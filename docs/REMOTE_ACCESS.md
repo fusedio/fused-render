@@ -64,8 +64,11 @@ computer (agent) ──TLS to relay :8443── control conn (JSON lines)
    signature and hands out `<host-id>.<domain>` where
    `host-id = base32(SHA-256("fused-render-host-id" ‖ public key))[:26]`.
    **Self-certifying names**: no accounts, nothing to register, and no one can
-   take over another computer's name without its key. Binding the domain and a
-   fresh nonce into the signature stops replay at the same or another relay.
+   take over another computer's name without its key. The fresh nonce stops
+   replay at the same relay; binding the domain stops replay at another one,
+   because the agent signs only for the relay it dialled (`domain_matches`:
+   the hello's domain must be the relay's host name or a parent of it; a
+   pinned relay is identified by its certificate instead).
 3. **A phone connects** to `https://<host-id>.<domain>/`. The relay reads the
    ClientHello (bounded: 16 KiB, 10 s), finds the agent, sends
    `{"t":"open","sid":<random 128-bit>,"peer":<phone ip>}`.
@@ -88,7 +91,9 @@ scoping) applies unchanged to away requests. On top of it:
    friends are never read.
 2. **A relayed request is never local.** Its `client` is rewritten to the phone
    address the relay reported, so nothing downstream ever sees `127.0.0.1` for
-   relayed traffic.
+   relayed traffic. The reported address is validated (`clean_peer`): anything
+   that is not a real remote IP — loopback, unspecified, a hostname, a string
+   with a newline — becomes the placeholder `relay`.
 3. **Off means closed.** With away access off, any `relay`/`tailscale` request
    is 404 / WebSocket 1008, and the relay and tailnet names are not in the
    Host allowlist. Turning Phone access off stops the agent.
@@ -107,9 +112,11 @@ scoping) applies unchanged to away requests. On top of it:
 7. **Management stays loopback-only.** `/api/lan/*` (pair codes, devices, the
    away switch) is on the desktop's loopback API; the LAN wrapper never forwards
    it, so a phone cannot widen its own access.
-8. **Bounded load.** The agent runs at most 64 streams; a malicious relay can
-   at worst open connections to the listener, which is what any stranger on
-   the Wi-Fi can do, and gets 401 without a paired cookie.
+8. **Bounded load.** The agent runs at most 256 streams and 32 per phone
+   address, and tells the relay at once when it refuses one; a stream idle for
+   5 minutes either way is closed. A malicious relay can at worst open
+   connections to the listener, which is what any stranger on the Wi-Fi can
+   do, and gets 401 without a paired cookie.
 
 ## 5. Safety rules on the relay
 
@@ -117,9 +124,13 @@ scoping) applies unchanged to away requests. On top of it:
 new phone connections per IP (token bucket, `--conn-per-ip-per-min`, default
 240/min, burst 120 — raise it behind carrier NAT), concurrent connections per
 IP (256) and in total (8192), streams per computer (128,
-`--streams-per-host`), agent handshakes per IP (30/min), a deadline on every
-pre-splice step, and a size bound on every buffer. An unknown or malformed SNI
-is dropped without answering. The relay holds no secrets that matter: its own
+`--streams-per-host`) and per computer per phone IP (32), agent handshakes per
+IP (30/min), a deadline on every pre-splice step and on every write to an
+agent, an idle bound on every read and drain of a spliced stream (a peer that
+stops reading cannot park a slot), and a size bound on every buffer. The
+ClientHello is parsed only when a whole TLS record has arrived and may span at
+most 8 records, so a byte-at-a-time sender costs a handful of parses. An
+unknown or malformed SNI is dropped without answering. The relay holds no secrets that matter: its own
 agent-port certificate, nothing else.
 
 ## 6. Running a relay
@@ -168,6 +179,17 @@ Borrowed: the ordered route list that falls back to the direct route
 
 ## 8. Not done / follow-ups
 
+- **Residual: an attacker who knows a host id can tie up streams.** The host
+  id is in the SNI (and in the pairing code). Silent TLS connections each
+  hold an agent slot until the 5-minute idle bound; caps per phone address
+  (agent 32, relay 32) mean one address cannot fill a computer, but an
+  attacker with many addresses (an IPv6 /64) still can, degrading the relay
+  route until the idle bound frees it. Wi-Fi and Tailscale are unaffected.
+  The real fix is relay-side admission (next item).
+- **Traffic that looks local.** A Tailscale subnet router (which SNATs to a
+  LAN address) or Tailscale Serve/Funnel (which proxies from loopback) makes
+  tailnet traffic arrive as `lan`. Both are things the user configures on
+  their own tailnet; with them, the tailnet counts as the Wi-Fi.
 - **A Fused-hosted relay** (and its `DEFAULT_RELAY`). Until then a user needs
   Tailscale or a relay of their own.
 - **Relay admission before the computer.** Today any client can reach the

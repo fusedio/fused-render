@@ -230,7 +230,7 @@ def test_the_relay_only_carries_ciphertext(world, monkeypatch):
     seen = bytearray()
     real = R.splice
 
-    async def spy(r1, w1, r2, w2):
+    async def spy(r1, w1, r2, w2, *rest):
         orig_read = r1.read
 
         async def read(n=-1):
@@ -239,7 +239,7 @@ def test_the_relay_only_carries_ciphertext(world, monkeypatch):
             return data
 
         r1.read = read
-        return await real(r1, w1, r2, w2)
+        return await real(r1, w1, r2, w2, *rest)
 
     monkeypatch.setattr(R, "splice", spy)
     world.agent.start()
@@ -267,7 +267,9 @@ def test_the_computer_sees_the_phone_address_on_its_loopback_leg(world, monkeypa
     world.agent.start()
     _wait_for(lambda: world.agent.connected, what="agent connected")
     _phone(world.relay.public_port, world.agent.status()["host"])
-    assert captured["peer"] == "127.0.0.1"
+    # The relay reported 127.0.0.1 (this test's phone): a loopback address
+    # from the relay is never passed on as the client — it would look local.
+    assert captured["peer"] == "relay"
     assert captured["held"]
     _wait_for(lambda: not world.agent._peers, what="stream cleaned up")
 
@@ -382,3 +384,140 @@ def test_the_agent_reconnects_after_the_relay_drops_it(world):
     _wait_for(lambda: world.agent.connected, timeout=15, what="agent reconnected")
     _fp, reply = _phone(world.relay.public_port, world.agent.status()["host"])
     assert reply == b"computer says: hi\n"
+
+
+# ---- review findings (abuse and robustness) ----------------------------------------
+
+
+@pytest.mark.parametrize("value,expected", [
+    ("203.0.113.9", "203.0.113.9"), ("2001:db8::1", "2001:db8::1"), ("::ffff:203.0.113.9", "203.0.113.9"),
+    ("127.0.0.1", "relay"), ("::1", "relay"), ("::ffff:127.0.0.1", "relay"), ("0.0.0.0", "relay"),
+    ("1.2.3.4\nINFO forged", "relay"), ("evil.example", "relay"), (None, "relay"), (5, "relay"),
+])
+def test_the_relay_reported_address_is_only_ever_a_real_remote_ip(value, expected):
+    assert A.clean_peer(value) == expected
+
+
+def test_the_agent_signs_only_for_the_relay_it_dialled():
+    assert A.domain_matches("relay.example.com", "relay.example.com")
+    assert A.domain_matches("eu.relay.example.com", "relay.example.com")
+    assert not A.domain_matches("evil.example", "relay.example.com")
+    assert not A.domain_matches("relay.example.com", "")
+    assert not A.domain_matches("xrelay.example.com", "relay.example.com")
+
+
+def test_an_unpinned_agent_refuses_a_relay_naming_another_domain(world):
+    """A malicious relay forwarding a real relay's hello must not get our
+    signature over the real relay's domain (review finding 4)."""
+    world.agent.relay_fingerprint = None
+    world.agent.relay_host = "evil.example"
+    world.agent._ssl = R.server_context  # never used: dial is replaced below
+
+    async def fake_dial():
+        return None, _Closable(), {"t": "hello", "v": P.VERSION, "domain": DOMAIN, "nonce": P.b64(b"n" * 32)}
+
+    world.agent._dial_relay = fake_dial
+    with pytest.raises(A.TunnelError, match="claims to be"):
+        asyncio.run(world.agent._session())
+
+
+class _Closable:
+    def close(self):
+        pass
+
+
+def test_one_address_cannot_take_every_stream(world):
+    """Silent connections from one phone address fill only that address's
+    share; another phone still gets through (review finding 1)."""
+    world.agent._max_per_peer = 3
+    world.agent.start()
+    _wait_for(lambda: world.agent.connected, what="agent connected")
+    host = world.agent.status()["host"]
+    idle = []
+    for _ in range(3):
+        ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
+        ctx.check_hostname = False
+        ctx.verify_mode = ssl.CERT_NONE
+        raw = socket.create_connection(("127.0.0.1", world.relay.public_port), timeout=10)
+        idle.append(ctx.wrap_socket(raw, server_hostname=host))  # handshake done, then silence
+    try:
+        _wait_for(lambda: world.agent._per_peer.get("relay") == 3, what="three idle streams")
+        # The fourth from the same address is refused at once, not parked.
+        started = time.monotonic()
+        with pytest.raises((ssl.SSLError, ConnectionError, OSError)):
+            _phone(world.relay.public_port, host)
+        assert time.monotonic() - started < world.relay.limits.open_timeout_s
+    finally:
+        for s in idle:
+            s.close()
+    _wait_for(lambda: not world.agent._per_peer, what="slots given back")
+    _fp, reply = _phone(world.relay.public_port, host)
+    assert reply == b"computer says: hi\n"
+
+
+def test_a_stalled_agent_does_not_leak_relay_slots(tmp_path):
+    """An agent that accepts streams and never reads them, while phones push
+    more than the buffers hold and then reset: every relay slot comes back
+    (review finding 2 — before, `drain()` into the stalled agent parked the
+    stream forever)."""
+    relay_cert, relay_key = R._self_signed(DOMAIN, str(tmp_path / "relay"))
+    lp = _Loop()
+    limits = R.Limits(stream_idle_s=1.0, send_timeout_s=1.0, open_timeout_s=5)
+    relay = R.Relay(DOMAIN, agent_ssl=R.server_context(relay_cert, relay_key), public_host="127.0.0.1",
+                    public_port=0, agent_host="127.0.0.1", agent_port=0, limits=limits)
+    lp.run(relay.start())
+    key = A.load_or_create_key(str(tmp_path / "stall.key"))
+    hid = P.host_id(A.public_raw(key))
+    accepted = []  # data connections the stalled agent took (and never reads)
+
+    async def stalled_agent():
+        ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
+        ctx.check_hostname = False
+        ctx.verify_mode = ssl.CERT_NONE
+        reader, writer = await asyncio.open_connection("127.0.0.1", relay.agent_port, ssl=ctx)
+        hello = P.decode(await reader.readline())
+        sig = key.sign(P.challenge(DOMAIN, P.unb64(hello["nonce"])))
+        writer.write(P.encode({"t": "auth", "pub": P.b64(A.public_raw(key)), "sig": P.b64(sig)}))
+        await writer.drain()
+        await reader.readline()  # ok
+        while True:
+            msg = P.decode(await reader.readline())
+            if msg and msg["t"] == "open":
+                dr, dw = await asyncio.open_connection("127.0.0.1", relay.agent_port, ssl=ctx)
+                await dr.readline()
+                dw.write(P.encode({"t": "data", "sid": msg["sid"]}))
+                await dw.drain()
+                accepted.append(dw)
+
+    task = asyncio.run_coroutine_threadsafe(stalled_agent(), lp.loop)
+    try:
+        _wait_for(lambda: relay.stats()["agents"] == 1, what="stalled agent registered")
+        phones = []
+        for _ in range(5):
+            raw = socket.create_connection(("127.0.0.1", relay.public_port), timeout=10)
+            raw.sendall(_client_hello(f"{hid}.{DOMAIN}"))
+            phones.append(raw)
+        _wait_for(lambda: len(accepted) == 5, timeout=20, what="five streams accepted by the stalled agent")
+        for raw in phones:
+            raw.settimeout(0.2)
+            try:
+                raw.sendall(b"x" * (8 << 20))  # more than every buffer on the way holds
+            except OSError:
+                pass  # full: the relay stopped reading, its drain is parked
+            raw.setsockopt(socket.SOL_SOCKET, socket.SO_LINGER, b"\x01\x00\x00\x00\x00\x00\x00\x00")
+            raw.close()  # RST
+        _wait_for(lambda: relay.stats()["connections"] == 0, timeout=20, what="slots released")
+        assert not relay._per_ip and not relay._host_ip
+    finally:
+        task.cancel()
+        lp.run(relay.close())
+        lp.close()
+
+
+def test_a_hello_split_into_many_records_is_refused():
+    hello = _client_hello("abc.relay.test")
+    body = hello[5:]
+    rec = lambda b: b"\x16\x03\x01" + len(b).to_bytes(2, "big") + b  # noqa: E731
+    pieces = b"".join(rec(body[i:i + 1]) for i in range(len(body)))
+    with pytest.raises(P.HelloError, match="too many records"):
+        P.parse_client_hello(pieces)

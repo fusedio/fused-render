@@ -762,9 +762,14 @@ def _lan_overlaps_tailnet(ip: str) -> bool:
     import ipaddress
 
     try:
-        addr = ipaddress.ip_address(ip.split("%")[0])
-        for own in lan_doctor.lan_ips():
-            if ipaddress.ip_network(f"{own}/24", strict=False) == ipaddress.ip_network(f"{addr}/24", strict=False):
+        net = ipaddress.ip_network(f"{ipaddress.ip_address(ip.split('%')[0])}/24", strict=False)
+        # Physical interfaces only: `lan_ips()` lists tunnels too (last), and
+        # the computer's own tailnet address must not make its tailnet peers
+        # look like the Wi-Fi.
+        for name, own in lan_doctor.interfaces():
+            if lan_doctor._is_tunnel(name) or lan_doctor._is_virtual(name):
+                continue
+            if ipaddress.ip_network(f"{own}/24", strict=False) == net:
                 return True
     except ValueError:
         return False

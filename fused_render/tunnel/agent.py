@@ -91,7 +91,10 @@ def load_or_create_key(path: str):
     pem = key.private_bytes(serialization.Encoding.PEM, serialization.PrivateFormat.PKCS8,
                             serialization.NoEncryption())
     tmp = path + ".tmp"
-    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    # A leftover temp file keeps its old mode through O_CREAT: start clean.
+    with contextlib.suppress(FileNotFoundError):
+        os.unlink(tmp)
+    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
     with os.fdopen(fd, "wb") as f:
         f.write(pem)
     os.replace(tmp, path)
@@ -107,10 +110,39 @@ def public_raw(key) -> bytes:
 # ---- the agent -------------------------------------------------------------------
 
 
+def clean_peer(value) -> str:
+    """The phone address the relay reported, as the computer will log and
+    present it — only ever a real, non-local IP address. Anything else (a
+    malicious relay naming 127.0.0.1, a log-injection string, a hostname)
+    becomes the placeholder "relay": a relayed request must never look local."""
+    import ipaddress
+
+    if isinstance(value, str) and len(value) <= 64:
+        try:
+            addr = ipaddress.ip_address(value)
+        except ValueError:
+            return "relay"
+        mapped = getattr(addr, "ipv4_mapped", None)
+        if mapped is not None:
+            addr = mapped
+        if not (addr.is_loopback or addr.is_unspecified or addr.is_link_local or addr.is_multicast):
+            return str(addr)
+    return "relay"
+
+
+def domain_matches(relay_host: str, domain: str) -> bool:
+    """Does the domain a relay names in its hello belong to the relay we
+    dialled? We sign over that domain, so a relay must not be able to name
+    another relay's: that would let it replay our signature there and claim
+    our name on it."""
+    relay_host, domain = relay_host.lower().rstrip("."), domain.lower().rstrip(".")
+    return bool(domain) and (relay_host == domain or relay_host.endswith("." + domain))
+
+
 class TunnelAgent:
     def __init__(self, relay_host: str, relay_port: int, key, local_port: Callable[[], int | None], *,
-                 relay_fingerprint: str | None = None, max_streams: int = 64,
-                 ssl_context: ssl.SSLContext | None = None):
+                 relay_fingerprint: str | None = None, max_streams: int = 256, max_streams_per_peer: int = 32,
+                 stream_idle_s: float = 300.0, ssl_context: ssl.SSLContext | None = None):
         self.relay_host = relay_host
         self.relay_port = relay_port
         self.relay_fingerprint = relay_fingerprint
@@ -118,6 +150,9 @@ class TunnelAgent:
         self.host_id = P.host_id(public_raw(key))
         self._local_port = local_port
         self._max_streams = max_streams
+        self._max_per_peer = max_streams_per_peer
+        self._stream_idle_s = stream_idle_s
+        self._per_peer: dict[str, int] = {}
         self._ssl = ssl_context or self._client_context()
         self._peers: dict[int, str] = {}
         self._peers_lock = threading.Lock()
@@ -240,6 +275,11 @@ class TunnelAgent:
             domain, nonce = hello.get("domain"), P.unb64(hello.get("nonce"))
             if not isinstance(domain, str) or not nonce or len(nonce) < 16:
                 raise TunnelError("malformed relay hello")
+            # Sign only for the relay we dialled. A pinned relay is identified
+            # by its certificate (often dialled by address), so the pin stands
+            # in for the name there.
+            if not self.relay_fingerprint and not domain_matches(self.relay_host, domain):
+                raise TunnelError(f"the relay at {self.relay_host} claims to be {domain!r}")
             sig = self._key.sign(P.challenge(domain, nonce))
             writer.write(P.encode({"t": "auth", "pub": P.b64(public_raw(self._key)), "sig": P.b64(sig)}))
             await writer.drain()
@@ -266,8 +306,20 @@ class TunnelAgent:
                         writer.write(P.encode({"t": "pong"}))
                         await writer.drain()
                 elif msg["t"] == "open" and isinstance(msg.get("sid"), str):
-                    peer = msg.get("peer") if isinstance(msg.get("peer"), str) else "relay"
-                    task = asyncio.get_running_loop().create_task(self._stream(msg["sid"][:64], peer[:64]))
+                    sid, peer = msg["sid"][:64], clean_peer(msg.get("peer"))
+                    if (self._streams >= self._max_streams
+                            or self._per_peer.get(peer, 0) >= self._max_per_peer):
+                        # Full (one address holding many silent connections
+                        # cannot take every slot): tell the relay at once.
+                        logger.info("tunnel: refused a stream from %s (%d open, %d from it)",
+                                    peer, self._streams, self._per_peer.get(peer, 0))
+                        async with lock:
+                            writer.write(P.encode({"t": "refuse", "sid": sid}))
+                            await writer.drain()
+                        continue
+                    self._streams += 1
+                    self._per_peer[peer] = self._per_peer.get(peer, 0) + 1
+                    task = asyncio.get_running_loop().create_task(self._stream(sid, peer))
                     self._stream_tasks.add(task)
                     task.add_done_callback(self._stream_tasks.discard)
                 elif msg["t"] == "error":
@@ -277,13 +329,16 @@ class TunnelAgent:
                 writer.close()
 
     async def _stream(self, sid: str, peer: str) -> None:
-        port = self._local_port()
-        if port is None or self._streams >= self._max_streams:
-            return
-        self._streams += 1
+        """One phone connection. The slot (``_streams``, ``_per_peer``) was
+        taken by the caller and is given back here, whatever happens."""
+        from fused_render.tunnel.relay import close_soon
+
         lw = dw = None
         src = None
         try:
+            port = self._local_port()
+            if port is None:
+                return
             lr, lw = await asyncio.wait_for(asyncio.open_connection("127.0.0.1", port), 5)
             src = lw.get_extra_info("sockname")[1]
             with self._peers_lock:
@@ -291,17 +346,27 @@ class TunnelAgent:
             dr, dw, _hello = await self._dial_relay()
             dw.write(P.encode({"t": "data", "sid": sid}))
             await dw.drain()
-            await splice(lr, lw, dr, dw)
+            await splice(lr, lw, dr, dw, self._stream_idle_s)
         except (OSError, ConnectionError, asyncio.TimeoutError, ssl.SSLError, TunnelError):
             pass
         except Exception:  # noqa: BLE001
             logger.exception("tunnel: stream failed")
         finally:
+            # The slot goes back as soon as no bytes can flow (closing below
+            # is bounded on its own): a phone making short requests back to
+            # back must not be refused by its own connections still closing.
             self._streams -= 1
+            left = self._per_peer.get(peer, 1) - 1
+            if left > 0:
+                self._per_peer[peer] = left
+            else:
+                self._per_peer.pop(peer, None)
+            # Closed BEFORE the source port leaves the map: while the
+            # listener can still read from this socket, its requests must
+            # still classify as relayed.
+            for w in (lw, dw):
+                if w is not None:
+                    await close_soon(w)
             if src is not None:
                 with self._peers_lock:
                     self._peers.pop(src, None)
-            for w in (lw, dw):
-                if w is not None:
-                    with contextlib.suppress(Exception):
-                        w.close()

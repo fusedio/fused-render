@@ -96,9 +96,23 @@ def test_classification_comes_from_the_transport_not_the_client(away):
 def test_a_lan_numbered_from_the_tailnet_range_stays_the_wifi(away, monkeypatch):
     """Some routers hand out 100.64/10 addresses on the LOCAL network: with
     the computer on such a LAN, a phone beside it is `lan`, not `tailscale`."""
-    monkeypatch.setattr(lan_doctor, "lan_ips", lambda: ["100.70.3.10"])
+    monkeypatch.setattr(lan_doctor, "interfaces", lambda: [("en0", "100.70.3.10")])
     assert lan._via({"client": ("100.70.3.44", 1)})[0] == "lan"
     assert lan._via({"client": (TS_IP, 1)})[0] == "tailscale"
+
+
+def test_the_computers_own_tailnet_address_does_not_make_peers_lan(away, monkeypatch):
+    """The tailnet interface is listed too: a peer in its /24 is still the
+    tailnet (security review, finding 3: it was `lan`, so it could pair and
+    got in with away access off)."""
+    monkeypatch.setattr(lan_doctor, "interfaces",
+                        lambda: [("en0", "192.168.1.20"), ("utun4", "100.101.102.103"), ("tailscale0", "100.101.102.103")])
+    assert lan._via({"client": ("100.101.102.7", 1)})[0] == "tailscale"
+    monkeypatch.setattr(tunnel_host.remote, "enabled", False)
+    token = lan.mint_pair_token()
+    status, _, _ = call(lan.LanApp(_echo), "/pair", query=f"t={token}".encode(),
+                        host="studio.local", client=("100.101.102.7", 1))
+    assert status == 404 and lan._read_devices() == []
 
 
 def test_stopping_away_access_clears_its_switch(home):

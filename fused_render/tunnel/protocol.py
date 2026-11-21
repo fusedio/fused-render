@@ -55,6 +55,10 @@ MAX_LINE = 4096
 #: shares included); TLS caps a record at 16 KiB + header.
 MAX_HELLO = 16384 + 5
 
+#: Upper bound on the TLS records a ClientHello may be split across. Real
+#: clients use one; a stranger sending many tiny records is refused.
+MAX_RECORDS = 8
+
 
 def host_id(public_key_raw: bytes) -> str:
     """The relay name for a raw 32-byte Ed25519 public key."""
@@ -116,7 +120,11 @@ def parse_client_hello(buf: bytes):
     # Reassemble the handshake message from consecutive handshake records.
     hs = bytearray()
     pos = 0
+    records = 0
     while True:
+        records += 1
+        if records > MAX_RECORDS:
+            raise HelloError("ClientHello split across too many records")
         if len(buf) < pos + 5:
             if pos == 0 and buf and buf[0] != 0x16:
                 raise HelloError("not a TLS handshake")

@@ -63,7 +63,10 @@ class Limits:
     concurrent_per_ip: int = 256
     concurrent_total: int = 8192
     streams_per_host: int = 128
+    streams_per_host_ip: int = 32       # one phone address cannot hold all of a computer's streams
     agent_auth_per_ip_per_min: int = 30
+    send_timeout_s: float = 10.0        # a write to an agent's control connection
+    stream_idle_s: float = 300.0        # a spliced stream with no bytes either way this long → closed
 
 
 class _Bucket:
@@ -79,12 +82,25 @@ class _Bucket:
         tokens, last = self._state.get(key, (self.burst, now))
         tokens = min(self.burst, tokens + (now - last) * self.rate)
         if len(self._state) > 100_000:  # never an unbounded map of strangers
-            self._state.clear()
+            self._prune(now)
         if tokens < 1.0:
             self._state[key] = (tokens, now)
             return False
         self._state[key] = (tokens - 1.0, now)
         return True
+
+    def _prune(self, now: float) -> None:
+        """Forget keys whose bucket has refilled (they would start full
+        anyway); only if that frees nothing, everything. Clearing everyone on
+        every overflow would hand a flooding key a fresh burst."""
+        self._state = {k: (t, last) for k, (t, last) in self._state.items()
+                       if t + (now - last) * self.rate < self.burst}
+        if len(self._state) > 100_000:
+            self._state.clear()
+
+
+class _Refused(Exception):
+    """The computer refused a stream (its own limit)."""
 
 
 @dataclass
@@ -95,10 +111,15 @@ class _Agent:
     streams: int = 0
     lock: asyncio.Lock = field(default_factory=asyncio.Lock)
 
-    async def send(self, msg: dict) -> None:
-        async with self.lock:
-            self.writer.write(P.encode(msg))
-            await self.writer.drain()
+    async def send(self, msg: dict, timeout: float = 10.0) -> None:
+        """Bounded: an agent that stops reading its control connection must
+        not park every phone waiting to reach it."""
+        async def write():
+            async with self.lock:
+                self.writer.write(P.encode(msg))
+                await self.writer.drain()
+
+        await asyncio.wait_for(write(), timeout)
 
     def close(self) -> None:
         with contextlib.suppress(Exception):
@@ -110,31 +131,60 @@ def _peer_ip(writer: asyncio.StreamWriter) -> str:
     return str(peer[0]) if isinstance(peer, tuple) and peer else "?"
 
 
+def _abort(writer: asyncio.StreamWriter) -> None:
+    """Drop a connection now, buffered bytes and all: wakes anything blocked
+    reading from or draining into it."""
+    with contextlib.suppress(Exception):
+        writer.transport.abort()
+
+
+async def close_soon(writer: asyncio.StreamWriter, grace: float = 5.0) -> None:
+    """Close gracefully (what is buffered still goes out), but never wait
+    more than ``grace`` on a peer that will not take it."""
+    with contextlib.suppress(Exception):
+        writer.close()
+    try:
+        await asyncio.wait_for(writer.wait_closed(), grace)
+    except Exception:  # noqa: BLE001 — timeout, reset: either way it is gone
+        _abort(writer)
+
+
 async def splice(r1: asyncio.StreamReader, w1: asyncio.StreamWriter,
-                 r2: asyncio.StreamReader, w2: asyncio.StreamWriter) -> int:
-    """Copy bytes both ways until either side ends; returns bytes moved."""
+                 r2: asyncio.StreamReader, w2: asyncio.StreamWriter, idle: float = 300.0) -> int:
+    """Copy bytes both ways until both sides end; returns bytes moved.
+
+    Every read and every drain is bounded by ``idle``: a peer that stops
+    reading (a full send buffer) or a stream nobody uses no longer holds a
+    slot forever. A timeout or error on either direction aborts BOTH
+    connections, so the other direction cannot stay parked either."""
     moved = 0
 
     async def pipe(r, w):
         nonlocal moved
+        clean = False
         try:
             while True:
-                data = await r.read(65536)
+                data = await asyncio.wait_for(r.read(65536), idle)
                 if not data:
+                    clean = True
                     break
                 moved += len(data)
                 w.write(data)
-                await w.drain()
-        except (ConnectionError, OSError, asyncio.IncompleteReadError, ssl.SSLError):
+                await asyncio.wait_for(w.drain(), idle)
+        except (ConnectionError, OSError, asyncio.IncompleteReadError, ssl.SSLError, asyncio.TimeoutError):
             pass
         finally:
-            # One side is done: end the other. A TLS transport cannot
-            # half-close, and the in-band close_notify already travelled.
-            with contextlib.suppress(Exception):
-                if w.can_write_eof():
-                    w.write_eof()
-                else:
-                    w.close()
+            if clean:
+                # One side finished: pass the end on. A TLS transport cannot
+                # half-close (the in-band close_notify already travelled).
+                with contextlib.suppress(Exception):
+                    if w.can_write_eof():
+                        w.write_eof()
+                    else:
+                        w.close()
+            else:
+                _abort(w1)
+                _abort(w2)
 
     await asyncio.gather(pipe(r1, w2), pipe(r2, w1))
     return moved
@@ -154,6 +204,7 @@ class Relay:
         self._advertise_port = advertise_port
         self._agents: dict[str, _Agent] = {}
         self._pending: dict[str, tuple[str, asyncio.Future]] = {}
+        self._host_ip: collections.Counter = collections.Counter()  # (host id, phone ip) → streams
         self._conn_bucket = _Bucket(self.limits.conn_per_ip_per_min, self.limits.conn_burst_per_ip)
         self._auth_bucket = _Bucket(self.limits.agent_auth_per_ip_per_min, self.limits.agent_auth_per_ip_per_min)
         self._per_ip: collections.Counter = collections.Counter()
@@ -203,25 +254,33 @@ class Relay:
             hello, sni = await asyncio.wait_for(self._read_hello(reader), lim.hello_timeout_s)
             hid = P.split_sni(sni, self.domain) if sni else None
             agent = self._agents.get(hid) if hid else None
-            if agent is None or agent.streams >= lim.streams_per_host:
+            if (agent is None or agent.streams >= lim.streams_per_host
+                    or self._host_ip[(agent.host_id, ip)] >= lim.streams_per_host_ip):
                 return
             sid = secrets.token_hex(16)
             fut: asyncio.Future = asyncio.get_running_loop().create_future()
             self._pending[sid] = (agent.host_id, fut)
             try:
-                await agent.send({"t": "open", "sid": sid, "peer": ip})
-                dreader, dwriter, done = await asyncio.wait_for(fut, lim.open_timeout_s)
+                await agent.send({"t": "open", "sid": sid, "peer": ip}, lim.send_timeout_s)
+                dreader, dwriter, claimed, done = await asyncio.wait_for(fut, lim.open_timeout_s)
             finally:
                 self._pending.pop(sid, None)
+            claimed.set()
             agent.streams += 1
+            key = (agent.host_id, ip)
+            self._host_ip[key] += 1
             try:
                 dwriter.write(hello)
-                await dwriter.drain()
-                await splice(reader, writer, dreader, dwriter)
+                await asyncio.wait_for(dwriter.drain(), lim.send_timeout_s)
+                await splice(reader, writer, dreader, dwriter, lim.stream_idle_s)
             finally:
                 agent.streams -= 1
+                self._host_ip[key] -= 1
+                if self._host_ip[key] <= 0:
+                    del self._host_ip[key]
+                await close_soon(dwriter)
                 done.set()
-        except (asyncio.TimeoutError, P.HelloError, ConnectionError, OSError, ssl.SSLError):
+        except (asyncio.TimeoutError, P.HelloError, ConnectionError, OSError, ssl.SSLError, _Refused):
             pass
         except Exception:  # noqa: BLE001 — one bad stream never takes the relay down
             logger.exception("relay: public stream failed")
@@ -230,21 +289,36 @@ class Relay:
             self._per_ip[ip] -= 1
             if self._per_ip[ip] <= 0:
                 del self._per_ip[ip]
-            with contextlib.suppress(Exception):
-                writer.close()
+            await close_soon(writer)
 
     async def _read_hello(self, reader: asyncio.StreamReader) -> tuple[bytes, str | None]:
+        """Buffer until the ClientHello is complete. The parser runs only when
+        a whole TLS record has arrived (at most ``protocol.MAX_RECORDS``
+        times), not after every read: a client trickling one byte per segment
+        must not make the relay re-parse a growing buffer thousands of times."""
         buf = b""
+        boundary = 0  # end of the last complete record
         while True:
             chunk = await reader.read(4096)
             if not chunk:
                 raise ConnectionError("closed before ClientHello")
             buf += chunk
-            got = P.parse_client_hello(buf)
-            if got is not P.NEED_MORE:
-                return buf, got
             if len(buf) > P.MAX_HELLO:
                 raise P.HelloError("ClientHello too large")
+            if boundary == 0 and buf[0] != 0x16:
+                raise P.HelloError("not a TLS handshake")
+            advanced = False
+            while len(buf) >= boundary + 5:
+                length = int.from_bytes(buf[boundary + 3:boundary + 5], "big")
+                if len(buf) < boundary + 5 + length:
+                    break
+                boundary += 5 + length
+                advanced = True
+            if not advanced:
+                continue
+            got = P.parse_client_hello(buf[:boundary])
+            if got is not P.NEED_MORE:
+                return buf, got
 
     # -- computers
     async def _on_agent(self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
@@ -314,7 +388,13 @@ class Relay:
                 if msg is None:
                     return
                 if msg["t"] == "ping":
-                    await agent.send({"t": "pong"})
+                    await agent.send({"t": "pong"}, self.limits.send_timeout_s)
+                elif msg["t"] == "refuse" and isinstance(msg.get("sid"), str):
+                    # The computer is at its own stream limit: fail the phone
+                    # now rather than after the open timeout.
+                    entry = self._pending.get(msg["sid"])
+                    if entry is not None and entry[0] == hid and not entry[1].done():
+                        entry[1].set_exception(_Refused())
         finally:
             pinger.cancel()
             if self._agents.get(hid) is agent:
@@ -332,8 +412,14 @@ class Relay:
         entry = self._pending.get(sid) if isinstance(sid, str) else None
         if entry is None or entry[1].done():
             return
-        done = asyncio.Event()
-        entry[1].set_result((reader, writer, done))
+        claimed, done = asyncio.Event(), asyncio.Event()
+        entry[1].set_result((reader, writer, claimed, done))
+        # The phone side takes it at once, or has just given up (the open
+        # timed out in the same tick): never wait on a stream nobody owns.
+        try:
+            await asyncio.wait_for(claimed.wait(), self.limits.open_timeout_s)
+        except asyncio.TimeoutError:
+            return
         await done.wait()
 
 
