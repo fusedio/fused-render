@@ -12935,3 +12935,93 @@ milliseconds.
   worker run only for the last page waiting.
 - **SV-5 Timeouts.** 330 s for a realtime run, 3600 s once the worker
   reports a batch kind; 120 s for a schema.
+
+## 55. Local SQL Engine For Pages
+
+DuckDB in a worker process of its own, reached over loopback routes,
+answering in Arrow IPC streams; never loaded in the server process.
+
+### 55.1 Model
+
+- **LQ-1 One engine.** One worker, one in-memory database, one `files/`
+  directory for the whole app. A session is one cursor of that database:
+  permanent tables and files are shared by every session; temp tables,
+  variables and cancellation are the session's own. A session's statements
+  run in order; sessions run concurrently.
+- **LQ-2 Engine death ends everything.** Worker crash, 20 min untouched
+  with nothing waiting, or shutdown: every session id answers 404, the
+  directory is removed, then waiting requests fail `engine_error`; the next
+  `POST /api/sql/session` starts a new engine. Deleting a session closes
+  only its cursor.
+
+### 55.2 Routes (`server/routers/sql.py`)
+
+All guarded by `X-Fused` (GETs too); none is on the LAN allowlist.
+
+| Route | Body | Answer |
+|---|---|---|
+| `POST /api/sql/session` | `{scope?}` (≤ 256 chars, a label) | `{session}` |
+| `POST …/{s}/query` | `{sql, query_id?}` | Arrow IPC stream (`application/vnd.apache.arrow.stream`) |
+| `POST …/{s}/cancel` | `{query_id}` | `{}`; also for an id not started yet |
+| `PUT …/{s}/file/{name}` | raw bytes | `{}` |
+| `POST …/{s}/file/{name}/link` | `{handle}` (`udf:<token>`; `idx:` → `unsupported`) | `{}` |
+| `GET` / `DELETE …/{s}/file/{name}` | | the bytes (`application/octet-stream`, nosniff + sandbox CSP) / `{}` |
+| `POST …/{s}/arrow/{table}?create=0\|1` | Arrow IPC stream | `{}`; 1 = create or replace, 0 = append |
+| `DELETE /api/sql/session/{s}` | | `{}` |
+
+Errors are `{code, message}`: `invalid_args` 400, `engine_error` 400
+(503 while quitting or when the worker cannot start), `cancelled` 400,
+`not_found` 404, `unsupported` 501 (duckdb/pyarrow missing). Names:
+`[A-Za-z0-9._-]{1,128}`, not `.`/`..`; tables `[A-Za-z_][A-Za-z0-9_]{0,127}`;
+`query_id` `[A-Za-z0-9._-]{1,128}`, namespaced by session (one session never
+cancels another's). A caller that disconnects mid-query cancels it. Bodies
+stream to `io/`; a result is spooled there and removed once sent.
+
+### 55.3 Directory and files (`sql/runner.py`, `sql/files.py`)
+
+`<home>/cache/sql/<pid>-<hex>/` per engine: `files/` (the worker's cwd, the
+only local directory SQL reaches), `tmp/` (temp_directory), `io/` (bodies
+in, results out; not readable from SQL); same volume as `cache/udf/`. A put
+file is `os.replace`d into place, never written in place. A link is a hard link to
+the saved result's body (a copy when linking fails), read-only on POSIX: the
+name keeps its bytes for the engine's life after the store replaces or
+expires the entry, and SQL cannot write the entry through it.
+
+`<instance>.lock` beside the directory is flocked for the engine's life and
+taken before the directory exists. The startup sweep (a thread, lean too;
+safe any time) removes a directory whose lock it can take or that has none,
+and never this process's own: two servers can share one home.
+
+### 55.4 Confinement (`sql/_worker.py`)
+
+`[sys.executable, -P, -m, fused_render.sql._worker]`, cwd the instance
+directory. In order: the protocol keeps a dup of stdout and fd 1 goes to
+stderr; duckdb/pyarrow imported, relative and cwd entries dropped from
+`sys.path`, then `chdir(files/)` (a registered `numpy.py` is never
+imported); secrets in memory only (`allow_persistent_secrets=false`, set
+before anything uses the secret manager, which is then started before the
+lockdown: started after it, the first remote read and every later one
+fail); extensions best-effort (`FUSED_RENDER_SQL_EXTENSIONS`, default
+`httpfs,spatial,h3`; `h3` from community; empty = none); `SET GLOBAL`
+temp_directory, python_enable_replacements=false, autoinstall/autoload of
+known extensions off; then `allowed_directories=[files/, tmp/, https://]` →
+`enable_external_access=false` → `lock_configuration=true`. A probe file
+outside `files/` must be unreadable or the worker reports `ready ok:false`
+and exits. Refused afterwards: local paths outside `files/`/`tmp/` (read,
+write, ATTACH, EXPORT, glob), `http://`, `s3://`, `file://`, GDAL `/vsi…`,
+loading extension files, changing any option (so no `SET` of an engine
+option works; `SET VARIABLE` does). Open: `https://` to any host (httpfs),
+and where such a host redirects to: httpfs follows a redirect to an
+`http://` address and DuckDB has no option to stop it;
+all of `files/` to every session, CPU and memory (engine defaults).
+
+### 55.5 Worker and lifecycle
+
+JSON lines, bodies as files in `io/`: `query`/`insert` → `started` (head of
+its session's queue) → `done` (`ok`, or `code: engine_error | cancelled`);
+`cancel` interrupts only that cursor while the id runs (repeated until it
+ends, checked under a lock so it never reaches the next statement) or marks
+an id not started yet; `close` interrupts and cancels a session's queue;
+stdin EOF exits at once. Spawned by the first query/insert; stopped (stdin
+closed, killed after 2 s, directory removed) by `refuse_new()` +
+`sql-engine` in `_stop_children` and an always-on shutdown hook.

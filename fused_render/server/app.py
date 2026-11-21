@@ -762,6 +762,26 @@ def create_app(start_dir: str, lean: bool = False) -> FastAPI:
 
         await asyncio.to_thread(udf_runner.shutdown)
 
+    # The local SQL engine (fused_render/sql/runner.py): started by the first
+    # query on a session, lean or not, so stopped regardless too. A no-op
+    # when none was started.
+    @on_shutdown_always
+    async def _shutdown_sql_engine():
+        from fused_render.sql import runner as sql_runner
+
+        await asyncio.to_thread(sql_runner.shutdown)
+
+    # Engine directories left by servers that are gone (a crash, a kill):
+    # removed on a thread so startup never waits on it. Only directories whose
+    # owner lock nobody holds go; another live server sharing this home keeps
+    # its own.
+    @on_startup_always
+    async def _startup_sweep_sql_engine_dirs():
+        from fused_render.sql import runner as sql_runner
+
+        threading.Thread(target=sql_runner.sweep, daemon=True,
+                         name="sql-engine-sweep").start()
+
     # The idle-unload reaper (SPEC AI-13): unloads a resident local model once
     # nothing has used it for the configured window (default 5 min, 0 = off).
     # No startup hook for it — `supervisor._start_resident` calls
@@ -1287,6 +1307,11 @@ def create_app(start_dir: str, lean: bool = False) -> FastAPI:
     from fused_render.server.routers.udf import router as udf_router
 
     app.include_router(udf_router)
+    # A local SQL engine for pages (SPEC §55): DuckDB in a worker process of
+    # its own, /api/sql/session/... routes answering in Arrow IPC streams.
+    from fused_render.server.routers.sql import router as sql_router
+
+    app.include_router(sql_router)
     # Remote (S3) locations: an `s3://bucket/key` address is an explorer
     # location. `routers/remote.py` stats, lists and downloads an object into
     # the local cache (remote_access.py is the one seam that knows how a
