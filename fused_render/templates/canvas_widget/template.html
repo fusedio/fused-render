@@ -20,8 +20,13 @@
          the node reads from OTHER nodes is the canvas as Fused has it
          saved, and the frame then loads that again.
 
-     The frame writes nothing back. This page must not import fused_render
-     (SPEC PY-15). -->
+     The frame writes nothing back. With the local SQL engine installed, and
+     the frame not loaded through the embed proxy, it is also offered that
+     engine: this page relays its `fused-embed-sql` messages to the loopback
+     `/api/sql/*` routes (SPEC §53.3 NW-7). The frame is also handed the
+     canvas as Fused last had it saved, once per document, so it can draw at
+     once (SPEC §53.3 NW-8). This page must not import fused_render (SPEC
+     PY-15). -->
 <html data-fused-theme="shell">
 <head>
 <meta charset="utf-8" />
@@ -124,6 +129,9 @@
   let lastSent = null;      // the text last posted, so a no-op save posts nothing
   let sourceSeq = 0;        // the newest read (or frame): an older read posts nothing
   let pendingPush = null;   // a push that landed before the frame was ready
+  let frameGen = 0;         // one per frame load: a reply to an older document is dropped
+  let sqlOffered = false;   // the current document was offered the SQL engine
+  let canvasSeed = null;    // this document's fetch of the saved canvas text (NW-8), or null
 
   function showMessage(build) {
     message.replaceChildren();
@@ -172,22 +180,44 @@
     el.className = "sync" + (tone ? " " + tone : "");
   }
 
-  function post(payload) {
+  function post(payload, transfer) {
     const win = frame.contentWindow;
     if (!win || !wb) return false;
     // Exact targetOrigin, never "*": the token rides this channel.
-    win.postMessage(payload, wb.origin);
+    win.postMessage(payload, wb.origin, transfer || []);
     return true;
   }
 
-  async function sendToken() {
+  // `fresh`: the frame just said it is ready (not a token refresh). Only then
+  // is the saved canvas posted, once per document (NW-8).
+  async function sendToken(fresh) {
+    const gen = frameGen;
+    const seed = fresh ? canvasSeed : null;
     try {
       const accessToken = await CanvasNode.token(node.env);
-      // `caps: []`: the node page writes nothing, so it is offered no channel.
-      post({ type: "fused-embed-auth-token", accessToken, caps: [], publicOrigin: wb.publicOrigin });
+      // `caps: []`: the node page writes nothing, so it is offered no channel,
+      // except the local SQL engine when it is installed. Never through
+      // the embed proxy: that frame's origin is a loopback listener.
+      const offer = !!wb.sqlEngine && wb.origin === wb.publicOrigin;
+      const payload = { type: "fused-embed-auth-token", accessToken, caps: [], publicOrigin: wb.publicOrigin };
+      if (offer) {
+        payload.caps = ["sql"];
+        payload.sqlEngine = { name: wb.sqlEngine.name, version: wb.sqlEngine.version };
+      }
+      // The saved canvas is data the page could fetch with its token, so it is
+      // offered through the embed proxy too.
+      payload.caps = [...payload.caps, "canvas"];
+      sqlOffered = offer;
+      post(payload);
       if ($("status").classList.contains("error")) setStatus("");
     } catch (error) {
       setStatus("Could not sign the workbench in: " + error.message, "error");
+      return;
+    }
+    if (seed) {
+      const json = await seed;
+      // A reply to an older document gets nothing.
+      if (gen === frameGen) post({ type: "fused-embed-canvas", canvas: node.name, json });
     }
   }
 
@@ -211,12 +241,272 @@
     post({ type: "fused-embed-node-source", node: node.node, kind: node.kind, text: source });
   }
 
+  // LOCAL SQL ENGINE RELAY (SPEC §53.3 NW-7). The frame has no route to
+  // /api/sql/*: each `fused-embed-sql` message is checked, mapped to one
+  // guarded loopback call, and answered with `fused-embed-sql-result`. The
+  // session's scope is this node's environment, never anything from the frame.
+  const SQL_NAME_RE = /^[A-Za-z0-9._-]{1,128}$/;
+  const SQL_TABLE_RE = /^[A-Za-z_][A-Za-z0-9_]{0,127}$/;
+  const SQL_CODES = [
+    "invalid_args",
+    "not_found",
+    "cancelled",
+    "engine_error",
+    "too_large",
+    "unsupported",
+  ];
+  const SQL_KEEPALIVE_MS = 5 * 60 * 1000;
+  const SQL_GUARD = { "X-Fused": "1" };
+  let sqlSession = null; // promise of the session id, shared by concurrent first messages
+  let sqlId = null; // the session id once created
+  let sqlTimer = null; // the keepalive
+
+  class SqlError extends Error {
+    constructor(code, message, status) {
+      super(message);
+      this.code = code;
+      this.status = status || 0;
+    }
+  }
+
+  function sqlName(value) {
+    return (
+      typeof value === "string" &&
+      SQL_NAME_RE.test(value) &&
+      value !== "." &&
+      value !== ".."
+    );
+  }
+  function sqlArgs(ok) {
+    if (!ok) throw new SqlError("invalid_args", "invalid arguments");
+  }
+
+  function sqlForget(id) {
+    if (id !== undefined && id !== sqlId) return;
+    sqlSession = null;
+    sqlId = null;
+    clearInterval(sqlTimer);
+    sqlTimer = null;
+  }
+
+  async function sqlFetch(url, init) {
+    let res;
+    try {
+      res = await fetch(url, {
+        ...init,
+        headers: { ...SQL_GUARD, ...(init.headers || {}) },
+      });
+    } catch (_) {
+      throw new SqlError("engine_error", "the SQL engine could not be reached");
+    }
+    if (res.ok) return res;
+    let body = null;
+    try {
+      body = await res.json();
+    } catch (_) {
+      body = null;
+    }
+    const code =
+      body && SQL_CODES.includes(body.code) ? body.code : "engine_error";
+    const message =
+      body && typeof body.message === "string"
+        ? body.message
+        : "HTTP " + res.status;
+    throw new SqlError(code, message, res.status);
+  }
+
+  function sqlSessionId() {
+    if (!sqlSession) {
+      const made = sqlFetch("/api/sql/session", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ scope: node.env }),
+      })
+        .then((res) => res.json())
+        .then((data) => {
+          if (!data || typeof data.session !== "string")
+            throw new SqlError("engine_error", "no SQL session");
+          sqlId = data.session;
+          sqlTimer = setInterval(sqlKeepalive, SQL_KEEPALIVE_MS);
+          return data.session;
+        });
+      sqlSession = made;
+      made.catch(() => {
+        if (sqlSession === made) sqlSession = null;
+      });
+    }
+    return sqlSession;
+  }
+
+  function sqlKeepalive() {
+    const id = sqlId;
+    if (!id) return;
+    sqlFetch("/api/sql/session/" + encodeURIComponent(id) + "/keepalive", {
+      method: "POST",
+    }).catch((error) => {
+      if (error.status === 404) sqlForget(id);
+    });
+  }
+
+  // One call on the session. A 404 for the session itself ("no such
+  // session": the engine went away) forgets it, so the next message makes a
+  // new one; a 404 for a file passes through as `not_found`.
+  async function sqlCall(path, init) {
+    const id = await sqlSessionId();
+    try {
+      return await sqlFetch(
+        "/api/sql/session/" + encodeURIComponent(id) + path,
+        init,
+      );
+    } catch (error) {
+      if (error.status === 404 && error.message === "no such session") {
+        sqlForget(id);
+        throw new SqlError("not_found", "the SQL session ended");
+      }
+      throw error;
+    }
+  }
+
+  const sqlJson = (body) => ({
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+
+  // Returns the reply's extra fields; throws SqlError.
+  async function sqlOp(m) {
+    switch (m.op) {
+      case "query": {
+        sqlArgs(typeof m.sql === "string");
+        const res = await sqlCall(
+          "/query",
+          sqlJson({ sql: m.sql, query_id: m.req }),
+        );
+        return { ipc: await res.arrayBuffer() };
+      }
+      case "register": {
+        sqlArgs(sqlName(m.name));
+        const path = "/file/" + encodeURIComponent(m.name);
+        if (m.bytes instanceof ArrayBuffer) {
+          await sqlCall(path, {
+            method: "PUT",
+            headers: { "Content-Type": "application/octet-stream" },
+            body: m.bytes,
+          });
+        } else if (typeof m.text === "string") {
+          await sqlCall(path, {
+            method: "PUT",
+            headers: { "Content-Type": "text/plain; charset=utf-8" },
+            body: m.text,
+          });
+        } else {
+          sqlArgs(typeof m.handle === "string");
+          await sqlCall(path + "/link", sqlJson({ handle: m.handle }));
+        }
+        return {};
+      }
+      case "drop":
+        sqlArgs(sqlName(m.name));
+        await sqlCall("/file/" + encodeURIComponent(m.name), {
+          method: "DELETE",
+        });
+        return {};
+      case "export": {
+        sqlArgs(sqlName(m.name));
+        const res = await sqlCall("/file/" + encodeURIComponent(m.name), {
+          method: "GET",
+        });
+        return { bytes: await res.arrayBuffer() };
+      }
+      case "insert":
+        sqlArgs(
+          typeof m.table === "string" &&
+            SQL_TABLE_RE.test(m.table) &&
+            m.ipc instanceof ArrayBuffer &&
+            typeof m.create === "boolean",
+        );
+        await sqlCall(
+          "/arrow/" +
+            encodeURIComponent(m.table) +
+            "?create=" +
+            (m.create ? 1 : 0),
+          {
+            method: "POST",
+            headers: { "Content-Type": "application/vnd.apache.arrow.stream" },
+            body: m.ipc,
+          },
+        );
+        return {};
+      case "cancel":
+        sqlArgs(typeof m.target === "string" && SQL_NAME_RE.test(m.target));
+        // Nothing runs without a session: there is nothing to cancel.
+        if (sqlSession) await sqlCall("/cancel", sqlJson({ query_id: m.target }));
+        return {};
+      case "reset": {
+        const id = sqlId;
+        sqlForget();
+        if (id) {
+          try {
+            await sqlFetch("/api/sql/session/" + encodeURIComponent(id), {
+              method: "DELETE",
+            });
+          } catch (error) {
+            if (error.status !== 404) throw error;
+          }
+        }
+        return {};
+      }
+      default:
+        throw new SqlError("invalid_args", "unknown operation");
+    }
+  }
+
+  async function sqlMessage(m) {
+    if (typeof m.req !== "string" || !SQL_NAME_RE.test(m.req)) return;
+    const gen = frameGen;
+    let reply;
+    try {
+      reply = { ok: true, ...(await sqlOp(m)) };
+    } catch (error) {
+      const known = error instanceof SqlError;
+      reply = {
+        ok: false,
+        error: {
+          code: known ? error.code : "engine_error",
+          message: known ? error.message : "the SQL engine failed",
+        },
+      };
+    }
+    if (gen !== frameGen) return;
+    const transfer = [reply.ipc, reply.bytes].filter(
+      (b) => b instanceof ArrayBuffer,
+    );
+    post({ type: "fused-embed-sql-result", req: m.req, ...reply }, transfer);
+  }
+
+  // End the session now rather than at the engine's idle timeout: when this
+  // page leaves, and when the frame loads a new document (which starts with
+  // none of the last one's temporary tables). Registered files stay for the
+  // engine's life.
+  function sqlEnd() {
+    const id = sqlId;
+    sqlForget();
+    if (id) {
+      fetch("/api/sql/session/" + encodeURIComponent(id), {
+        method: "DELETE",
+        keepalive: true,
+        headers: SQL_GUARD,
+      }).catch(() => {});
+    }
+  }
+  window.addEventListener("pagehide", sqlEnd);
+
   window.addEventListener("message", (event) => {
     if (!wb || event.origin !== wb.origin || event.source !== frame.contentWindow) return;
     const data = event.data;
     if (!data || typeof data.type !== "string") return;
     if (data.type === "fused-embed-auth-ready" || data.type === "fused-embed-auth-refresh") {
-      void sendToken();
+      void sendToken(data.type === "fused-embed-auth-ready");
     } else if (data.type === "fused-embed-node-ready" && data.node === node.node) {
       pageReady = true;
       clearTimeout(readyTimer);
@@ -234,6 +524,8 @@
       // A save that landed while the file watch was still coming up made no
       // event: look once more (nothing is posted when the text is the same).
       setTimeout(() => void sendSource(false), SOURCE_RECHECK_MS);
+    } else if (data.type === "fused-embed-sql") {
+      if (sqlOffered) void sqlMessage(data);
     } else if (data.type === "fused-embed-node-state" && data.node === node.node) {
       const status = typeof data.status === "string" ? data.status : "";
       const detail = status === "error" && typeof data.message === "string" ? ": " + data.message : "";
@@ -246,6 +538,11 @@
     lastSent = null;
     sourceSeq++;
     pendingPush = null;
+    frameGen++;
+    sqlOffered = false;   // a new document is offered again with its own token
+    // Fetched once per document, in parallel with the token.
+    canvasSeed = CanvasNode.saved(node.env, node.name);
+    sqlEnd();
     setStatus(STATUS_TEXT.loading);
     showMessage((el) => el.append(text("div", "Loading " + node.title + "…")));
     // The wait for the page to say it is there runs from the frame's LOAD (a

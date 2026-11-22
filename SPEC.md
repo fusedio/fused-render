@@ -12649,10 +12649,12 @@ is never sent it, and every alternation of their generations resets the view
   the load by it) and the clipboard permissions, as the workspace's frame.
 - **NW-2 The bearer.** On `fused-embed-auth-ready` and
   `fused-embed-auth-refresh` from the frame the page posts
-  `fused-embed-auth-token {accessToken, caps: [], publicOrigin}` at the
+  `fused-embed-auth-token {accessToken, caps, publicOrigin}` at the
   frame's exact origin, the token from `GET /api/canvases/token` (guarded).
-  `caps: []`: the node page writes nothing, so it is offered no channel.
-  Every message is accepted only from the frame's window on that origin.
+  `caps: []`: the node page writes nothing, so it is offered no channel,
+  except the SQL engine of NW-7 (`"sql"`, when it is installed) and the
+  saved canvas of NW-8 (`"canvas"`, always). Every message is accepted only from the
+  frame's window on that origin.
 - **NW-3 The file's text.** After the frame's `fused-embed-node-ready` and on
   every change of the file, the page posts `fused-embed-node-source {node,
   kind, text}` (`kind`: `widget` or `html`; `text` null when the file is
@@ -12671,6 +12673,77 @@ is never sent it, and every alternation of their generations resets the view
   posts `fused-embed-pushed {push_seq}` to the frame, which loads the saved
   canvas again in place (NP-3): an edit to a node this one reads shows
   without Reload.
+
+- **NW-7 The SQL engine.** With the engine installed (§55) and the frame
+  loaded from the workbench's own origin (`origin == publicOrigin`, never
+  through the embed proxy), the token message is `caps: ["sql"], sqlEngine:
+  {name, version}`; `GET /api/canvases/status` carries the same pair as
+  `sql_engine` (null when the engine is not installed; the version is package metadata, and reading it starts
+  nothing). Otherwise it is `caps: []` with no `sqlEngine`, as before, and
+  every `fused-embed-sql` message is ignored, as is one for a document that
+  was not offered it (a reload of the frame offers again with its token).
+  The frame never reaches `/api/sql/*`: this page checks each message and
+  makes the call.
+  Frame to page, `fused-embed-sql {req, op, …}`, `req` matching
+  `^[A-Za-z0-9._-]{1,128}$` (a message without one is dropped):
+  `query {sql}`; `register {name, bytes | text | handle}` (`handle`:
+  `udf:<token>`, linked, not copied); `drop {name}`; `export {name}`;
+  `insert {table, ipc, create}` (`ipc`: an Arrow IPC stream); `cancel
+  {target}` (the `req` of a running query); `reset`. Names and tables follow
+  §55.2 and are refused as `invalid_args` before any call. Page to frame,
+  `fused-embed-sql-result {req, ok: true, ipc?, bytes?}` (`ipc` for a query,
+  `bytes` for an export) or `{req, ok: false, error: {code, message}}`,
+  `code` one of `invalid_args`, `not_found`, `cancelled`, `engine_error`,
+  `too_large`, `unsupported`; a route's `{code, message}` passes through,
+  a network failure is `engine_error`, and a handler that throws still
+  answers `engine_error`. Replies are posted at the frame's exact origin
+  with the buffers transferred. Each call carries `X-Fused`.
+  The session's `scope` is this node's environment name, never anything the
+  frame sends. It is created on the first message (once per page load,
+  however many arrive together), kept alive by a call every 5 minutes, and
+  deleted on `pagehide` and when the frame loads a new document; a 404 for the session itself (the engine went
+  away) forgets it, answers that request `not_found` ("the SQL session
+  ended") and lets the next message start a new one. `reset` deletes it
+  and starts none. Deleting a session does not remove registered files:
+  they stay for the engine's life (LQ-2). SQL text and file names are never
+  logged.
+
+- **NW-8 The saved canvas.** The node page is handed the canvas as Fused
+  last had it saved, so it can draw at once and then refresh itself.
+  *Stored document:* each time the sync's remote probe asks Fused
+  for the canvas by name, the service's whole JSON answer is also written,
+  as text and atomically (temp file, then rename), to
+  `<canvas root>/.sync/<canvas>.canvas.json`, beside the sync state and
+  outside the clone, readable by the user only (0600 on POSIX; it can hold
+  parameters and tokens). It is written on every probe that succeeds (every
+  `PULL_POLL_S` while the canvas's sync runs), so it is at most one poll
+  old while it runs. A canvas no sync probes (a reference copy, or a clone
+  whose sync has not yet completed a probe) is covered by the route below.
+  A failed write changes nothing else: the probe and the sync carry
+  on as without it. Deleting or renaming the clone takes the file with it.
+  The text is opaque to this app: stored, served and relayed, never parsed
+  or logged. *Route:* `GET /api/canvases/saved?env=<env>&name=<canvas>`
+  (guarded by `X-Fused`; `env` as the other canvas routes, `name` a clone or a reference copy of
+  that env): 200 with the stored text, `application/json`, `Cache-Control:
+  no-store`, when a document is stored; 404
+  `{detail}` otherwise (not a canvas folder of that env, or nothing
+  stored and none could be fetched). With none stored, the route runs the
+  same remote probe once itself, waiting at most 15 s, and serves what it
+  stored; concurrent requests for one canvas share that one probe. With a
+  document stored the route serves it at once, and when the file is more than
+  30 s old starts one background probe for that canvas so the next open is
+  fresh. Nothing is probed when signed out, with no
+  usable CLI, or while the app quits (the answer is then 404 or the stored
+  document, quietly).
+  *Message:* the token message's `caps` also holds
+  `"canvas"` (also through the embed proxy: it is data the page could fetch
+  itself with its token). Right after the first token message of a frame
+  document (the answer to `fused-embed-auth-ready`) the page posts exactly
+  one `fused-embed-canvas {canvas, json}` at the frame's exact origin:
+  `canvas` the canvas's name, `json` the stored text or `null` when there is
+  none. The text is fetched once per frame load, in parallel with the token,
+  and a document that was replaced meanwhile gets nothing. A token refresh
+  does not send it again; a new frame document does.
 
 ### 53.4 `canvas_note`: a note
 
@@ -12768,7 +12841,9 @@ shared.
   (NW-3), and `fused-embed-pushed`, on which the page loads the saved
   canvas again.
 - **NP-4 It writes nothing.** No autosave, snapshot, body or rename leaves
-  the page, and nothing is saved to the server.
+  the page, and nothing is saved to the server. (With the SQL engine
+  offered, NW-7, it may also send SQL and tables to the local engine; that
+  is not a write to the canvas.)
 
 ### 53.7 Out of scope
 
@@ -12943,16 +13018,26 @@ answering in Arrow IPC streams; never loaded in the server process.
 
 ### 55.1 Model
 
-- **LQ-1 One engine.** One worker, one in-memory database, one `files/`
-  directory for the whole app. A session is one cursor of that database:
-  permanent tables and files are shared by every session; temp tables,
-  variables and cancellation are the session's own. A session's statements
-  run in order; sessions run concurrently.
-- **LQ-2 Engine death ends everything.** Worker crash, 20 min untouched
-  with nothing waiting, or shutdown: every session id answers 404, the
-  directory is removed, then waiting requests fail `engine_error`; the next
-  `POST /api/sql/session` starts a new engine. Deleting a session closes
-  only its cursor.
+- **LQ-1 One engine per scope.** `scope` on `POST /api/sql/session` selects
+  the engine: sessions created with the same scope string share one worker,
+  one in-memory database and one `files/` directory; a different scope has
+  its own worker, directory, lock and idle clock. The empty scope (also what
+  a caller that passes none gets) is the default engine. At most 16 engines
+  are live at once; a session for a 17th scope answers `engine_error` 503
+  ("too many SQL engines"), while a scope that already has an engine always
+  takes more sessions. A session is one cursor of its engine's database:
+  permanent tables and files are shared by the engine's sessions; temp
+  tables, variables and cancellation are the session's own. A session's
+  statements run in order; sessions run concurrently.
+- **LQ-2 Engine death ends that engine.** Worker crash, 20 min untouched
+  with nothing waiting (each engine has its own clock), or shutdown: every
+  session id of that engine answers 404, its directory and lock are removed,
+  then its waiting requests fail `engine_error`; other engines are not
+  touched. The next `POST /api/sql/session` of that scope starts a new
+  engine. `refuse_new()` and `shutdown()` cover every engine. Deleting a
+  session closes only its cursor.
+- **LQ-3 Keepalive.** `POST …/{s}/keepalive` counts as use of the session's
+  engine, so the idle reaper leaves it.
 
 ### 55.2 Routes (`server/routers/sql.py`)
 
@@ -12960,9 +13045,10 @@ All guarded by `X-Fused` (GETs too); none is on the LAN allowlist.
 
 | Route | Body | Answer |
 |---|---|---|
-| `POST /api/sql/session` | `{scope?}` (≤ 256 chars, a label) | `{session}` |
+| `POST /api/sql/session` | `{scope?}` (≤ 256 chars; selects the engine, see LQ-1) | `{session}` |
 | `POST …/{s}/query` | `{sql, query_id?}` | Arrow IPC stream (`application/vnd.apache.arrow.stream`) |
 | `POST …/{s}/cancel` | `{query_id}` | `{}`; also for an id not started yet |
+| `POST …/{s}/keepalive` | none | `{}`; 404 `not_found` for an unknown session |
 | `PUT …/{s}/file/{name}` | raw bytes | `{}` |
 | `POST …/{s}/file/{name}/link` | `{handle}` (`udf:<token>`; `idx:` → `unsupported`) | `{}` |
 | `GET` / `DELETE …/{s}/file/{name}` | | the bytes (`application/octet-stream`, nosniff + sandbox CSP) / `{}` |
@@ -12970,16 +13056,34 @@ All guarded by `X-Fused` (GETs too); none is on the LAN allowlist.
 | `DELETE /api/sql/session/{s}` | | `{}` |
 
 Errors are `{code, message}`: `invalid_args` 400, `engine_error` 400
-(503 while quitting or when the worker cannot start), `cancelled` 400,
-`not_found` 404, `unsupported` 501 (duckdb/pyarrow missing). Names:
+(503 while quitting, when the worker cannot start or when 16 engines are
+live), `cancelled` 400, `not_found` 404, `too_large` 413 (see below),
+`unsupported` 501 (duckdb/pyarrow missing). Names:
 `[A-Za-z0-9._-]{1,128}`, not `.`/`..`; tables `[A-Za-z_][A-Za-z0-9_]{0,127}`;
 `query_id` `[A-Za-z0-9._-]{1,128}`, namespaced by session (one session never
 cancels another's). A caller that disconnects mid-query cancels it. Bodies
 stream to `io/`; a result is spooled there and removed once sent.
 
+Size ceilings (environment variables, read at each request; unset, empty,
+non-numeric or not positive = the default):
+
+- `FUSED_RENDER_SQL_MAX_UPLOAD_BYTES` (default 1 GiB): a `PUT …/file/{name}`
+  or `POST …/arrow/{table}` body past it answers `too_large` (413) as soon as
+  the declared length or the bytes received pass it; the partial file is
+  removed, nothing is registered, an existing file keeps its bytes.
+- `FUSED_RENDER_SQL_MAX_RESULT_BYTES` (default 256 MiB): the server passes it
+  to the worker with each query; the worker stops writing batches once the
+  Arrow stream passes it and answers `done` with `code: "too_large"`; the
+  spool is removed and the route answers `too_large` (413). The session and
+  engine go on.
+
+Request logs never carry SQL text or a registered file or table name: the
+request line logs `/file/…` and `/arrow/…` in place of the name, and the
+engine logs nothing of a statement above debug level.
+
 ### 55.3 Directory and files (`sql/runner.py`, `sql/files.py`)
 
-`<home>/cache/sql/<pid>-<hex>/` per engine: `files/` (the worker's cwd, the
+`<home>/cache/sql/<pid>-<hex>/` per engine (one per scope): `files/` (the worker's cwd, the
 only local directory SQL reaches), `tmp/` (temp_directory), `io/` (bodies
 in, results out; not readable from SQL); same volume as `cache/udf/`. A put
 file is `os.replace`d into place, never written in place. A link is a hard link to
@@ -13004,7 +13108,11 @@ lockdown: started after it, the first remote read and every later one
 fail); extensions best-effort (`FUSED_RENDER_SQL_EXTENSIONS`, default
 `httpfs,spatial,h3`; `h3` from community; empty = none); `SET GLOBAL`
 temp_directory, python_enable_replacements=false, autoinstall/autoload of
-known extensions off; then `allowed_directories=[files/, tmp/, https://]` →
+known extensions off; `SET GLOBAL TimeZone` to `FUSED_RENDER_SQL_TIMEZONE`
+when it is set and non-empty (best-effort like the rest); unset or empty,
+the engine keeps its own default, so a page's SQL sees the zone of the
+machine it runs on, and the
+variable pins it for deployments that want fixed results; then `allowed_directories=[files/, tmp/, https://]` →
 `enable_external_access=false` → `lock_configuration=true`. A probe file
 outside `files/` must be unreadable or the worker reports `ready ok:false`
 and exits. Refused afterwards: local paths outside `files/`/`tmp/` (read,
@@ -13018,7 +13126,8 @@ all of `files/` to every session, CPU and memory (engine defaults).
 ### 55.5 Worker and lifecycle
 
 JSON lines, bodies as files in `io/`: `query`/`insert` → `started` (head of
-its session's queue) → `done` (`ok`, or `code: engine_error | cancelled`);
+its session's queue) → `done` (`ok`, or
+`code: engine_error | cancelled | too_large`; a `query` carries `max_bytes`);
 `cancel` interrupts only that cursor while the id runs (repeated until it
 ends, checked under a lock so it never reaches the next statement) or marks
 an id not started yet; `close` interrupts and cancels a session's queue;

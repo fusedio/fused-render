@@ -7,6 +7,8 @@
 //                               the server parses the path; a page never does)
 //   CanvasNode.workbench(env)   where that environment's workbench is framed
 //                               from, and its real origin
+//   CanvasNode.saved(env, name) the canvas as Fused last had it saved (JSON
+//                               text the sync stored), or null
 //   CanvasNode.token(env)       the environment's `fused login` bearer
 //   CanvasNode.sync(node, on)   keep the canvas's sync engine running while
 //                               this page is open, and hear how it stands
@@ -40,10 +42,11 @@
     return getJson("/api/canvases/node?path=" + encodeURIComponent(file));
   }
 
-  // `{base, origin, publicOrigin}`: `base` is what the frame loads from (the
+  // `{base, origin, publicOrigin, sqlEngine}`: `base` is what the frame loads from (the
   // custom environment's loopback proxy when that is on, else the workbench
   // itself), `origin` the origin messages to the frame are posted at, and
-  // `publicOrigin` the workbench's real one.
+  // `publicOrigin` the workbench's real one, and `sqlEngine` the local SQL
+  // engine the node's page may be offered (`{name, version}`), else null.
   async function workbench(env) {
     var status = await getJson("/api/canvases/status?env=" + encodeURIComponent(env));
     var entry = status && status.envs ? status.envs[env] : null;
@@ -55,7 +58,23 @@
       base: base.replace(/\/+$/, ""),
       origin: new URL(base).origin,
       publicOrigin: new URL(entry.base_url).origin,
+      sqlEngine: status.sql_engine && typeof status.sql_engine === "object" ? status.sql_engine : null,
     };
+  }
+
+  // The saved canvas the sync last read from Fused for this canvas, as the
+  // service's JSON text, or null (the preference is off, none is stored, or
+  // any failure). The text is passed on as it is, never parsed here.
+  async function saved(env, name) {
+    try {
+      var res = await fetch(
+        "/api/canvases/saved?env=" + encodeURIComponent(env) + "&name=" + encodeURIComponent(name),
+        { headers: GUARD },
+      );
+      return res.ok ? await res.text() : null;
+    } catch (_) {
+      return null;
+    }
   }
 
   async function token(env) {
@@ -271,6 +290,7 @@
   window.CanvasNode = {
     info: info,
     workbench: workbench,
+    saved: saved,
     token: token,
     sync: sync,
     canvasHref: canvasHref,
