@@ -7,12 +7,9 @@ giving free concurrency for blocking filesystem/subprocess work; /api/run is
 async (the fused engine is async; the built-in executor is offloaded).
 
 Execution engine (D69/D70/D204): /api/run follows the persisted preference,
-which **defaults to the fused local compute backend** (`engine.py`) whenever the
-`fused` package is importable and to the built-in executor otherwise — D204
-reversed D70's builtin-by-default. `FUSED_RENDER_ENGINE` still overrides the
-whole process: `=builtin` never touches the package even if importable, `=auto`
-matches the default's behaviour, `=fused` requires it (fail loudly at startup if
-missing).
+which **defaults to the fused local compute backend** (`engine.py`);
+`builtin` selects the built-in executor. `FUSED_RENDER_ENGINE` overrides the
+whole process (`builtin` or `fused`; any other value fails loudly at startup).
 """
 
 import asyncio
@@ -188,11 +185,15 @@ def export_app_env() -> None:
     canvases.log_url_override_without_pin()
     # The `fused` CLI wrapper the chats we spawn can run (D334): a wrapper
     # script under home_dir()/fused-bin goes on PATH and its dir is published
-    # as one more FUSED_RENDER_* var, so a Claude session can `fused workbench
+    # as one more FUSED_RENDER_* var, so a Claude session can `fused
     # canvas push` against the same environment the canvases iframe shows.
     # Filesystem-only, like the skill plugin export above.
     from fused_render import fusedcli
     fusedcli.export_fused_cli_env()
+    # The `fused-render` wrapper an MCP entry runs as `app serve <dir>`; it needs
+    # no fused CLI. Old `fused app serve` entries are pointed at it.
+    from fused_render import app_serve_migration
+    app_serve_migration.start(fusedcli.export_render_wrapper())
     _export_bundled_uv_path()
     # MUST stay last: every PATH writer above is a synchronous read-modify-write
     # of os.environ["PATH"], and the probe's background thread does the same.
@@ -429,12 +430,11 @@ def create_app(start_dir: str, lean: bool = False) -> FastAPI:
     no-op when nothing was started. See `on_shutdown_always` just below.
     """
     # Engine (D69/D70 + SPEC §20): validate any FUSED_RENDER_ENGINE override
-    # ONCE at startup — this raises on a bad value and fails loudly for
-    # `=fused` when the package is missing, and logs the choice. Dispatch
+    # ONCE at startup — this raises on a bad value and logs the choice. Dispatch
     # itself goes through the single live resolver (`prefs.effective_engine`,
-    # which re-reads the override + pref + availability per request), so the
-    # Preferences switch and a mid-session install both apply with no restart
-    # and the page's "running" label never drifts from what actually runs.
+    # which re-reads the override + pref per request), so the Preferences switch
+    # applies with no restart and the page's "running" label never drifts from
+    # what actually runs.
     _forced_engine()
 
     # Startup/shutdown work, collected here and run by `lifespan` below.

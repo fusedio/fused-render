@@ -173,7 +173,7 @@ def status(root):
     except Exception as e:  # noqa: BLE001
         apptools, err = None, f"apptools import failed: {e}"
     else:
-        err = "" if apptools.available() else "app tools unavailable on this interpreter"
+        err = ""
     recs = None
     for s in starters():
         st = _with_state(s, root)

@@ -156,13 +156,6 @@ def test_connected_tools_are_not_held_by_the_local_cache(connect, no_local):
     assert [r.name for r in apptools.registry()] == ["search"]
 
 
-def test_connected_tools_ignore_local_availability(connect, no_local, monkeypatch):
-    monkeypatch.setattr(apptools, "_HAVE", False)
-    monkeypatch.setattr(apptools, "_NATIVE", False)
-    assert apptools.available() is False
-    assert [r.name for r in apptools.registry(force=True)] == ["search", "notion-create-pages"]
-
-
 def test_find_resolves_a_connected_tool(connect, no_local):
     recs = apptools.registry(force=True)
     assert apptools.find(recs, "notion", "search") is recs[0]
@@ -358,15 +351,6 @@ def test_bot_run_tool_error_and_cap(connect, no_local, tmp_path):
     _, text = b.run_tool("notion", "search", {"query": "x"})
     assert text.startswith("RESULT:\n" + "y" * apptools.RESULT_CAP + "\n(truncated; full result saved to Inbox as ")
     assert any(n.startswith("tool-notion-search-") for n in os.listdir(tmp_path))
-
-
-def test_bot_run_tool_needs_no_bundled_module_for_services(connect, no_local, tmp_path, monkeypatch):
-    monkeypatch.setattr(apptools, "_HAVE", False)
-    monkeypatch.setattr(apptools, "_NATIVE", False)
-    b = _StubBot(str(tmp_path))
-    assert b.run_tool("notion", "search", {"query": "x"})[1] == "RESULT:\nfound 2 pages"
-    _, text = b.run_tool("fake-docs", "fake_echo", {})
-    assert text.startswith("error: app tools are not available in this copy of the app")
 
 
 def test_bot_run_tool_unknown_lists_services(connect, no_local, tmp_path):

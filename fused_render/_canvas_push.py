@@ -1,4 +1,4 @@
-"""Answer a `fused workbench canvas push` / `pull` of a CANVAS CLONE itself.
+"""Answer a `fused canvas push` / `pull` of a CANVAS CLONE itself.
 
 Since the revision spine (2026-11-11, owner Q7) a Claude session in a clone
 has NO sync verbs: the folder publishes itself (the session's turn end — the
@@ -61,7 +61,7 @@ import os
 # (`_cli_env`), and the FIRST thing checked here.
 #
 # Without it this module eats its own tail. `_SyncManager._push` runs
-# `[*cli.command, "workbench", "canvas", "push", …]`, and on the shim path
+# `[*cli.command, "canvas", "push", …]`, and on the shim path
 # `fused_cli()` resolves `cli.command` to `[sys.executable, _fused_cli.py]` —
 # the very file that calls into here. So the server's own push re-entered the
 # interception, POSTed back to /api/canvases/sync/push, was refused because a
@@ -124,56 +124,55 @@ _UNSUPPORTED_FLAGS = ("--no-validate", "--no-ignore")
 _VALUE_OPTS = ("--canvas",)
 _BARE_OPTS = ("--id",)
 
-# fused._cli mounts the legacy `workbench` group under a TOP-LEVEL group
-# (`fused.agent_core.cli`) that has its own options — so
-# `fused --env unstable workbench canvas push .` is the canonical push command
-# with a global option in front of it, and matching `args[:3]` verbatim missed
-# it entirely (fell through to the raw, unguarded push). These are that
-# group's options as of this writing (`fused/agent_core/cli.py`'s `cli()`):
-# `--backend` and `--env`, both value-taking. (The old bare flags
-# `--enable-infra`/`--enable-destructive`/`--disable-reset` went with the root
-# MCP server in fusedio/fused#371; the real CLI now rejects them, so they are
-# deliberately NOT skipped here — a push behind one falls through to the CLI's
-# own usage error.) Anything else ahead of `workbench` is unrecognised, so
-# parsing stops and falls through — same conservative rule as everywhere else
-# in this matcher.
-_GLOBAL_VALUE_OPTS = ("--backend", "--env")
-# The `workbench` group's OWN options (fused `workbench/cli/__init__.py`'s
-# `cli()`), between `workbench` and `canvas`. Its `--env` is not the
-# top-level one above (that is agent_core's OPENFUSED_ENV, which does not
-# move a workbench push): it is FUSED_ENV's flag form, beats the variable,
-# and so is the run's real target on a fall-through (`_fall_through`).
-_WORKBENCH_VALUE_OPTS = ("--env", "--format")
+# The `fused` root group's own options, ahead of `canvas` (`fused.cli.main`):
+# `--env` (FUSED_ENV's flag form: it beats the variable, so it is the run's real
+# target on a fall-through, `_fall_through`) and `--format`, both value-taking.
+# Anything else ahead of `canvas` is unrecognised, so parsing stops and falls
+# through — same conservative rule as everywhere else in this matcher.
+_ROOT_VALUE_OPTS = ("--env", "--format")
 
 
-def _skip_global_options(args: list[str], opts: tuple[str, ...] = _GLOBAL_VALUE_OPTS,
-                         seen: dict[str, str] | None = None) -> list[str]:
-    """Argv with any recognised leading value options (`opts`, the top-level
-    group's by default) removed, so the `workbench canvas push` match below
-    still fires behind them. Each skipped option's value lands in `seen`
-    when given, the last one winning as in click."""
+def _skip_root_options(args: list[str], seen: dict[str, str]) -> list[str]:
+    """Argv with any recognised leading root options removed, so the `canvas
+    push` / `pull` match below still fires behind them. Each skipped option's
+    value lands in `seen`, the last one winning as in click."""
     i = 0
     while i < len(args):
         token = args[i]
-        if token in opts:
+        if token in _ROOT_VALUE_OPTS:
             if i + 1 >= len(args):
                 break  # malformed; let the real CLI produce the error
-            if seen is not None:
-                seen[token] = args[i + 1]
+            seen[token] = args[i + 1]
             i += 2
             continue
         matched = False
-        for opt in opts:
+        for opt in _ROOT_VALUE_OPTS:
             if token.startswith(opt + "="):
-                if seen is not None:
-                    seen[opt] = token[len(opt) + 1:]
+                seen[opt] = token[len(opt) + 1:]
                 i += 1
                 matched = True
                 break
         if matched:
             continue
-        break  # not a global option this recognises — stop here
+        break  # not a root option this recognises — stop here
     return args[i:]
+
+
+def _canvas_verb(args: list[str], verb: str) -> tuple[list[str], dict[str, str]] | None:
+    """`(rest, root_opts)` when `args` is `[root opts] [workbench [root opts]]
+    canvas <verb> ...`, else None.
+
+    The release CLI (`fused.cli.main`) puts `canvas` at the top level and keeps
+    `fused workbench ...` as a hidden alias of itself, so both spellings reach
+    the same command and both must be matched: an unmatched raw push in a clone
+    is exactly what this module exists to stop."""
+    root_opts: dict[str, str] = {}
+    skipped = _skip_root_options(args, root_opts)
+    if skipped[:1] == ["workbench"]:
+        skipped = _skip_root_options(skipped[1:], root_opts)
+    if skipped[:2] != ["canvas", verb]:
+        return None
+    return skipped[2:], root_opts
 
 
 def canvases_base() -> str:
@@ -276,20 +275,16 @@ def _clone_name(source_dir: str) -> tuple[str, str] | None:
 
 
 def parse_push(args: list[str]) -> dict | None:
-    """`{"source_dir", "canvas", "unsupported", "env"}` for a `workbench
-    canvas push` we recognise, else None ("not ours, fall through"). `env` is
-    the workbench group's `--env`, or None.
+    """`{"source_dir", "canvas", "unsupported", "env"}` for a `canvas push` we
+    recognise, else None ("not ours, fall through"). `env` is the root
+    `--env`, or None.
 
     `args` is argv WITHOUT the program name, i.e. what click sees.
     """
-    skipped = _skip_global_options(args)
-    if skipped[:1] != ["workbench"]:
+    matched_verb = _canvas_verb(args, "push")
+    if matched_verb is None:
         return None
-    workbench_opts: dict[str, str] = {}
-    skipped = _skip_global_options(skipped[1:], _WORKBENCH_VALUE_OPTS, workbench_opts)
-    if skipped[:2] != ["canvas", "push"]:
-        return None
-    rest = skipped[2:]
+    rest, root_opts = matched_verb
     positionals: list[str] = []
     canvas = None
     unsupported = []
@@ -334,10 +329,10 @@ def parse_push(args: list[str]) -> dict | None:
         # usage error (the CLI should say so) or a shape we do not model.
         return None
     return {"source_dir": positionals[0], "canvas": canvas,
-            "unsupported": unsupported, "env": workbench_opts.get("--env")}
+            "unsupported": unsupported, "env": root_opts.get("--env")}
 
 
-# `canvas pull`'s own options (fused workbench/cli/canvas.py): value-taking
+# `canvas pull`'s own options (fused/cli/canvas.py): value-taking
 # `-o/--output`, flags `--force/-f`, `--dry-run/-n`, `--show-diff`, and the
 # canvas-ref options. Only `-o` matters to the matcher (where it writes);
 # every other token is accepted as is — a pull INTO a clone is refused
@@ -346,15 +341,12 @@ _PULL_OUTPUT_OPTS = ("-o", "--output")
 
 
 def parse_pull(args: list[str]) -> dict | None:
-    """`{"canvas_ref", "output"}` for a `workbench canvas pull` (output None
+    """`{"canvas_ref", "output"}` for a `canvas pull` (output None
     when no `-o`), else None. Same leading-option rules as parse_push."""
-    skipped = _skip_global_options(args)
-    if skipped[:1] != ["workbench"]:
+    matched_verb = _canvas_verb(args, "pull")
+    if matched_verb is None:
         return None
-    skipped = _skip_global_options(skipped[1:], _WORKBENCH_VALUE_OPTS, {})
-    if skipped[:2] != ["canvas", "pull"]:
-        return None
-    rest = skipped[2:]
+    rest, _ = matched_verb
     output = None
     positionals: list[str] = []
     i = 0
@@ -524,7 +516,7 @@ def _fall_through(name: str, env: str, err, cli_env: str | None = None) -> int |
     shim imports and runs the CLI in this same process right after
     (`_fused_cli.py`), and click reads the variable at parse time.
 
-    `cli_env` is the command's own `workbench --env`, which beats FUSED_ENV
+    `cli_env` is the command's own root `--env`, which beats FUSED_ENV
     exactly as it does in the CLI (click: an option over its envvar)."""
     target_env = cli_env or os.environ.get("FUSED_ENV")
     source = "--env" if cli_env else "FUSED_ENV"

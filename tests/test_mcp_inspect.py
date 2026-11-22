@@ -229,86 +229,63 @@ def test_a_folder_with_no_tagged_page_reports_no_page(inspect_app, app):
 # ----------------------------------------------------------- registration probe
 
 
-def _fake_cli(app, monkeypatch, name="fused"):
-    """A `fused` wrapper in a dir exported the way the SERVER exports it (D334)."""
+def _fake_wrapper(app, monkeypatch, name="fused-render"):
+    """A `fused-render` wrapper exported the way the SERVER exports it."""
     bin_dir = os.path.join(app, "bin")
     os.makedirs(bin_dir, exist_ok=True)
-    # The filename has to match what fusedcli.export_fused_cli_env() actually
-    # writes, or this fixture writes a file inspect_app._fused_cli() never goes
-    # looking for.
     path = os.path.join(bin_dir, name)
     with open(path, "w", encoding="utf-8") as fh:
         fh.write("#!/bin/sh\n")
     os.chmod(path, 0o755)
-    monkeypatch.setenv("FUSED_RENDER_FUSED_CLI_DIR", bin_dir)
+    monkeypatch.setenv("FUSED_RENDER_BIN", path)
     return path
 
 
-def test_the_fused_executable_comes_from_the_servers_own_export(
-    inspect_app, app, monkeypatch
-):
+def test_the_command_comes_from_the_servers_own_export(inspect_app, app, monkeypatch):
     # Registration writes `{command: <this>, args: [app, serve, <dir>]}` into a
-    # GLOBAL ~/.claude.json, so the binary has to be the one the server vetted
-    # and exported (D334) — never whatever `fused` a PATH lookup happens to find.
-    fake = _fake_cli(app, monkeypatch)
+    # GLOBAL ~/.claude.json, so the binary has to be the one the server wrote
+    # and exported, never whatever `fused-render` a PATH lookup finds.
+    fake = _fake_wrapper(app, monkeypatch)
     monkeypatch.delenv("PATH", raising=False)
 
-    assert inspect_app.main(path=app)["fused"] == fake
+    assert inspect_app.main(path=app)["command"] == fake
 
 
-def test_a_fused_on_PATH_is_NOT_offered(inspect_app, app, monkeypatch):
-    # The D334 regression this guards: a venv without the [fused] extra plus a
-    # stray pipx `fused` on PATH must not get that binary registered globally.
+def test_a_fused_render_on_PATH_is_NOT_offered(inspect_app, app, monkeypatch):
     stray = os.path.join(app, "stray")
     os.makedirs(stray)
-    with open(os.path.join(stray, "fused"), "w", encoding="utf-8") as fh:
+    with open(os.path.join(stray, "fused-render"), "w", encoding="utf-8") as fh:
         fh.write("#!/bin/sh\n")
-    os.chmod(os.path.join(stray, "fused"), 0o755)
+    os.chmod(os.path.join(stray, "fused-render"), 0o755)
     monkeypatch.setenv("PATH", stray)
-    monkeypatch.delenv("FUSED_RENDER_FUSED_CLI_DIR", raising=False)
+    monkeypatch.delenv("FUSED_RENDER_BIN", raising=False)
 
-    assert inspect_app.main(path=app)["fused"] == ""
+    assert inspect_app.main(path=app)["command"] == ""
 
 
-def test_an_exported_dir_with_no_wrapper_in_it_is_an_empty_string(
+def test_an_exported_path_with_no_file_behind_it_is_an_empty_string(
     inspect_app, app, monkeypatch, tmp_path
 ):
-    monkeypatch.setenv("FUSED_RENDER_FUSED_CLI_DIR", str(tmp_path / "empty"))
+    monkeypatch.setenv("FUSED_RENDER_BIN", str(tmp_path / "missing"))
 
-    assert inspect_app.main(path=app)["fused"] == ""
+    assert inspect_app.main(path=app)["command"] == ""
 
 
-def test_the_reader_finds_exactly_what_the_writer_names(
+def test_the_reader_finds_exactly_what_the_writer_wrote(
     inspect_app, app, monkeypatch, tmp_path
 ):
-    """`inspect_app._fused_cli()` must look for the exact filename
-    `fusedcli.export_fused_cli_env()` writes.
-
-    This is the pin `_fused_cli()`'s docstring and `appenv.canvases_root()`
-    promise: the reader cannot import `fusedcli` (SPEC PY-15 — templates are
-    stdlib-only), so it duplicates the writer's filename rule instead, and a
-    test has to fail the moment the two copies disagree. It exercises the real
-    writer (`fusedcli.export_fused_cli_env`) rather than a copy of its
-    filename string.
-    """
+    """The reader cannot import `fusedcli` (SPEC PY-15, templates are
+    stdlib-only), so it reads the env var the real writer sets; this fails the
+    moment the two disagree on the variable name."""
     from fused_render import fusedcli
 
     monkeypatch.setenv("FUSED_RENDER_HOME", str(tmp_path / "home"))
-    monkeypatch.delenv(fusedcli.CLI_DIR_ENV, raising=False)
-    monkeypatch.delenv("PATH", raising=False)
-    stub = fusedcli.FusedCli(command=["/opt/stub/fused-real"], external=True)
-    monkeypatch.setattr(fusedcli, "fused_cli", lambda: stub)
+    monkeypatch.delenv(fusedcli.RENDER_BIN_ENV, raising=False)
 
-    bin_dir = fusedcli.export_fused_cli_env()
-    assert bin_dir is not None  # premise: the writer actually wrote a wrapper
+    written = fusedcli.export_render_wrapper()
+    assert written is not None  # premise: the writer actually wrote a wrapper
 
-    monkeypatch.setenv("FUSED_RENDER_FUSED_CLI_DIR", bin_dir)
-
-    found = inspect_app.main(path=app)["fused"]
-    assert found != "", (
-        f"reader could not find the wrapper the writer wrote in {bin_dir}"
-    )
-    assert os.path.dirname(found) == bin_dir
+    assert inspect_app.main(path=app)["command"] == written
 
 
 # ------------------------------------------------------------------------ drift

@@ -14,7 +14,7 @@ The page carries a line-for-line JavaScript twin of `apply` (the
 runs both over the same cases, so the two cannot drift.
 
 stdlib only, and nothing here imports fused_render (SPEC PY-15): it runs in the
-template venv under runPython and under `fused app serve` for mcp.toml.
+template venv under runPython and under `fused-render app serve` for mcp.toml.
 """
 from __future__ import annotations
 

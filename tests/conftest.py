@@ -317,10 +317,7 @@ def warm_fused_backend_venv(tmp_path_factory):
     import asyncio
     import time
 
-    from fused_render import engine, envinstall
-
-    if not engine.available():
-        return None  # the tests that ask for this are skipped anyway
+    from fused_render import envinstall
 
     # Build from THIS interpreter, whatever version it is (D214). Session-scoped, so
     # the function-scoped pin below has not run yet and the real resolution would
@@ -955,9 +952,6 @@ def _no_startup_engine_warm(monkeypatch):
     from fused_render import engine
 
     monkeypatch.setattr(engine, "warm_in_background", lambda: None)
-    engine._available_cached = None
-    yield
-    engine._available_cached = None
 
 
 @pytest.fixture(autouse=True)

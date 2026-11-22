@@ -103,8 +103,9 @@ def test_a_declared_import_that_is_missing_here_explains_itself(tmp_path):
     assert "a_distribution_nobody_has_installed" in message
     assert "pyproject.toml" in message
     assert os.path.basename(str(tmp_path)) in message
-    # Both fixes must be reachable from the message alone.
-    assert "Preferences" in message and "fused-render[fused]" in message
+    # The fix must be reachable from the message alone. The engine always
+    # ships (D1502), so switching it on in Preferences is the only one.
+    assert "Preferences" in message
 
 
 def test_a_missing_module_nobody_declared_is_left_alone(tmp_path):
