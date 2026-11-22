@@ -118,11 +118,11 @@ def test_the_capability_is_offered_only_for_an_engine_and_an_unproxied_frame(htm
     send = _body_of(html, "async function sendToken")
     assert "const offer = !!wb.sqlEngine && wb.origin === wb.publicOrigin;" in send
     assert "caps: []" in send
-    assert 'payload.caps = ["sql"]' in send
+    assert 'payload.caps = ["sql", "udf"]' in send
     # caps and sqlEngine are only ever set inside the `if (offer)` branch.
     assert send.count('"sql"') == 1 and send.count("payload.sqlEngine") == 1
     branch = _body_of(send, "if (offer)")
-    assert 'payload.caps = ["sql"]' in branch and "payload.sqlEngine" in branch
+    assert 'payload.caps = ["sql", "udf"]' in branch and "payload.sqlEngine" in branch
 
 
 def test_sql_messages_are_ignored_unless_the_offer_was_made(html):
@@ -218,3 +218,89 @@ def test_the_relay_logs_nothing(html):
 def test_the_template_still_does_not_import_fused_render(html):
     code = re.sub(r"<!--.*?-->", "", html, flags=re.DOTALL)
     assert not re.search(r"^\s*(import|from)\s+fused_render", code, re.MULTILINE)
+
+
+# ------------------------------------------------ the UDF relay (NW-9)
+
+
+def test_the_udf_relay_is_offered_exactly_with_sql(html):
+    send = _body_of(html, "async function sendToken")
+    assert send.count('"udf"') == 1
+    assert 'payload.caps = ["sql", "udf"]' in _body_of(send, "if (offer)")
+    assert "udfOffered = offer;" in send
+    assert "udfOffered = false" in _body_of(html, "function loadFrame")
+
+
+def test_udf_messages_are_ignored_unless_offered(html):
+    handler = _body_of(html, 'window.addEventListener("message"')
+    assert re.search(
+        r'"fused-embed-udf"\)\s*\{\s*if \(udfOffered\) udfMessage\(data\);', handler
+    )
+    assert re.search(
+        r'"fused-embed-udf-cancel"\)\s*\{\s*if \(udfOffered\) udfCancel\(data\);',
+        handler,
+    )
+    # The same origin and source checks as every other message.
+    assert handler.index("event.source !== frame.contentWindow") < handler.index(
+        "fused-embed-udf"
+    )
+
+
+def test_the_udf_ref_is_this_nodes_own_and_checks_the_request(html):
+    relay = _body_of(html, "function udfMessage")
+    assert (
+        "fused.workbench.udf({ canvas: node.name, name: m.name, env: node.env })" in relay
+    )
+    assert relay.count("fused.workbench.udf(") == 1
+    # Nothing but the name, the params and the fresh flag is taken from the frame.
+    assert re.findall(r"\bm\.(\w+)", relay) and set(re.findall(r"\bm\.(\w+)", relay)) <= {
+        "req",
+        "name",
+        "params",
+        "fresh",
+    }
+    assert "SQL_NAME_RE.test(m.req)" in relay
+    assert 'm.name.includes("/")' in relay and 'm.name.endsWith(".py")' in relay
+    assert '"[object Object]"' in relay
+    assert 'cache: "fresh"' in relay and 'format: "parquet"' in relay
+
+
+def test_no_confirmation_flag_is_forwarded_to_the_runtime(html):
+    relay = _body_of(html, "function udfMessage")
+    assert "confirm" not in relay.lower()
+    assert "signal" not in relay
+
+
+def test_the_result_token_is_validated_before_a_handle_is_sent(html):
+    assert "const UDF_TOKEN_RE = /^(?:[0-9a-f]{64}|t[0-9a-f]{32})$/;" in html
+    token = _body_of(html, "function udfToken")
+    assert "UDF_TOKEN_RE.test" in token
+    relay = _body_of(html, "function udfMessage")
+    assert 'handle: "udf:" + token' in relay
+    assert 'fail("failed", "the result could not be registered")' in relay
+
+
+def test_udf_replies_go_through_post_guarded_by_frame_gen(html):
+    relay = _body_of(html, "function udfMessage")
+    assert "const gen = frameGen;" in relay
+    assert re.search(
+        r'if \(gen === frameGen\) post\(\{ type: "fused-embed-udf-result", req', relay
+    )
+    assert "postMessage" not in relay
+    assert relay.count("fused-embed-udf-result") == 1
+
+
+def test_the_early_saved_answer_is_not_final_and_one_final_ends_the_request(html):
+    relay = _body_of(html, "function udfMessage")
+    assert "answer(r, false)" in relay and "answer(r, true)" in relay
+    assert "run.saved.then" in relay and "!finished" in relay
+    assert relay.count("answer(r, true)") == 1
+    assert 'cached: r.source !== "fresh"' in relay
+
+
+def test_a_new_document_abandons_the_old_documents_runs(html):
+    load = _body_of(html, "function loadFrame")
+    assert load.index("frameGen++") < load.index("udfAbort();")
+    assert 'window.addEventListener("pagehide", udfAbort);' in html
+    assert "run.cancel()" in _body_of(html, "function udfAbort")
+    assert "run.cancel()" in _body_of(html, "function udfCancel")

@@ -119,6 +119,9 @@ registers (kept for the engine's life, visible to every session), and the CPU,
 memory and disk the queries use. The frame is also handed the saved canvas the
 sync last read (it can hold parameters and tokens; the stored copy is readable
 by the user only), which it could fetch itself with the token it already holds.
+The framed page can also ask the host to run UDFs of its own canvas (never of
+another canvas or environment) and gets a result handle back; the runtime's
+own confirmation dialogs still appear, and the frame cannot answer them.
 
 ## Hosted deploy via the `fused` CLI
 

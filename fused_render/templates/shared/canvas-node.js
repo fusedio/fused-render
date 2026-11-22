@@ -146,6 +146,8 @@
   //   on.status(text, tone)   the strip's line; tone "" | "busy" | "error"
   //   on.pushed(pushSeq)      a push finished after this page opened
   //   on.changed(diskRev)     a file of the clone changed on disk
+//   on.saved(savedSeq)      the stored saved canvas changed (a probe stored a
+//                           different one); also once on the first state
   //
   // Not signed in, or a reference copy (not a clone this app may sync):
   // nothing is started and `on.status` says why. Returns the stop function.
@@ -186,6 +188,7 @@
     var owned = false;
     var pushSeq = null;      // null until the first state: only LATER pushes count
     var diskRev = null;
+    var savedSeq = null;
     var epoch = null;
 
     function start() {
@@ -230,6 +233,7 @@
         epoch = state.watcher_epoch;
         pushSeq = null;
         diskRev = null;
+        savedSeq = null;
       }
       var seq = state.legs && state.legs.disk_to_server ? state.legs.disk_to_server.push_seq : null;
       if (typeof seq === "number") {
@@ -239,6 +243,10 @@
       if (typeof state.disk_rev === "number") {
         if (diskRev !== null && state.disk_rev !== diskRev && on.changed) on.changed(state.disk_rev);
         diskRev = state.disk_rev;
+      }
+      if (typeof state.saved_seq === "number") {
+        if ((savedSeq === null || state.saved_seq !== savedSeq) && on.saved) on.saved(state.saved_seq);
+        savedSeq = state.saved_seq;
       }
       var line = syncLine(state);
       status(line[0], line[1]);

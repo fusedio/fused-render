@@ -12652,7 +12652,8 @@ is never sent it, and every alternation of their generations resets the view
   `fused-embed-auth-token {accessToken, caps, publicOrigin}` at the
   frame's exact origin, the token from `GET /api/canvases/token` (guarded).
   `caps: []`: the node page writes nothing, so it is offered no channel,
-  except the SQL engine of NW-7 (`"sql"`, when it is installed) and the
+  except the SQL engine of NW-7 (`"sql"`, when it is installed), the UDF
+  relay of NW-9 (`"udf"`, exactly when `"sql"` is offered) and the
   saved canvas of NW-8 (`"canvas"`, always). Every message is accepted only from the
   frame's window on that origin.
 - **NW-3 The file's text.** After the frame's `fused-embed-node-ready` and on
@@ -12738,12 +12739,57 @@ is never sent it, and every alternation of their generations resets the view
   *Message:* the token message's `caps` also holds
   `"canvas"` (also through the embed proxy: it is data the page could fetch
   itself with its token). Right after the first token message of a frame
-  document (the answer to `fused-embed-auth-ready`) the page posts exactly
-  one `fused-embed-canvas {canvas, json}` at the frame's exact origin:
+  document (the answer to `fused-embed-auth-ready`) the page posts
+  `fused-embed-canvas {canvas, json}` at the frame's exact origin:
   `canvas` the canvas's name, `json` the stored text or `null` when there is
   none. The text is fetched once per frame load, in parallel with the token,
   and a document that was replaced meanwhile gets nothing. A token refresh
   does not send it again; a new frame document does.
+  *Updates:* the sync's probes already rewrite the stored document, so the
+  page is told when it changed rather than polling. `sync/state` and the
+  events socket carry `saved_seq`, a counter that goes up by one each time a
+  probe stores a document whose bytes differ from the one before (a remote
+  change, a pull or merge landing, this host's own push); it starts at 0 with
+  each watcher. The page re-reads `GET /api/canvases/saved` (a) when
+  `saved_seq` moves, and once on the first state it sees, and (b) after each
+  push this host made (the page still posts `fused-embed-pushed` first), and
+  re-posts `fused-embed-canvas` only when the text differs from what that
+  frame document was last sent. At most one re-read runs at a time; a change
+  heard during one makes exactly one more; none starts before the document's
+  first message, and a change heard before it is read right after it. A
+  document that was replaced meanwhile gets nothing. A canvas with no
+  running sync (a reference copy) gets the one message at load and no
+  updates. The text is never logged.
+- **NW-9 The UDF relay.** With the SQL engine offered (NW-7), the token
+  message's `caps` also holds `"udf"`, and the page runs UDFs of this
+  node's own canvas for the frame and answers with a handle for the result,
+  which the frame can register with the engine (NW-7 `register`, `handle`)
+  instead of carrying the bytes. *Messages from the frame* (ignored unless
+  offered; accepted only from the frame's window on its origin, like every
+  message): `fused-embed-udf {req, name, params?, fresh?}`: `req` matches
+  `^[A-Za-z0-9._-]{1,128}$` (dropped otherwise), `name` is a non-empty
+  string with no `/` and not ending `.py`, `params` a plain object (default
+  `{}`), `fresh` an optional boolean; an invalid one is answered
+  `invalid_args`. `fused-embed-udf-cancel {req}` cancels that run. *The run:*
+  `fused.workbench.udf({canvas, name, env}).run(params, {format: "parquet"})`
+  (§54) with `canvas` and `env` always this node's own and, for `fresh:
+  true`, cache mode `fresh` (skip the saved answer). Nothing else is taken
+  from the frame: no canvas, no environment, no file reference, and no
+  confirmation flag; the runtime's own dialogs (batch runs, large results)
+  appear as they do for any page, and a refusal there comes back as an error.
+  *Replies* through the page's `post`: `fused-embed-udf-result {req, ok:
+  true, handle, size, contentType, version, cached, final}`: `handle` is
+  `udf:` plus the result's token, parsed from the result's `/api/udf/results/
+  <token>` address and checked against `^(?:[0-9a-f]{64}|t[0-9a-f]{32})$`;
+  `version` the result's saved-at in milliseconds (the address's `v`), which
+  changes when the stored bytes do; `cached` true unless the answer is a
+  fresh run's; `final` false for the early answer the runtime gives from its
+  saved result before the run ends (when there is one), true for the answer
+  that ends the request. Exactly one `final: true` or one `{type, req, ok:
+  false, error: {code, message}}` ends each request, the code and message the
+  runtime's own (`declined`, `signed_out`, `cancelled`, `failed`, ...); a
+  throw still answers. A reply to an older frame document is dropped, and a
+  new frame document (or this page closing) cancels the old one's runs.
 
 ### 53.4 `canvas_note`: a note
 

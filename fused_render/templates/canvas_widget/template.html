@@ -23,10 +23,11 @@
      The frame writes nothing back. With the local SQL engine installed, and
      the frame not loaded through the embed proxy, it is also offered that
      engine: this page relays its `fused-embed-sql` messages to the loopback
-     `/api/sql/*` routes (SPEC §53.3 NW-7). The frame is also handed the
-     canvas as Fused last had it saved, once per document, so it can draw at
-     once (SPEC §53.3 NW-8). This page must not import fused_render (SPEC
-     PY-15). -->
+     `/api/sql/` routes (SPEC §53.3 NW-7), and runs UDFs of this node's own
+     canvas for it, answering with a result handle (SPEC §53.3 NW-9). The
+     frame is also handed the canvas as Fused last had it saved, so it can
+     draw at once, and again whenever the sync stores a different one (SPEC
+     §53.3 NW-8). This page must not import fused_render (SPEC PY-15). -->
 <html data-fused-theme="shell">
 <head>
 <meta charset="utf-8" />
@@ -132,6 +133,12 @@
   let frameGen = 0;         // one per frame load: a reply to an older document is dropped
   let sqlOffered = false;   // the current document was offered the SQL engine
   let canvasSeed = null;    // this document's fetch of the saved canvas text (NW-8), or null
+  let canvasSent = null;    // the saved canvas text this document was last sent
+  let canvasReady = false;  // the first message of this document went out
+  let canvasStale = false;  // a change was heard before it did
+  let canvasReading = false; // a re-read is in flight
+  let canvasAgain = false;  // a change was heard during it
+  let udfOffered = false;   // the current document was offered the UDF relay (NW-9)
 
   function showMessage(build) {
     message.replaceChildren();
@@ -201,13 +208,14 @@
       const offer = !!wb.sqlEngine && wb.origin === wb.publicOrigin;
       const payload = { type: "fused-embed-auth-token", accessToken, caps: [], publicOrigin: wb.publicOrigin };
       if (offer) {
-        payload.caps = ["sql"];
+        payload.caps = ["sql", "udf"];
         payload.sqlEngine = { name: wb.sqlEngine.name, version: wb.sqlEngine.version };
       }
       // The saved canvas is data the page could fetch with its token, so it is
       // offered through the embed proxy too.
       payload.caps = [...payload.caps, "canvas"];
       sqlOffered = offer;
+      udfOffered = offer;
       post(payload);
       if ($("status").classList.contains("error")) setStatus("");
     } catch (error) {
@@ -217,7 +225,45 @@
     if (seed) {
       const json = await seed;
       // A reply to an older document gets nothing.
-      if (gen === frameGen) post({ type: "fused-embed-canvas", canvas: node.name, json });
+      if (gen === frameGen) {
+        canvasSent = json;
+        post({ type: "fused-embed-canvas", canvas: node.name, json });
+        canvasReady = true;
+        if (canvasStale) {
+          canvasStale = false;
+          void refreshCanvas();
+        }
+      }
+    }
+  }
+
+  // The sync stored a different saved canvas, or this host pushed (NW-8):
+  // read it again and post it when it is not the text this document already
+  // has. One read at a time; a change heard during one makes exactly one
+  // more. The text is never logged.
+  async function refreshCanvas() {
+    if (!canvasReady) {
+      canvasStale = true;
+      return;
+    }
+    if (canvasReading) {
+      canvasAgain = true;
+      return;
+    }
+    canvasReading = true;
+    const gen = frameGen;
+    try {
+      do {
+        canvasAgain = false;
+        const json = await CanvasNode.saved(node.env, node.name);
+        if (gen !== frameGen) return;
+        if (json !== null && json !== canvasSent) {
+          canvasSent = json;
+          post({ type: "fused-embed-canvas", canvas: node.name, json });
+        }
+      } while (canvasAgain);
+    } finally {
+      if (gen === frameGen) canvasReading = false;
     }
   }
 
@@ -484,6 +530,100 @@
     post({ type: "fused-embed-sql-result", req: m.req, ...reply }, transfer);
   }
 
+  // UDF RELAY (SPEC §53.3 NW-9). The frame asks this page to run a UDF of
+  // THIS node's canvas and gets back a handle for the result, which it can
+  // register with the SQL engine instead of carrying the bytes. The canvas and
+  // environment are this node's own, never the frame's; the runtime's own
+  // dialogs (batch runs, large results) are shown as for any page.
+  const UDF_TOKEN_RE = /^(?:[0-9a-f]{64}|t[0-9a-f]{32})$/;
+  const udfJobs = new Map(); // req -> the run, for the current document
+
+  function udfToken(url) {
+    const m = /^\/api\/udf\/results\/([^/?#]+)(?:[?#]|$)/.exec(typeof url === "string" ? url : "");
+    return m && UDF_TOKEN_RE.test(m[1]) ? m[1] : null;
+  }
+  function udfVersion(r) {
+    try {
+      const v = Number(new URL(r.url, location.href).searchParams.get("v"));
+      if (Number.isFinite(v)) return v;
+    } catch (_) {
+      /* no usable url: fall back to the saved-at time */
+    }
+    return r.savedAt instanceof Date ? r.savedAt.getTime() : 0;
+  }
+  function udfAbort() {
+    const runs = [...udfJobs.values()];
+    udfJobs.clear();
+    for (const run of runs) {
+      try {
+        run.cancel();
+      } catch (_) {
+        /* already over */
+      }
+    }
+  }
+
+  function udfMessage(m) {
+    if (typeof m.req !== "string" || !SQL_NAME_RE.test(m.req) || udfJobs.has(m.req)) return;
+    const req = m.req;
+    const gen = frameGen;
+    const reply = (extra) => {
+      if (gen === frameGen) post({ type: "fused-embed-udf-result", req, ...extra });
+    };
+    const fail = (code, message) => reply({ ok: false, error: { code, message } });
+    const params = m.params === undefined ? {} : m.params;
+    if (
+      typeof m.name !== "string" || !m.name || m.name.includes("/") || m.name.endsWith(".py") ||
+      Object.prototype.toString.call(params) !== "[object Object]" ||
+      (m.fresh !== undefined && typeof m.fresh !== "boolean")
+    ) {
+      fail("invalid_args", "invalid arguments");
+      return;
+    }
+    let run;
+    try {
+      const udf = fused.workbench.udf({ canvas: node.name, name: m.name, env: node.env });
+      run = udf.run(params, m.fresh === true ? { format: "parquet", cache: "fresh" } : { format: "parquet" });
+    } catch (error) {
+      fail((error && error.code) || "failed", (error && error.message) || "the UDF could not be run");
+      return;
+    }
+    udfJobs.set(req, run);
+    let finished = false;
+    const answer = (r, final) => {
+      const token = udfToken(r && r.url);
+      if (!token) return false;
+      reply({
+        ok: true, handle: "udf:" + token, size: r.size, contentType: r.contentType,
+        version: udfVersion(r), cached: r.source !== "fresh", final,
+      });
+      return true;
+    };
+    const over = () => {
+      finished = true;
+      if (udfJobs.get(req) === run) udfJobs.delete(req);
+    };
+    // The saved answer, before the run ends, so the frame can draw at once.
+    run.saved.then((r) => {
+      if (r && !finished) answer(r, false);
+    });
+    run.result.then(
+      (r) => {
+        over();
+        if (!answer(r, true)) fail("failed", "the result could not be registered");
+      },
+      (error) => {
+        over();
+        fail((error && error.code) || "failed", (error && error.message) || "the UDF failed");
+      },
+    );
+  }
+  function udfCancel(m) {
+    if (typeof m.req !== "string" || !SQL_NAME_RE.test(m.req)) return;
+    const run = udfJobs.get(m.req);
+    if (run) run.cancel();
+  }
+
   // End the session now rather than at the engine's idle timeout: when this
   // page leaves, and when the frame loads a new document (which starts with
   // none of the last one's temporary tables). Registered files stay for the
@@ -500,6 +640,7 @@
     }
   }
   window.addEventListener("pagehide", sqlEnd);
+  window.addEventListener("pagehide", udfAbort);
 
   window.addEventListener("message", (event) => {
     if (!wb || event.origin !== wb.origin || event.source !== frame.contentWindow) return;
@@ -526,6 +667,10 @@
       setTimeout(() => void sendSource(false), SOURCE_RECHECK_MS);
     } else if (data.type === "fused-embed-sql") {
       if (sqlOffered) void sqlMessage(data);
+    } else if (data.type === "fused-embed-udf") {
+      if (udfOffered) udfMessage(data);
+    } else if (data.type === "fused-embed-udf-cancel") {
+      if (udfOffered) udfCancel(data);
     } else if (data.type === "fused-embed-node-state" && data.node === node.node) {
       const status = typeof data.status === "string" ? data.status : "";
       const detail = status === "error" && typeof data.message === "string" ? ": " + data.message : "";
@@ -540,6 +685,13 @@
     pendingPush = null;
     frameGen++;
     sqlOffered = false;   // a new document is offered again with its own token
+    udfOffered = false;
+    udfAbort();           // the old document's runs are abandoned (its replies are dropped by frameGen)
+    canvasSent = null;
+    canvasReady = false;
+    canvasStale = false;
+    canvasReading = false;
+    canvasAgain = false;
     // Fetched once per document, in parallel with the token.
     canvasSeed = CanvasNode.saved(node.env, node.name);
     sqlEnd();
@@ -614,7 +766,11 @@
       pushed: (seq) => {
         if (pageReady) post({ type: "fused-embed-pushed", push_seq: seq });
         else pendingPush = seq;
+        void refreshCanvas();
       },
+      // The sync stored a different saved canvas (a remote change, a pull or
+      // merge): the frame gets it too, when it differs from what it has.
+      saved: () => void refreshCanvas(),
     });
     // Another writer's save (the Code mode, an agent): the frame gets the new
     // text, with no reload of either page.

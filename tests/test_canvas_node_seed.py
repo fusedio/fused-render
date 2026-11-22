@@ -305,7 +305,7 @@ def test_the_capability_is_always_offered(html):
     assert 'payload.caps = [...payload.caps, "canvas"];' in send
     assert "nodeSeed" not in html
     # Alongside "sql", never instead of it, and not tied to the SQL offer.
-    assert 'payload.caps = ["sql"]' in _body_of(send, "if (offer)")
+    assert 'payload.caps = ["sql", "udf"]' in _body_of(send, "if (offer)")
     assert '"canvas"' not in _body_of(send, "if (offer)")
 
 
@@ -314,7 +314,8 @@ def test_the_text_is_fetched_once_per_frame_load_in_parallel(html):
     assert "canvasSeed = CanvasNode.saved(node.env, node.name);" in load
     # Started with the frame, ahead of the frame's address and any token.
     assert load.index("canvasSeed =") < load.index("frame.src")
-    assert html.count("CanvasNode.saved(") == 1
+    # The other read is the re-read after a change (below).
+    assert html.count("CanvasNode.saved(") == 2
     assert html.index("frameGen++") < html.index("canvasSeed = CanvasNode.saved")
 
 
@@ -340,9 +341,7 @@ def test_the_token_is_not_held_for_the_canvas(html):
 def test_an_older_document_gets_no_canvas_message(html):
     send = _body_of(html, "async function sendToken")
     assert "const gen = frameGen;" in send
-    assert re.search(
-        r'if \(gen === frameGen\) post\(\{ type: "fused-embed-canvas"', send
-    )
+    assert re.search(r"if \(gen === frameGen\) \{\s*canvasSent = json;\s*post\(\{ type: \"fused-embed-canvas\"", send)
 
 
 def test_a_refresh_does_not_resend_it_and_a_ready_does(html):
@@ -496,3 +495,82 @@ def test_a_reference_copy_is_served_like_a_clone(client):
     res = _saved(client, "mirrored")
     assert res.status_code == 200
     assert res.text == DOC
+
+
+# ------------------------------- updates follow the sync's own probes (NW-8)
+
+
+class _Counting:
+    name = "alpha"
+    env = ENV
+    saved_seq = 0
+
+    def __init__(self, root):
+        self.root = root
+
+
+def test_saved_seq_moves_only_when_a_probe_stored_different_bytes(
+    tmp_path, monkeypatch
+):
+    path = _canvas_saved.path_for(str(tmp_path), "alpha")
+    answers = iter([DOC, DOC, DOC + " ", None])
+
+    def fake_probe(env, root, name, timeout):
+        doc = next(answers)
+        if doc is None:
+            return None  # a failed probe stores nothing
+        _canvas_saved.write(path, doc)
+        return {"id": "c1", "udfs": {}}
+
+    monkeypatch.setattr(canvases_mod, "_probe_manifest", fake_probe)
+    m = _Counting(str(tmp_path))
+    seen = []
+    for _ in range(4):
+        canvases_mod._SyncManager._probe_remote(m)
+        seen.append(m.saved_seq)
+    assert seen == [1, 1, 2, 2]
+
+
+def test_the_sync_state_publishes_saved_seq():
+    assert canvases_mod._unwatched_state(ENV, "alpha")["saved_seq"] == 0
+    src = open(canvases_mod.__file__, encoding="utf-8").read()
+    assert '"saved_seq": self.saved_seq,' in src
+
+
+def test_canvas_node_reports_a_changed_saved_seq():
+    js = open(NODE_JS, encoding="utf-8").read()
+    block = _body_of(js, 'if (typeof state.saved_seq === "number")')
+    assert "on.saved(state.saved_seq)" in block
+    # Like the push counter, a new watcher numbers from its own start.
+    assert "savedSeq = null;" in _body_of(js, "if (state.watcher_epoch !== epoch)")
+
+
+def test_a_push_or_a_saved_change_re_reads_the_canvas(html):
+    boot = _body_of(html, "CanvasNode.sync(node, {")
+    assert "post({ type: \"fused-embed-pushed\", push_seq: seq });" in boot
+    assert "void refreshCanvas();" in _body_of(boot, "pushed: (seq)")
+    assert "saved: () => void refreshCanvas()" in boot
+
+
+def test_the_canvas_is_re_posted_only_when_the_text_changed(html):
+    refresh = _body_of(html, "async function refreshCanvas")
+    assert "json !== null && json !== canvasSent" in refresh
+    assert refresh.count("fused-embed-canvas") == 1
+    assert "CanvasNode.saved(node.env, node.name)" in refresh
+    # Not before the document's first message; the change is remembered.
+    assert "canvasStale = true;" in _body_of(refresh, "if (!canvasReady)")
+
+
+def test_re_reads_are_coalesced_and_guarded_by_frame_gen(html):
+    refresh = _body_of(html, "async function refreshCanvas")
+    assert "if (canvasReading) {" in refresh and "canvasAgain = true;" in refresh
+    assert "while (canvasAgain)" in refresh
+    assert "if (gen !== frameGen) return;" in refresh
+    load = _body_of(html, "function loadFrame")
+    for field in ("canvasSent = null", "canvasReady = false", "canvasReading = false"):
+        assert field in load
+
+
+def test_the_document_text_is_never_logged(html):
+    for fn in ("async function refreshCanvas", "async function sendToken"):
+        assert "console." not in _body_of(html, fn)

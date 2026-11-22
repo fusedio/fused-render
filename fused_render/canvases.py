@@ -3643,6 +3643,9 @@ class _SyncManager:
         self._lock_path = _lock_path(env, name)
         self._lock_since = lock_since
         self.push_seq = 0
+        # Counts the probes that stored a saved canvas (NW-8) whose bytes
+        # differ from the one before: what a page drawing from it re-reads on.
+        self.saved_seq = 0
         self.last_push_at: float | None = None
         self.last_error: str | None = None
         # The push's FULL stderr lines when it failed, newest failure only.
@@ -4382,7 +4385,12 @@ class _SyncManager:
         """The remote manifest via the shim, or None (external CLI, not
         signed in, transient failure, junk output — all mean 'can't tell',
         never 'changed')."""
-        return _probe_manifest(self.env, self.root, self.name, LIST_SHIM_TIMEOUT)
+        path = _canvas_saved.path_for(self.root, self.name)
+        before = _canvas_saved.read_bytes(path)
+        probe = _probe_manifest(self.env, self.root, self.name, LIST_SHIM_TIMEOUT)
+        if _canvas_saved.read_bytes(path) != before:
+            self.saved_seq += 1
+        return probe
 
     @staticmethod
     def _remote_moved(prev: dict, cur: dict) -> bool:
@@ -7639,6 +7647,8 @@ class _SyncManager:
             },
             "disk_rev": rev,
             "watcher_epoch": self.watcher_epoch,
+            # Moves when a probe stored a different saved canvas (NW-8).
+            "saved_seq": self.saved_seq,
             # The frame keeps skipping names with no edit of its own posted
             # (`_check_skip_streak`), or None; `embed_heal_seq` moves once per
             # such streak and the page answers with a full state for it.
@@ -7776,6 +7786,7 @@ def _unwatched_state(env: str, name: str) -> dict:
         },
         "disk_rev": 0,
         "watcher_epoch": None,
+        "saved_seq": 0,
         "owner": others[0] if others else None,
         "other_watchers": others,
         "error_detail": [],
