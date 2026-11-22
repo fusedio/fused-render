@@ -1354,3 +1354,25 @@
   padding: 0 6px;
   margin-left: -4px;
 }
+
+/* -- A RAIL WINDOW'S ACTS ON ROW 1, ITS FACTS ON ROW 2 (TaskHead `splitRows`;
+   Akshil, 2026-11-22: "always show fav and open button on right on 1st row …
+   msg count and time will be shown in right side of 2nd row") --------------
+     [pin]  folder › file ………………… [chips] ☆  Open  ⋮
+     status · id · title ……………………………… count · time
+   The acts' layer stands at rest (the rules above hide it until the pointer
+   comes); nothing trades, so nothing slides. The facts close row 2 after the
+   title, which gives width first. */
+.task-head-facts.has-acts.is-split > .task-head-facts-layer.is-b {
+  position: static;
+  transform: none;
+  opacity: 1;
+  pointer-events: auto;
+}
+.task-head.is-window.is-two-line .task-head-titlerow > .task-head-rowfacts {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  flex: 0 0 auto;
+  margin-left: auto;
+}

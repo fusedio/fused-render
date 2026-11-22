@@ -1003,41 +1003,45 @@ test("no where-tag, no seat for it (a whole folder, a file: the place alone)", (
   expect(byClass(r, "task-head-where")).toHaveLength(0);
 });
 
-test("a rail window's facts and acts are two layers of one box; a panel keeps the two slots (2026-11-16)", () => {
+test("a rail window's acts stand on row 1 and its facts close row 2; a panel keeps the two slots (2026-11-22)", () => {
   const props = {
     task: task({ message_count: 6 }),
     open: { href: "/x", label: "Open in Explorer", onOpen: () => {} },
   };
   const win = render(head({ ...props, reveal: "window" }));
-  // One box, two layers: count + time, then star + door. No per-fact slots.
+  // Row 1: one box holding star + door only (split, always standing). No
+  // per-fact slots, no count/time layer.
   expect(byClass(win, "task-head-facts")).toHaveLength(1);
   expect(cls(byClass(win, "task-head-facts")[0]!)).toContain("has-acts");
+  expect(cls(byClass(win, "task-head-facts")[0]!)).toContain("is-split");
   expect(byClass(win, "task-head-countslot")).toHaveLength(0);
   expect(byClass(win, "task-head-timeslot")).toHaveLength(0);
-  const [a, b] = byClass(win, "task-head-facts-layer");
-  expect(cls(a!)).toContain("is-a");
-  expect(JSON.stringify(a)).toContain("task-head-count");
-  expect(JSON.stringify(a)).toContain("task-head-time");
-  expect(cls(b!)).toContain("is-b");
-  expect(JSON.stringify(b)).toContain("task-head-open");
-  // ONE ACT ALONE (favourites off: no star): the count STAYS under the
-  // pointer, so the head keeps one slot per fact — the stayer is one node
-  // that cannot jump between two layers (Bugbot on #2297).
-  const noStar = render(head({ ...props, reveal: "window", star: false }));
-  expect(byClass(noStar, "task-head-facts")).toHaveLength(0);
-  const cs = byClass(noStar, "task-head-countslot")[0]!;
-  expect(JSON.stringify(cs)).toContain("task-head-count");
-  expect(JSON.stringify(cs)).not.toContain("task-star");
-  expect(JSON.stringify(byClass(noStar, "task-head-timeslot")[0])).toContain("task-head-open");
-  expect(byClass(noStar, "task-head-count")).toHaveLength(1);
-  // …and the same with a star but no door.
-  const noDoor = render(head({ task: task({ message_count: 6 }), reveal: "window" }));
-  expect(byClass(noDoor, "task-head-facts")).toHaveLength(0);
-  expect(byClass(noDoor, "task-head-time")).toHaveLength(1);
-  // No acts at all: the facts alone, and they stay under the pointer.
+  const layers = byClass(win, "task-head-facts-layer");
+  expect(layers).toHaveLength(1);
+  expect(cls(layers[0]!)).toContain("is-b");
+  expect(JSON.stringify(layers[0])).toContain("task-head-open");
+  expect(JSON.stringify(byClass(win, "task-head-row")[0])).not.toContain("task-head-count");
+  // Row 2: the count and the time after the title.
+  const facts = byClass(win, "task-head-rowfacts");
+  expect(facts).toHaveLength(1);
+  expect(JSON.stringify(facts[0])).toContain("task-head-count");
+  expect(JSON.stringify(facts[0])).toContain("task-head-time");
+  expect(JSON.stringify(byClass(win, "task-head-titlerow")[0])).toContain("task-head-rowfacts");
+  // ONE ACT ALONE OR NONE: the same split — the act(s) on row 1, the count
+  // and the time on row 2, nothing trading under the pointer.
+  for (const one of [
+    render(head({ ...props, reveal: "window", star: false })),
+    render(head({ task: task({ message_count: 6 }), reveal: "window" })),
+  ]) {
+    expect(byClass(one, "task-head-countslot")).toHaveLength(0);
+    expect(byClass(one, "task-head-timeslot")).toHaveLength(0);
+    expect(cls(byClass(one, "task-head-facts")[0]!)).toContain("is-split");
+    expect(byClass(one, "task-head-rowfacts")).toHaveLength(1);
+    expect(byClass(one, "task-head-count")).toHaveLength(1);
+  }
   const bare = render(head({ task: task({ message_count: 6 }), reveal: "window", star: false }));
-  expect(cls(byClass(bare, "task-head-facts")[0]!)).not.toContain("has-acts");
-  expect(byClass(bare, "task-head-facts-layer")).toHaveLength(1);
+  expect(byClass(bare, "task-head-facts")).toHaveLength(0);
+  expect(JSON.stringify(byClass(bare, "task-head-rowfacts")[0])).toContain("task-head-time");
   // A panel or a pane keeps one slot per fact.
   const pane = render(head(props));
   expect(byClass(pane, "task-head-facts")).toHaveLength(0);
