@@ -324,3 +324,76 @@ def test_python_files_in_files_are_never_imported(worker, tmp_path):
     assert worker.done("s:2")["ok"] is True
     assert worker.run("s:3", "s", "SELECT * FROM t")[0]["ok"] is True
     assert not marker.exists()
+
+
+def _machine_zone():
+    import duckdb
+
+    con = duckdb.connect()
+    try:
+        return con.execute("SELECT current_setting('TimeZone')").fetchone()[0]
+    finally:
+        con.close()
+
+
+def test_the_time_zone_is_the_machines_by_default(worker):
+    expected = _machine_zone()
+    done, out = worker.run("s1:tz", "s1", "SELECT current_setting('TimeZone') AS tz")
+    assert done["ok"] is True
+    assert read_table(out).column("tz").to_pylist() == [expected]
+    # A cursor of another session sees the same (the setting is global).
+    done, out = worker.run("s2:tz", "s2", "SELECT current_setting('TimeZone') AS tz")
+    assert read_table(out).column("tz").to_pylist() == [expected]
+
+
+def test_an_empty_time_zone_variable_leaves_the_machines_zone(tmp_path):
+    w = Worker(tmp_path / "none", env_extra={"FUSED_RENDER_SQL_TIMEZONE": ""})
+    try:
+        assert w.ready()["ok"] is True
+        done, out = w.run("s1:tz", "s1", "SELECT current_setting('TimeZone') AS tz")
+        assert read_table(out).column("tz").to_pylist() == [_machine_zone()]
+    finally:
+        w.stop()
+
+
+def test_the_time_zone_variable_pins_the_zone(tmp_path):
+    w = Worker(
+        tmp_path / "ny", env_extra={"FUSED_RENDER_SQL_TIMEZONE": "America/New_York"}
+    )
+    try:
+        assert w.ready()["ok"] is True
+        done, out = w.run("s1:tz", "s1", "SELECT current_setting('TimeZone') AS tz")
+        assert read_table(out).column("tz").to_pylist() == ["America/New_York"]
+    finally:
+        w.stop()
+
+
+def test_a_result_past_max_bytes_answers_too_large_and_leaves_no_spool(worker):
+    out = str(worker.io / "big.arrows")
+    worker.send(
+        {
+            "op": "query",
+            "id": "s1:big",
+            "session": "s1",
+            "out": out,
+            "max_bytes": 2000,
+            "sql": "SELECT range AS v FROM range(1000000)",
+        }
+    )
+    done = worker.done("s1:big")
+    assert done["ok"] is False and done["code"] == "too_large"
+    assert not os.path.exists(out) and not os.path.exists(out + ".part")
+    # The session goes on; a result within the limit passes.
+    out = str(worker.io / "small.arrows")
+    worker.send(
+        {
+            "op": "query",
+            "id": "s1:small",
+            "session": "s1",
+            "out": out,
+            "max_bytes": 1 << 20,
+            "sql": "SELECT 1 AS v",
+        }
+    )
+    assert worker.done("s1:small")["ok"] is True
+    assert read_table(out).column("v").to_pylist() == [1]

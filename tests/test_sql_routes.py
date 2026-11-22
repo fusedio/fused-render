@@ -68,7 +68,7 @@ def started():
     runner.started_listeners.remove(listener)
 
 
-def new_session(client, scope="test"):
+def new_session(client, scope=""):
     r = client.post("/api/sql/session", json={"scope": scope}, headers=H)
     assert r.status_code == 200, r.text
     return r.json()["session"]
@@ -117,6 +117,7 @@ def test_every_route_refuses_a_request_without_x_fused(client):
         ("post", "/api/sql/session", {"json": {}}),
         ("post", f"{s}/query", {"json": {"sql": "SELECT 1"}}),
         ("post", f"{s}/cancel", {"json": {"query_id": "x"}}),
+        ("post", f"{s}/keepalive", {}),
         ("put", f"{s}/file/a.csv", {"content": b"a\n1\n"}),
         ("post", f"{s}/file/a.csv/link", {"json": {"handle": "udf:" + "0" * 64}}),
         ("get", f"{s}/file/a.csv", {}),
@@ -445,7 +446,7 @@ def test_a_worker_crash_fails_the_query_and_forgets_every_session(client, starte
     sid = new_session(client)
     pending = in_background(lambda: q(client, sid, FOREVER, query_id="long"))
     started(sid, "long")
-    proc = runner._ENGINE.proc
+    proc = runner._ENGINES[""].proc
     old_dir = runner.engine_dir()
     assert proc.pid != os.getpid()
     proc.kill()
@@ -458,14 +459,14 @@ def test_a_worker_crash_fails_the_query_and_forgets_every_session(client, starte
     assert not os.path.exists(old_dir + ".lock")
     fresh = new_session(client)
     assert table_of(q(client, fresh, "SELECT 1 AS v")).column("v").to_pylist() == [1]
-    assert runner._ENGINE.proc is not proc
+    assert runner._ENGINES[""].proc is not proc
     assert runner.engine_dir() != old_dir
 
 
 def test_shutdown_leaves_no_worker_and_no_directory(client):
     sid = new_session(client)
     assert q(client, sid, "SELECT 1").status_code == 200
-    proc = runner._ENGINE.proc
+    proc = runner._ENGINES[""].proc
     engine_path = runner.engine_dir()
     runner.shutdown()
     assert proc.wait(WAIT_S) is not None
@@ -502,7 +503,7 @@ def test_without_duckdb_a_session_is_unsupported(client, monkeypatch):
 def test_the_idle_reaper_ends_an_untouched_engine_only(client, started):
     sid = new_session(client)
     assert q(client, sid, "SELECT 1").status_code == 200
-    proc = runner._ENGINE.proc
+    proc = runner._ENGINES[""].proc
     engine_path = runner.engine_dir()
     assert runner.reap_once() is False
     # Something waiting keeps it, however old.
@@ -561,3 +562,234 @@ def test_the_sweep_removes_dead_owners_and_keeps_live_ones(client, home):
     assert runner.sweep() == ["3-live"]
     assert os.path.isdir(own_dir)
     assert q(client, own, "SELECT 1").status_code == 200
+# ------------------------------------------------------------- engine scopes
+
+
+def test_sessions_of_one_scope_share_an_engine_and_scopes_are_apart(client):
+    a1 = new_session(client, "a")
+    a2 = new_session(client, "a")
+    b = new_session(client, "b")
+    default = new_session(client)
+    assert q(client, a1, "CREATE TABLE shared AS SELECT 1 AS v").status_code == 200
+    assert table_of(q(client, a2, "SELECT v FROM shared")).column("v").to_pylist() == [
+        1
+    ]
+    for other in (b, default):
+        r = q(client, other, "SELECT v FROM shared")
+        assert r.status_code == 400 and r.json()["code"] == "engine_error"
+    # One worker, one directory per scope; the empty scope is the default engine.
+    pids = {runner.worker_pid(s) for s in ("a", "b", "")}
+    assert None not in pids and len(pids) == 3
+    dirs = {runner.engine_dir(s) for s in ("a", "b", "")}
+    assert len(dirs) == 3 and all(os.path.isdir(d) for d in dirs)
+    assert runner.engine_dir("never") is None and runner.worker_pid("never") is None
+    assert runner.session_files_dir(a1) == runner.session_files_dir(a2)
+    assert runner.session_files_dir(a1) != runner.session_files_dir(b)
+    # A file put in one scope is not in another.
+    assert (
+        client.put(
+            f"/api/sql/session/{a1}/file/f.csv", content=b"a\n1\n", headers=H
+        ).status_code
+        == 200
+    )
+    assert client.get(f"/api/sql/session/{a2}/file/f.csv", headers=H).status_code == 200
+    assert client.get(f"/api/sql/session/{b}/file/f.csv", headers=H).status_code == 404
+    # No scope given = the default engine.
+    r = client.post("/api/sql/session", json={}, headers=H)
+    assert runner._ENGINES[""].sessions.keys() >= {default, r.json()["session"]}
+
+
+def test_a_crash_ends_only_its_scopes_engine(client, started):
+    a = new_session(client, "a")
+    b = new_session(client, "b")
+    assert q(client, b, "CREATE TABLE kept AS SELECT 7 AS v").status_code == 200
+    pending = in_background(lambda: q(client, a, FOREVER, query_id="long"))
+    started(a, "long")
+    dir_a = runner.engine_dir("a")
+    runner._ENGINES["a"].proc.kill()
+    assert pending().json()["code"] == "engine_error"
+    assert q(client, a, "SELECT 1").status_code == 404
+    assert not os.path.exists(dir_a) and not os.path.exists(dir_a + ".lock")
+    assert table_of(q(client, b, "SELECT v FROM kept")).column("v").to_pylist() == [7]
+    again = new_session(client, "a")
+    assert table_of(q(client, again, "SELECT 1 AS v")).column("v").to_pylist() == [1]
+
+
+def test_the_reaper_ends_each_engine_on_its_own_clock_and_keepalive_resets_it(client):
+    a = new_session(client, "a")
+    b = new_session(client, "b")
+    for sid in (a, b):
+        assert q(client, sid, "SELECT 1").status_code == 200
+    proc_a = runner._ENGINES["a"].proc
+    dir_a, dir_b = runner.engine_dir("a"), runner.engine_dir("b")
+    old = time.monotonic() - runner.IDLE_S - 60
+    runner._ENGINES["a"].last_used = old
+    runner._ENGINES["b"].last_used = old
+    r = client.post(f"/api/sql/session/{b}/keepalive", headers=H)
+    assert r.status_code == 200 and r.json() == {}
+    assert runner.reap_once() is True
+    assert proc_a.wait(WAIT_S) is not None
+    assert not os.path.exists(dir_a) and os.path.isdir(dir_b)
+    assert q(client, a, "SELECT 1").status_code == 404
+    assert q(client, b, "SELECT 1").status_code == 200
+    assert runner.reap_once() is False
+
+
+def test_keepalive_of_an_unknown_session_is_404(client):
+    for bad in ("0" * 32, "not-a-session"):
+        r = client.post(f"/api/sql/session/{bad}/keepalive", headers=H)
+        assert r.status_code == 404 and r.json()["code"] == "not_found"
+    sid = new_session(client)
+    assert client.delete(f"/api/sql/session/{sid}", headers=H).status_code == 200
+    assert (
+        client.post(f"/api/sql/session/{sid}/keepalive", headers=H).status_code == 404
+    )
+
+
+def test_the_number_of_live_engines_is_bounded(client, monkeypatch):
+    monkeypatch.setattr(runner, "MAX_ENGINES", 2)
+    new_session(client, "a")
+    new_session(client, "b")
+    r = client.post("/api/sql/session", json={"scope": "c"}, headers=H)
+    assert r.status_code == 503 and r.json()["code"] == "engine_error"
+    assert "too many" in r.json()["message"]
+    assert runner.engine_dir("c") is None
+    # An existing scope still takes sessions, and a freed slot is reusable.
+    new_session(client, "a")
+    runner.reap_once(now=time.monotonic() + runner.IDLE_S + 60)
+    assert (
+        client.post("/api/sql/session", json={"scope": "c"}, headers=H).status_code
+        == 200
+    )
+
+
+def test_shutdown_and_refuse_new_cover_every_engine_and_sweep_spares_them(client):
+    a = new_session(client, "a")
+    b = new_session(client)
+    for sid in (a, b):
+        assert q(client, sid, "SELECT 1").status_code == 200
+    procs = [runner._ENGINES[s].proc for s in ("a", "")]
+    dirs = [runner.engine_dir(s) for s in ("a", "")]
+    assert runner.sweep() == []
+    assert all(os.path.isdir(d) for d in dirs)
+    runner.refuse_new()
+    assert (
+        client.post("/api/sql/session", json={"scope": "a"}, headers=H).status_code
+        == 503
+    )
+    assert (
+        client.post("/api/sql/session", json={"scope": "z"}, headers=H).status_code
+        == 503
+    )
+    runner.shutdown()
+    for proc in procs:
+        assert proc.wait(WAIT_S) is not None
+    assert not any(os.path.exists(d) for d in dirs)
+    assert (
+        q(client, a, "SELECT 1").status_code == 404
+        and q(client, b, "SELECT 1").status_code == 404
+    )
+
+
+# -------------------------------------------------------------- size ceilings
+
+
+def test_an_upload_past_the_ceiling_is_413_too_large_and_leaves_nothing(
+    client, monkeypatch
+):
+    monkeypatch.setenv("FUSED_RENDER_SQL_MAX_UPLOAD_BYTES", "16")
+    sid = new_session(client)
+    files_dir, io_dir = runner.session_files_dir(sid), runner.session_io_dir(sid)
+    url = f"/api/sql/session/{sid}/file/big.bin"
+    r = client.put(url, content=b"x" * 17, headers=H)
+    assert r.status_code == 413 and r.json()["code"] == "too_large"
+    # A body with no declared length is cut off as it streams.
+    r = client.put(url, content=iter([b"x" * 10, b"x" * 10]), headers=H)
+    assert r.status_code == 413 and r.json()["code"] == "too_large"
+    assert os.listdir(files_dir) == [] and os.listdir(io_dir) == []
+    assert client.put(url, content=b"x" * 16, headers=H).status_code == 200
+    assert os.path.getsize(os.path.join(files_dir, "big.bin")) == 16
+    # A refused replacement keeps what was there.
+    assert client.put(url, content=b"y" * 17, headers=H).status_code == 413
+    assert os.path.getsize(os.path.join(files_dir, "big.bin")) == 16
+    assert os.listdir(io_dir) == []
+
+
+def test_an_arrow_upload_past_the_ceiling_is_413_too_large(client, monkeypatch):
+    sid = new_session(client)
+    data = arrow_bytes(pa.table({"n": list(range(100))}))
+    monkeypatch.setenv("FUSED_RENDER_SQL_MAX_UPLOAD_BYTES", str(len(data) - 1))
+    url = f"/api/sql/session/{sid}/arrow/items?create=1"
+    r = client.post(url, content=data, headers=H)
+    assert r.status_code == 413 and r.json()["code"] == "too_large"
+    r = client.post(url, content=iter([data[:50], data[50:]]), headers=H)
+    assert r.status_code == 413 and r.json()["code"] == "too_large"
+    assert os.listdir(runner.session_io_dir(sid)) == []
+    r = q(
+        client,
+        sid,
+        "SELECT count(*) AS n FROM duckdb_tables() WHERE table_name = 'items'",
+    )
+    assert table_of(r).column("n").to_pylist() == [0]
+    monkeypatch.setenv("FUSED_RENDER_SQL_MAX_UPLOAD_BYTES", str(len(data)))
+    assert client.post(url, content=data, headers=H).status_code == 200
+
+
+def test_a_result_past_the_ceiling_is_413_too_large_and_its_spool_is_removed(
+    client, monkeypatch
+):
+    sid = new_session(client)
+    monkeypatch.setenv("FUSED_RENDER_SQL_MAX_RESULT_BYTES", "2000")
+    r = q(client, sid, "SELECT range AS v FROM range(100000)")
+    assert r.status_code == 413 and r.json()["code"] == "too_large"
+    assert os.listdir(runner.session_io_dir(sid)) == []
+    # The session and the engine go on, and a small result still passes.
+    assert table_of(q(client, sid, "SELECT 1 AS v")).column("v").to_pylist() == [1]
+    monkeypatch.delenv("FUSED_RENDER_SQL_MAX_RESULT_BYTES")
+    assert (
+        table_of(q(client, sid, "SELECT range AS v FROM range(100000)")).num_rows
+        == 100000
+    )
+
+
+def test_the_limits_default_to_1_gib_and_256_mib_and_ignore_nonsense(monkeypatch):
+    for name in (
+        "FUSED_RENDER_SQL_MAX_UPLOAD_BYTES",
+        "FUSED_RENDER_SQL_MAX_RESULT_BYTES",
+    ):
+        monkeypatch.delenv(name, raising=False)
+    assert runner.max_upload_bytes() == 1 << 30
+    assert runner.max_result_bytes() == 256 << 20
+    monkeypatch.setenv("FUSED_RENDER_SQL_MAX_UPLOAD_BYTES", "junk")
+    monkeypatch.setenv("FUSED_RENDER_SQL_MAX_RESULT_BYTES", "-5")
+    assert runner.max_upload_bytes() == 1 << 30
+    assert runner.max_result_bytes() == 256 << 20
+    monkeypatch.setenv("FUSED_RENDER_SQL_MAX_UPLOAD_BYTES", "123")
+    assert runner.max_upload_bytes() == 123
+
+
+# -------------------------------------------------------------------- logging
+
+
+def test_nothing_at_info_or_above_names_the_sql_or_a_file(client, caplog):
+    import logging
+
+    caplog.set_level(logging.INFO)
+    sid = new_session(client)
+    marker = "marker_zq_table"
+    assert (
+        client.put(
+            f"/api/sql/session/{sid}/file/{marker}.csv", content=b"a\n1\n", headers=H
+        ).status_code
+        == 200
+    )
+    assert (
+        q(
+            client, sid, f"CREATE TABLE {marker} AS SELECT a FROM '{marker}.csv'"
+        ).status_code
+        == 200
+    )
+    assert q(client, sid, f"SELECT * FROM no_such_{marker}").status_code == 400
+    runner.shutdown()
+    ours = "\n".join(r.getMessage() for r in caplog.records if r.name.startswith("fused_render"))
+    assert marker not in ours and "/file/" in ours

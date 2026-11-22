@@ -6,12 +6,15 @@ Every route, reads included, requires the `X-Fused` header
 (`_require_fused`), and none is on the LAN allowlist (`lan.py`), so a LAN
 peer never reaches them. Errors are `{code, message}` with `code` one of
 `unsupported` (501: duckdb/pyarrow missing), `invalid_args` (400),
-`not_found` (404), `cancelled` (400), `engine_error` (400; 503 while the
-app is quitting or the engine cannot start).
+`not_found` (404), `cancelled` (400), `too_large` (413: an upload past
+FUSED_RENDER_SQL_MAX_UPLOAD_BYTES, a result past
+FUSED_RENDER_SQL_MAX_RESULT_BYTES), `engine_error` (400; 503 while the app
+is quitting, the engine cannot start or too many engines are live).
 
 Request bodies (a file's bytes, an Arrow stream) are streamed to a file in
-the engine's `io/`, never held in memory whole; a query's answer is the
-spooled Arrow IPC stream the worker wrote, removed once sent.
+the engine's `io/`, never held in memory whole, and refused once past the
+upload ceiling; a query's answer is the spooled Arrow IPC stream the worker
+wrote, removed once sent. Nothing here logs SQL text or file names.
 """
 from __future__ import annotations
 
@@ -42,7 +45,7 @@ _FILE_HEADERS = {
 
 def _err(code: str, message: str, status: int | None = None) -> JSONResponse:
     if status is None:
-        status = {"unsupported": 501, "not_found": 404}.get(code, 400)
+        status = {"unsupported": 501, "not_found": 404, "too_large": 413}.get(code, 400)
     return JSONResponse({"code": code, "message": message}, status_code=status)
 
 
@@ -86,12 +89,30 @@ def _remove(path: str) -> None:
         pass
 
 
+class _TooLarge(Exception):
+    pass
+
+
 async def _spool_body(request: Request, path: str) -> None:
-    """Stream the request body to `path` (a new file in `io/`)."""
+    """Stream the request body to `path` (a new file in `io/`). _TooLarge as
+    soon as it passes the upload ceiling (the caller removes the partial
+    file)."""
+    limit = runner.max_upload_bytes()
+    declared = request.headers.get("content-length", "")
+    if declared.isdigit() and int(declared) > limit:
+        raise _TooLarge
+    total = 0
     with open(path, "xb") as fh:
         async for chunk in request.stream():
             if chunk:
+                total += len(chunk)
+                if total > limit:
+                    raise _TooLarge
                 fh.write(chunk)
+
+
+def _too_large_upload() -> JSONResponse:
+    return _err("too_large", f"the body is larger than {runner.max_upload_bytes()} bytes")
 
 
 async def run_until_disconnected(request: Request, work, on_disconnect) -> tuple[bool, object]:
@@ -158,6 +179,18 @@ async def api_sql_query(session: str, request: Request,
                         background=BackgroundTask(_remove, result))
 
 
+@router.post("/api/sql/session/{session}/keepalive")
+async def api_sql_keepalive(session: str, x_fused: str | None = Header(default=None)):
+    guard = _require_fused(x_fused)
+    if guard is not None:
+        return guard
+    try:
+        runner.keepalive(session)
+    except runner.NoSession:
+        return _not_found()
+    return {}
+
+
 @router.post("/api/sql/session/{session}/cancel")
 async def api_sql_cancel(session: str, request: Request,
                          x_fused: str | None = Header(default=None)):
@@ -193,6 +226,8 @@ async def api_sql_file_put(session: str, name: str, request: Request,
     try:
         await _spool_body(request, tmp)
         files.register_bytes(files_dir, name, tmp)
+    except _TooLarge:
+        return _too_large_upload()
     except OSError as exc:
         return _err("engine_error", f"could not store the file: {exc}")
     finally:
@@ -269,6 +304,8 @@ async def api_sql_arrow(session: str, table: str, request: Request, create: str 
     try:
         try:
             await _spool_body(request, tmp)
+        except _TooLarge:
+            return _too_large_upload()
         except OSError as exc:
             return _err("engine_error", f"could not store the body: {exc}")
         try:

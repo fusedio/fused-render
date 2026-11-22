@@ -88,7 +88,7 @@ def register_link(files_dir: str, io_dir: str, name: str, handle: str) -> None:
             raise NotFound("no such result (it may have expired)") from None
         except OSError as exc:
             # Another volume, or a filesystem without hard links: a copy.
-            logger.info("sql files: linking %s failed (%s); copying it", handle, exc)
+            logger.debug("sql files: linking %s failed (%s); copying it", handle, exc)
             try:
                 shutil.copyfile(body, tmp)
             except FileNotFoundError:

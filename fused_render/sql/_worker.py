@@ -14,7 +14,9 @@ Startup, in this order:
      `files/` (a file registered as `numpy.py` must never be importable);
   3. `duckdb.connect(":memory:")`, the extensions in FUSED_RENDER_SQL_EXTENSIONS
      (comma-separated; unset = httpfs,spatial,h3; empty = none) loaded
-     best-effort, then settings, then the lockdown:
+     best-effort, then settings (including `TimeZone` when
+     FUSED_RENDER_SQL_TIMEZONE is set and non-empty; otherwise the engine
+     keeps its own default, the machine's zone), then the lockdown:
      `allowed_directories=[files, tmp, https://]` ->
      `enable_external_access=false` -> `lock_configuration=true`;
   4. a self-check: a file in the instance directory, outside `files/` and
@@ -26,13 +28,15 @@ Protocol: JSON lines. Bodies never travel on the pipe; they are files in
 
   -> {"event": "ready", "ok": true, "version", "extensions"}
      | {"event": "ready", "ok": false, "error"}
-  {"op": "query", "id", "session", "sql", "out"}
+  {"op": "query", "id", "session", "sql", "out", "max_bytes"?}
   {"op": "insert", "id", "session", "table", "create", "path"}
       -> {"id", "event": "started"}       the statement is about to run
       -> {"id", "event": "done", "ok": true, "size"}
          (`out` holds an Arrow IPC stream; written to `out.part`, then renamed)
       or {"id", "event": "done", "ok": false,
-          "code": "engine_error" | "cancelled", "message"}
+          "code": "engine_error" | "cancelled" | "too_large", "message"}
+         (`too_large`: the stream passed `max_bytes`; writing stopped and
+         `out` was removed)
   {"op": "cancel", "id"}       interrupts `id` while it runs; an id not yet
                                started answers `cancelled` when its turn comes
   {"op": "close", "session"}   interrupts what runs there, pending statements
@@ -54,6 +58,10 @@ _DEFAULT_EXTENSIONS = "httpfs,spatial,h3"
 _COMMUNITY = {"h3"}
 _REMEMBERED = 4096
 _INTERRUPT_EVERY_S = 0.02
+
+class _TooLarge(Exception):
+    """A query's Arrow stream passed the size the server allows."""
+
 
 _PROTO = None
 _SEND_LOCK = threading.Lock()
@@ -132,7 +140,8 @@ class _Session:
             send({"id": rid, "event": "started"})
             try:
                 if item["op"] == "query":
-                    size = self._query(item["sql"], item["out"], rid)
+                    size = self._query(item["sql"], item["out"], rid,
+                                       item.get("max_bytes"))
                 else:
                     size = self._insert(item["table"], bool(item.get("create")),
                                         item["path"], rid)
@@ -140,9 +149,14 @@ class _Session:
             except Exception as exc:  # noqa: BLE001 — every failure is an answer
                 with _LOCK:
                     cancelled = rid in self.cancelled or self.closed
+                if cancelled:
+                    code, message = "cancelled", "cancelled"
+                elif isinstance(exc, _TooLarge):
+                    code, message = "too_large", str(exc)
+                else:
+                    code, message = "engine_error", str(exc) or type(exc).__name__
                 done = {"id": rid, "event": "done", "ok": False,
-                        "code": "cancelled" if cancelled else "engine_error",
-                        "message": "cancelled" if cancelled else (str(exc) or type(exc).__name__)}
+                        "code": code, "message": message}
             with _LOCK:
                 self.running = None
             self._end(rid, done)
@@ -162,11 +176,13 @@ class _Session:
             if rid in self.cancelled or self.closed:
                 raise InterruptedError("cancelled")
 
-    def _query(self, sql: str, out: str, rid: str) -> int:
+    def _query(self, sql: str, out: str, rid: str, max_bytes: int | None = None) -> int:
         import pyarrow as pa
         import pyarrow.ipc  # noqa: F401
 
         part = out + ".part"
+        limit = max_bytes if isinstance(max_bytes, int) and max_bytes > 0 else None
+        too_large = _TooLarge(f"the result is larger than {limit} bytes")
         try:
             self._check_cancel(rid)
             cur = self.cursor.execute(sql)
@@ -182,6 +198,10 @@ class _Session:
                     for batch in reader:
                         self._check_cancel(rid)
                         writer.write_batch(batch)
+                        if limit is not None and fh.tell() > limit:
+                            raise too_large
+            if limit is not None and os.path.getsize(part) > limit:
+                raise too_large
             self._check_cancel(rid)
             os.replace(part, out)
             return os.path.getsize(out)
@@ -318,10 +338,16 @@ def _start(instance: str):
         print(f"sql worker: starting the secret manager failed: {exc}", file=sys.stderr)
     # GLOBAL: a plain SET of a client setting stays on this connection and a
     # cursor would not see it.
-    for setting in (f"SET GLOBAL temp_directory={_quote_literal(tmp)}",
-                    "SET GLOBAL python_enable_replacements=false",
-                    "SET GLOBAL autoinstall_known_extensions=false",
-                    "SET GLOBAL autoload_known_extensions=false"):
+    settings = [f"SET GLOBAL temp_directory={_quote_literal(tmp)}",
+                "SET GLOBAL python_enable_replacements=false",
+                "SET GLOBAL autoinstall_known_extensions=false",
+                "SET GLOBAL autoload_known_extensions=false"]
+    # A page's SQL sees the machine's zone unless the variable pins one for
+    # fixed results.
+    zone = (os.environ.get("FUSED_RENDER_SQL_TIMEZONE") or "").strip()
+    if zone:
+        settings.append(f"SET GLOBAL TimeZone={_quote_literal(zone)}")
+    for setting in settings:
         try:
             con.execute(setting)
         except Exception as exc:  # noqa: BLE001 — best-effort

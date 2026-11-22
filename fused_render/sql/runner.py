@@ -1,18 +1,22 @@
 """The local SQL engine in the server process (SPEC §55.4).
 
-One engine for the whole app: one worker process (`_worker.py`), one
-in-memory DuckDB database, one directory. A session is a caller's own
-connection to that database (a cursor in the worker): permanent tables and
-registered files are shared by every session; temp tables, variables and
-cancellation are the session's own. A session's statements run in order;
-different sessions run concurrently.
+One engine per scope: sessions created with the same scope string share one
+worker process (`_worker.py`), one in-memory DuckDB database and one
+directory; a different scope has an engine of its own (its own worker,
+directory, lock and idle clock). The empty scope is the default engine. At
+most MAX_ENGINES engines are live at once. A session is a caller's own
+connection to its engine's database (a cursor in the worker): permanent
+tables and registered files are shared by the engine's sessions; temp tables,
+variables and cancellation are the session's own. A session's statements run
+in order; different sessions run concurrently.
 
-An engine incarnation is created by the first `create_session` and its
-worker is spawned lazily, by the first query or insert. The engine ends when
-its worker dies, after IDLE_S untouched with nothing waiting, or on
-`shutdown()`; every session id is then unknown, the directory is removed,
-and requests still waiting fail with `WorkerGone`. The next `create_session`
-starts a new incarnation.
+An engine incarnation is created by the first `create_session` of its scope
+and its worker is spawned lazily, by the first query or insert. An engine
+ends when its worker dies, after IDLE_S untouched with nothing waiting, or on
+`shutdown()`; every session id of it is then unknown, its directory is
+removed, and requests still waiting on it fail with `WorkerGone`. Other
+engines are not affected. The next `create_session` of the scope starts a new
+incarnation.
 
 Directory: `<FUSED_RENDER_HOME or ~/.fused-render>/cache/sql/<instance>/`
 with `files/` (the worker's working directory and the only local directory
@@ -25,6 +29,8 @@ can take belongs to nobody.
 
 This module never imports duckdb or pyarrow: the engine only runs in the
 worker.
+
+Nothing here logs SQL text or registered file names above debug level.
 """
 from __future__ import annotations
 
@@ -49,13 +55,18 @@ READY_TIMEOUT_S = 180.0
 _STOP_WAIT_S = 2.0
 _REAP_EVERY_S = 60.0
 _PRE_CANCEL_MAX = 1024
+#: Live engines (distinct scopes) at once.
+MAX_ENGINES = 16
+DEFAULT_MAX_UPLOAD_BYTES = 1 << 30
+DEFAULT_MAX_RESULT_BYTES = 256 << 20
 
 SESSION_RE = re.compile(r"^[0-9a-f]{32}$")
 QUERY_ID_RE = re.compile(r"^[A-Za-z0-9._-]{1,128}$")
 TABLE_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]{0,127}$")
 
 _LOCK = threading.Lock()
-_ENGINE: _Engine | None = None
+# Live (not discarded) engines by scope.
+_ENGINES: dict[str, _Engine] = {}
 _refused = False
 _reaper: threading.Thread | None = None
 # Engines marked ended whose worker and directory are still being removed.
@@ -94,6 +105,29 @@ def root() -> str:
     return os.path.join(base, "cache", "sql")
 
 
+def _env_bytes(name: str, default: int) -> int:
+    raw = os.environ.get(name)
+    if raw is None or not raw.strip():
+        return default
+    try:
+        value = int(raw.strip())
+    except ValueError:
+        return default
+    return value if value > 0 else default
+
+
+def max_upload_bytes() -> int:
+    """The largest body a file or Arrow upload may have
+    (FUSED_RENDER_SQL_MAX_UPLOAD_BYTES, read at call time)."""
+    return _env_bytes("FUSED_RENDER_SQL_MAX_UPLOAD_BYTES", DEFAULT_MAX_UPLOAD_BYTES)
+
+
+def max_result_bytes() -> int:
+    """The largest Arrow stream a query may answer
+    (FUSED_RENDER_SQL_MAX_RESULT_BYTES, read at call time)."""
+    return _env_bytes("FUSED_RENDER_SQL_MAX_RESULT_BYTES", DEFAULT_MAX_RESULT_BYTES)
+
+
 def available() -> bool:
     return (importlib.util.find_spec("duckdb") is not None
             and importlib.util.find_spec("pyarrow") is not None)
@@ -126,8 +160,9 @@ class _Session:
 
 
 class _Engine:
-    def __init__(self, instance: str, lock_handle):
+    def __init__(self, instance: str, lock_handle, scope: str = ""):
         self.instance = instance
+        self.scope = scope
         self.dir = os.path.join(root(), instance)
         self.lock_path = self.dir + ".lock"
         self.lock_handle = lock_handle
@@ -262,7 +297,7 @@ def _open_lock(path: str):
     return None
 
 
-def _new_engine() -> _Engine:
+def _new_engine(scope: str) -> _Engine:
     base = root()
     os.makedirs(base, exist_ok=True)
     instance = f"{os.getpid()}-{secrets.token_hex(6)}"
@@ -272,7 +307,7 @@ def _new_engine() -> _Engine:
     handle = _open_lock(lock_path)
     if handle is None:
         raise Unavailable("could not take the SQL engine's directory lock")
-    engine = _Engine(instance, handle)
+    engine = _Engine(instance, handle, scope)
     try:
         for d in (engine.files, engine.tmp, engine.io):
             os.makedirs(d, exist_ok=True)
@@ -285,13 +320,12 @@ def _new_engine() -> _Engine:
 def _mark_discarded(engine: _Engine) -> bool:
     """Caller holds _LOCK. Makes every session id of `engine` unknown; False
     when another caller already did (and finishes the job)."""
-    global _ENGINE
     if engine.discarded:
         return False
     engine.discarded = True
     _ENDING.add(engine)
-    if _ENGINE is engine:
-        _ENGINE = None
+    if _ENGINES.get(engine.scope) is engine:
+        del _ENGINES[engine.scope]
     engine.sessions.clear()
     return True
 
@@ -376,28 +410,32 @@ def _engine_of(sid: str) -> _Engine:
     """The live engine holding session `sid`, or NoSession. Caller holds _LOCK."""
     if not isinstance(sid, str) or not SESSION_RE.match(sid):
         raise NoSession("no such session")
-    engine = _ENGINE
-    if engine is None or engine.discarded or sid not in engine.sessions:
-        raise NoSession("no such session")
-    engine.last_used = time.monotonic()
-    return engine
+    for engine in _ENGINES.values():
+        if not engine.discarded and sid in engine.sessions:
+            engine.last_used = time.monotonic()
+            return engine
+    raise NoSession("no such session")
 
 
 def create_session(scope: str = "") -> str:
-    """A new session id on the engine (created when there is none). The
-    worker is not started here."""
-    global _ENGINE
+    """A new session id on the engine of `scope` (created when there is
+    none). The worker is not started here. Unavailable when the app is
+    quitting or MAX_ENGINES engines are already live."""
+    scope = scope or ""
     if not available():
         raise NotInstalled("duckdb and pyarrow are needed for local SQL")
     with _LOCK:
         if _refused:
             raise Unavailable("fused-render is quitting")
-        engine = _ENGINE
+        engine = _ENGINES.get(scope)
         if engine is None or engine.discarded:
-            engine = _new_engine()
-            _ENGINE = engine
+            if len(_ENGINES) >= MAX_ENGINES:
+                raise Unavailable(
+                    f"too many SQL engines are running ({MAX_ENGINES}); reuse a scope")
+            engine = _new_engine(scope)
+            _ENGINES[scope] = engine
         sid = secrets.token_hex(16)
-        engine.sessions[sid] = _Session(scope or "")
+        engine.sessions[sid] = _Session(scope)
         engine.last_used = time.monotonic()
     _start_reaper()
     return sid
@@ -420,17 +458,25 @@ def io_path(sid: str) -> str:
     return os.path.join(engine.io, f"in-{secrets.token_hex(12)}.part")
 
 
-def worker_pid() -> int | None:
-    """The live worker's pid, or None."""
+def keepalive(sid: str) -> None:
+    """Mark the engine of session `sid` as used, so the idle reaper leaves
+    it. NoSession when unknown."""
     with _LOCK:
-        engine = _ENGINE
+        _engine_of(sid)
+
+
+def worker_pid(scope: str = "") -> int | None:
+    """The live worker's pid of the engine of `scope`, or None."""
+    with _LOCK:
+        engine = _ENGINES.get(scope)
         proc = engine.proc if engine is not None else None
     return proc.pid if proc is not None else None
 
 
-def engine_dir() -> str | None:
+def engine_dir(scope: str = "") -> str | None:
     with _LOCK:
-        return _ENGINE.dir if _ENGINE is not None else None
+        engine = _ENGINES.get(scope)
+        return engine.dir if engine is not None else None
 
 
 async def _request(sid: str, rid: str, op: dict) -> dict:
@@ -471,14 +517,15 @@ async def _request(sid: str, rid: str, op: dict) -> dict:
 def _check_done(event: dict) -> None:
     if event.get("ok"):
         return
-    code = event.get("code") if event.get("code") in ("cancelled", "engine_error") else "engine_error"
+    code = (event.get("code") if event.get("code") in ("cancelled", "engine_error", "too_large")
+            else "engine_error")
     raise QueryFailed(code, str(event.get("message") or code))
 
 
 async def query(sid: str, sql: str, query_id: str | None = None) -> str:
     """Run `sql` on session `sid`; the path of the spooled Arrow IPC stream
     (the caller removes it). Raises NoSession, Unavailable, WorkerGone or
-    QueryFailed."""
+    QueryFailed (`too_large` when the stream would pass max_result_bytes())."""
     qid = query_id or secrets.token_hex(8)
     if not QUERY_ID_RE.match(qid):
         raise QueryFailed("invalid_args", "query_id is 1-128 of A-Z a-z 0-9 . _ -")
@@ -487,7 +534,8 @@ async def query(sid: str, sql: str, query_id: str | None = None) -> str:
         engine = _engine_of(sid)
     out = os.path.join(engine.io, f"out-{secrets.token_hex(12)}.arrows")
     event = await _request(sid, rid, {"op": "query", "id": rid, "session": sid,
-                                      "sql": sql, "out": out})
+                                      "sql": sql, "out": out,
+                                      "max_bytes": max_result_bytes()})
     _check_done(event)
     return out
 
@@ -575,17 +623,19 @@ def delete_session(sid: str) -> None:
 
 
 def reap_once(now: float | None = None) -> bool:
-    """One pass of the idle reaper: ends the engine when nothing touched it
-    for IDLE_S and nothing is waiting on it. True when it did."""
+    """One pass of the idle reaper: ends every engine nothing touched for
+    IDLE_S and nothing is waiting on. True when it ended any."""
+    ended = []
     with _LOCK:
-        engine = _ENGINE
-        if engine is None or engine.waiters:
-            return False
-        if (time.monotonic() if now is None else now) - engine.last_used <= IDLE_S:
-            return False
-        _mark_discarded(engine)
-    _discard(engine, "idle", marked=True)
-    return True
+        t = time.monotonic() if now is None else now
+        for engine in list(_ENGINES.values()):
+            if engine.waiters or t - engine.last_used <= IDLE_S:
+                continue
+            if _mark_discarded(engine):
+                ended.append(engine)
+    for engine in ended:
+        _discard(engine, "idle", marked=True)
+    return bool(ended)
 
 
 def _reap() -> None:
@@ -614,11 +664,11 @@ def refuse_new() -> None:
 
 
 def shutdown() -> None:
-    """End the engine (quit, server shutdown): the worker's stdin closed,
+    """End every engine (quit, server shutdown): the worker's stdin closed,
     killed after a short wait, the directory removed. Waiting requests fail."""
     with _LOCK:
-        engine = _ENGINE
-    if engine is not None:
+        engines = list(_ENGINES.values())
+    for engine in engines:
         _discard(engine, "shutdown")
     # An engine another thread is already ending (its worker died a moment
     # ago) is waited for too, so nothing is left once this returns.
@@ -631,19 +681,19 @@ def shutdown() -> None:
 def sweep() -> list[str]:
     """Remove the engine directories whose owner is gone. Two servers can
     share one home, so only a directory whose lock can be taken (nobody
-    holds it) or that has no lock file is removed; this process's own engine
-    is skipped by name. Returns the instances removed."""
+    holds it) or that has no lock file is removed; this process's own engines
+    are skipped by name. Returns the instances removed."""
     base = root()
     try:
         names = os.listdir(base)
     except OSError:
         return []
     with _LOCK:
-        own = _ENGINE.instance if _ENGINE is not None else None
+        own = {e.instance for e in (*_ENGINES.values(), *_ENDING)}
     instances = {n[:-len(".lock")] if n.endswith(".lock") else n for n in names}
     removed = []
     for instance in sorted(instances):
-        if not instance or instance == own:
+        if not instance or instance in own:
             continue
         path = os.path.join(base, instance)
         lock_path = path + ".lock"
