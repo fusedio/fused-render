@@ -855,20 +855,7 @@
   opacity: 1;
   pointer-events: auto;
 }
-.task-head.is-window.is-two-line .task-head-marks > .task-head-kebab {
-  opacity: 0;
-  pointer-events: none;
-  transition: opacity 0.08s ease;
-}
-.task-head.is-window.is-two-line:is(.is-hot, :hover, :has(.task-head-kebab :focus-visible), :has(.task-head-marks [aria-expanded="true"])) .task-head-marks > .task-head-kebab {
-  opacity: 1;
-  pointer-events: auto;
-}
 @media (hover: none) {
-  .task-head.is-window.is-two-line .task-head-marks > .task-head-kebab {
-    opacity: 1;
-    pointer-events: auto;
-  }
   .task-head-facts.has-acts > .task-head-facts-layer.is-a {
     opacity: 0;
     pointer-events: none;
@@ -1209,14 +1196,6 @@
   display: contents;
 }
 
-/* A LONE COUNT STARTS ITS SLOT (a head with one act alone; the paired facts
-   and acts stand in a box as wide as the pair it shows — "THE BOX IS AS
-   WIDE AS THE PAIR IT SHOWS", above — so there is no leftover width to
-   place). */
-.task-head.is-two-line .task-head-countslot {
-  justify-items: start;
-}
-
 /* ONE TAG SIZE ON ROW 1 (Akshil, 2026-11-17: "why is the Fused label small
    but the other two seem big … the worktree icon is so small and its text
    colour is also different"). The folder chip was 11px in a 21px box beside
@@ -1319,18 +1298,6 @@
   margin-bottom: -5px;
   padding-bottom: 5px;
 }
-
-/* -- A RAIL WINDOW'S TWO LINES, EVENLY SPACED (Akshil, 2026-11-17, of a pinned
-   head: "a bit ugly, can you just add a bit of padding on top and remove a
-   bit of padding from bottom … but make sure it is uniform across top,
-   middle and bottom") ----------------------------------------------------------
-   With row 1 on its own ground the two rows read as two boxes, and their air
-   did not match: 12px above and below row 1's tags (a 44px row), then 4px
-   above the title's ring and 10px under it (a 28px row with its 6px foot).
-   Now every band is 10px: row 1 is 40px (20px tags, 10 + 10), row 2 is 34px
-   (its 22px archive seat between 6px above and the 6px foot, so the 14px
-   ring has 10 + 10). The head is 75px where it was 73. Every rail window's
-   two-line head, pinned or not — a pin must not move the chat under it. */
 
 /* -- EVERY TWO-LINE HEAD: ONE AIR ALL ROUND (Akshil, 2026-11-22: "make sure
    in 1st and 2nd row the padding we have between elements is consistent

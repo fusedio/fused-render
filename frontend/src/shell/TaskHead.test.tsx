@@ -572,10 +572,10 @@ test("the ladder: the chips one at a time, the facts, a rail window's title row,
   // pairs, so a head that swapped as the pointer went to the menu moved the
   // menu out from under it, and back). No rule keys on the ⋮'s menu alone.
   expect(css).not.toContain('.task-head-kebab [aria-expanded="true"]');
-  expect(css.split(':has(.task-head-marks [aria-expanded="true"])').length - 1).toBe(5);
-  // A two-line head with one act alone has no acts' layer: its ⋮ keeps its
-  // seat and shows on the same trigger.
-  expect(css).toContain(".task-head.is-window.is-two-line .task-head-marks > .task-head-kebab {\n  opacity: 0;");
+  expect(css.split(':has(.task-head-marks [aria-expanded="true"])').length - 1).toBe(4);
+  // Every two-line head seats its ⋮ in the split acts (2026-11-22), so no
+  // rule hides a ⋮ standing loose in the marks.
+  expect(css).not.toContain(".task-head-marks > .task-head-kebab");
   expect(css).toContain(`.task-head${from(5)} .task-head-seats {`);
   expect(css).toContain(`.task-head${from(6)} .task-head-nav {`);
   // The last rung caps the place; the id slot (and its Archive) never goes.
