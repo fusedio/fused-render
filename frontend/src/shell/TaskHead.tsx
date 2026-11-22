@@ -685,8 +685,10 @@ export function TaskHead({
   // button on right on 1st row … msg count and time will be shown in right
   // side of 2nd row"). Row 1 ends in star · Open · ⋮, standing at rest too;
   // row 2 ends in count · time after the title. Nothing trades any more, so
-  // nothing slides — with one act or none as well.
-  const splitRows = isWindow && twoLine && !!who;
+  // nothing slides — with one act or none as well. Every two-line head: the
+  // rail's windows, and the side panel and the Tasks page panel that wear
+  // the same two lines (Akshil, 2026-11-22: "these look good").
+  const splitRows = twoLine && !!who;
   const kebabInActs = splitRows && !!kebabEl;
   const rowFacts =
     splitRows && (countFact || whenFact) ? (

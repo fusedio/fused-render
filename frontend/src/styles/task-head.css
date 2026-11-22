@@ -1331,12 +1331,51 @@
    (its 22px archive seat between 6px above and the 6px foot, so the 14px
    ring has 10 + 10). The head is 75px where it was 73. Every rail window's
    two-line head, pinned or not — a pin must not move the chat under it. */
-.task-head.is-window.is-two-line .task-head-row {
-  min-height: 40px;
+
+/* -- EVERY TWO-LINE HEAD: ONE AIR ALL ROUND (Akshil, 2026-11-22: "make sure
+   in 1st and 2nd row the padding we have between elements is consistent
+   across top bottom and left and right") ---------------------------------------
+   Measured on the drawn ink, not the boxes: 10px above row 1's tags, 10px
+   between them and row 2's ring and title, 10px under it; the first and
+   last mark of each row 14px from the head's sides. The lead and act buttons
+   are 28px boxes round a 14px glyph and the tags 20–22px, so row 1 is 35px
+   with 7px on top (the tag sits 3px inside the button box); row 2 is 33px,
+   its 22px archive seat between 4px and 7px (the 16px ring 3px inside the
+   seat). The head is 69px — the rail's windows, the side panel's chat and
+   the Tasks page's panel alike, pinned or not: a pin must not move the chat
+   under it (the pinned ground's own bands give way, below). */
+.task-head.task-head.is-two-line .task-head-row {
+  box-sizing: border-box;
+  min-height: 35px;
+  padding-top: 7px;
 }
-.task-head.is-window.is-two-line .task-head-titlerow {
-  min-height: 34px;
-  padding-top: 6px;
+.task-head.task-head.is-two-line .task-head-titlerow {
+  box-sizing: border-box;
+  min-height: 33px;
+  padding: 4px 4px 7px;
+}
+/* Row ends: the first lead's glyph and the ⋮'s dots stand where row 2's ring
+   and time do. The × glyph draws smaller inside its box than the pin and ←,
+   so it steps out further. */
+.task-head.is-two-line .task-head-row > .task-head-acts:first-child {
+  margin-left: -3px;
+}
+.task-head.is-two-line .task-head-row > .task-head-acts:first-child > .task-head-lead.is-close:first-child {
+  margin-left: -3px;
+}
+.task-head.is-two-line .task-head-facts.is-split .task-head-kebab {
+  margin-right: -9px;
+}
+/* A pinned window's row 1 ground ends halfway between the tags and the
+   title, so the ground moves nothing: 10px over the tags, 5px under. */
+.task-head.task-head.is-two-line:has(.rail-pin-btn.is-pinned) .task-head-row {
+  min-height: 37px;
+  padding-top: 7px;
+  padding-bottom: 2px;
+}
+.task-head.task-head.is-two-line:has(.rail-pin-btn.is-pinned) .task-head-titlerow {
+  min-height: 31px;
+  padding-top: 2px;
 }
 
 /* -- A RAIL WINDOW'S FIRST ROW: THE PLACE STANDS BY THE PIN, THE DOOR HAS
@@ -1369,7 +1408,7 @@
   opacity: 1;
   pointer-events: auto;
 }
-.task-head.is-window.is-two-line .task-head-titlerow > .task-head-rowfacts {
+.task-head.is-two-line .task-head-titlerow > .task-head-rowfacts {
   display: inline-flex;
   align-items: center;
   gap: 6px;

@@ -621,10 +621,11 @@ test("a panel or a pane that asks wears the rail window's two lines, keeping its
   expect(byClass(landing, "task-head-titlerow")).toHaveLength(0);
 
   // One act alone (favourites off: the host passes `star={false}`): the
-  // facts keep a slot each, so the count stays under the pointer.
+  // split holds too (2026-11-22) — the act on row 1, count and time on row 2.
   const noStar = render(head({ ...props, star: false }), 2000);
-  expect(byClass(noStar, "task-head-facts")).toHaveLength(0);
-  expect(byClass(noStar, "task-head-timeslot")).toHaveLength(1);
+  expect(cls(byClass(noStar, "task-head-facts")[0]!)).toContain("is-split");
+  expect(byClass(noStar, "task-head-timeslot")).toHaveLength(0);
+  expect(byClass(noStar, "task-head-rowfacts")).toHaveLength(1);
 
   // THE CRUMB HOLDS ITS WIDTH in a panel (the ladder folds the chips and the
   // seats instead), is cut only on the last rung, and the time never folds.
