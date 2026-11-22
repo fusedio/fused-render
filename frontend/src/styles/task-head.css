@@ -1321,17 +1321,71 @@
   min-height: 33px;
   padding: 4px 4px 7px;
 }
-/* Row ends: the first lead's glyph and the ⋮'s dots stand where row 2's ring
-   and time do. The × glyph draws smaller inside its box than the pin and ←,
-   so it steps out further. */
+/* ONE GAP BETWEEN EVERY MARK OF ROW 1, ONE INSET AT ITS ENDS (Akshil,
+   2026-11-22: "check the spacing we have on left and spacing on right … add
+   proper uniform spacing, and also padding inside and outside the Open
+   button and between that and the star"). Measured on the drawn ink in the
+   Tasks page panel, the side panel's chat, the rail's task / favourite
+   window (pinned and not) and the Tasks door's chat, dark and light:
+
+     14 | × 8 ↑ 8 ↓ 8 [tag] ………… ★ 8 Open 8 ⋮ | 14
+     14 | ◯ 8 T667 8 title ………………… 1 💬 8 3h ago | 14
+
+   The head's buttons are 28px boxes round a 14px glyph, and each glyph
+   draws a different width inside its box (the × and the chevrons 8px, the
+   pin 12, the ← 10), so the boxes overlap by what the glyphs leave empty:
+   the margins below are those measured differences, not a scale. The Open
+   door keeps 6px of its own wash a side, the same on every head. */
+.task-head.task-head.is-two-line .task-head-acts,
+.task-head.task-head.is-two-line .task-head-nav,
+.task-head.task-head.is-two-line .task-head-facts.is-split > .task-head-facts-layer.is-b {
+  gap: 0;
+}
+/* The row's ends. */
 .task-head.is-two-line .task-head-row > .task-head-acts:first-child {
   margin-left: -3px;
 }
-.task-head.is-two-line .task-head-row > .task-head-acts:first-child > .task-head-lead.is-close:first-child {
+.task-head.is-two-line .task-head-row > .task-head-acts:first-child > :is(.task-head-lead, .rail-pin-btn).is-close:first-child {
   margin-left: -3px;
+}
+.task-head.is-two-line .task-head-row > .task-head-acts:first-child > .task-head-lead.is-back:first-child {
+  margin-left: -2px;
 }
 .task-head.is-two-line .task-head-facts.is-split .task-head-kebab {
   margin-right: -9px;
+}
+/* Left: the lead, the chevrons, the place. */
+.task-head.task-head.is-two-line .task-head-acts > .rail-pin-btn:not(.is-close) {
+  margin-right: 2px;
+}
+.task-head.task-head.is-two-line .task-head-acts > .rail-pin-btn + .task-head-lead.is-back {
+  margin-left: -11px;
+}
+.task-head.task-head.is-two-line .task-head-acts > .task-head-nav > :first-child {
+  margin-left: -12px;
+}
+.task-head.task-head.is-two-line .task-head-nav > * + * {
+  margin-left: -12px;
+}
+.task-head.task-head.is-two-line .task-head-acts + .task-head-crumb {
+  margin-left: -12px;
+}
+.task-head.task-head.is-two-line .task-head-acts:has(> .task-head-lead.is-back:last-child) + .task-head-crumb {
+  margin-left: -11px;
+}
+/* Right: the star, the door with its own 6px wash a side, the ⋮. */
+.task-head.task-head.is-two-line .task-head-facts.is-split .task-head-open {
+  padding: 0 6px;
+  margin-left: 0;
+}
+.task-head.task-head.is-two-line .task-head-facts.is-split .claude-rail-peek-star + .task-head-open {
+  margin-left: -2px;
+}
+.task-head.task-head.is-two-line .task-head-facts.is-split .task-head-kebab {
+  margin-left: -11px;
+}
+.task-head.task-head.is-two-line .task-head-facts.is-split .task-star + .task-head-kebab {
+  margin-left: -7px;
 }
 /* A pinned window's row 1 ground ends halfway between the tags and the
    title, so the ground moves nothing: 10px over the tags, 5px under. */
@@ -1378,7 +1432,7 @@
 .task-head.is-two-line .task-head-titlerow > .task-head-rowfacts {
   display: inline-flex;
   align-items: center;
-  gap: 6px;
+  gap: 8px;
   flex: 0 0 auto;
   margin-left: auto;
 }
