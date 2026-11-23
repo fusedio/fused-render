@@ -88,8 +88,7 @@ import {
   type MoveEdge,
 } from "./rail-move-lib";
 import { commitWindowBox, magnetBox, usePusher, useWindowBox, windowPos } from "./rail-move-store";
-import { useRailFreePins } from "./rail-free-pins-flag";
-import { useRailExpand } from "./rail-expand-flag";
+import { useRailExtras } from "./rail-extras-flag";
 import { watchRailWidth } from "./rail-width-watch";
 import { drawnBox, useCardMove, useRailResizing } from "./useCardMove";
 import {
@@ -221,7 +220,7 @@ export const BotPeek = forwardRef<BotPeekHandle, BotPeekProps>(function BotPeek(
   const cardRef = useRef<HTMLDivElement | null>(null);
   // FREE PINS (rail-slots-lib): pinned, the card is frozen at the box the
   // window's mark holds; not pinned, it pushes the pins it would cover.
-  const freePins = useRailFreePins();
+  const freePins = useRailExtras();
   const freePinsRef = useRef(false);
   freePinsRef.current = freePins;
   // A PINNED WINDOW MOVES (rail-move-lib; owner, 2026-11-17): this card is
@@ -265,9 +264,10 @@ export const BotPeek = forwardRef<BotPeekHandle, BotPeekProps>(function BotPeek(
   const wish = () => favCardWish(FAV_SIZE, storedPeekSize(), pinCtl.pinned ? Infinity : window.innerHeight);
   const railLeft = useRef(0);
   const row = useMemo(() => rowOf(railEl), [railEl]);
-  // THE EXPANDABLE RAIL (rail-width-watch): its edge moves with no window
-  // resize and no row reshaping — the card follows it too.
-  const followRailWidth = useRailExpand();
+  // THE EXPANDABLE RAIL (rail-width-watch; Rail extras, the free pins' own
+  // switch): its edge moves with no window resize and no row reshaping — the
+  // card follows it too.
+  const followRailWidth = freePins;
   // WHERE IT STANDS (header): the rail is the anchor — with `align:
   // "bottom"` the card's bottom lands on the rail's, clamped inside the row
   // — bottom right, whichever ring opened it (FavouritePeek `anchorOf`).

@@ -4559,7 +4559,7 @@ def _row(task: dict, number: str, triage: dict, read: dict, now: float,
     row = {
         "key": task["key"],
         "task_id": number,
-        # THE TASK'S FACE (`task_icons_enabled`, experiment 2026-11-10):
+        # THE TASK'S FACE (task icons, 2026-11-10; always on since 2026-11-23):
         # which of the 299 glyphs this row wears, from its number record — see
         # `_icon_faces`. None on a task that wears the ring (not starred and
         # never given one, or its icon removed — 2026-11-16) and while it has
@@ -8192,7 +8192,7 @@ class IconPatch(BaseModel):
 @router.post("/api/tasks/icon")
 def api_task_icon(patch: IconPatch, x_fused: str | None = Header(default=None)):
     """Give one task the FACE THE USER PICKED, or take its face away
-    (`task_icons_enabled`; owner, 2026-11-11: "instead of giving a random
+    (task icons; owner, 2026-11-11: "instead of giving a random
     one, we let user pick"; 2026-11-16: the icon is not the star's). Pressing
     the status ring or icon of ANY task opens a picker over the whole set;
     the choice is stamped on the task's number record

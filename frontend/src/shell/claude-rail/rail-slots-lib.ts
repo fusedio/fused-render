@@ -1,5 +1,5 @@
 // FREE PINS: FOUR WINDOWS OFF THE RAIL (owner, 2026-11-18). Behind
-// `rail_free_pins_enabled` (rail-free-pins-flag.ts): off, every card keeps
+// Rail extras (`rail_extras_enabled`, rail-extras-flag.ts): off, every card keeps
 // the rules of rail-pin-lib and rail-move-lib as they were.
 //
 // THE RAIL HAS TWO SECTIONS (owner: "section a which opens window a → between

@@ -105,7 +105,7 @@ import {
 } from "@platform/lib/last-chat";
 import { setBotOpen, useAPinned } from "@platform/lib/last-chat";
 import { aPinTask } from "./rail-slots-lib";
-import { useRailFreePins } from "./rail-free-pins-flag";
+import { useRailExtras } from "./rail-extras-flag";
 import { freezeFromDock } from "./rail-move-store";
 import { otherSlot, registerPinFocus, setFreeSlot, setPinTitle, useFreeSlot, type Slot } from "./rail-slots-store";
 import { PIN_B_ID, usePinHasBox } from "./use-pin-box";
@@ -175,7 +175,7 @@ const FAV_COMPOSER_WAIT_MS = 2500;
  *  OF A CHAT WINDOW"): mounted only with free pins on — off, the one card
  *  below is all there is, as it always was. */
 export function FavouritePeekSlotY() {
-  return useRailFreePins() ? <FavouritePeek slot="y" /> : null;
+  return useRailExtras() ? <FavouritePeek slot="y" /> : null;
 }
 
 export function FavouritePeek({ slot = "x" }: { slot?: Slot } = {}) {
@@ -196,7 +196,7 @@ export function FavouritePeek({ slot = "x" }: { slot?: Slot } = {}) {
   // FREE PINS (rail-slots-lib): the favourite's window is two slots — its
   // non-pin and its pin (below) — so the pin's key and the open key are two
   // different chats.
-  const freePins = useRailFreePins();
+  const freePins = useRailExtras();
   // ONE OF TWO SLOTS, BY ROLE (rail-slots-store): the FREE slot is this card
   // as it always was — the open key, the hover, every rule below; the other
   // shows the PINNED favourite (`favPinned`) and nothing else, and none of

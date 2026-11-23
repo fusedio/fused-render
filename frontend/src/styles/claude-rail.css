@@ -798,7 +798,7 @@ html.rail-card-moving iframe {
   z-index: 48;
 }
 /* FREE PINS (rail-slots-lib; `.is-free-pin`, useCardMove — behind
-   `rail_free_pins_enabled`). A PINNED WINDOW STANDS UNDER THE NON-PINS: the
+   `rail_extras_enabled`). A PINNED WINDOW STANDS UNDER THE NON-PINS: the
    window a hover or a click opens beside the rail is the one the reader is
    looking at, and where a pin could not be pushed clear of it (no room to
    its left) the non-pin lies over it. Under the hover's bridge too (44), so
@@ -2160,7 +2160,7 @@ button.git-commit:focus-visible {
   color: var(--fg-muted);
 }
 
-/* THE EXPANDABLE RAIL (ClaudeRail `expandOn`, `rail_expand_enabled`; owner,
+/* THE EXPANDABLE RAIL (ClaudeRail `expandOn`, `rail_extras_enabled`; owner,
    2026-11-21): the left sidebar's expand / collapse, on the right rail.
    Collapsed it is the 48px rail above, plus its button. Expanded (`.is-expanded`,
    its width inline from platform/lib/railstate) it is the same rail, wider,

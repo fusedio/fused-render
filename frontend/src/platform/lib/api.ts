@@ -1615,24 +1615,11 @@ export interface Prefs {
   // (`canvas_shot_slow_fallback_enabled`, shell/prefs.py; off by default).
   // Optional: absent (older server) reads as off.
   canvas_shot?: { slow_fallback: boolean };
-  // Free pins on the Claude rail (`rail_free_pins_enabled`, shell/prefs.py; off
-  // by default): a pin is its task's, freezes the window where it stood, and
-  // leaves the rail's column to a second, non-pinned window. Optional: absent
-  // (older server) reads as off.
-  rail_free_pins?: { enabled: boolean };
-  // A file's other modes as doors on the Claude rail (`rail_mode_doors_enabled`,
-  // shell/prefs.py; off by default): the mode menu's entries, the active one
-  // left out, above Git, each previewing the file that way in a rail card.
-  // Read only with the rail flag on. Optional: absent (older server) reads as off.
-  rail_mode_doors?: { enabled: boolean };
-  // The expandable Claude rail (`rail_expand_enabled`, shell/prefs.py; off by
-  // default): a button at its top widens it to icon + title. Optional: absent
-  // (older server) reads as off.
-  rail_expand?: { enabled: boolean };
-  // Task icons (`task_icons_enabled`, shell/prefs.py; off by default,
-  // experiment 2026-11-10): a favourite wears one of 299 glyphs in place of
-  // its status ring. Optional: absent (older server) reads as off.
-  task_icons?: { enabled: boolean };
+  // Rail extras (`rail_extras_enabled`, shell/prefs.py; off by default): a
+  // file's other views as doors above Git, the expandable rail, and free
+  // pinned rail windows (exact place and size, a second window for the rest).
+  // Optional: absent (older server) reads as off.
+  rail_extras?: { enabled: boolean };
   // Stable AI titles: Tasks rows titled only by the stable `title` (`task_summary_titles_enabled`,
   // shell/prefs.py; off by default). Optional: absent reads as off.
   task_summary_titles?: { enabled: boolean };
@@ -2209,20 +2196,8 @@ export function putCanvasShotSlowFallbackEnabled(enabled: boolean): Promise<Pref
   return putJson<Prefs>("/api/prefs", { canvas_shot_slow_fallback_enabled: enabled });
 }
 
-export function putRailFreePinsEnabled(enabled: boolean): Promise<Prefs> {
-  return putJson<Prefs>("/api/prefs", { rail_free_pins_enabled: enabled });
-}
-
-export function putRailExpandEnabled(enabled: boolean): Promise<Prefs> {
-  return putJson<Prefs>("/api/prefs", { rail_expand_enabled: enabled });
-}
-
-export function putRailModeDoorsEnabled(enabled: boolean): Promise<Prefs> {
-  return putJson<Prefs>("/api/prefs", { rail_mode_doors_enabled: enabled });
-}
-
-export function putTaskIconsEnabled(enabled: boolean): Promise<Prefs> {
-  return putJson<Prefs>("/api/prefs", { task_icons_enabled: enabled });
+export function putRailExtrasEnabled(enabled: boolean): Promise<Prefs> {
+  return putJson<Prefs>("/api/prefs", { rail_extras_enabled: enabled });
 }
 
 /** One PUT per Bots page-wide switch (`Prefs.bots`). */
@@ -3990,7 +3965,7 @@ export interface TaskBackgroundJobs {
 export interface Task {
   key: string;
   task_id: string; // TASK-003 — numbered per project, allocated once, never reused
-  // THE TASK'S FACE (`task_icons_enabled`, 2026-11-10): which of the 299
+  // THE TASK'S FACE (task icons, 2026-11-10): which of the 299
   // glyphs in shell/task-icons.ts this task wears — arithmetic on its number
   // server-side (tasks_store.icon_slot); a pick (`setTaskIcon`) stamps
   // another. THE ICON IS NOT THE STAR'S (2026-11-16): a row carries one when
@@ -5028,7 +5003,7 @@ export function renameTask(key: string, title: string): Promise<{ ok: boolean; t
   return postJson<{ ok: boolean; title: string }>("/api/tasks/rename", { key, title });
 }
 
-/** THE FACE THE USER PICKED for one task (`task_icons_enabled`): `slot`
+/** THE FACE THE USER PICKED for one task: `slot`
  *  indexes shell/task-icons.ts and is kept server-side, worn starred or not;
  *  null is the picker's Remove — the ring again, starred or not, until a
  *  star gives the icon back (2026-11-16). Answers what the task wears now

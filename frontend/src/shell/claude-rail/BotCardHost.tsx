@@ -27,7 +27,7 @@ import { useFavPeekState } from "./fav-peek-store";
 import { viewPress } from "./rail-pin-lib";
 import { useUrlVersion } from "@platform/lib/hooks";
 import { botOpen, setBotOpen, setFavPinned, useBotOpen } from "@platform/lib/last-chat";
-import { useRailFreePins } from "./rail-free-pins-flag";
+import { useRailExtras } from "./rail-extras-flag";
 import { freezeFromDock } from "./rail-move-store";
 import { otherSlot, registerPinFocus, setFreeSlot, setPinTitle, useFreeSlot, type Slot } from "./rail-slots-store";
 import { PIN_BOT_ID, usePinHasBox } from "./use-pin-box";
@@ -37,7 +37,7 @@ export { BOT_PEEK_ID };
 /** The second slot of the bot's window (rail-slots-store "THE TWO SLOTS OF A
  *  CHAT WINDOW"): mounted only with free pins on. */
 export function BotCardHostSlotY() {
-  return useRailFreePins() ? <BotCardHost slot="y" /> : null;
+  return useRailExtras() ? <BotCardHost slot="y" /> : null;
 }
 
 const noop = () => {};
@@ -51,7 +51,7 @@ export function BotCardHost({ slot = "x" }: { slot?: Slot } = {}) {
   const card = useBotCardState();
   const intent = botCardIntent();
   const ref = useRef<BotPeekHandle | null>(null);
-  const freePins = useRailFreePins();
+  const freePins = useRailExtras();
   // ONE OF TWO SLOTS, BY ROLE (rail-slots-store): the FREE slot is this host
   // as it always was — the store's card, the rings' hovers and presses; the
   // other shows the PINNED bot (last-chat `botOpen`, a pinned bot's mark with

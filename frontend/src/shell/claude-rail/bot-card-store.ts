@@ -21,7 +21,7 @@ import { useSyncExternalStore } from "react";
 import { setBotOpen } from "@platform/lib/last-chat";
 import { setBotCard } from "./fav-peek-store";
 import { PeekIntent, type Timers } from "./rail-peek-lib";
-import { railFreePinsNow } from "./rail-free-pins-flag";
+import { railExtrasNow } from "./rail-extras-flag";
 
 export interface BotCardState {
   /** The bot whose card is up (a hover's preview or pinned), by id. */
@@ -59,7 +59,7 @@ function write(patch: Partial<BotCardState>): void {
  *  (BotCardHost) and read by the shell's pinned host — this card is the
  *  non-pin, never held, and must not clear it. */
 function markOpen(): void {
-  if (railFreePinsNow()) return;
+  if (railExtrasNow()) return;
   setBotOpen(state.key && state.pinned && state.held ? state.key : null);
 }
 

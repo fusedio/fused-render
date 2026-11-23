@@ -1,4 +1,4 @@
-"""Task icons (`task_icons_enabled`, 2026-11-10): the slot a task wears is
+"""Task icons (2026-11-10; always on since 2026-11-23): the slot a task wears is
 arithmetic on its number, unique within a project, stable under deletion;
 a pick persists an override; and — the icon and the star being two things
 since 2026-11-16 — a task wears a face when it was picked by hand, or while

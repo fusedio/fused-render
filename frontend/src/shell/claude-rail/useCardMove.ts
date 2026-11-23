@@ -65,7 +65,7 @@ import {
   windowSize,
 } from "./rail-move-store";
 import { setSnapGuides } from "./card-snap";
-import { useRailFreePins } from "./rail-free-pins-flag";
+import { useRailExtras } from "./rail-extras-flag";
 import { useDoomedWindow } from "./rail-slots-store";
 
 /** WHERE A FLOATING CARD IS DRAWN THIS RENDER: `box` as its chassis placed
@@ -197,7 +197,7 @@ export function useCardMove(o: {
   const { win, headSelector } = o;
   // FREE PINS (rail-slots-lib): a pinned window is frozen where it stood, so
   // it always floats and nothing docks it but its unpin.
-  const freePins = useRailFreePins();
+  const freePins = useRailExtras();
   const doomed = useDoomedWindow();
   const shown = o.shown ?? null;
   useEffect(() => {

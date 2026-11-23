@@ -752,7 +752,7 @@ def ensure_ids(items, rekeys=(), reproject=False) -> dict[str, str]:
 #
 # A task can wear one of ICON_COUNT glyphs (frontend/public/task-icons.svg;
 # the slot order is frontend/src/shell/task-icons.ts), shown in place of the
-# status ring under the `task_icons_enabled` experiment (shell/prefs.py).
+# status ring (task icons; an experiment until 2026-11-23, always on since).
 #
 # THE ICON AND THE STAR ARE TWO THINGS (owner, 2026-11-16). Until then only
 # a starred task wore one (2026-11-11: "we will show these icons only for

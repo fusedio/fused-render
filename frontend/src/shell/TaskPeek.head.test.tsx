@@ -140,7 +140,7 @@ test("the shared head — ×, chevrons, identity, ↗ Open and the chat's own �
   const idSlot = hostAll(r, (n) => hasClass(n, "task-head-idslot"))[0]!;
   expect(idSlot.findAll((n) => typeof n.type === "string" && hasClass(n, "task-head-file"))).toHaveLength(1);
   // TWO LINES (2026-11-17), the rail window's layout, under the panel's own
-  // reveal (no `is-window`): the acts (the star, the door) stand on row 1
+  // reveal (no `is-window`). The acts (the star, the door) stand on row 1
   // (2026-11-22, the split), and the count and the time close row 2 —
   // nothing trades.
   const headEl = hostAll(r, (n) => hasClass(n, "task-head"))[0]!;

@@ -15,7 +15,7 @@
 import { useCallback, useEffect, useLayoutEffect, useRef, useState, type Ref } from "react";
 import { useAPinned, useBotOpen, useFavPinned } from "@platform/lib/last-chat";
 import { pinWords, pressVerdict, viewPress, type PressTarget, type PressWhere } from "./rail-pin-lib";
-import { useRailFreePins } from "./rail-free-pins-flag";
+import { useRailExtras } from "./rail-extras-flag";
 import type { RailWindow } from "./rail-move-lib";
 import { doomedBy, pinHint, sectionPinned } from "./rail-slots-lib";
 import { doomedWindow, setDoomedWindow, usePinTitle } from "./rail-slots-store";
@@ -85,7 +85,7 @@ export function RailPinButton({
   // on a non-pin card whose section has a pin, the caption names what the
   // press closes, and the hover (or the keyboard's focus) wears that pinned
   // window a red border.
-  const freePins = useRailFreePins();
+  const freePins = useRailExtras();
   const own = useRef<HTMLButtonElement | null>(null);
   const [win, setWin] = useState<RailWindow | null>(null);
   useLayoutEffect(() => {
