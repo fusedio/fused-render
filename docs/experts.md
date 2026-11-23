@@ -565,14 +565,17 @@ Experts were called specialists until 2026-11-23. `experts/migrate.py` (`run_onc
 switch is read and before seeding) moves a machine across once:
 
 - `<workspace>/specialists` is renamed to `<workspace>/experts`. Whatever was already in `<workspace>/experts` is
-  deleted first.
+  zipped to `<home>/backup/legacy-experts-<time>.zip` and then deleted; if the zip cannot be written nothing is
+  deleted and the next start tries again.
 - In each home `specialist.json` becomes `expert.json` and `.specialist/` becomes `.expert/`; `.gitignore` and
   `CLAUDE.md` are rewritten; memory, skills, inbox and the git history are untouched, and the renames are one
   commit, "Specialists are now experts".
 - The chats are carried to the new folder (`claude_session_move.relocate`), and the transcript paths in
   `state.json` and the inbox pointer files are repointed. A main or earlier chat that did not come across is dropped
   from `state.json`, so the page shows no chat it cannot open.
-- `specialists_enabled` in prefs.json becomes `experts_enabled`.
+- `specialists_enabled` in prefs.json becomes `experts_enabled`. An `experts_enabled` stored before this ran was the
+  switch of the expert bots removed in #2426 and is dropped.
 
 The stamp `<home>/experts_migration.json` is written even when there was nothing to move, so the delete can never
-run later against experts in use. A run that raised is not stamped and is tried again on the next start.
+run later against experts in use; the moved root also carries `.state/migrated-from-specialists`, which stops a
+run under another app home on the same workspace from deleting it. A run that raised is not stamped and is tried again on the next start.

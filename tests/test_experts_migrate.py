@@ -59,6 +59,13 @@ def test_the_old_root_moves_across_and_what_was_in_the_new_one_is_deleted(old_ho
 
     migrate.run_once()
 
+    import zipfile
+
+    backup = os.path.join(os.path.dirname(migrate._stamp_path()), "backup")
+    (name,) = os.listdir(backup)
+    assert name.startswith("legacy-experts-") and name.endswith(".zip")
+    with zipfile.ZipFile(os.path.join(backup, name)) as z:
+        assert "stray/expert.json" in z.namelist()
     assert not os.path.exists(old_home["old_root"])
     assert sorted(n for n in os.listdir(old_home["new_root"]) if not n.startswith(".")) == [old_home["name"]]
     s = store.get(old_home["id"])
@@ -100,6 +107,55 @@ def test_it_runs_once_so_a_later_old_root_never_deletes_experts(old_home):
 
     assert store.get(old_home["id"]) is not None
     assert os.path.isdir(os.path.join(old_home["old_root"], "again"))
+
+
+def test_when_the_backup_cannot_be_written_nothing_is_deleted_and_it_retries(old_home, monkeypatch):
+    from fused_render.experts import migrate
+
+    stray = os.path.join(old_home["new_root"], "stray")
+    os.makedirs(stray)
+    open(os.path.join(stray, "memory.md"), "w").close()
+
+    real = migrate.shutil.make_archive
+    full = [True]
+
+    def archive(*a, **k):
+        if full[0]:
+            raise OSError("disk full")
+        return real(*a, **k)
+    monkeypatch.setattr(migrate.shutil, "make_archive", archive)
+    migrate.run_once()
+    assert os.path.isdir(stray) and os.path.isdir(old_home["old_root"])
+    assert not os.path.exists(migrate._stamp_path())
+
+    full[0] = False
+    migrate.run_once()
+    assert not os.path.exists(old_home["old_root"]) and not os.path.exists(stray)
+
+
+def test_another_app_home_on_the_same_workspace_never_deletes_migrated_experts(old_home):
+    from fused_render.experts import migrate, store
+
+    migrate.run_once()
+    os.remove(migrate._stamp_path())  # a second app home: no stamp of its own
+    os.makedirs(os.path.join(old_home["old_root"], "made-by-an-old-build"))
+
+    migrate.run_once()
+
+    assert store.get(old_home["id"]) is not None
+    assert os.path.isdir(os.path.join(old_home["old_root"], "made-by-an-old-build"))
+
+
+def test_a_switch_left_by_the_removed_expert_bots_is_dropped(old_home, monkeypatch):
+    from fused_render.experts import migrate
+    from fused_render.shell import prefs
+
+    monkeypatch.delenv("FUSED_RENDER_EXPERTS", raising=False)
+    prefs.write_pref("experts_enabled", True)
+
+    migrate.run_once()
+
+    assert "experts_enabled" not in prefs.read_prefs()
 
 
 def test_with_no_old_root_the_experts_are_left_alone_now_and_later(old_home):

@@ -3,7 +3,8 @@
 `<workspace>/specialists` becomes `<workspace>/experts`, with every home in it: memory, skills, inbox, the home's
 git history and the root's `.state/` (tokens, the seeded list, trash). The owner's rules (2026-11-23):
 
-- Whatever already sits in `<workspace>/experts` is deleted first; the specialists are the record.
+- Whatever already sits in `<workspace>/experts` is deleted first; the specialists are the record. It is kept as
+  a zip, `<home>/backup/legacy-experts-<time>.zip`, and deleted only once that zip is written.
 - Memory and skills are what matters. The chats are carried too (`claude_session_move.relocate`, which also
   repoints the cwd inside each transcript), because a chat left under the old folder would be a dead row on the
   page: the main chat and the earlier chats are named by session id in `.expert/state.json`.
@@ -16,7 +17,10 @@ The stored switch moves with it: `specialists_enabled` in prefs.json becomes `ex
 
 Runs once per machine, before the shipped experts are seeded, whether the switch is on or off. The stamp
 (`<home>/experts_migration.json`) is written even when there was nothing to move, so an old build that later
-recreates `<workspace>/specialists` can never cause the delete above to run against experts in use. A move that
+recreates `<workspace>/specialists` can never cause the delete above to run against experts in use; and since the
+stamp is per app home while a workspace can be shared by two, the moved root also carries a marker
+(`.state/migrated-from-specialists`) that stops any later run from deleting it. An `experts_enabled` already stored
+when this runs belongs to the expert bots removed in #2426 and is dropped. A move that
 raised is not stamped and is tried again on the next start. Never raises past `run_once`.
 """
 from __future__ import annotations
@@ -24,6 +28,7 @@ from __future__ import annotations
 import logging
 import os
 import shutil
+import time
 
 from fused_render.experts import home as hm
 from fused_render.experts import paths
@@ -35,6 +40,9 @@ OLD_ROOT = "specialists"
 OLD_MANIFEST = "specialist.json"
 OLD_APP_DIR = ".specialist"
 OLD_PREF = "specialists_enabled"
+#: Written into the root's `.state/` as it moves: an experts root that has it is never deleted by a later run.
+MARKER = "migrated-from-specialists"
+BACKUP_DIR = "backup"
 
 
 def _stamp_path() -> str:
@@ -52,9 +60,13 @@ def _move_pref() -> None:
 
     with prefs._PREFS_LOCK:
         data = prefs.read_prefs()
-        if OLD_PREF not in data:
+        if OLD_PREF in data:
+            data["experts_enabled"] = data.pop(OLD_PREF)
+        elif "experts_enabled" in data:
+            # Stored before this ran, so it is the switch of the expert bots removed in #2426, not this one.
+            data.pop("experts_enabled")
+        else:
             return
-        data["experts_enabled"] = data.pop(OLD_PREF)
         prefs._store(data)
 
 
@@ -109,6 +121,21 @@ def _settle_home(home: str, old_home: str) -> None:
     history.commit(home, "Specialists are now experts")
 
 
+def _back_up(folder: str) -> str | None:
+    """Zip what sat in the experts root before the move into `<home>/backup/legacy-experts-<time>.zip`; the path,
+    or None for an empty folder (nothing to keep)."""
+    from fused_render.shell import storage
+
+    if not os.path.isdir(folder) or os.path.islink(folder) or not os.listdir(folder):
+        return None
+    backup = os.path.join(storage.home_dir(), BACKUP_DIR)
+    os.makedirs(backup, exist_ok=True)
+    base = os.path.join(backup, "legacy-experts-" + time.strftime("%Y%m%d-%H%M%S"))
+    path = shutil.make_archive(base, "zip", root_dir=folder)
+    logger.info("experts migration: what was in %s is kept in %s", folder, path)
+    return path
+
+
 def migrate() -> bool:
     """Move the old root across. True when there was one."""
     from fused_render import app_state_move, claude_session_move
@@ -116,7 +143,15 @@ def migrate() -> bool:
     old, new = _old_root(), paths.root()
     if not os.path.isdir(old):
         return False
+    if os.path.isfile(os.path.join(new, paths.STATE, MARKER)):
+        # The stamp is per app home and the workspace can be shared: these experts already came across under
+        # another home, and `old` is what an old build made since. They are never deleted for it.
+        logger.info("experts migration: %s already holds migrated experts; %s left alone", new, old)
+        return False
+    os.makedirs(os.path.join(old, paths.STATE), exist_ok=True)
+    hm.write_text(os.path.join(old, paths.STATE, MARKER), "")
     if os.path.lexists(new):
+        _back_up(new)  # raises when the copy could not be written: nothing is deleted, and the next start retries
         shutil.rmtree(new) if os.path.isdir(new) and not os.path.islink(new) else os.remove(new)
     os.rename(old, new)
     paths._reset()
