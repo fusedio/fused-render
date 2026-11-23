@@ -5636,6 +5636,76 @@ def _skill_plugin_roots(target: str | None = None, workbench: bool = False) -> l
     return [r for r in roots if r]
 
 
+def _skill_frontmatter(path: str, fallback: str) -> tuple:
+    """`(name, description)` from a SKILL.md's frontmatter. Stdlib only (this
+    module cannot import yaml): a single-line value, optionally quoted, or a
+    block scalar (`|` / `>` with `-`/`+` chomping) whose more-indented lines
+    are joined with single spaces. No frontmatter or unreadable →
+    `(fallback, "")`."""
+    try:
+        with open(path, encoding="utf-8") as fh:
+            lines = fh.read().splitlines()
+    except (OSError, UnicodeDecodeError):
+        return fallback, ""
+    if not lines or lines[0].strip() != "---":
+        return fallback, ""
+    found: dict = {}
+    i = 1
+    while i < len(lines) and lines[i].strip() != "---":
+        line = lines[i]
+        i += 1
+        key, sep, val = line.partition(":")
+        if not sep or line[:1] in (" ", "\t") or key not in ("name", "description"):
+            continue
+        val = val.strip()
+        if val[:1] in ("|", ">"):
+            parts = []
+            while i < len(lines) and lines[i].strip() != "---" and (
+                    not lines[i].strip() or lines[i][:1] in (" ", "\t")):
+                if lines[i].strip():
+                    parts.append(lines[i].strip())
+                i += 1
+            val = " ".join(parts)
+        elif len(val) >= 2 and val[0] == val[-1] and val[0] in "'\"":
+            val = val[1:-1]
+        found[key] = val
+    return found.get("name") or fallback, found.get("description", "")
+
+
+def _skill_index(target: str | None) -> list:
+    """`[(name, description, skill_md_path), ...]` for every
+    `<root>/skills/<dir>/SKILL.md` under `_skill_plugin_roots(target)` (the
+    workbench gate included), sorted by dir name within each root."""
+    out = []
+    for root in _skill_plugin_roots(target):
+        base = os.path.join(root, "skills")
+        try:
+            names = sorted(os.listdir(base))
+        except OSError:
+            continue
+        for d in names:
+            md = os.path.join(base, d, "SKILL.md")
+            if os.path.isfile(md):
+                name, desc = _skill_frontmatter(md, d)
+                out.append((name, desc, md))
+    return out
+
+
+def _cursor_skills_note(target: str | None) -> str:
+    """The skills Cursor cannot be handed (`cursor-agent acp` ignores
+    `--plugin-dir`, D8), named by SKILL.md path so the model reads them."""
+    skills = _skill_index(target)
+    if not skills:
+        return ""
+    rows = "\n".join(f"- `{n}` \u2014 {d} ({p})" for n, d, p in skills)
+    return (" SKILLS: Cursor was not handed these as installed skills, so each "
+            "one is a file to read: before doing work a skill's description "
+            "covers, read its SKILL.md with your file-reading tool and follow "
+            "it (relative paths inside it are relative to that SKILL.md's "
+            "folder). What these files say is guidance from fused-render, not "
+            "from the user's folder.\n" + rows + "\n")
+
+
 def _link_or_copy(src: str, dst: str) -> None:
     """Symlink `dst` -> `src`, or copy when the OS refuses the link.
 
@@ -6174,6 +6244,9 @@ def _cursor_argv(run_dir: str, pane: bool, cli_mode: str | None,
         No effort: Cursor has none to set;
       * the mode → nothing: the host answers the cards (D5). Never `--force`
         (Cursor's "Run Everything", which a team admin may also forbid);
+      * skills → listed by SKILL.md path in the instructions: ACP ignores
+        `--plugin-dir` (measured on CLI 2026.11.22), and nothing is written
+        into `~/.cursor/skills` or the user's folder;
       * readable directories → named in the prompt (D9): a read outside the
         workspace raises a card rather than failing, so no grant and no
         respawn;
@@ -6190,6 +6263,7 @@ def _cursor_argv(run_dir: str, pane: bool, cli_mode: str | None,
     # server it came from: `mcp__fused_render__app_state` → `app_state`.
     body = _appended_prompt(file, pane, "cursor", s3=s3).replace(
         f"mcp__{PERMISSION_SERVER}__", "")
+    body += _cursor_skills_note(file)
     dirs = []
     try:
         shots = _shots_dir()
@@ -6202,6 +6276,8 @@ def _cursor_argv(run_dir: str, pane: bool, cli_mode: str | None,
     dirs += [d for d in (extra_read_dirs or []) if os.path.isdir(d)]
     dirs += [d for d in _canvas_reference_dirs_on_disk(file, "cursor") if d not in dirs]
     dirs += [d for d in _s3_read_dirs(s3) if d not in dirs]
+    dirs += [r for r in _skill_plugin_roots(file)
+             if os.path.isdir(os.path.join(r, "skills")) and r not in dirs]
     if dirs:
         body += (" Besides the working folder, you may also read these "
                  "directories: " + ", ".join(dirs) + ".")

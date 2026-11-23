@@ -138,6 +138,79 @@ def test_the_argv_is_bare_and_the_prompt_lands_in_the_run_dir(agent, tmp_path, m
     assert agent._read_poll_cursor(str(run_dir), 100) == 7
 
 
+def _skill(root, d, text):
+    f = root / "skills" / d / "SKILL.md"
+    f.parent.mkdir(parents=True)
+    f.write_text(text)
+    return str(f)
+
+
+def _instructions(agent, tmp_path, monkeypatch, target_in_workbench, own=True, wb=True):
+    monkeypatch.setattr(agent, "_cursor_bin", lambda: "/x/cursor-agent")
+    monkeypatch.setattr(agent, "_terminal_tools_supported", lambda: False)
+    monkeypatch.setattr(agent, "_in_workbench_root", lambda f: target_in_workbench)
+    own_root, wb_root = tmp_path / "own", tmp_path / "wb"
+    paths = {}
+    if own:
+        paths["foo"] = _skill(own_root, "foo", "---\nname: foo-skill\ndescription: 'Does foo things'\n---\nbody\n")
+        paths["blk"] = _skill(own_root, "blk", "---\nname: blk\ndescription: >\n  first line\n  second line\n---\nbody\n")
+    if wb:
+        paths["wbs"] = _skill(wb_root, "wbs", "---\nname: wbs\ndescription: workbench thing\n---\n")
+    monkeypatch.setattr(agent, "_skill_plugin_dir", lambda: str(own_root) if own else None)
+    monkeypatch.setattr(agent, "_workbench_plugin_dir", lambda: str(wb_root) if wb else None)
+    page = tmp_path / "proj" / "index.html"
+    page.parent.mkdir()
+    page.write_text("<html></html>")
+    run_dir = tmp_path / "runs" / "r1"
+    run_dir.mkdir(parents=True)
+    agent._cursor_argv(str(run_dir), False, "auto", "", "m", "high", [], str(page))
+    return (run_dir / "cursor_agent" / "instructions.md").read_text(encoding="utf-8"), paths
+
+
+def _readable_sentence(body):
+    """The 'Besides the working folder ...' sentence, which runs to the end of the line."""
+    start = body.index("Besides the working folder, you may also read these directories:")
+    return body[start:].split("\n", 1)[0]
+
+
+def test_instructions_list_fused_skills_but_not_workbench_off_canvas(agent, tmp_path, monkeypatch):
+    body, paths = _instructions(agent, tmp_path, monkeypatch, False)
+    assert " SKILLS: " in body
+    assert "`foo-skill` \u2014 Does foo things (%s)" % paths["foo"] in body
+    assert "workbench thing" not in body and paths["wbs"] not in body
+    # The skills folder is named readable.
+    assert str(tmp_path / "own") in _readable_sentence(body)
+
+
+def test_instructions_list_workbench_skills_on_a_canvas_target(agent, tmp_path, monkeypatch):
+    body, paths = _instructions(agent, tmp_path, monkeypatch, True)
+    assert "`wbs` \u2014 workbench thing (%s)" % paths["wbs"] in body
+    assert paths["foo"] in body
+    readable = _readable_sentence(body)
+    assert str(tmp_path / "own") in readable and str(tmp_path / "wb") in readable
+
+
+def test_a_block_scalar_description_is_joined(agent, tmp_path, monkeypatch):
+    body, paths = _instructions(agent, tmp_path, monkeypatch, False)
+    assert "`blk` \u2014 first line second line (%s)" % paths["blk"] in body
+
+
+def test_no_plugin_dirs_means_no_skills_note(agent, tmp_path, monkeypatch):
+    body, _ = _instructions(agent, tmp_path, monkeypatch, True, own=False, wb=False)
+    assert " SKILLS:" not in body
+
+
+def test_skill_frontmatter_edge_cases(agent, tmp_path):
+    f = tmp_path / "SKILL.md"
+    f.write_text("no frontmatter here")
+    assert agent._skill_frontmatter(str(f), "d") == ("d", "")
+    f.write_text('---\ndescription: "quoted"\n---\n')
+    assert agent._skill_frontmatter(str(f), "d") == ("d", "quoted")
+    f.write_text("---\ndescription: |-\n  a\n  b\nname: n\n---\n")
+    assert agent._skill_frontmatter(str(f), "d") == ("n", "a b")
+    assert agent._skill_frontmatter(str(tmp_path / "missing"), "d") == ("d", "")
+
+
 def test_the_host_reads_the_instructions_where_agent_writes_them(agent):
     import importlib.util
     spec = importlib.util.spec_from_file_location(

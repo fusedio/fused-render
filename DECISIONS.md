@@ -8232,3 +8232,10 @@ enforced) is right for it too.
 Not mirrored: the SDK's runtime `ceiling` / `raisedTo` overrides in `vy`, the
 managed `managed-settings.d` drop-ins, the legacy `~/.claude.json`
 `autoCompactEnabled`, and `CLAUDE_CODE_DISABLE_1M_CONTEXT`.
+
+## D1503: Cursor sessions get the skills as paths in the instructions file (2026-11-23, cursor-skills-in-instructions)
+
+- **What.** `_cursor_argv` appends a SKILLS paragraph to `cursor_agent/instructions.md`: one line per `SKILL.md` (name, description, absolute path) of fused-render's own skills, and of the workbench skills only when the target is inside the workbench gate. The model is told to read a skill's file before work its description covers. The skills folders are added to the readable directories the same file names.
+- **Why.** Measured against the real CLI (2026.11.22-e9042b2) with an ACP turn: `cursor-agent acp` ignores `--plugin-dir`, `--add-dir` and a workspace `.cursor/skills`; only `~/.cursor/skills` loads. So Cursor sessions saw none of the skills Claude (`--plugin-dir`) and Copilot (generated plugin dir) get.
+- **What the model gains.** The text of skills it chooses to read, as guidance from fused-render. No new tool, grant or write location.
+- **Rejected.** Writing into `~/.cursor/skills`: global state shared with the user's other Cursor use, which fused does not write. Writing `.cursor/skills` or `AGENTS.md` in the user's folder: ignored by ACP, and fused never writes there.
