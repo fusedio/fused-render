@@ -9,7 +9,9 @@ call puts the task's conversation in the specialist's inbox (`update.point`), so
 """
 from __future__ import annotations
 
+import json
 import os
+import re
 
 from fastapi import APIRouter, Body, Header
 
@@ -50,6 +52,38 @@ def _guidance(spec) -> str:
         "with specialist_note."])
 
 
+_RUN_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,80}$")
+
+
+def caller(run_id) -> dict:
+    """`{"run_id","session_id","backend","target"}` for agent run `run_id`, as far as its run dir says now
+    (`target`: the folder it works in). Never raises: an unknown run is a caller with only its run id."""
+    out = {"run_id": str(run_id or ""), "session_id": "", "backend": "", "target": ""}
+    if not isinstance(run_id, str) or not _RUN_ID_RE.match(run_id) or run_id in (".", ".."):
+        return out
+    try:
+        from fused_render.claude_agent import agent_module
+
+        agent = agent_module()
+        run_dir = os.path.join(agent.RUNS, run_id)
+        with open(os.path.join(run_dir, "meta.json"), encoding="utf-8") as fh:
+            meta = json.load(fh)
+        if not isinstance(meta, dict):
+            return out
+        try:
+            sid = agent._run_own_session(run_dir, meta)
+        except Exception:  # noqa: BLE001
+            sid = ""
+        out["session_id"] = str(sid or meta.get("session_id") or meta.get("resumed_from") or "")
+        out["backend"] = str(meta.get("backend") or "claude")
+        file = str(meta.get("file") or "")
+        if file:
+            out["target"] = file if os.path.isdir(file) else os.path.dirname(file)
+    except Exception:  # noqa: BLE001 — an unreadable run dir is just an unknown caller
+        pass
+    return out
+
+
 def _call(body, x_fused, *fields: tuple[str, int]):
     """`(spec, caller, values)` for a tool call, or `(error response, None, None)`."""
     if (bad := _require_fused(x_fused)) is not None:
@@ -64,9 +98,7 @@ def _call(body, x_fused, *fields: tuple[str, int]):
     spec = store.find(str(body.get("specialist") or ""))
     if spec is None:
         return _error(f'No specialist is called "{str(body.get("specialist") or "")[:80]}". ' + _listing(), 404), None, None
-    from fused_render.experts import learn
-
-    who = learn.caller(body.get("run_id"))
+    who = caller(body.get("run_id"))
     if who["session_id"] and who["target"]:
         update.point(spec, who["session_id"], who["target"], "task")
     return spec, who, values

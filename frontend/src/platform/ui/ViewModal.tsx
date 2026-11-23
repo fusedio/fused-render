@@ -1,4 +1,4 @@
-// The overlay a specialist's "show" card opens (docs/specialists.md §15): a canvas, or one node of a canvas (a UDF,
+// The overlay a specialist's "show" card opens (docs/specialists.md §14): a canvas, or one node of a canvas (a UDF,
 // a widget, an HTML node, a note), drawn the way the explorer draws it when the same file is opened there: a node
 // through its file view in a chrome-free frame (the node's own template, D1495), a whole canvas as its workspace page in a chrome-free frame. Nothing is
 // mounted until the card (apps/claude/ui/ViewCard) opens it, and closing unmounts it (the frame stops).

@@ -147,8 +147,7 @@ _MCP_SERVER = "fused_render"
 _MCP_TITLE = re.compile(r"^(?P<server>[A-Za-z0-9_.-]+): (?P<tool>[A-Za-z0-9_.-]+)$")
 #: fused's own pane-server tools (permission_server.py).
 _FUSED_TOOLS = frozenset({"app_state", "canvas_screenshot", "terminal_list",
-                          "terminal_read", "terminal_send", "s3_search", "s3_read",
-                          "expert_list", "expert_context", "expert_ask"})
+                          "terminal_read", "terminal_send", "s3_search", "s3_read"})
 # `session/load` answers only AFTER its replay has streamed (Cursor awaits
 # `replayConversationHistory` before replying), so the quiet wait is short;
 # kept, bounded, for an update that trails the reply.

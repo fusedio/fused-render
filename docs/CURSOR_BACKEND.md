@@ -139,7 +139,7 @@ agent.py:      _HOST_FILES["cursor"] = cursor_host.py; _SELF_MINTED_ID_BACKENDS 
   switches are the same request. `caps.live_model_switch = True`. No effort:
   the thinking level is a per-model PARAMETER (`configOptions` category
   `thought_level`) that Cursor defaults; `efforts = ()`.
-- **D8** System prompt: `_cursor_argv` writes `<run_dir>/cursor_agent/instructions.md` (not `cursor/`: that is the poll's byte-offset file) Skills ride in the same file, listed by SKILL.md path (`_skills_note`): `cursor-agent acp` ignores `--plugin-dir`, `--add-dir` and a workspace `.cursor/skills`, and only loads `~/.cursor/skills`, which fused does not write (measured on CLI 2026.11.22-e9042b2 with a real ACP turn).
+- **D8** System prompt: `_cursor_argv` writes `<run_dir>/cursor_agent/instructions.md` (not `cursor/`: that is the poll's byte-offset file) Skills ride in the same file, listed by SKILL.md path (`_skills_note`): `cursor-agent acp` ignores `--plugin-dir`, `--add-dir` and a workspace `.cursor/skills`, and only loads `~/.cursor/skills`, which fused does not write (measured on CLI 2026.11.22-e9042b2 with a real ACP turn). The note ends by telling the model the listed SKILL.md files are the complete page-API reference and that it must not read fused-render's installed code or search outside the folder: in a measured app-building run Cursor spent 20 of 38 tool calls on `find / -name runtime.js` and reading the app bundle, and with the sentence 0 of 16 calls left the folder (246 s vs 308 s, one run each), see D1507.
   = `_appended_prompt(file, pane, "cursor")` with `mcp__fused_render__<tool>`
   spelled `<tool>`, plus the readable directories (D9). The host sends it as a
   leading text block, wrapped in `<fused_render_context>…</fused_render_context>`,

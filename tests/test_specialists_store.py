@@ -15,7 +15,7 @@ def test_create_lays_out_an_ordinary_claude_code_project():
     h = s.home
     assert h == os.path.join(paths.root(), "canvas") and paths.home(s.id) == h
     charter = open(os.path.join(h, "CLAUDE.md")).read()
-    assert "You are the Canvas specialist, an expert on Fused canvases." in charter and "@memory.md" in charter
+    assert "You are the Canvas specialist. Your subject: Fused canvases." in charter and "@memory.md" in charter
     assert open(os.path.join(h, "memory.md")).read() == ""
     assert open(os.path.join(h, ".gitignore")).read() == ".specialist/\n"  # inbox/ is tracked
     assert json.load(open(os.path.join(h, ".claude", "settings.json"))) == {"autoMemoryEnabled": False}
@@ -56,7 +56,7 @@ def test_update_rewrites_the_charter_and_keeps_its_subject():
     s = store.create("Canvas", "canvases", subject="Some subject text.")
     store.update(s.id, name="Canvasser", about="all canvases", face={"shape": "circle"})
     charter = open(os.path.join(s.home, "CLAUDE.md")).read()
-    assert "You are the Canvasser specialist, an expert on all canvases." in charter
+    assert "You are the Canvasser specialist. Your subject: all canvases." in charter
     assert charter.endswith("## Subject\nSome subject text.\n")
     assert store.get(s.id).face == {"shape": "circle"}
     with pytest.raises(store.Invalid):

@@ -8245,6 +8245,12 @@ managed `managed-settings.d` drop-ins, the legacy `~/.claude.json`
 - **Why.** codex-cli 0.164 has no option naming an extra skills root; `.agents/skills` would write into the user's folder, and CODEX_HOME holds the credential, so neither is touched. Codex was the one backend left with no fused-render or workbench skills.
 - **What.** `_Host._developer_instructions` appends `_skills_note(target)` (Cursor's note from D1503, now shared) to the `_appended_prompt` text: name, description and SKILL.md path per skill, workbench skills only in a canvas root. No readable-directory text: Codex's sandboxes read the whole filesystem.
 
+## D1507: The skills note says the skills are the whole reference (2026-11-23, agents-skills-are-the-reference)
+
+- **Why.** Cursor and Codex get the skills as SKILL.md paths (D1503, D1504). In a real Cursor app-building run the model read two skills, then spent about two minutes on `find / -name runtime.js` and reading fused-render's installed source (`static/runtime.js`, `server/fs_mutate.py`, `server/routers/ai_runtime.py`) to double-check `fused.ai` and `fused.writeFile`: 20 of its 38 tool calls. Re-running the same prompt with one added sentence, 0 of 16 calls left the folder and the turn took 246 s instead of 308 s (one run each).
+- **What.** `_skills_note` ends with that sentence: the listed SKILL.md files are the complete page-API reference, never read or search fused-render's installed code or outside the working folder, and use the documented call as written when a skill leaves a detail unsaid. Only present when there are skills.
+- **Not changed.** No tool, grant or readable directory; the sentence is guidance, not enforcement.
+
 ## D1505: A held Cursor edit announces its file early as a bare content_block_start (2026-11-23, cursor-announce-edits-early)
 
 - **Why.** Measured on a 250-line file write: `tool_call` pending (empty `rawInput`) at +6.8 s, the file named at +7.5 s, then nothing until `in_progress` at +28.5 s. D14 holds an edit's row until `completed` (the diff only exists then), so the chat showed nothing for 20+ seconds.

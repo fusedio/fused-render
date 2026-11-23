@@ -96,7 +96,7 @@ export function parseMdStage(text: string): string {
 }
 
 /** The same Marked instance's tokens, for a renderer that builds React elements from them (components/MdDoc.tsx: the
- *  expert pane's memory.md and its diffs) instead of an HTML string. Inline `text`, `codespan` and `escape` tokens
+ *  specialist pane's memory.md and its diffs) instead of an HTML string. Inline `text`, `codespan` and `escape` tokens
  *  carry their text HTML-escaped (marked's lexer does that), so such a renderer unescapes them before React escapes
  *  them again. */
 export function mdTokens(src: unknown): Token[] {

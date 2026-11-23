@@ -1730,9 +1730,7 @@ class _Host:
                 BACKEND,
                 # What the spawn stamped into this run's mcp.json, so the S3
                 # note matches the server's roster (agent._s3_stamped).
-                s3=self.agent._s3_stamped(self.run_dir),
-                # Likewise the expert tools (`agent._expert_stamped`).
-                experts=self.agent._expert_stamped(self.run_dir)) or "")
+                s3=self.agent._s3_stamped(self.run_dir)) or "")
             # Codex has no extra-skills-root option: list them by path.
             return prompt + self.agent._skills_note(target)
         except Exception as exc:  # noqa: BLE001

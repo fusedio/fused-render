@@ -82,7 +82,6 @@ from __future__ import annotations
 import json
 import logging
 import os
-import sys
 import threading
 import time
 
@@ -112,10 +111,7 @@ _OWNER = {"fh": None, "lean": False, "ready": False, "elect_lock": threading.Loc
           # must land before this process's next pass). `ws_lock`: the workspace steps run under it, whether from
           # the pass or from take_workspace() on a request thread, so they never run twice at once (an RLock:
           # take_workspace holds it while _workspace_steps takes it again).
-          "ws_yield_until": 0.0, "ws_lock": threading.RLock(),
-          # `experts_seeded`: the shipped experts' seed ran in this process (`_seed_experts`), so an Experts flag
-          # turned on later need not seed again (`_seed_experts_once`).
-          "experts_seeded": False}
+          "ws_yield_until": 0.0, "ws_lock": threading.RLock()}
 WS_LOCK = ".routines.lock"
 WS_YIELD_COOLDOWN_S = 30.0
 WS_YIELD_BUDGET_S = 8.0
@@ -238,9 +234,9 @@ def loaded() -> list:
         return list(_bots.values())
 
 
-def create(name="", model="", effort="", instructions="", preset="", kind="", browser="", expert=None):
+def create(name="", model="", effort="", instructions="", preset="", kind="", browser=""):
     require_owner()
-    b = _botmod().create(name, model, effort, instructions, preset=preset, kind=kind, browser=browser, expert=expert)
+    b = _botmod().create(name, model, effort, instructions, preset=preset, kind=kind, browser=browser)
     sync_wake()
     return b
 
@@ -474,7 +470,6 @@ def _become_owner() -> None:
              ("FusedBot import", _import_fusedbot),
              ("v3 folder migration", _migrate_v3),
              ("Super Bot seed", _seed_super),
-             ("experts seed", _seed_experts),
              ("channels router", _start_router),
              ("takeover walk", _reconcile),
              ("browser sweep", _sweep_browsers),
@@ -482,7 +477,7 @@ def _become_owner() -> None:
     _run_steps([x for x in steps if claimed or x[0] not in _WS_STEPS])
 
 
-_WS_STEPS = ("v3 folder migration", "Super Bot seed", "experts seed", "takeover walk", "browser sweep")
+_WS_STEPS = ("v3 folder migration", "Super Bot seed", "takeover walk", "browser sweep")
 
 
 def _run_steps(steps) -> None:
@@ -501,7 +496,7 @@ def _workspace_steps() -> None:
         if _OWNER["ws_ready"] or not _claim_workspace():
             return
         _OWNER["ws_ready"] = True
-    _run_steps((("v3 folder migration", _migrate_v3), ("Super Bot seed", _seed_super), ("experts seed", _seed_experts),
+    _run_steps((("v3 folder migration", _migrate_v3), ("Super Bot seed", _seed_super),
                 ("takeover walk", _reconcile), ("browser sweep", _sweep_browsers)))
 
 
@@ -699,41 +694,6 @@ def _seed_super() -> None:
     seed_super()
 
 
-def _seed_experts() -> None:
-    """The shipped experts (experts/seed.py), right after the Super Bot seed and under the same gates: until the
-    v3 migration has stamped, a legacy expert would be invisible and seeded twice. Only while the Experts flag is
-    on (docs/experts.md §17): off, nothing is seeded, and the first owner pass that sees it on seeds then
-    (`_seed_experts_once`). A failure logs, never blocks."""
-    from fused_render import experts
-    if not experts.enabled():
-        logger.info("experts seed skipped: the Experts flag is off")
-        return
-    from fused_render.bots import migrate_v3
-    if not os.path.exists(migrate_v3.stamp_path()) or _legacy_bots_remain():
-        logger.info("experts seed skipped: the v3 folder migration has not completed")
-        return
-    try:
-        from fused_render.experts import seed
-        seed.seed()
-        _OWNER["experts_seeded"] = True
-    except Exception:  # noqa: BLE001 — startup goes on without the shipped experts
-        logger.warning("experts seed failed", exc_info=True)
-
-
-def _seed_experts_once() -> None:
-    """The seed for an Experts flag turned on after startup: run on an owner pass (never on a request thread, the
-    workspace steps' rule) once the flag reads on and this ownership has not seeded yet. Under `ws_lock`, so it
-    never runs beside `_workspace_steps`. The seed's own witness keeps it to once per shipped expert."""
-    if _OWNER.get("experts_seeded"):
-        return
-    from fused_render import experts
-    if not experts.enabled():
-        return
-    with _OWNER["ws_lock"]:
-        if not _OWNER.get("experts_seeded") and _OWNER["ws_ready"]:
-            _seed_experts()
-
-
 def _legacy_bots_remain() -> bool:
     """A BOT still waiting: a legacy data dir holding a bot.json, or a parked `<bots_root>/.unmigrated/<id>/bot.json`.
     Strays (`.unmigrated/stray-<ts>/`, parked from every real tree: `cache/bots/browsers` and the like) and empty
@@ -887,13 +847,8 @@ def _pass() -> None:
         return  # another home's owner sweeps and ticks this workspace; re-tried next pass
     _write_ws_record()  # the claimant's heartbeat, read by workspace_info() in other homes
     _sweep_handoffs()
-    _seed_experts_once()
-    from fused_render import experts
-    experts_on = experts.enabled()
     for b in all():
         try:
-            if not experts_on and _botmod().is_expert(getattr(b, "meta", None)):
-                continue  # Experts flag off (docs/experts.md §17): a hidden expert's routines wait, nothing is lost
             b.tick_routines()
         except Exception:  # noqa: BLE001
             logger.warning("routine tick failed for %s", getattr(b, "id", "?"), exc_info=True)
@@ -1121,14 +1076,6 @@ def shutdown(budget_s: float = 8.0) -> None:
             b.stop()
         except Exception:  # noqa: BLE001
             logger.warning("bot %s: stop failed", getattr(b, "id", "?"), exc_info=True)
-    # The experts' timer and side-session harnesses end here, before the Chromes take their share of the budget
-    # and before the workspace claim is released (they write the experts' memory.md). Only when experts were used.
-    if "fused_render.experts.sessions" in sys.modules:
-        try:
-            from fused_render.experts import scheduler as experts_scheduler
-            experts_scheduler.shutdown(min(2.0, budget_s))
-        except Exception:  # noqa: BLE001
-            logger.warning("ending the experts' sessions failed", exc_info=True)
     try:
         n = browsers.stop_all(budget_s)
     except Exception:  # noqa: BLE001
@@ -1149,9 +1096,6 @@ def reset_for_tests() -> None:
         browser_mod.allow_launches()  # a test that ran shutdown() must not latch the next one
     except Exception:  # noqa: BLE001
         pass
-    experts_sessions = sys.modules.get("fused_render.experts.sessions")
-    if experts_sessions is not None:
-        experts_sessions.reopen()  # likewise: a shutdown closed the experts' side sessions
     with _lock:
         if _sched.get("stop") is not None:
             _sched["stop"].set()

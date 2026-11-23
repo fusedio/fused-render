@@ -1,4 +1,4 @@
-"""A specialist showing its work in its main chat (docs/specialists.md §15): the canvas server, its two tools,
+"""A specialist showing its work in its main chat (docs/specialists.md §14): the canvas server, its two tools,
 and the card line a `show` answers with."""
 from _specialists_conftest import *  # noqa: F401,F403
 import json

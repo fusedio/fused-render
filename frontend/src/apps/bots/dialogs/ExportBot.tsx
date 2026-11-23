@@ -113,9 +113,6 @@ export function ExportBotDialog({ bot, onClose }: { bot: Bot; onClose: () => voi
     : "";
 
   const isSuper = bot.kind === "super" || !!plan?.super;
-  // An expert (docs/experts.md §5) travels in the same package: its instructions.md, skills and, if ticked, its
-  // memory.md and archive. It has no approval posture, routines, logins or Inbox, so those lines say what it has.
-  const isExpert = bot.kind === "expert" || str(pub.kind) === "expert";
   const toggle = (folder: string, on: boolean) => setTicked((cur) => {
     const next = new Set(cur);
     if (on) next.add(folder); else next.delete(folder);
@@ -162,7 +159,7 @@ export function ExportBotDialog({ bot, onClose }: { bot: Bot; onClose: () => voi
             <span className="size-10 shrink-0 [&>svg]:block [&>svg]:size-full"><Face b={bot} /></span>
             <div className="flex min-w-0 flex-1 flex-col gap-1.5">
               <DialogTitle>Export {plan?.name || bot.name}</DialogTitle>
-              <DialogDescription>One file you can send to someone or keep. Opening it on a Mac makes a new {isExpert ? "expert" : "bot"}.</DialogDescription>
+              <DialogDescription>One file you can send to someone or keep. Opening it on a Mac makes a new bot.</DialogDescription>
             </div>
           </div>
           {plan && !isSuper ? (
@@ -205,14 +202,11 @@ export function ExportBotDialog({ bot, onClose }: { bot: Bot; onClose: () => voi
                     </dd>
                     <dt className="text-muted-foreground">Model</dt>
                     <dd className="m-0">{label(MODELS, str(pub.model)) || "—"} · {label(EFFORTS, str(pub.effort)) || "—"}</dd>
-                    {isExpert ? null : <>
-                      <dt className="text-muted-foreground">Approval</dt>
-                      <dd className="m-0">{APPROVAL_LABEL[str(pub.approval)] || str(pub.approval) || "—"}</dd>
-                    </>}
+                    <dt className="text-muted-foreground">Approval</dt>
+                    <dd className="m-0">{APPROVAL_LABEL[str(pub.approval)] || str(pub.approval) || "—"}</dd>
                   </dl>
                   <p className="m-0 text-xs text-muted-foreground">
-                    {isExpert ? "Its sessions and the folders it may read stay on this Mac."
-                      : "Routines go along switched off. Logins, history and the Inbox stay on this Mac."}
+                    Routines go along switched off. Logins, history and the Inbox stay on this Mac.
                   </p>
                 </section>
 
@@ -220,7 +214,7 @@ export function ExportBotDialog({ bot, onClose }: { bot: Bot; onClose: () => voi
                   <h3 id="exmem" className="m-0 text-sm font-medium">Memory</h3>
                   <label className={cn("flex items-center gap-2.5 text-sm", plan.memory_bytes ? "cursor-pointer" : "opacity-60")}>
                     <Checkbox checked={memory} disabled={!plan.memory_bytes || busy || !!result} onCheckedChange={(c) => setMemory(!!c)} />
-                    <span>{isExpert ? "Include what it has learned (memory.md and its archive)" : "Include what it remembers"}</span>
+                    <span>Include what it remembers</span>
                     <span className="ml-auto text-xs text-muted-foreground tabular-nums">{plan.memory_bytes ? size(plan.memory_bytes) : "Empty"}</span>
                   </label>
                   <p className="m-0 text-xs text-muted-foreground">Memory is private: notes about you and your work. Leave it off unless the file stays with you.</p>

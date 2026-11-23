@@ -11,7 +11,7 @@ trigger: edge, edges, connect, connection, upstream, downstream, link nodes, udf
 
 ## What the repo does not cover
 
-How a UDF's Python code reads the output of the node an edge comes from is not described anywhere in this expert's sources. Do not answer it from memory. Search the canvas copies for a pair of connected nodes (find an `edges` entry in a `canvas.toml`, then read both nodes' `.py` files) and show what that canvas does, citing both paths. If no copy shows it, say you are unsure. Sessions in a clone are also handed the `workbench:fused-udfs` skill for writing UDF code.
+How a UDF's Python code reads the output of the node an edge comes from is not described anywhere in this specialist's sources. Do not answer it from memory. Search the canvas copies for a pair of connected nodes (find an `edges` entry in a `canvas.toml`, then read both nodes' `.py` files) and show what that canvas does, citing both paths. If no copy shows it, say you are unsure. Sessions in a clone are also handed the `workbench:fused-udfs` skill for writing UDF code.
 
 ## Folders (node groups on the canvas)
 
