@@ -457,6 +457,27 @@ def test_cas_push_conflict_merges_and_retries_once(sim):
     _assert_invariants(w)
 
 
+def test_push_names_the_udfs_it_changed(sim):
+    w = sim.world()
+    w.session.start_turn()
+    w.session.edit_body("a", "tk_s1")
+    w.session.edit_body("w", "tk_s2")
+    w.follow()
+    w.tick(3)
+    assert w.server.imports == 0
+    w.session.end_turn()
+    w.tick(4)
+    leg = w.manager.sync_state()["legs"]["disk_to_server"]
+    assert leg["push_seq"] == 1 and leg["push_changed"] == ["a"]
+    w.session.start_turn()
+    w.session.edit_body("b", "tk_s3")
+    w.session.end_turn()
+    w.tick(4)
+    leg = w.manager.sync_state()["legs"]["disk_to_server"]
+    assert leg["push_seq"] == 2 and leg["push_changed"] == ["b"]
+    _assert_invariants(w)
+
+
 def test_auto_merge_when_idle_and_held_while_a_run_is_live(sim):
     """§3 auto merge-pull (Q8): a server move merges at once when no run is
     live; while one is, it is held (server_stale with a per-file list, the
