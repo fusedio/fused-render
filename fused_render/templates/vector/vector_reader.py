@@ -108,10 +108,9 @@ def _read_ogr(src, cap):
 
 def _read_parquet(file, cap):
     import json
-    import geopandas as gpd
     import pyarrow as pa
     import pyarrow.parquet as pq
-    import shapely
+    from geopandas.io.arrow import _arrow_to_geopandas
 
     pf = pq.ParquetFile(_Ranged(file) if "://" in file else file, pre_buffer=True)
     schema = pf.schema_arrow
@@ -130,10 +129,7 @@ def _read_parquet(file, cap):
     columns = [f.name for f in schema if f.name == col
                or not (f.name in skip or pa.types.is_binary(f.type))]
     table = pf.read_row_groups(range(groups), columns=columns).slice(0, cap)
-    df = table.to_pandas()
-    df[col] = shapely.from_wkb(df[col].to_numpy())
-    gdf = gpd.GeoDataFrame(df, geometry=col, crs=meta.get("crs", "OGC:CRS84"))
-    return gdf, pf.metadata.num_rows, pf.metadata.num_rows > cap, []
+    return _arrow_to_geopandas(table, geo), pf.metadata.num_rows, pf.metadata.num_rows > cap, []
 
 
 def main(file: str = "", max_features: int = 20000, table_rows: int = 50):
