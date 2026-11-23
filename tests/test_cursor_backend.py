@@ -200,6 +200,21 @@ def test_no_plugin_dirs_means_no_skills_note(agent, tmp_path, monkeypatch):
     assert " SKILLS:" not in body
 
 
+_NO_OUTSIDE_READS = "Never read or search fused-render's own installed code"
+
+
+def test_skills_note_says_the_skills_are_the_whole_reference(agent, tmp_path, monkeypatch):
+    body, paths = _instructions(agent, tmp_path, monkeypatch, True)
+    assert _NO_OUTSIDE_READS in body and "no `find /`" in body
+    last_row = max(body.index(p) for p in paths.values())
+    assert body.index(_NO_OUTSIDE_READS) > last_row
+
+
+def test_skills_note_is_empty_without_skills(agent, tmp_path, monkeypatch):
+    monkeypatch.setattr(agent, "_skill_index", lambda target: [])
+    assert agent._skills_note("x") == ""
+
+
 def test_skill_frontmatter_edge_cases(agent, tmp_path):
     f = tmp_path / "SKILL.md"
     f.write_text("no frontmatter here")

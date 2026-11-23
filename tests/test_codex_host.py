@@ -1491,6 +1491,7 @@ def _dev_instructions(agent, host_mod, tmp_path, monkeypatch, in_workbench, own=
 def test_codex_instructions_list_fused_skills_not_workbench_off_canvas(agent, host_mod, tmp_path, monkeypatch):
     body, paths = _dev_instructions(agent, host_mod, tmp_path, monkeypatch, False)
     assert " SKILLS: " in body and paths["foo"] in body
+    assert "Never read or search fused-render's own installed code" in body
     assert paths["wbs"] not in body
 
 

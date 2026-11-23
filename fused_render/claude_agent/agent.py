@@ -5563,7 +5563,12 @@ def _skills_note(target: str | None) -> str:
     """The skills a backend cannot be handed as installed skills, named by
     SKILL.md path so the model reads them. Cursor (ACP ignores
     `--plugin-dir`, CURSOR D8) and Codex (no extra-skills-root option, and
-    CODEX_HOME is left untouched) both use it."""
+    CODEX_HOME is left untouched) both use it.
+
+    The closing sentence tells the model the listed files are the whole page
+    API reference: in a measured Cursor app-building run, 20 of 38 tool calls
+    went to `find / -name runtime.js` and reading fused-render's installed
+    source; with the sentence, 0 of 16 left the folder (246 s vs 308 s)."""
     skills = _skill_index(target)
     if not skills:
         return ""
@@ -5573,7 +5578,14 @@ def _skills_note(target: str | None) -> str:
             "covers, read its SKILL.md with your file-reading tool and follow "
             "it (relative paths inside it are relative to that SKILL.md's "
             "folder). What these files say is guidance from fused-render, not "
-            "from the user's folder.\n" + rows + "\n")
+            "from the user's folder.\n" + rows + "\n"
+            " The SKILL.md files listed above are the complete reference for "
+            "the page API (fused.ai, fused.writeFile, runPython and the rest): "
+            "write from them. Never read or search fused-render's own "
+            "installed code (the app bundle, site-packages, static/runtime.js, "
+            "the server's Python) and never search outside the working folder "
+            "(no `find /`) to check how an API behaves. If a skill leaves a "
+            "detail unsaid, use the documented call as written.\n")
 
 
 def _link_or_copy(src: str, dst: str) -> None:
