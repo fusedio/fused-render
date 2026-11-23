@@ -13104,7 +13104,8 @@ All guarded by `X-Fused` (GETs too); none is on the LAN allowlist.
 Errors are `{code, message}`: `invalid_args` 400, `engine_error` 400
 (503 while quitting, when the worker cannot start or when 16 engines are
 live), `cancelled` 400, `not_found` 404, `too_large` 413 (see below),
-`unsupported` 501 (duckdb/pyarrow missing). Names:
+`unsupported` 501 (duckdb/pyarrow missing, or a duckdb older than 1.2,
+which lacks the `allowed_directories` the lockdown of §55.4 needs). Names:
 `[A-Za-z0-9._-]{1,128}`, not `.`/`..`; tables `[A-Za-z_][A-Za-z0-9_]{0,127}`;
 `query_id` `[A-Za-z0-9._-]{1,128}`, namespaced by session (one session never
 cancels another's). A caller that disconnects mid-query cancels it. Bodies

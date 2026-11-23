@@ -82,7 +82,7 @@ class Unavailable(Exception):
 
 
 class NotInstalled(Unavailable):
-    """duckdb or pyarrow is not installed."""
+    """duckdb or pyarrow is not installed, or duckdb is older than MIN_DUCKDB."""
 
 
 class NoSession(LookupError):
@@ -128,9 +128,36 @@ def max_result_bytes() -> int:
     return _env_bytes("FUSED_RENDER_SQL_MAX_RESULT_BYTES", DEFAULT_MAX_RESULT_BYTES)
 
 
+# The first DuckDB with `allowed_directories`, which the worker's lockdown
+# needs: on an older one the worker cannot start, so the engine is treated as
+# not installed rather than offered and then failing its first query.
+MIN_DUCKDB = (1, 2)
+
+
+def _duckdb_version() -> tuple[int, ...] | None:
+    """The installed duckdb's version from package metadata (duckdb itself is
+    never imported in the server process), or None when it cannot be read."""
+    from importlib import metadata
+
+    try:
+        raw = metadata.version("duckdb")
+    except metadata.PackageNotFoundError:
+        return None
+    parts = []
+    for piece in raw.split("."):
+        digits = re.match(r"\d+", piece)
+        if digits is None:
+            break
+        parts.append(int(digits.group()))
+    return tuple(parts) or None
+
+
 def available() -> bool:
-    return (importlib.util.find_spec("duckdb") is not None
-            and importlib.util.find_spec("pyarrow") is not None)
+    if (importlib.util.find_spec("duckdb") is None
+            or importlib.util.find_spec("pyarrow") is None):
+        return False
+    version = _duckdb_version()
+    return version is not None and version >= MIN_DUCKDB
 
 
 class _Waiter:
@@ -423,7 +450,7 @@ def create_session(scope: str = "") -> str:
     quitting or MAX_ENGINES engines are already live."""
     scope = scope or ""
     if not available():
-        raise NotInstalled("duckdb and pyarrow are needed for local SQL")
+        raise NotInstalled("duckdb 1.2 or newer and pyarrow are needed for local SQL")
     with _LOCK:
         if _refused:
             raise Unavailable("fused-render is quitting")

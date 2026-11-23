@@ -5,7 +5,8 @@
 Every route, reads included, requires the `X-Fused` header
 (`_require_fused`), and none is on the LAN allowlist (`lan.py`), so a LAN
 peer never reaches them. Errors are `{code, message}` with `code` one of
-`unsupported` (501: duckdb/pyarrow missing), `invalid_args` (400),
+`unsupported` (501: duckdb/pyarrow missing, or duckdb older than 1.2),
+`invalid_args` (400),
 `not_found` (404), `cancelled` (400), `too_large` (413: an upload past
 FUSED_RENDER_SQL_MAX_UPLOAD_BYTES, a result past
 FUSED_RENDER_SQL_MAX_RESULT_BYTES), `engine_error` (400; 503 while the app

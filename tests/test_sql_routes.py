@@ -793,3 +793,24 @@ def test_nothing_at_info_or_above_names_the_sql_or_a_file(client, caplog):
     runner.shutdown()
     ours = "\n".join(r.getMessage() for r in caplog.records if r.name.startswith("fused_render"))
     assert marker not in ours and "/file/" in ours
+
+
+@pytest.mark.parametrize(
+    "version, ok",
+    [("1.1.3", False), ("1.2.0", True), ("1.5.6", True), ("1.10.0", True),
+     ("2.0.0.dev12", True), ("0.10.2", False), ("garbage", False)],
+)
+def test_the_engine_needs_a_duckdb_that_has_the_lockdown(monkeypatch, version, ok):
+    from importlib import metadata
+
+    monkeypatch.setattr(metadata, "version", lambda name: version)
+    assert runner.available() is ok
+
+
+def test_an_older_duckdb_is_unsupported_not_a_failed_first_query(client, monkeypatch):
+    from importlib import metadata
+
+    monkeypatch.setattr(metadata, "version", lambda name: "1.1.3")
+    r = client.post("/api/sql/session", json={}, headers=H)
+    assert r.status_code == 501 and r.json()["code"] == "unsupported"
+    assert runner.worker_pid() is None
