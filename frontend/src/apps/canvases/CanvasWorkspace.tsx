@@ -30,7 +30,7 @@
 //            (owner call: the right pane follows the canvas)
 //   parent → { type: "fused-embed-select", udfName }  (restore ?node= on
 //            load; null from the sidebar's close button, so both sides agree)
-//   parent → { type: "fused-embed-pushed", push_seq }  after a push, for the
+//   parent → { type: "fused-embed-pushed", push_seq, changed }  after a push, for the
 //            workbench's save chip ("Published"); it triggers no reload.
 //   iframe → { type: "fused-embed-open-code", udfName, backendId? }  LEGACY:
 //            a workbench on the body channel (`caps: ["body"]`) toggles its
@@ -2909,20 +2909,24 @@ export default function CanvasWorkspace({
   }, [sideOpen]);
 
   // After every push, tell the workbench's save chip it is published. This
-  // is informational only — the frame never reloads or re-fetches on it (the
+  // names the UDFs it changed; the frame never reloads or re-fetches on it (the
   // delta leg above is how disk changes reach it).
   const lastPushSeqRef = useRef<number | null>(null);
+  const pushSeqsRef = useRef(new Map<string, number>());
   useEffect(() => {
-    const seq = sync?.legs.disk_to_server.push_seq ?? null;
-    if (seq === null) return;
-    const prev = lastPushSeqRef.current;
-    lastPushSeqRef.current = seq;
-    if (prev === null || seq <= prev) return;
+    if (!sync?.watcher_epoch) return;
+    const { push_seq: seq, push_changed_at: at = {} } = sync.legs.disk_to_server;
+    const seqs = pushSeqsRef.current;
+    const prev = seqs.get(sync.watcher_epoch) ?? (seqs.size ? 0 : seq);
+    lastPushSeqRef.current = Math.max(prev, seq);
+    seqs.set(sync.watcher_epoch, lastPushSeqRef.current);
+    if (seq <= prev) return;
     const frame = frameRef.current;
     const origin = baseOriginRef.current;
     if (!frame?.contentWindow || !origin) return;
-    frame.contentWindow.postMessage({ type: "fused-embed-pushed", push_seq: seq }, origin);
-  }, [sync?.legs.disk_to_server.push_seq]);
+    const changed = Object.keys(at).filter((n) => at[n] > prev && at[n] <= seq);
+    frame.contentWindow.postMessage({ type: "fused-embed-pushed", push_seq: seq, changed }, origin);
+  }, [sync?.legs.disk_to_server.push_seq, sync?.watcher_epoch]);
 
   // Self-heal: a state saying no watcher runs here (a server restart, a
   // stop) re-arms it through sync/start — which answers `owned` instead if

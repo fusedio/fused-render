@@ -2268,7 +2268,8 @@ edit files; you never run a sync command.
   this folder to the canvas (and also whenever the folder goes quiet while no
   turn is running). A change set you leave half-done at the end of a turn is
   published half-done, so finish it within the turn (e.g. a rename: the `.py`
-  file AND its `canvas.toml` entry).
+  file AND its `canvas.toml` entry). Until fused-render publishes, a canvas
+  run of a node that `fused.load`s a sibling you changed uses the old sibling.
 - **The server's changes are merged into this folder automatically.** When
   someone edits the canvas in the hosted workbench, fused-render merges their
   change in per file (canvas.toml per node; a file only you changed keeps
@@ -3643,6 +3644,7 @@ class _SyncManager:
         self._lock_path = _lock_path(env, name)
         self._lock_since = lock_since
         self.push_seq = 0
+        self.push_changed_at: dict[str, int] = {}
         # Counts the probes that stored a saved canvas (NW-8) whose bytes
         # differ from the one before: what a page drawing from it re-reads on.
         self.saved_seq = 0
@@ -5527,6 +5529,8 @@ class _SyncManager:
             self.last_push_at = time.time()
             self.last_error = None
             self.error_detail = []
+            self.push_changed_at = {**self.push_changed_at, **dict.fromkeys(
+                _changed_udfs(self._base_files or {}, base_snapshot), self.push_seq + 1)}
             self._base_files = base_snapshot
             self._base_toml = base_toml_snapshot
             self._rotate_remote(after)
@@ -7608,6 +7612,7 @@ class _SyncManager:
             d2s = {"state": "idle", "oldest_age_ms": None, "reason": None}
         d2s["last_push_at"] = self.last_push_at
         d2s["push_seq"] = self.push_seq
+        d2s["push_changed_at"] = self.push_changed_at
 
         # server → disk.
         if self._pull_in_flight:
@@ -7713,6 +7718,11 @@ for _field in ("embed_gen", "embed_view", "view_reset_pending", "view_from_hello
     setattr(_SyncManager, "_" + _field, _default_frame_field(_field))
 _SyncManager._frame_seen = _default_frame_field("seen")
 del _field
+
+
+def _changed_udfs(before: dict[str, str], after: dict[str, str]) -> set[str]:
+    return {rel[:-3] for rel in before.keys() | after.keys() if before.get(rel) != after.get(rel)
+            and rel.endswith(".py") and os.sep not in rel and not rel.startswith("_")}
 
 
 def _stale_changed(stale: dict | None) -> list[dict]:
