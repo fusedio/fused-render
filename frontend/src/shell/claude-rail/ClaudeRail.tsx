@@ -4778,7 +4778,9 @@ export function ClaudeRail({
                       data-hint={hovers ? "" : name}
                       data-hint-title={name}
                       data-hint-side="left"
-                      {...(railQuiet && !hovers ? { "data-hint-row": "", "data-hint-window": "b" } : {})}
+                      {...(railQuiet && !hovers
+                        ? { "data-hint-row": "", "data-hint-window": freePins && pinnedBotId === b.id ? "none" : "b" }
+                        : {})}
                       {...(card
                         ? {
                             "aria-haspopup": "dialog" as const,
