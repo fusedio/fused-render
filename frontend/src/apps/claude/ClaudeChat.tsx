@@ -6572,6 +6572,8 @@ function ChatBody(props: ChatBodyProps) {
                          thing the reader actually meant — and it posts the TEMPLATE
                          id the row carries, which is the only id that stops it. */
                       onStopRepeat={() => void deleteWaiting(row.entryId, row.stopId)}
+                      {...(state.sessionId && row.comeback ? { onRetry: () => void retryLimitNow() } : {})}
+                      retrying={limitRetrying}
                     />
                   ))}
                 </>
