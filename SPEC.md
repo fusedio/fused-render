@@ -12664,7 +12664,8 @@ is never sent it, and every alternation of their generations resets the view
 - **NW-4 The frame's state.** `fused-embed-node-state {node, status,
   message?}` sets the strip's status: `loading`, `ready`, `missing` ("Not in
   the saved canvas"), `error` (with its message). Reload loads the frame
-  again (the saved canvas moved).
+  again (the saved canvas moved). While the loader of NW-10 is up, `loading`
+  sets no status text: the loader is the one sign of loading.
 - **NW-5 A workbench without the page.** No `fused-embed-node-ready` within
   10 s of the frame's load (or 30 s of setting its address, for a frame that
   never loads; a ready that arrives later still shows the frame): the page says "This environment's workbench
@@ -12806,6 +12807,26 @@ is never sent it, and every alternation of their generations resets the view
   when the frame loads a new document) or whose result is gone. Only handles
   issued to the current document are readable; the results route itself
   stays same-origin.
+
+- **NW-10 One loader.** From the page's first paint until the frame has
+  something of its own to show, the page shows one loader over the frame: a
+  progress bar and "Loading…", drawn by the page's static markup so nothing
+  changes look while its script starts. The frame loads underneath it. The
+  loader is taken off (the bar fills, a 180 ms fade) at the first
+  `fused-embed-node-state` whose status is not `loading` (`ready`, `missing`
+  and `error` are the frame's to draw) once `fused-embed-node-ready` has
+  arrived, in either order. A frame that sends `fused-embed-node-ready` but no
+  state at all within 2 s of it is shown as it is. It happens once per frame
+  document: a later `loading` (the canvas loading again in place, NW-6) never
+  covers what is drawn, and sets the strip's status as in NW-4. The bar only
+  moves forward: it steps at what the page can see (the node read, the
+  workbench resolved, the frame's `load`, the token sent, the frame's ready,
+  the canvas posted) and creeps between steps, never past 94% before the end.
+  Reload starts it again. Any other message of the page (signed out, an
+  error, NW-5) replaces the loader. The strip takes its height from the first
+  paint with its parts hidden until the node is read, so the loader does not
+  move when they land; it is hidden for a file that is no node. Transitions
+  are off under `prefers-reduced-motion`.
 
 ### 53.4 `canvas_note`: a note
 
