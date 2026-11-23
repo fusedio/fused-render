@@ -8244,3 +8244,10 @@ managed `managed-settings.d` drop-ins, the legacy `~/.claude.json`
 
 - **Why.** codex-cli 0.164 has no option naming an extra skills root; `.agents/skills` would write into the user's folder, and CODEX_HOME holds the credential, so neither is touched. Codex was the one backend left with no fused-render or workbench skills.
 - **What.** `_Host._developer_instructions` appends `_skills_note(target)` (Cursor's note from D1503, now shared) to the `_appended_prompt` text: name, description and SKILL.md path per skill, workbench skills only in a canvas root. No readable-directory text: Codex's sandboxes read the whole filesystem.
+
+## D1505: Cursor chats start from a per-folder warm spare (2026-11-23, cursor-warm-spare-per-folder)
+
+- **What.** The composer's `defaults` call starts a spare `cursor_host.py` for the folder (one per cwd, at most two, retired after 5 minutes unclaimed). The spare runs `initialize` and a throwaway `session/new`, then waits; `_start` hands the real chat to a ready spare with the same cwd and argv, else spawns a cold host. `FUSED_CURSOR_PREWARM=0` disables it.
+- **Why.** The first `session/new` in a `cursor-agent acp` process takes 4.1-4.8 s (a later one 1.2 s), so the first message waited about 4.5 s. Cursor reads rules and skills from the process cwd, so the spare must match the chat's cwd.
+- **Cost.** One idle CLI process per recently opened folder for up to 5 minutes, and one throwaway `~/.cursor/acp-sessions/<id>` per spare that fused never reads.
+- **Rejected.** A single global spare: wrong cwd means wrong rules and skills. Warming at app start: spawns CLIs for users who never open Cursor chat.
