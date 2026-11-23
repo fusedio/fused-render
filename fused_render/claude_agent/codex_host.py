@@ -1724,14 +1724,17 @@ class _Host:
         is never told something different from Claude about the same target.
         A failure costs the session its context note, never the session."""
         try:
-            return str(self.agent._appended_prompt(
-                str(self.req.get("file") or self.cwd), bool(self.req.get("pane")),
+            target = str(self.req.get("file") or self.cwd)
+            prompt = str(self.agent._appended_prompt(
+                target, bool(self.req.get("pane")),
                 BACKEND,
                 # What the spawn stamped into this run's mcp.json, so the S3
                 # note matches the server's roster (agent._s3_stamped).
                 s3=self.agent._s3_stamped(self.run_dir),
                 # Likewise the expert tools (`agent._expert_stamped`).
                 experts=self.agent._expert_stamped(self.run_dir)) or "")
+            # Codex has no extra-skills-root option: list them by path.
+            return prompt + self.agent._skills_note(target)
         except Exception as exc:  # noqa: BLE001
             sys.stderr.write("codex_host: no developer instructions: %r\n" % (exc,))
             return ""

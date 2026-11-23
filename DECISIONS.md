@@ -8239,3 +8239,8 @@ managed `managed-settings.d` drop-ins, the legacy `~/.claude.json`
 - **Why.** Measured against the real CLI (2026.11.22-e9042b2) with an ACP turn: `cursor-agent acp` ignores `--plugin-dir`, `--add-dir` and a workspace `.cursor/skills`; only `~/.cursor/skills` loads. So Cursor sessions saw none of the skills Claude (`--plugin-dir`) and Copilot (generated plugin dir) get.
 - **What the model gains.** The text of skills it chooses to read, as guidance from fused-render. No new tool, grant or write location.
 - **Rejected.** Writing into `~/.cursor/skills`: global state shared with the user's other Cursor use, which fused does not write. Writing `.cursor/skills` or `AGENTS.md` in the user's folder: ignored by ACP, and fused never writes there.
+
+## D1504: Codex sessions get the skills as paths in the developer instructions (2026-11-23, codex-skills-in-instructions)
+
+- **Why.** codex-cli 0.164 has no option naming an extra skills root; `.agents/skills` would write into the user's folder, and CODEX_HOME holds the credential, so neither is touched. Codex was the one backend left with no fused-render or workbench skills.
+- **What.** `_Host._developer_instructions` appends `_skills_note(target)` (Cursor's note from D1503, now shared) to the `_appended_prompt` text: name, description and SKILL.md path per skill, workbench skills only in a canvas root. No readable-directory text: Codex's sandboxes read the whole filesystem.
