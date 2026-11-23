@@ -1072,6 +1072,11 @@
     -webkit-mask-image: linear-gradient(to right, var(--fg) calc(100% - 30px), transparent calc(100% - 16px));
     mask-image: linear-gradient(to right, var(--fg) calc(100% - 30px), transparent calc(100% - 16px));
   }
+  /* A two-line head's 12px gap (below). */
+  .task-head.task-head.is-two-line .task-side-peek-who.is-title .task-side-peek-rename {
+    margin-left: -28px;
+    margin-right: 0;
+  }
 }
 
 /* -- A RAIL WINDOW'S HEAD IS TWO LINES, ALWAYS (TaskHead `twoLine`; Akshil,
@@ -1124,7 +1129,7 @@
 /* Row 2: the ring, the agent's mark, the number and the title, in the one
    line's own spacing. */
 .task-head.is-two-line .task-head-titlerow {
-  gap: 8px;
+  gap: 12px;
   padding-left: 4px;
 }
 
@@ -1329,8 +1334,11 @@
    Tasks page panel, the side panel's chat, the rail's task / favourite
    window (pinned and not) and the Tasks door's chat, dark and light:
 
-     14 | × 8 ↑ 8 ↓ 8 [tag] ………… ★ 8 Open 8 ⋮ | 14
-     14 | ◯ 8 T667 8 title ………………… 1 💬 8 3h ago | 14
+     14 | × 12 ↑ 12 ↓ 12 [tag] ……… ★ 12 Open 12 ⋮ | 14
+     14 | ◯ 12 T667 12 title ……………… 1 💬 12 3h ago | 14
+
+   (12px since 2026-11-22: "add 4px padding horizontally between these
+   things … in header", row 1 and row 2.)
 
    The head's buttons are 28px boxes round a 14px glyph, and each glyph
    draws a different width inside its box (the × and the chevrons 8px, the
@@ -1360,33 +1368,45 @@
   margin-right: 2px;
 }
 .task-head.task-head.is-two-line .task-head-acts > .rail-pin-btn + .task-head-lead.is-back {
-  margin-left: -11px;
+  margin-left: -7px;
 }
 .task-head.task-head.is-two-line .task-head-acts > .task-head-nav > :first-child {
-  margin-left: -12px;
+  margin-left: -8px;
 }
 .task-head.task-head.is-two-line .task-head-nav > * + * {
-  margin-left: -12px;
+  margin-left: -8px;
 }
 .task-head.task-head.is-two-line .task-head-acts + .task-head-crumb {
-  margin-left: -12px;
+  margin-left: -8px;
 }
 .task-head.task-head.is-two-line .task-head-acts:has(> .task-head-lead.is-back:last-child) + .task-head-crumb {
-  margin-left: -11px;
+  margin-left: -7px;
 }
 /* Right: the star, the door with its own 6px wash a side, the ⋮. */
 .task-head.task-head.is-two-line .task-head-facts.is-split .task-head-open {
   padding: 0 6px;
-  margin-left: 0;
+  margin-left: 4px;
 }
 .task-head.task-head.is-two-line .task-head-facts.is-split .claude-rail-peek-star + .task-head-open {
-  margin-left: -2px;
+  margin-left: 2px;
 }
 .task-head.task-head.is-two-line .task-head-facts.is-split .task-head-kebab {
-  margin-left: -11px;
+  margin-left: -7px;
 }
 .task-head.task-head.is-two-line .task-head-facts.is-split .task-star + .task-head-kebab {
-  margin-left: -7px;
+  margin-left: -3px;
+}
+/* Row 2's id and title stand 12px apart too; the rename pencil hands back
+   its 16px and that gap (TaskPeekWho measures the gap it reads). */
+.task-head.task-head.is-two-line .task-side-peek-who.is-title {
+  gap: 12px;
+}
+.task-head.task-head.is-two-line .task-side-peek-who.is-title .task-side-peek-rename {
+  margin-right: -28px;
+}
+.task-head.task-head.is-two-line .task-side-peek-who.is-title.is-rename-over .task-side-peek-rename {
+  margin-left: -28px;
+  margin-right: 0;
 }
 /* A pinned window's row 1 ground ends halfway between the tags and the
    title, so the ground moves nothing: 10px over the tags, 5px under. */
@@ -1433,7 +1453,7 @@
 .task-head.is-two-line .task-head-titlerow > .task-head-rowfacts {
   display: inline-flex;
   align-items: center;
-  gap: 8px;
+  gap: 12px;
   flex: 0 0 auto;
   margin-left: auto;
 }
