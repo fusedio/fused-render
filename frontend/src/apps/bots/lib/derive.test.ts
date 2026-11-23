@@ -15,9 +15,9 @@ describe("statusLabel", () => {
     expect(statusLabel(bot({ status: "idle" }))).toBe("idle · browser off");
     expect(statusLabel(bot({ status: "idle", browser: { running: true } }))).toBe("idle");
   });
-  test("a specialist has no browser: never 'browser off'", () => {
-    expect(statusLabel(bot({ kind: "specialist", status: "idle" }))).toBe("idle");
-    expect(statusLabel(bot({ kind: "specialist", status: "running", step: 2 }))).toBe("running · step 2");
+  test("an expert has no browser: never 'browser off'", () => {
+    expect(statusLabel(bot({ kind: "expert", status: "idle" }))).toBe("idle");
+    expect(statusLabel(bot({ kind: "expert", status: "running", step: 2 }))).toBe("running · step 2");
   });
 });
 

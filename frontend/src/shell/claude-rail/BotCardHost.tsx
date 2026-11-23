@@ -24,9 +24,7 @@ import {
 } from "./bot-card-store";
 import { pinnedBots } from "./claude-rail-lib";
 import { useFavPeekState } from "./fav-peek-store";
-import { useCanvasRailPeek } from "./rail-peek-flag";
 import { viewPress } from "./rail-pin-lib";
-import { useTaskHeadUnified } from "@shell/task-head-flag";
 import { useUrlVersion } from "@platform/lib/hooks";
 import { botOpen, setBotOpen, setFavPinned, useBotOpen } from "@platform/lib/last-chat";
 import { useRailFreePins } from "./rail-free-pins-flag";
@@ -46,16 +44,13 @@ const noop = () => {};
 const noRing = () => null;
 
 export function BotCardHost({ slot = "x" }: { slot?: Slot } = {}) {
-  const on = useCanvasRailPeek();
-  const offered = useBotsAvailable(on);
-  const rows = useBotsRows(on && offered);
+  const offered = useBotsAvailable(true);
+  const rows = useBotsRows(offered);
   const bots = useMemo(() => pinnedBots(rows), [rows]);
   const { rail } = useFavPeekState();
   const card = useBotCardState();
   const intent = botCardIntent();
   const ref = useRef<BotPeekHandle | null>(null);
-  // HOVER / TEMP / PIN (rail-pin-lib): the unified-head switch.
-  const pinModel = useTaskHeadUnified();
   const freePins = useRailFreePins();
   // ONE OF TWO SLOTS, BY ROLE (rail-slots-store): the FREE slot is this host
   // as it always was — the store's card, the rings' hovers and presses; the
@@ -75,8 +70,8 @@ export function BotCardHost({ slot = "x" }: { slot?: Slot } = {}) {
   useEffect(() => {
     if (pathWas.current === path) return;
     pathWas.current = path;
-    if (isFree && pinModel && card.key && card.pinned && !card.held) intent.dismiss();
-  }, [path, pinModel, card.key, card.pinned, card.held, intent, isFree]);
+    if (isFree && card.key && card.pinned && !card.held) intent.dismiss();
+  }, [path, card.key, card.pinned, card.held, intent, isFree]);
 
   useEffect(() => setBotCardWarm(preloadBotChat), []);
   // The rail's way into the NON-PIN card is the free slot's.
@@ -87,11 +82,6 @@ export function BotCardHost({ slot = "x" }: { slot?: Slot } = {}) {
       focusChat: () => !!ref.current?.focusChat(),
     });
   }, [isFree]);
-  // The flag off: nothing to show.
-  useEffect(() => {
-    if (!on && isFree) intent.dismiss();
-  }, [on, intent, isFree]);
-
   // THE PINNED BOT (the pin role): gone once the bots — ANSWERED — no longer
   // list it (unpinned from the rail, removed), and the pin goes with it.
   // Judged off the feed itself, not this render's rows: an empty list is
@@ -101,15 +91,15 @@ export function BotCardHost({ slot = "x" }: { slot?: Slot } = {}) {
   // session remembered, or nothing.
   const pinBot = useMemo(() => (pinRole && pinnedId ? (bots.find((b) => b.id === pinnedId) ?? null) : null), [pinRole, pinnedId, bots]);
   useEffect(() => {
-    if (!pinRole || !pinnedId || !on || !offered || !botsPulseAnswered()) return;
+    if (!pinRole || !pinnedId || !offered || !botsPulseAnswered()) return;
     if (!pinnedBots(botsRowsNow()).some((b) => b.id === pinnedId) && botOpen() === pinnedId) setBotOpen(null);
-  }, [pinRole, pinnedId, on, offered, bots]);
+  }, [pinRole, pinnedId, offered, bots]);
   const freeShown = useMemo(
-    () => (on && isFree && card.key ? (bots.find((b) => b.id === card.key) ?? null) : null),
-    [on, isFree, card.key, bots],
+    () => (isFree && card.key ? (bots.find((b) => b.id === card.key) ?? null) : null),
+    [isFree, card.key, bots],
   );
-  const placed = usePinHasBox("b", pinRole && on && !!pinBot, rail);
-  const shown = pinRole ? (on && placed ? pinBot : null) : freeShown;
+  const placed = usePinHasBox("b", pinRole && !!pinBot, rail);
+  const shown = pinRole ? (placed ? pinBot : null) : freeShown;
   // The keyboard's way into the pinned window, and its name for the
   // non-pin's pin icon (rail-slots-store).
   const pinUp = pinRole && !!shown;
@@ -123,7 +113,7 @@ export function BotCardHost({ slot = "x" }: { slot?: Slot } = {}) {
     setPinTitle("b", "bot-" + slot, pinName);
     return () => setPinTitle("b", "bot-" + slot, null);
   }, [pinRole, slot, pinName]);
-  if (!on || bots.length === 0) return null;
+  if (bots.length === 0) return null;
   // THE PINNED WINDOW: the same card, frozen where its pin left it, until its
   // × closes it.
   if (pinRole) {
@@ -206,31 +196,35 @@ export function BotCardHost({ slot = "x" }: { slot?: Slot } = {}) {
       held={card.held}
       onHeld={setBotCardHeld}
       pinned={card.pinned}
-      pinCtl={
-        pinModel
-          ? {
-              pinned: card.held,
-              onToggle: () => {
-                // FREE PINS (rail-slots-lib): the pin's press freezes the
-                // window where it stands, and the two slots SWAP ROLES — this
-                // card, as it is, becomes window B's pinned window (replacing
-                // a favourite or a bot pinned there); the store's card, the
-                // non-pin, is the other slot's from here on and is put down.
-                const id = botCardIntent().current;
-                if (freePins) {
-                  if (!id) return;
-                  freezeFromDock("b");
-                  setFavPinned(null);
-                  setBotOpen(id);
-                  setFreeSlot("bot", otherSlot(slot));
-                  botCardIntent().dismiss();
-                  return;
-                }
-                setBotCardHeld(!card.held);
-              },
-            }
-          : null
-      }
+      pinCtl={{
+        pinned: card.held,
+        onToggle: () => {
+          // FREE PINS (rail-slots-lib): the pin's press freezes the
+          // window where it stands, and the two slots SWAP ROLES — this
+          // card, as it is, becomes window B's pinned window (replacing
+          // a favourite or a bot pinned there); the store's card, the
+          // non-pin, is the other slot's from here on and is put down.
+          const id = botCardIntent().current;
+          if (freePins) {
+            if (!id) return;
+            freezeFromDock("b");
+            setFavPinned(null);
+            setBotOpen(id);
+            setFreeSlot("bot", otherSlot(slot));
+            botCardIntent().dismiss();
+            return;
+          }
+          if (card.held) {
+            setBotCardHeld(false);
+            return;
+          }
+          // The pin from the keyboard pins too (a pointer's press inside the
+          // card already did, `onPressInside`), so the reload mark follows —
+          // the task card's pin, the same way.
+          if (id && !botCardIntent().isPinned) botCardIntent().press(id);
+          setBotCardHeld(true);
+        },
+      }}
     />
   );
 }

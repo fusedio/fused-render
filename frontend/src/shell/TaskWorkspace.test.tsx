@@ -325,7 +325,7 @@ test("the Undo toast says what the archive stopped and removed", async () => {
   }) as unknown as typeof fetch;
   void posts;
   const r = await render([task({ key: "a", title: "Fix it" })]);
-  const btn = r.root.findByProps({ className: "tasks-rowmark ws-mark" }).findByProps({ className: "tasks-act tasks-act--archive" });
+  const btn = r.root.findByProps({ className: "tasks-idslot" }).findByProps({ className: "tasks-act tasks-act--archive" });
   await act(async () => {
     btn.props.onClick({ stopPropagation() {} });
   });
@@ -584,10 +584,10 @@ test("holds are read for every task, in chunks of at most 100; one chunk failing
   expect(ports.length).toBeLessThanOrEqual(100);
 });
 
-test("the card's ring slot holds the List's Archive button, and pressing it archives with Undo", async () => {
+test("the card's id slot holds the List's Archive button, and pressing it archives with Undo", async () => {
   const posts = serve();
   const r = await render([task({ key: "a", title: "Fix it" })]);
-  const mark = r.root.findByProps({ className: "tasks-rowmark ws-mark" });
+  const mark = r.root.findByProps({ className: "tasks-idslot" });
   const btn = mark.findByProps({ className: "tasks-act tasks-act--archive" });
   expect(btn.props["aria-label"]).toBe("Archive");
   expect(byClass(r, "ws-check").length).toBeGreaterThan(0);
@@ -712,7 +712,7 @@ test("archiving a pinned task from the view drops its pin and persists the list"
   pinnedPref = ["a", "other"];
   const posts = serve();
   const r = await render([task({ key: "a", title: "Fix it" })]);
-  const btn = r.root.findByProps({ className: "tasks-rowmark ws-mark" }).findByProps({ className: "tasks-act tasks-act--archive" });
+  const btn = r.root.findByProps({ className: "tasks-idslot" }).findByProps({ className: "tasks-act tasks-act--archive" });
   await act(async () => {
     btn.props.onClick({ stopPropagation() {} });
   });

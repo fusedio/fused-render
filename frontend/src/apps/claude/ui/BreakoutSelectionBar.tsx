@@ -1,20 +1,20 @@
 // The pick-mode bar above the composer: shown only while the top-bar Breakout
 // button has the chat in pick mode.
-import type { BreakoutSpecialist } from "@platform/lib/breakouts";
-import { useSpecialists } from "@platform/lib/specialists";
+import type { BreakoutExpert } from "@platform/lib/breakouts";
+import { useExperts } from "@platform/lib/experts";
 
 export interface BreakoutSelectionBarProps {
   /** Exchanges picked (user turns in the selection). */
   count: number;
-  /** "With": the specialist the breakout runs with; offered only when there are any. */
-  specialist?: BreakoutSpecialist | undefined;
-  onSpecialist: (s: BreakoutSpecialist | undefined) => void;
+  /** "With": the expert the breakout runs with; offered only when there are any. */
+  expert?: BreakoutExpert | undefined;
+  onExpert: (s: BreakoutExpert | undefined) => void;
   onStart: () => void;
   onCancel: () => void;
 }
 
-export function BreakoutSelectionBar({ count, specialist, onSpecialist, onStart, onCancel }: BreakoutSelectionBarProps) {
-  const specialists = useSpecialists();
+export function BreakoutSelectionBar({ count, expert, onExpert, onStart, onCancel }: BreakoutSelectionBarProps) {
+  const experts = useExperts();
   return (
     <div className="breakout-sel-bar" role="status">
       <span className="breakout-sel-text">
@@ -27,19 +27,19 @@ export function BreakoutSelectionBar({ count, specialist, onSpecialist, onStart,
         )}
       </span>
       <span className="breakout-sel-actions">
-        {specialists.length ? (
+        {experts.length ? (
           <label>
             With{" "}
             <select
               className="breakout-sel-cancel"
-              value={specialist?.id ?? ""}
+              value={expert?.id ?? ""}
               onChange={(e) => {
-                const s = specialists.find((x) => x.id === e.target.value);
-                onSpecialist(s && { id: s.id, name: s.name, home: s.home });
+                const s = experts.find((x) => x.id === e.target.value);
+                onExpert(s && { id: s.id, name: s.name, home: s.home });
               }}
             >
-              <option value="">No specialist</option>
-              {specialists.map((s) => (
+              <option value="">No expert</option>
+              {experts.map((s) => (
                 <option key={s.id} value={s.id}>
                   {s.name}
                 </option>

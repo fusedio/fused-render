@@ -4,8 +4,7 @@
 // the only pin — pins and outside presses are ignored, the pin icon again is
 // temp; a ring or door closes its own TEMP card (never a pinned one) and a
 // double-click is open then close; the rail and window A / B are the view, so a press there closes
-// no temp card; the hop rows 13–17; and the switch off keeps every rule it
-// had. Real modules throughout, as ClaudeRail.render.test.tsx;
+// no temp card; the hop rows 13–17. Real modules throughout, as ClaudeRail.render.test.tsx;
 // the document's and the window's listeners are recorded so a press, a key
 // and a frame's blur can be played to them.
 import { installDomShim, installPortalContainer, removePortalContainer } from "@platform/lib/testDomShim";
@@ -22,10 +21,6 @@ const { BotPeek } = await import("./BotPeek");
 const { BotCardHost } = await import("./BotCardHost");
 const { DoorCard } = await import("./DoorCard");
 const { TaskHead } = await import("@shell/TaskHead");
-const { publishTaskFavourites, publishFavouritesParent, resetTaskFavouritesFlagForTests } = await import(
-  "@platform/lib/favourites-flag"
-);
-const { publishCanvasRailPeek, resetCanvasRailPeekFlagForTests } = await import("./rail-peek-flag");
 const { publishTasks, rememberListing, forgetListing, resetListingFeedForTests } = await import("@shell/tasksPulse");
 const { favPeekState, resetFavPeekStoreForTests, resetFavHoverForTests } = await import("./fav-peek-store");
 const { publishBots, resetBotsPulseForTests } = await import("@platform/lib/botsPulse");
@@ -37,7 +32,6 @@ const { botsCardState, botsCardStore, registerBotsCard, resetBotsCardForTests } 
 const { registerTasksCard, resetTasksCardForTests, tasksCardState, tasksCardStore } = await import("./tasks-peek-store");
 const { forgetGitCardRail, gitCardIntent, gitCardState, gitCardStore, resetGitCardForTests, setGitCardRail, GIT_CARD_KEY } =
   await import("./git-peek-store");
-const { publishTaskHeadUnified, resetTaskHeadUnifiedFlagForTests } = await import("@shell/task-head-flag");
 const { resetFlagsForTests: resetClaudeFlagsForTests } = await import("@apps/claude/feature-flag");
 const { getPlusCard, plusHostElement, registerPlusHost, resetPlusCardStoreForTests } = await import("./plus-card-store");
 const { doorSelector, ringSelector, botRingSelector, viewPress } = await import("./rail-pin-lib");
@@ -177,9 +171,6 @@ beforeEach(() => {
     classList: { add() {}, remove() {}, toggle() {}, contains: () => false },
     style: { setProperty() {}, removeProperty() {} },
   };
-  resetTaskFavouritesFlagForTests();
-  resetCanvasRailPeekFlagForTests();
-  resetTaskHeadUnifiedFlagForTests();
   resetFavPeekStoreForTests();
   resetFavHoverForTests();
   resetListingFeedForTests();
@@ -205,8 +196,6 @@ afterEach(() => {
   resetListingFeedForTests();
   forgetListing();
   resetFavPeekStoreForTests();
-  resetTaskFavouritesFlagForTests();
-  resetCanvasRailPeekFlagForTests();
   resetBotCardForTests();
   resetBotsPulseForTests();
   resetTasksCardForTests();
@@ -222,7 +211,6 @@ afterEach(() => {
   (globalThis as { fetch: unknown }).fetch = realFetch;
   dropSharedPrefsRead();
   resetClaudeFlagsForTests();
-  resetTaskHeadUnifiedFlagForTests();
   removePortalContainer();
   if (!hadGetById) delete doc.getElementById;
   doc.activeElement = hadActive;
@@ -247,8 +235,7 @@ const settle = () =>
     await tick();
   });
 
-function Rail({ place, unified, ...rest }: { place?: RailPlace; unified?: boolean; railKey?: string }) {
-  void unified;
+function Rail({ place, ...rest }: { place?: RailPlace; railKey?: string }) {
   return (
     <ClaudeRail
       key={rest.railKey ?? "rail"}
@@ -264,16 +251,10 @@ function Rail({ place, unified, ...rest }: { place?: RailPlace; unified?: boolea
 }
 
 async function mount(o: {
-  unified: boolean;
-  favourites?: boolean;
   chats?: Task[];
   extra?: ReactElement | null;
   bots?: boolean;
 }): Promise<ReactTestRenderer> {
-  publishCanvasRailPeek({ enabled: true });
-  publishFavouritesParent({ enabled: true });
-  publishTaskFavourites({ enabled: o.favourites ?? true });
-  if (o.unified) publishTaskHeadUnified({ enabled: true });
   const rows = o.chats ?? [chat("a"), chat("b")];
   rememberListing(rows);
   publishTasks(rows as unknown as TaskPulseTask[]);
@@ -366,9 +347,9 @@ async function frameBlur() {
 
 // ---------------------------------------------------------------------------
 
-describe("the task ring's card (window A), switch on", () => {
+describe("the task ring's card (window A)", () => {
   test("a click is TEMP: one press outside closes it, and so does Escape; a PINNED card ignores Escape", async () => {
-    const r = await mount({ unified: true });
+    const r = await mount({});
     await press(listRing(r, "a"));
     expect(shownKey(r)).toBe("a");
     expect(peek(r)!.props.pinned).toBe(true);
@@ -389,7 +370,7 @@ describe("the task ring's card (window A), switch on", () => {
   });
 
   test("the rail is the view, not outside: its blank, another ring, a door or window B's card close no temp card", async () => {
-    const r = await mount({ unified: true });
+    const r = await mount({});
     await press(listRing(r, "a"));
     await pressAt(onRail());
     await pressAt(onRail(ringSelector(".claude-rail-chats", "b")));
@@ -411,7 +392,7 @@ describe("the task ring's card (window A), switch on", () => {
   });
 
   test("the pin icon PINS (outside presses and the frame ignored), again is temp, then an outside press closes", async () => {
-    const r = await mount({ unified: true });
+    const r = await mount({});
     await press(listRing(r, "a"));
     await act(async () => peek(r)!.props.pinCtl.onToggle());
     expect(peek(r)!.props.held).toBe(true);
@@ -427,14 +408,14 @@ describe("the task ring's card (window A), switch on", () => {
   });
 
   test("a press into the frame closes a temp card", async () => {
-    const r = await mount({ unified: true });
+    const r = await mount({});
     await press(listRing(r, "a"));
     await frameBlur();
     expect(shownKey(r)).toBeNull();
   });
 
   test("its own ring toggles a TEMP card closed (owner, 2026-11-19); a pinned one stays up, pinned", async () => {
-    const r = await mount({ unified: true });
+    const r = await mount({});
     await press(listRing(r, "a"));
     expect(shownKey(r)).toBe("a");
     await press(listRing(r, "a"));
@@ -456,7 +437,7 @@ describe("the task ring's card (window A), switch on", () => {
   });
 
   test("a double-click is two clicks: it opens temp, then closes it; a lone detail-2 click opens temp", async () => {
-    const r = await mount({ unified: true });
+    const r = await mount({});
     await press(listRing(r, "a"), 1);
     await press(listRing(r, "a"), 2);
     expect(shownKey(r)).toBeNull();
@@ -467,7 +448,7 @@ describe("the task ring's card (window A), switch on", () => {
   });
 
   test("THE PIN IS THE WINDOW'S: another ring of a pinned window swaps what it shows, still pinned", async () => {
-    const r = await mount({ unified: true });
+    const r = await mount({});
     await press(listRing(r, "a"));
     await pinIcon(r);
     expect(peek(r)!.props.held).toBe(true);
@@ -478,7 +459,7 @@ describe("the task ring's card (window A), switch on", () => {
   });
 
   test("no × with the pin: the head's first button is the pin", async () => {
-    const r = await mount({ unified: true });
+    const r = await mount({});
     await press(listRing(r, "a"));
     const labels = peek(r)!
       .findAll((n) => n.type === "button")
@@ -488,57 +469,18 @@ describe("the task ring's card (window A), switch on", () => {
   });
 
   test("row 20: Enter on a ring (detail 0) is a click: temp", async () => {
-    const r = await mount({ unified: true });
+    const r = await mount({});
     await press(listRing(r, "a"), 0);
     expect(shownKey(r)).toBe("a");
     expect(peek(r)!.props.held).toBe(false);
   });
 });
 
-describe("the switch off: every rule as it was", () => {
-  test("favourites on: a click HOLDS at once; an outside press and the frame leave it; no pin icon", async () => {
-    const r = await mount({ unified: false });
-    await press(listRing(r, "a"));
-    expect(peek(r)!.props.held).toBe(true);
-    expect(peek(r)!.props.pinCtl).toBeNull();
-    await pressAt(NOWHERE);
-    await frameBlur();
-    expect(shownKey(r)).toBe("a");
-    // A double-click is two clicks: the second closes (the toggle).
-    await press(listRing(r, "b"), 1);
-    await press(listRing(r, "b"), 2);
-    expect(shownKey(r)).toBeNull();
-  });
-
-  test("favourites off: a clicked card is not held, and Escape with the focus nowhere closes it", async () => {
-    const r = await mount({ unified: false, favourites: false });
-    await press(listRing(r, "a"));
-    expect(peek(r)!.props.held).toBe(false);
-    await escapeOnBody();
-    expect(shownKey(r)).toBeNull();
-  });
-
-  test("the bot ring: a press holds, the window's mark at once; the Tasks door's second press closes", async () => {
-    const off = registerTasksCard();
-    const r = await mount({ unified: false });
-    await act(async () => {
-      publishBots([{ id: "b1", status: "idle", seq: 1, pinned: true, name: "Helper" }] as never);
-    });
-    await press(r.root.find((n) => n.type === "a" && n.props["data-bot-id"] === "b1"));
-    expect(botCardState()).toMatchObject({ key: "b1", pinned: true, held: true });
-    expect(botOpen()).toBe("b1");
-    await press(byLabel(r, "Tasks")[0]!, 1);
-    await press(byLabel(r, "Tasks")[0]!, 2);
-    expect(tasksCardState().up).toBe(false);
-    off();
-  });
-});
-
-describe("the favourite's card (window B), switch on", () => {
+describe("the favourite's card (window B)", () => {
   const starred = () => [chat("a"), chat("f", { starred: true })];
 
   test("a click is temp; one press outside closes it; its own ring toggles it closed; the pin icon pins and outside presses are ignored", async () => {
-    const r = await mount({ unified: true, chats: starred() });
+    const r = await mount({ chats: starred() });
     await press(footRing(r, "f"));
     expect(favOpen()).toBe("f");
     expect(favPinned()).toBeNull();
@@ -577,7 +519,7 @@ describe("the favourite's card (window B), switch on", () => {
 
   test("its own ring and the rail are not an outside press; the card's own tree (a portal) is inside", async () => {
     const { favPress } = await import("./fav-peek-store");
-    const r = await mount({ unified: true, chats: starred() });
+    const r = await mount({ chats: starred() });
     await press(footRing(r, "f"));
     await pressAt(onRail(ringSelector(".claude-rail-favs", "f")));
     await pressAt(onRail());
@@ -592,7 +534,7 @@ describe("the favourite's card (window B), switch on", () => {
   });
 
   test("a press into the frame closes a temp favourite's card", async () => {
-    const r = await mount({ unified: true, chats: starred() });
+    const r = await mount({ chats: starred() });
     await press(footRing(r, "f"));
     await frameBlur();
     expect(favOpen()).toBeNull();
@@ -603,7 +545,7 @@ describe("window A and window B (rows 3, 4, 6)", () => {
   const starred = () => [chat("a"), chat("f", { starred: true })];
 
   test("A temp, a press on B's ring or B's card: A stays (the rail is the view), and B opens temp; a page press closes both", async () => {
-    const r = await mount({ unified: true, chats: starred() });
+    const r = await mount({ chats: starred() });
     await press(listRing(r, "a"));
     await pressAt(onRail(ringSelector(".claude-rail-favs", "f")));
     expect(shownKey(r)).toBe("a");
@@ -620,7 +562,7 @@ describe("window A and window B (rows 3, 4, 6)", () => {
   });
 
   test("B temp, a press on A's ring or A's card: B stays; a page press closes it", async () => {
-    const r = await mount({ unified: true, chats: starred() });
+    const r = await mount({ chats: starred() });
     await press(footRing(r, "f"));
     await pressAt(onRail(ringSelector(".claude-rail-chats", "a")));
     await pressAt(at(".claude-rail-peek"));
@@ -631,7 +573,7 @@ describe("window A and window B (rows 3, 4, 6)", () => {
   });
 
   test("row 4: A pinned, B opened: both stay up; B pinned, A opened: both stay", async () => {
-    const r = await mount({ unified: true, chats: starred() });
+    const r = await mount({ chats: starred() });
     await press(listRing(r, "a"));
     await pinIcon(r);
     await pressAt(onRail(ringSelector(".claude-rail-favs", "f")));
@@ -646,14 +588,14 @@ describe("window A and window B (rows 3, 4, 6)", () => {
   });
 });
 
-describe("the bot ring's card (window B), switch on", () => {
+describe("the bot ring's card (window B)", () => {
   const BOT = { id: "b1", status: "idle", seq: 1, pinned: true, name: "Helper" };
   const ring = (r: ReactTestRenderer) => r.root.find((n) => n.type === "a" && n.props["data-bot-id"] === "b1");
 
   const botPinIcon = (r: ReactTestRenderer) => act(async () => r.root.findByType(BotPeek).props.pinCtl.onToggle());
 
   test("temp: no mark for a reload, one press outside or Escape closes, the rail does not; pinned by the pin icon: the mark, outside ignored", async () => {
-    const r = await mount({ unified: true });
+    const r = await mount({});
     await act(async () => {
       publishBots([BOT] as never);
     });
@@ -705,7 +647,7 @@ describe("the bot ring's card (window B), switch on", () => {
 
   test("row 15 / 13: a page hop keeps a pinned bot card and closes a temp one", async () => {
     const Host = ({ n }: { n: number }) => <BotCardHost key="host" data-n={n} />;
-    const r = await mount({ unified: true, bots: false, extra: <Host n={1} /> });
+    const r = await mount({ bots: false, extra: <Host n={1} /> });
     await act(async () => {
       publishBots([BOT] as never);
     });
@@ -724,7 +666,7 @@ describe("the bot ring's card (window B), switch on", () => {
 
   test("a reload pins the window's open bot back — pinned", async () => {
     setBotOpen("b1");
-    const r = await mount({ unified: true });
+    const r = await mount({});
     await act(async () => {
       publishBots([BOT] as never);
       await tick();
@@ -734,10 +676,10 @@ describe("the bot ring's card (window B), switch on", () => {
   });
 });
 
-describe("the Tasks, Bots and Git doors' cards (window A), switch on", () => {
+describe("the Tasks, Bots and Git doors' cards (window A)", () => {
   test("Tasks: a press is temp, one press outside closes it; its own door and the rail are not outside; its door closes a temp card, never pins it; the pin icon pins; the frame closes temp only", async () => {
     const off = registerTasksCard();
-    const r = await mount({ unified: true });
+    const r = await mount({});
     const door = () => byLabel(r, "Tasks")[0]!;
     expect(door().props["data-rail-door"]).toBe("tasks");
     await press(door());
@@ -786,7 +728,7 @@ describe("the Tasks, Bots and Git doors' cards (window A), switch on", () => {
 
   test("Bots: the same — temp closes outside only, its door closes a temp card, never pins it, the pin icon pins", async () => {
     const off = registerBotsCard();
-    const r = await mount({ unified: true });
+    const r = await mount({});
     const door = () => byLabel(r, "Bots")[0]!;
     await press(door());
     expect(botsCardState()).toMatchObject({ up: true, pinned: true, held: false });
@@ -808,7 +750,7 @@ describe("the Tasks, Bots and Git doors' cards (window A), switch on", () => {
   });
 
   test("Git: temp closes outside and on its rail going; pinned stays through both", async () => {
-    const r = await mount({ unified: true });
+    const r = await mount({});
     void r;
     await act(async () => {
       gitCardIntent().press(GIT_CARD_KEY);
@@ -845,10 +787,6 @@ describe("the Tasks, Bots and Git doors' cards (window A), switch on", () => {
     );
     // The card first: it is the shell's, mounted once — a hop swaps the rail
     // beside it, never the card itself.
-    publishCanvasRailPeek({ enabled: true });
-    publishFavouritesParent({ enabled: true });
-    publishTaskFavourites({ enabled: true });
-    publishTaskHeadUnified({ enabled: true });
     let r!: ReactTestRenderer;
     await act(async () => {
       r = create(<>{card}<Rail /></>, { createNodeMock: () => fakeEl() });
@@ -871,7 +809,7 @@ describe("the Tasks, Bots and Git doors' cards (window A), switch on", () => {
   });
 });
 
-describe("the + and a draft's ring (window A's popover), switch on", () => {
+describe("the + and a draft's ring (window A's popover)", () => {
   // The card's dialog, as the rail reads it (`popBusy`): standing, not mid-Create.
   let hadQuery: unknown = MISSING;
   beforeEach(() => {
@@ -909,7 +847,7 @@ describe("the + and a draft's ring (window A's popover), switch on", () => {
   test("the +: a click is temp (the pin icon hollow, grips on), one press outside closes it the chassis' way; its own door and the rail are not outside", async () => {
     answer();
     const off = registerPlusHost();
-    const r = await mount({ unified: true });
+    const r = await mount({});
     await pressPlus(r, 1);
     expect(card()).toMatchObject({ pop: true, pinned: true, door: PLUS_DOOR });
     expect(card()!.held).toBeFalsy();
@@ -930,7 +868,7 @@ describe("the + and a draft's ring (window A's popover), switch on", () => {
   test("the +: the pin icon holds (outside presses, the frame and its own door ignored); unpinned, its door closes it", async () => {
     answer();
     const off = registerPlusHost();
-    const r = await mount({ unified: true });
+    const r = await mount({});
     await pressPlus(r, 1);
     await popPinIcon();
     expect(card()!.held).toBe(true);
@@ -952,7 +890,7 @@ describe("the + and a draft's ring (window A's popover), switch on", () => {
   test("the +: a lone detail-2 click opens it temp (no double-click pin)", async () => {
     answer();
     const off = registerPlusHost();
-    const r = await mount({ unified: true });
+    const r = await mount({});
     await pressPlus(r, 2);
     expect(card()).toMatchObject({ pop: true, pinned: true, door: PLUS_DOOR });
     expect(card()!.held).toBeFalsy();
@@ -962,7 +900,7 @@ describe("the + and a draft's ring (window A's popover), switch on", () => {
   test("the +, pinned and moved (owner, 2026-11-17): it floats at window A's position — no box published, the right grips on — and docks with the unpin", async () => {
     answer();
     const off = registerPlusHost();
-    const r = await mount({ unified: true });
+    const r = await mount({});
     await pressPlus(r, 1);
     type Pop = {
       place: (w: { width: number; height: number }) => unknown;
@@ -996,20 +934,11 @@ describe("the + and a draft's ring (window A's popover), switch on", () => {
     off();
   });
 
-  test("the switch off: no pin icon, and a preview has no grips", async () => {
-    answer();
-    const off = registerPlusHost();
-    const r = await mount({ unified: false });
-    await pressPlus(r, 1);
-    expect(drawn()!.pinNode).toBeUndefined();
-    off();
-  });
-
   test("a draft's ring: a click opens its popover temp; its ring is its own door: it closes a temp card, never pins it; the pin icon pins", async () => {
     answer();
     const off = registerPlusHost();
     const draft = chat("d", { kind: "draft", draft_kind: "chat", session_id: "" } as Partial<Task>);
-    const r = await mount({ unified: true, chats: [chat("a"), draft] });
+    const r = await mount({ chats: [chat("a"), draft] });
     await press(listRing(r, "d"), 1);
     await act(async () => {
       await tick(20);
@@ -1032,7 +961,7 @@ describe("the + and a draft's ring (window A's popover), switch on", () => {
 
 describe("a pinned task card across a hop and a list change (rows 13, 16–18)", () => {
   test("row 13: a temp card does not survive the rail's remount", async () => {
-    const r = await mount({ unified: true });
+    const r = await mount({});
     await press(listRing(r, "a"));
     await act(async () => r.update(<><Rail railKey="next" /><BotCardHost /></>));
     await settle();
@@ -1040,7 +969,7 @@ describe("a pinned task card across a hop and a list change (rows 13, 16–18)",
   });
 
   test("row 16: pinned, the next page lists the chat — it stays on that ring, pinned", async () => {
-    const r = await mount({ unified: true });
+    const r = await mount({});
     await press(listRing(r, "a"));
     await pinIcon(r);
     await act(async () => r.update(<><Rail railKey="next" /><BotCardHost /></>));
@@ -1063,7 +992,7 @@ describe("a pinned task card across a hop and a list change (rows 13, 16–18)",
   test("pinned, the next page does not list the chat — the window closes, the pin with it (no + in its place)", async () => {
     const off = registerPlusHost();
     answerSeed();
-    const r = await mount({ unified: true, chats: [chat("a"), chat("o", { project: OTHER, target: OTHER })] });
+    const r = await mount({ chats: [chat("a"), chat("o", { project: OTHER, target: OTHER })] });
     await press(listRing(r, "a"));
     await pinIcon(r);
     expect(aPinned()).toBe("task:" + chat("a").key);
@@ -1081,7 +1010,7 @@ describe("a pinned task card across a hop and a list change (rows 13, 16–18)",
     const off = registerPlusHost();
     answerSeed();
     setAPinned("plus");
-    const r = await mount({ unified: true });
+    const r = await mount({});
     await act(async () => {
       await tick(30);
     });
@@ -1092,7 +1021,7 @@ describe("a pinned task card across a hop and a list change (rows 13, 16–18)",
 
   test("a reload (a fresh rail, the mark kept): the pinned task's card comes back on its ring, pinned", async () => {
     setAPinned("task:" + chat("a").key);
-    const r = await mount({ unified: true });
+    const r = await mount({});
     await settle();
     expect(shownKey(r)).toBe("a");
     expect(peek(r)!.props.held).toBe(true);
@@ -1102,7 +1031,7 @@ describe("a pinned task card across a hop and a list change (rows 13, 16–18)",
     const off = registerPlusHost();
     answerSeed();
     setAPinned("task:gone");
-    const r = await mount({ unified: true });
+    const r = await mount({});
     await act(async () => {
       await tick(30);
     });
@@ -1115,22 +1044,15 @@ describe("a pinned task card across a hop and a list change (rows 13, 16–18)",
   test("a reload with the mark on the Tasks card: it comes back pinned once its card is mounted", async () => {
     const off = registerTasksCard();
     setAPinned("tasks");
-    await mount({ unified: true });
+    await mount({});
     await settle();
     expect(tasksCardState()).toMatchObject({ up: true, held: true });
     off();
   });
 
-  test("the switch off: the mark restores nothing", async () => {
-    setAPinned("task:" + chat("a").key);
-    const r = await mount({ unified: false });
-    await settle();
-    expect(shownKey(r)).toBeNull();
-  });
-
   test("row 17: the pinned task's ring drops out of the list with no change of view — the window closes, the pin with it", async () => {
     const off = registerPlusHost();
-    const r = await mount({ unified: true });
+    const r = await mount({});
     await press(listRing(r, "a"));
     await pinIcon(r);
     await act(async () => {
@@ -1147,7 +1069,7 @@ describe("a pinned task card across a hop and a list change (rows 13, 16–18)",
 
   test("row 18: the pinned task archived — the window closes, the pin with it", async () => {
     const off = registerPlusHost();
-    const r = await mount({ unified: true });
+    const r = await mount({});
     await press(listRing(r, "a"));
     await pinIcon(r);
     await act(async () => {
@@ -1162,14 +1084,6 @@ describe("a pinned task card across a hop and a list change (rows 13, 16–18)",
     off();
   });
 
-  test("the switch off: a pinned (held) card is gone with the hop, as it always was", async () => {
-    const r = await mount({ unified: false });
-    await press(listRing(r, "a"));
-    expect(peek(r)!.props.held).toBe(true);
-    await act(async () => r.update(<><Rail railKey="next" /><BotCardHost /></>));
-    await settle();
-    expect(shownKey(r)).toBeNull();
-  });
 });
 
 describe("the pin's seat in the shared head", () => {
@@ -1207,8 +1121,8 @@ describe("the pin's seat in the shared head", () => {
     act(() => r.unmount());
   });
 
-  test("the list card's head, switch on: the pin, hollow, its hint \"Pin\"; pressed, \"Unpin\"", async () => {
-    const r = await mount({ unified: true });
+  test("the list card's head: the pin, hollow, its hint \"Pin\"; pressed, \"Unpin\"", async () => {
+    const r = await mount({});
     await press(listRing(r, "a"));
     const pins = peek(r)!.findAll((n) => n.type === "button" && String(n.props.className).includes("rail-pin-btn"));
     expect(pins).toHaveLength(1);
@@ -1288,7 +1202,7 @@ describe("a pinned window moves by its head (owner, 2026-11-17)", () => {
   }
 
   test("a head drag floats the pinned list card at window A's position; no box is published while it floats", async () => {
-    const r = await mount({ unified: true });
+    const r = await mount({});
     await pinList(r);
     const docked = { ...styleOf(listBox(r)) };
     expect(windowABox()).not.toBeNull();
@@ -1303,7 +1217,7 @@ describe("a pinned window moves by its head (owner, 2026-11-17)", () => {
   });
 
   test("a press that never passes the threshold moves nothing; a hover or temp card never moves", async () => {
-    const r = await mount({ unified: true });
+    const r = await mount({});
     await press(listRing(r, "a"));
     const temp = { ...styleOf(listBox(r)) };
     await dragHead(listBox(r), -300, 50);
@@ -1330,7 +1244,7 @@ describe("a pinned window moves by its head (owner, 2026-11-17)", () => {
         }}
       </DoorCard>
     );
-    const r = await mount({ unified: true, extra: card });
+    const r = await mount({ extra: card });
     await pinList(r);
     await act(async () => commitWindowPos("a", { left: 120, top: 60 }));
     await settle();
@@ -1353,7 +1267,7 @@ describe("a pinned window moves by its head (owner, 2026-11-17)", () => {
   });
 
   test("unpinned, the card docks and the position goes with the pin; a double-click on the head docks and keeps the pin", async () => {
-    const r = await mount({ unified: true });
+    const r = await mount({});
     await pinList(r);
     const docked = { ...styleOf(listBox(r)) };
     await act(async () => commitWindowPos("a", { left: 120, top: 60 }));
@@ -1380,7 +1294,7 @@ describe("a pinned window moves by its head (owner, 2026-11-17)", () => {
   test("a reload brings the pinned window back where it floated (the mark)", async () => {
     setAPinned("task:a");
     setWindowPosMark("a", JSON.stringify({ left: 210, top: 140 }));
-    const r = await mount({ unified: true });
+    const r = await mount({});
     await settle();
     expect(shownKey(r)).toBe("a");
     expect(peek(r)!.props.held).toBe(true);
@@ -1389,7 +1303,7 @@ describe("a pinned window moves by its head (owner, 2026-11-17)", () => {
 
   test("window B: a floating bot card publishes no box for window A to keep clear of; pressed last, window A steps over it", async () => {
     const BOT = { id: "b1", status: "idle", seq: 1, pinned: true, name: "Helper" };
-    const r = await mount({ unified: true });
+    const r = await mount({});
     await act(async () => {
       publishBots([BOT] as never);
     });
@@ -1426,14 +1340,6 @@ describe("a pinned window moves by its head (owner, 2026-11-17)", () => {
     expect(listBox(r).props.className).toContain("is-front");
   });
 
-  test("the switch off: nothing moves", async () => {
-    const r = await mount({ unified: false });
-    await press(listRing(r, "a"));
-    await dragHead(listBox(r), -300, 50);
-    await settle();
-    expect(windowPosMark("a")).toBeNull();
-    expect(listBox(r).props.className).not.toContain("is-movable");
-  });
 });
 
 describe("floating windows (round 3 B; owner, 2026-11-17)", () => {
@@ -1471,7 +1377,7 @@ describe("floating windows (round 3 B; owner, 2026-11-17)", () => {
   test("back where I left it: a window shrink squeezes the floating card, the stored spot stays, and it returns as the room does", async () => {
     win.innerWidth = 1400;
     win.innerHeight = 900;
-    const r = await mount({ unified: true });
+    const r = await mount({});
     await press(listRing(r, "a"));
     await act(async () => peek(r)!.props.pinCtl.onToggle());
     await settle();
@@ -1495,7 +1401,7 @@ describe("floating windows (round 3 B; owner, 2026-11-17)", () => {
   });
 
   test("the edge magnet: a head drag within 12px of window B's card lands flush with it, the guide along the edge until the release", async () => {
-    const r = await mount({ unified: true });
+    const r = await mount({});
     await openBot(r);
     await press(listRing(r, "a"));
     await act(async () => peek(r)!.props.pinCtl.onToggle());
@@ -1547,7 +1453,7 @@ describe("the pin on the door of a pinned window (owner, 2026-11-18)", () => {
   const marks = (r: ReactTestRenderer) => marksIn(r.root);
 
   test("window A: no mark on a temp card's ring; the pin icon puts it on that ring, and takes it off again", async () => {
-    const r = await mount({ unified: true });
+    const r = await mount({});
     await press(listRing(r, "a"));
     expect(marks(r)).toHaveLength(0);
     await act(async () => peek(r)!.props.pinCtl.onToggle());
@@ -1558,7 +1464,7 @@ describe("the pin on the door of a pinned window (owner, 2026-11-18)", () => {
   });
 
   test("window B: the pinned favourite's ring in the favourites, never the list's ring on the same chat", async () => {
-    const r = await mount({ unified: true, chats: [chat("a"), chat("f", { starred: true })] });
+    const r = await mount({ chats: [chat("a"), chat("f", { starred: true })] });
     await press(footRing(r, "f"));
     expect(marks(r)).toHaveLength(0);
     await act(async () => setFavPinned("f"));
@@ -1570,7 +1476,7 @@ describe("the pin on the door of a pinned window (owner, 2026-11-18)", () => {
 
   test("the Tasks door: the mark while its card is pinned", async () => {
     const off = registerTasksCard();
-    const r = await mount({ unified: true });
+    const r = await mount({});
     const door = () => byLabel(r, "Tasks")[0]!;
     await press(door());
     expect(marks(r)).toHaveLength(0);
@@ -1579,10 +1485,4 @@ describe("the pin on the door of a pinned window (owner, 2026-11-18)", () => {
     off();
   });
 
-  test("the switch off: a held card's ring wears no pin (there is no pin)", async () => {
-    const r = await mount({ unified: false });
-    await press(listRing(r, "a"));
-    expect(peek(r)!.props.held).toBe(true);
-    expect(marks(r)).toHaveLength(0);
-  });
 });

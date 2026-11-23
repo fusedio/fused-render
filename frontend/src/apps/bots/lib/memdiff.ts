@@ -1,4 +1,4 @@
-// Pure helpers for the specialist pane (components/SpecialistPane.tsx, PaneParts.tsx): a short "how long ago", and a
+// Pure helpers for the expert pane (components/ExpertPane.tsx, PaneParts.tsx): a short "how long ago", and a
 // unified diff of memory.md read as rows of a document (added, removed, a removed + added pair, unchanged context).
 // No fetching, no React.
 

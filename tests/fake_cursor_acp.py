@@ -30,7 +30,9 @@ mangled new-file shape the real CLI sends: `oldText: "-- /dev/null"`,
 `newText: "++ b/<path>\n<content>"`), `--question` a question card (`__ask_question_skip__`), `--ext` an
 agent→client `cursor/update_todos` request; then replies `{stopReason:
 "end_turn"}` (`cancelled` after a `session/cancel`, a JSON-RPC error with
-`--error`). `--block-until PATH` holds the prompt open; `--die` exits
+`--error`). `--stale-update` sends one chunk addressed to the FIRST session id on
+each prompt; `--stderr-on-prompt TEXT` writes TEXT to stderr on each prompt.
+`--block-until PATH` holds the prompt open; `--die` exits
 mid-prompt. Like the real server, stdin EOF does not end the process (a
 SIGTERM does) unless `--exit-on-eof`.
 
@@ -60,6 +62,10 @@ def _flag(name, default=None):
 
 LOG = _flag("--log")
 SESSION_ID = ""
+#: The id the FIRST `session/new` minted: what a spare's throwaway session is.
+FIRST_SID = ""
+STALE_UPDATE = "--stale-update" in ARGS
+STDERR_ON_PROMPT = _flag("--stderr-on-prompt")
 BLOCK_UNTIL = _flag("--block-until")
 REPLAY = int(_flag("--replay", "1"))
 WITH_TOOL = "--tool" in ARGS
@@ -145,7 +151,7 @@ def _state():
 
 
 def _serve(msg):
-    global SESSION_ID
+    global SESSION_ID, FIRST_SID
     method = msg.get("method")
     rid = msg.get("id")
     params = msg.get("params") or {}
@@ -184,6 +190,7 @@ def _serve(msg):
                                     "'cursor_login'."}}})
             return
         SESSION_ID = str(uuid.uuid4())
+        FIRST_SID = FIRST_SID or SESSION_ID
         _reply(rid, dict(_state(), sessionId=SESSION_ID))
         _update("available_commands_update", availableCommands=COMMANDS)
     elif method == "session/load":
@@ -357,6 +364,16 @@ def _prompt(rid, params):
             _log({"echo_seen": _echo_seen(text), "text": text})
         if DIE:
             os._exit(3)
+        if STDERR_ON_PROMPT:
+            sys.stderr.write(STDERR_ON_PROMPT + "\n")
+            sys.stderr.flush()
+        if STALE_UPDATE:
+            # An update for the spare's THROWAWAY session (the first
+            # `session/new`'s id), as a late one from the warm-up would be.
+            _send({"jsonrpc": "2.0", "method": "session/update",
+                   "params": {"sessionId": FIRST_SID, "update": {
+                       "sessionUpdate": "agent_message_chunk",
+                       "content": {"type": "text", "text": "STALE"}}}})
         _text("agent_message_chunk", "Hello")
         _text("agent_message_chunk", " world")
         if EXT:

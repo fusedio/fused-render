@@ -1,6 +1,5 @@
 // RAIL CARDS: HOVER / TEMP PIN / PIN (owner, 2026-11-16; design.md "Rail
-// cards"). Behind the unified-head switch (`task_head_unified_enabled`,
-// shell/task-head-flag): off, every card keeps the rules it had.
+// cards").
 //
 // Every card off the rail — window A (a task ring, a draft ring, the +, Tasks,
 // Bots, Git) and window B (a favourite's ring, a bot's ring) — is in one of

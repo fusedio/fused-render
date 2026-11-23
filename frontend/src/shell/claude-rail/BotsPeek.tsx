@@ -38,7 +38,7 @@
 // and name, its status in the rail's words (claude-rail-lib
 // `botStatusWords`), and Open — the bot's page.
 import { Component, lazy, Suspense, useCallback, useEffect, useLayoutEffect, useRef, useState, type ReactNode } from "react";
-import { ArrowLeft, ChevronDown, ChevronUp, X } from "lucide-react";
+import { ArrowLeft, ChevronDown, ChevronUp } from "lucide-react";
 import { useBotsAvailable } from "@platform/lib/bots-available";
 import { Face } from "@apps/bots/components/Face";
 import { botHref } from "@apps/bots/routes";
@@ -46,7 +46,6 @@ import { useBotsSelector } from "@apps/bots/state/store";
 import { botStatusWords } from "./claude-rail-lib";
 import { DoorCard } from "./DoorCard";
 import { RailPinButton } from "./RailPin";
-import { useCanvasRailPeek } from "./rail-peek-flag";
 import { botsCardStore, useBotsCard } from "./bots-peek-store";
 
 // The page's chunks (the Bots page lazy-loads the same modules): not the
@@ -71,10 +70,9 @@ class ListBoundary extends Component<{ children: ReactNode }, { failed: boolean 
 }
 
 export function BotsPeek() {
-  const on = useCanvasRailPeek();
-  const offered = useBotsAvailable(on);
+  const offered = useBotsAvailable(true);
   const card = useBotsCard();
-  const up = on && offered && card.up;
+  const up = offered && card.up;
   const listRef = useRef<HTMLDivElement | null>(null);
   // LAZY, THEN KEPT (header).
   const [mounted, setMounted] = useState(false);
@@ -121,7 +119,7 @@ export function BotsPeek() {
             {chat ? (
               <div className="claude-rail-peek-row">
                 {/* The pin before ← (no × on this row): `[pin] [←] [↑][↓]`. */}
-                {api.pin && <RailPinButton variant="legacy" pinned={api.pin.pinned} onToggle={api.pin.onToggle} />}
+                <RailPinButton variant="legacy" pinned={api.pin.pinned} onToggle={api.pin.onToggle} />
                 <button
                   ref={api.backRef}
                   type="button"
@@ -154,13 +152,8 @@ export function BotsPeek() {
               </div>
             ) : (
               <div className="claude-rail-peek-row">
-                {/* With the pin: no ×, the pin in its seat (and the keyboard's landing). */}
-                {!api.pin && (
-                  <button ref={api.closeRef} type="button" className="claude-rail-peek-btn claude-rail-peek-close" aria-label="Close Bots" data-hint="Close" onClick={api.close}>
-                    <X size={14} aria-hidden="true" />
-                  </button>
-                )}
-                {api.pin && <RailPinButton variant="legacy" btnRef={api.closeRef} pinned={api.pin.pinned} onToggle={api.pin.onToggle} />}
+                {/* No ×: the pin in its seat (and the keyboard's landing). */}
+                <RailPinButton variant="legacy" btnRef={api.closeRef} pinned={api.pin.pinned} onToggle={api.pin.onToggle} />
                 <span className="claude-rail-tasks-title">
                   Bots
                 </span>

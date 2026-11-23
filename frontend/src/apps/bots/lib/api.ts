@@ -2,7 +2,7 @@
 // Every call goes through request(): one place counts calls in flight, reports a call still pending after STALL_MS
 // (the store shows it in the banner) and logs anything slower than SLOW_MS. The store installs those hooks
 // (apiHooks) at load, so this module imports nothing from it.
-import type { Specialist } from "@platform/lib/specialists";
+import type { Expert } from "@platform/lib/experts";
 
 // ------------------------------------------------------------------ wire types (§2) ----
 /** `note`: a muted harness line in the thread ("Already ran …", "Still waiting for Approve / Deny on …"); not a bubble, not reactable. */
@@ -198,11 +198,11 @@ export interface Bot {
   /** Folders on this Mac the bot may READ (`ls` / `find` / `readfile`; Settings › Permissions › Folders it may read).
    *  Plain absolute paths, the user's own: the bot never writes there and only the dialog edits the list. */
   folders?: string[];
-  /** "super": the one bot per Mac with Claude Code's own tools (docs §5 "Super Bot"); "specialist": a row the page
-   *  makes from /api/specialists (docs/specialists.md), not a bot the bots backend knows; absent for an ordinary bot. */
-  kind?: "bot" | "super" | "specialist";
-  /** Specialist only: its row (state/store.ts specialistBots). */
-  specialist?: Specialist;
+  /** "super": the one bot per Mac with Claude Code's own tools (docs §5 "Super Bot"); "expert": a row the page
+   *  makes from /api/experts (docs/experts.md), not a bot the bots backend knows; absent for an ordinary bot. */
+  kind?: "bot" | "super" | "expert";
+  /** Expert only: its row (state/store.ts expertBots). */
+  expert?: Expert;
   /** Super Bot's permission posture: ask before writes / edits / shell, or unattended (Claude's own judgement). */
   super_access?: "ask" | "full";
   face?: Face | null;
@@ -547,31 +547,31 @@ export const api = {
   starterStatus: () => get<{ ok: true; ready: Record<string, boolean | null>; why: Record<string, string> }>("/api/bot-apps/starters/status", "starter_status"),
 };
 
-const sid = (id: string) => `/api/specialists/${encodeURIComponent(id)}`;
-export interface SpecialistBody { name: string; about: string; folder: string; face: Face | null }
+const sid = (id: string) => `/api/experts/${encodeURIComponent(id)}`;
+export interface ExpertBody { name: string; about: string; folder: string; face: Face | null }
 /** An inbox file: a note's text, or a conversation's pointer; `kind` and `title` from its first line. */
-export interface SpecialistEntry { name: string; text: string; at: number; kind: "note" | "task" | "breakout" | "chat"; title: string }
+export interface ExpertEntry { name: string; text: string; at: number; kind: "note" | "task" | "breakout" | "chat"; title: string }
 /** A commit of its history: a learning run ("Update"; `read` entries) or a change to memory or skills. */
-export interface SpecialistChange { sha: string; at: number; label: string; read: number; changed: boolean }
-export interface SpecialistChat { session_id: string | null; folded: { session_id: string; at: number }[] }
-/** /api/specialists/<id>/… (fused_render/specialists/routes.py). */
-export const specialistApi = {
-  create: (body: SpecialistBody) => post<Specialist>("/api/specialists", body, "new specialist"),
-  patch: (id: string, body: SpecialistBody) => request<Specialist>("PATCH", sid(id), body, "specialist settings"),
-  remove: (id: string) => request<Ok>("DELETE", sid(id), undefined, "delete specialist"),
-  chat: (id: string) => get<SpecialistChat>(`${sid(id)}/chat`, "specialist chat"),
-  clear: (id: string) => post<SpecialistChat>(`${sid(id)}/chat/clear`, {}, "specialist clear"),
+export interface ExpertChange { sha: string; at: number; label: string; read: number; changed: boolean }
+export interface ExpertChat { session_id: string | null; folded: { session_id: string; at: number }[] }
+/** /api/experts/<id>/… (fused_render/experts/routes.py). */
+export const expertApi = {
+  create: (body: ExpertBody) => post<Expert>("/api/experts", body, "new expert"),
+  patch: (id: string, body: ExpertBody) => request<Expert>("PATCH", sid(id), body, "expert settings"),
+  remove: (id: string) => request<Ok>("DELETE", sid(id), undefined, "delete expert"),
+  chat: (id: string) => get<ExpertChat>(`${sid(id)}/chat`, "expert chat"),
+  clear: (id: string) => post<ExpertChat>(`${sid(id)}/chat/clear`, {}, "expert clear"),
   /** Its main chat as Markdown (the task chat's export). */
   exportChat: (id: string) => get<{ name: string; text: string }>(`${sid(id)}/chat/export`, "export"),
-  seen: (id: string) => post<Ok>(`${sid(id)}/seen`, {}, "specialist seen"),
-  memory: (id: string) => get<{ text: string }>(`${sid(id)}/memory`, "specialist memory"),
-  skills: (id: string) => get<{ skills: { name: string; description: string; text: string }[] }>(`${sid(id)}/skills`, "specialist skills"),
-  notes: (id: string) => get<{ notes: SpecialistEntry[] }>(`${sid(id)}/notes`, "specialist notes"),
+  seen: (id: string) => post<Ok>(`${sid(id)}/seen`, {}, "expert seen"),
+  memory: (id: string) => get<{ text: string }>(`${sid(id)}/memory`, "expert memory"),
+  skills: (id: string) => get<{ skills: { name: string; description: string; text: string }[] }>(`${sid(id)}/skills`, "expert skills"),
+  notes: (id: string) => get<{ notes: ExpertEntry[] }>(`${sid(id)}/notes`, "expert notes"),
   deleteNote: (id: string, name: string) => request<Ok>("DELETE", `${sid(id)}/notes/${encodeURIComponent(name)}`, undefined, "delete note"),
-  changes: (id: string) => get<{ changes: SpecialistChange[] }>(`${sid(id)}/changes`, "specialist changes"),
+  changes: (id: string) => get<{ changes: ExpertChange[] }>(`${sid(id)}/changes`, "expert changes"),
   /** `reply` and `read` for a learning run only. */
   diff: (id: string, sha: string) => get<{ diff: string; reply?: string; read?: { kind: string; title: string }[] }>(
-    `${sid(id)}/changes/${encodeURIComponent(sha)}`, "specialist diff"),
+    `${sid(id)}/changes/${encodeURIComponent(sha)}`, "expert diff"),
   /** Learn now. `started` false: nothing was waiting. */
   update: (id: string) => post<{ started: boolean }>(`${sid(id)}/update`, {}, "learn now"),
 };

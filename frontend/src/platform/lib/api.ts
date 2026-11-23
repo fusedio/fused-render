@@ -1608,31 +1608,17 @@ export interface Prefs {
   // Breakout side chats (`breakout_enabled`, shell/prefs.py; opt-in, off by
   // default). Optional like `queue`: absent reads as off.
   breakout?: { enabled: boolean };
-  // Specialists (`specialists_enabled`, shell/prefs.py; docs/specialists.md).
+  // Experts (`experts_enabled`, shell/prefs.py; docs/experts.md).
   // Experimental, off by default. Optional like `breakout`: absent reads as off.
-  specialists?: { enabled: boolean };
+  experts?: { enabled: boolean };
   // The slow in-canvas screenshot fallback on a Mac
   // (`canvas_shot_slow_fallback_enabled`, shell/prefs.py; off by default).
   // Optional: absent (older server) reads as off.
   canvas_shot?: { slow_fallback: boolean };
-  // The canvas page's collapsed Claude rail shows the hovered chat as a live
-  // floating card (`canvas_rail_peek_enabled`, shell/prefs.py; off by
-  // default). Optional: absent (older server) reads as off. A hover previews
-  // and a click pins — there is no trigger choice any more.
-  canvas_rail_peek?: { enabled: boolean };
-  // Favourite chats (`task_favourites_enabled`, shell/prefs.py; off by
-  // default): the star on the rail card, the rail's favourites section, the
-  // favourite's own card, the rail beside the open pane, the star beside the
-  // id in every task list. Optional: absent (older server) reads as off.
-  task_favourites?: { enabled: boolean };
-  // One shared task header in every task view: the Tasks page side panel, the
-  // rail Tasks card, the New task card, the Cards popup (`task_head_unified_enabled`,
-  // shell/prefs.py; off by default). Optional: absent (older server) reads as off.
-  task_head_unified?: { enabled: boolean };
   // Free pins on the Claude rail (`rail_free_pins_enabled`, shell/prefs.py; off
   // by default): a pin is its task's, freezes the window where it stood, and
-  // leaves the rail's column to a second, non-pinned window. Read only with
-  // the unified head on. Optional: absent (older server) reads as off.
+  // leaves the rail's column to a second, non-pinned window. Optional: absent
+  // (older server) reads as off.
   rail_free_pins?: { enabled: boolean };
   // A file's other modes as doors on the Claude rail (`rail_mode_doors_enabled`,
   // shell/prefs.py; off by default): the mode menu's entries, the active one
@@ -2215,24 +2201,12 @@ export function putBreakoutEnabled(enabled: boolean): Promise<Prefs> {
   return putJson<Prefs>("/api/prefs", { breakout_enabled: enabled });
 }
 
-export function putSpecialistsEnabled(enabled: boolean): Promise<Prefs> {
-  return putJson<Prefs>("/api/prefs", { specialists_enabled: enabled });
+export function putExpertsEnabled(enabled: boolean): Promise<Prefs> {
+  return putJson<Prefs>("/api/prefs", { experts_enabled: enabled });
 }
 
 export function putCanvasShotSlowFallbackEnabled(enabled: boolean): Promise<Prefs> {
   return putJson<Prefs>("/api/prefs", { canvas_shot_slow_fallback_enabled: enabled });
-}
-
-export function putCanvasRailPeekEnabled(enabled: boolean): Promise<Prefs> {
-  return putJson<Prefs>("/api/prefs", { canvas_rail_peek_enabled: enabled });
-}
-
-export function putTaskFavouritesEnabled(enabled: boolean): Promise<Prefs> {
-  return putJson<Prefs>("/api/prefs", { task_favourites_enabled: enabled });
-}
-
-export function putTaskHeadUnifiedEnabled(enabled: boolean): Promise<Prefs> {
-  return putJson<Prefs>("/api/prefs", { task_head_unified_enabled: enabled });
 }
 
 export function putRailFreePinsEnabled(enabled: boolean): Promise<Prefs> {

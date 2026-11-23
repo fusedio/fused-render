@@ -350,7 +350,6 @@ export function TaskPeekWho({
             failed={ringBroke}
             background={background}
             icon={task.icon_slot}
-            iconPicked={task.icon_picked}
             {...(ring?.unread ? { unread: true } : {})}
             {...(ring?.draftHeld ? { draftHeld: true } : {})}
             // The seat's instant caption says it (above): no native tooltip
