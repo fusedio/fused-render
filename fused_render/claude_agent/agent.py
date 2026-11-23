@@ -5691,14 +5691,16 @@ def _skill_index(target: str | None) -> list:
     return out
 
 
-def _cursor_skills_note(target: str | None) -> str:
-    """The skills Cursor cannot be handed (`cursor-agent acp` ignores
-    `--plugin-dir`, D8), named by SKILL.md path so the model reads them."""
+def _skills_note(target: str | None) -> str:
+    """The skills a backend cannot be handed as installed skills, named by
+    SKILL.md path so the model reads them. Cursor (ACP ignores
+    `--plugin-dir`, CURSOR D8) and Codex (no extra-skills-root option, and
+    CODEX_HOME is left untouched) both use it."""
     skills = _skill_index(target)
     if not skills:
         return ""
     rows = "\n".join(f"- `{n}` \u2014 {d} ({p})" for n, d, p in skills)
-    return (" SKILLS: Cursor was not handed these as installed skills, so each "
+    return (" SKILLS: this agent was not handed these as installed skills, so each "
             "one is a file to read: before doing work a skill's description "
             "covers, read its SKILL.md with your file-reading tool and follow "
             "it (relative paths inside it are relative to that SKILL.md's "
@@ -5909,6 +5911,9 @@ def _codex_argv(run_dir: str, pane: bool, cli_mode: str | None,
         neither sandbox writes outside the session's own folder, so they
         are read-only there without a rule. The prompt names them
         (`_canvas_reference_note`);
+      * skills → nothing here: the host appends `_skills_note` to the developer
+        instructions (no Codex option names an extra skills root, and
+        CODEX_HOME is left as found);
       * the permission bridge → nothing: approvals arrive as app-server
         requests the host answers through `perm/` (D4).
     What is left is the pane MCP server (`app_state`, `terminal_*`), on the
@@ -6263,7 +6268,7 @@ def _cursor_argv(run_dir: str, pane: bool, cli_mode: str | None,
     # server it came from: `mcp__fused_render__app_state` → `app_state`.
     body = _appended_prompt(file, pane, "cursor", s3=s3).replace(
         f"mcp__{PERMISSION_SERVER}__", "")
-    body += _cursor_skills_note(file)
+    body += _skills_note(file)
     dirs = []
     try:
         shots = _shots_dir()
