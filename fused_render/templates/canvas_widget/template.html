@@ -84,12 +84,32 @@
     padding: 24px; text-align: center; color: var(--fg-muted); background: var(--bg);
   }
   .message .error { color: var(--error); white-space: pre-wrap; max-width: 640px; }
+  /* The one loading look, from this page's first paint until the frame has
+     something of its own to show: a bar that only moves forward. */
+  .message.leaving { opacity: 0; pointer-events: none; transition: opacity 180ms ease; }
+  .loader { display: flex; flex-direction: column; align-items: center; gap: 12px; }
+  .loader .track { width: 168px; height: 3px; border-radius: 2px; background: var(--line); overflow: hidden; }
+  .loader .bar {
+    height: 100%; border-radius: 2px; background: var(--accent);
+    transform-origin: left center; transform: scaleX(0.04);
+    transition: transform 320ms cubic-bezier(0.2, 0.7, 0.2, 1);
+  }
+  .loader .label { font-size: 12px; }
+  /* The frame may draw words of its own in the same place: these go at
+     once, only the bar fades. */
+  .message.leaving .label { visibility: hidden; }
+  /* The strip keeps its height while its parts are not known yet, so the
+     loader does not jump when they land. */
+  .strip.pending > * { visibility: hidden; }
+  @media (prefers-reduced-motion: reduce) {
+    .message.leaving, .loader .bar { transition: none; }
+  }
   .message .actions { display: flex; gap: 8px; }
   [hidden] { display: none !important; }
 </style>
 </head>
 <body>
-<div class="strip" id="strip" hidden>
+<div class="strip pending" id="strip">
   <span class="title" id="title"></span>
   <span class="kind" id="kind"></span>
   <span class="canvas" id="canvas"></span>
@@ -101,7 +121,12 @@
 </div>
 <div class="stage">
   <iframe id="frame" hidden allow="clipboard-read; clipboard-write" referrerpolicy="origin"></iframe>
-  <div class="message" id="message">Loading…</div>
+  <div class="message" id="message">
+    <div class="loader" id="loader" role="progressbar" aria-label="Loading" aria-busy="true">
+      <div class="track"><div class="bar" id="bar"></div></div>
+      <div class="label">Loading…</div>
+    </div>
+  </div>
 </div>
 <script>
   // This page pushes the file's text itself; a reload would rebuild the
@@ -118,10 +143,19 @@
   const SOURCE_RECHECK_MS = 1500;
   const KIND_LABEL = { widget: "Widget", html: "HTML" };
   const STATUS_TEXT = { loading: "Loading…", ready: "", missing: "Not in the saved canvas", error: "Could not load" };
+  // A frame that says it is the node page but never says how it stands is
+  // shown after this long (one that does report is waited for).
+  const STATE_WAIT_MS = 2000;
+  // How far along the load is at each step this page can see. The bar creeps
+  // between them and never moves back.
+  const STEP = { start: 0.06, node: 0.18, workbench: 0.3, frame: 0.5, signedIn: 0.62, page: 0.76, canvas: 0.86 };
+  const CREEP_TO = 0.94;
 
   const $ = (id) => document.getElementById(id);
   const frame = $("frame");
   const message = $("message");
+  const loader = $("loader");
+  const bar = $("bar");
 
   let node = null;          // GET /api/canvases/node's answer
   let wb = null;            // CanvasNode.workbench's answer
@@ -139,11 +173,64 @@
   let canvasReading = false; // a re-read is in flight
   let canvasAgain = false;  // a change was heard during it
   let udfOffered = false;   // the current document was offered the UDF relay (NW-9)
+  let revealed = false;     // this document's frame has been shown
+  let stateSeen = false;    // this document said how it stands at least once
+  let settled = false;      // …and that it is past loading
+  let stateTimer = null;
+  let leaveTimer = null;
+  let progress = 0;         // the bar, 0..1
+  let creepTimer = null;
 
   function showMessage(build) {
+    stopLoading();
     message.replaceChildren();
     build(message);
     message.hidden = false;
+  }
+
+  // The loader (NW-10): one look from the first paint to the frame's own
+  // content, whatever is being waited for behind it.
+  function drawProgress() {
+    bar.style.transform = "scaleX(" + progress.toFixed(3) + ")";
+  }
+  function advance(to) {
+    if (to <= progress) return;
+    progress = to;
+    drawProgress();
+  }
+  function showLoading() {
+    clearTimeout(leaveTimer);
+    message.classList.remove("leaving");
+    if (loader.parentNode !== message) message.replaceChildren(loader);
+    message.hidden = false;
+    if (creepTimer === null) {
+      creepTimer = setInterval(() => {
+        if (progress < CREEP_TO) advance(progress + (CREEP_TO - progress) * 0.025);
+      }, 120);
+    }
+  }
+  function stopLoading() {
+    clearInterval(creepTimer);
+    creepTimer = null;
+    clearTimeout(leaveTimer);
+    clearTimeout(stateTimer);
+    message.classList.remove("leaving");
+  }
+  // Show the frame: the bar fills as the loader fades off it.
+  function reveal() {
+    if (revealed) return;
+    revealed = true;
+    stopLoading();
+    if (loader.parentNode !== message || message.hidden) {
+      message.hidden = true;
+      return;
+    }
+    advance(1);
+    message.classList.add("leaving");
+    leaveTimer = setTimeout(() => {
+      message.hidden = true;
+      message.classList.remove("leaving");
+    }, 200);
   }
   function text(tag, value, cls) {
     const el = document.createElement(tag);
@@ -206,6 +293,7 @@
       // except the local SQL engine when it is installed. Never through
       // the embed proxy: that frame's origin is a loopback listener.
       const offer = !!wb.sqlEngine && wb.origin === wb.publicOrigin;
+      advance(STEP.signedIn);
       const payload = { type: "fused-embed-auth-token", accessToken, caps: [], publicOrigin: wb.publicOrigin };
       if (offer) {
         payload.caps = ["sql", "udf", "udf-read"];
@@ -228,6 +316,7 @@
       if (gen === frameGen) {
         canvasSent = json;
         post({ type: "fused-embed-canvas", canvas: node.name, json });
+        advance(STEP.canvas);
         canvasReady = true;
         if (canvasStale) {
           canvasStale = false;
@@ -706,7 +795,15 @@
       clearTimeout(readyTimer);
       // Also for a page that answered after the wait gave up on it.
       frame.hidden = false;
-      message.hidden = true;
+      // The page is there but has nothing to show yet: the loader stays over
+      // it until it says how it stands (NW-10).
+      if (settled) reveal();
+      if (!revealed) {
+        showLoading();
+        advance(STEP.page);
+        clearTimeout(stateTimer);
+        stateTimer = setTimeout(() => { if (!stateSeen) reveal(); }, STATE_WAIT_MS);
+      }
       // A fresh document holds no text yet, whatever was sent to the last one.
       void sendSource(true);
       // The canvas was pushed while this page was loading (the engine's
@@ -729,7 +826,13 @@
     } else if (data.type === "fused-embed-node-state" && data.node === node.node) {
       const status = typeof data.status === "string" ? data.status : "";
       const detail = status === "error" && typeof data.message === "string" ? ": " + data.message : "";
-      setStatus((STATUS_TEXT[status] || "") + detail, status === "error" ? "error" : "");
+      stateSeen = true;
+      // Anything but "loading" is the page's own to show, an error too.
+      if (status !== "loading") settled = true;
+      if (settled && pageReady) reveal();
+      // While the loader is up it is the one sign of loading.
+      const quiet = status === "loading" && !revealed;
+      setStatus(quiet ? "" : (STATUS_TEXT[status] || "") + detail, status === "error" ? "error" : "");
     }
   });
 
@@ -751,8 +854,21 @@
     // Fetched once per document, in parallel with the token.
     canvasSeed = CanvasNode.saved(node.env, node.name);
     sqlEnd();
-    setStatus(STATUS_TEXT.loading);
-    showMessage((el) => el.append(text("div", "Loading " + node.title + "…")));
+    setStatus("");
+    revealed = false;
+    stateSeen = false;
+    settled = false;
+    // A reload starts the bar over, from where a first load is by now.
+    if (message.hidden || loader.parentNode !== message) {
+      // Set back in one step, not drawn sliding backwards.
+      progress = 0;
+      bar.style.transition = "none";
+      drawProgress();
+      void bar.offsetWidth;
+      bar.style.transition = "";
+    }
+    showLoading();
+    advance(STEP.workbench);
     // The wait for the page to say it is there runs from the frame's LOAD (a
     // slow network is not a missing page), with a longer one from here in
     // case the frame never loads at all.
@@ -777,21 +893,27 @@
   }
   frame.addEventListener("load", () => {
     if (wb && !pageReady && !frame.hidden) armReadyWait(NODE_READY_WAIT_MS);
+    if (wb && !revealed) advance(STEP.frame);
   });
 
   async function boot() {
     if (!FILE) {
+      $("strip").hidden = true;
       showMessage((el) => el.append(text("div", "No file to show.")));
       return;
     }
+    showLoading();
+    advance(STEP.start);
     try {
       node = await CanvasNode.info(FILE);
     } catch (error) {
+      $("strip").hidden = true;
       fail("Could not read this node", error);
       return;
     }
     if (!node || !node.enabled || !node.node) {
       node = null;
+      $("strip").hidden = true;
       showMessage((el) => el.append(text("div", "This file is not a node of a canvas you work on.")));
       return;
     }
@@ -800,7 +922,8 @@
     $("canvas").textContent = node.name;
     $("open").addEventListener("click", () => CanvasNode.openCanvas(node));
     $("reload").addEventListener("click", () => { if (wb) loadFrame(); });
-    $("strip").hidden = false;
+    $("strip").classList.remove("pending");
+    advance(STEP.node);
     if (!node.signed_in) {
       showMessage((el) => {
         el.append(text("div", "Sign in to Fused to show " + node.title + " live."));
