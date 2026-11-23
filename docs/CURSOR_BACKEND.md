@@ -139,7 +139,7 @@ agent.py:      _HOST_FILES["cursor"] = cursor_host.py; _SELF_MINTED_ID_BACKENDS 
   switches are the same request. `caps.live_model_switch = True`. No effort:
   the thinking level is a per-model PARAMETER (`configOptions` category
   `thought_level`) that Cursor defaults; `efforts = ()`.
-- **D8** System prompt: `_cursor_argv` writes `<run_dir>/cursor_agent/instructions.md` (not `cursor/`: that is the poll's byte-offset file) Skills ride in the same file, listed by SKILL.md path (`_cursor_skills_note`): `cursor-agent acp` ignores `--plugin-dir`, `--add-dir` and a workspace `.cursor/skills`, and only loads `~/.cursor/skills`, which fused does not write (measured on CLI 2026.11.22-e9042b2 with a real ACP turn).
+- **D8** System prompt: `_cursor_argv` writes `<run_dir>/cursor_agent/instructions.md` (not `cursor/`: that is the poll's byte-offset file) Skills ride in the same file, listed by SKILL.md path (`_skills_note`): `cursor-agent acp` ignores `--plugin-dir`, `--add-dir` and a workspace `.cursor/skills`, and only loads `~/.cursor/skills`, which fused does not write (measured on CLI 2026.11.22-e9042b2 with a real ACP turn).
   = `_appended_prompt(file, pane, "cursor")` with `mcp__fused_render__<tool>`
   spelled `<tool>`, plus the readable directories (D9). The host sends it as a
   leading text block, wrapped in `<fused_render_context>…</fused_render_context>`,
