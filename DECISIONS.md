@@ -8178,3 +8178,10 @@ A user redid a canvas's folders through Claude; the five old folders stayed on s
 - **Why.** A page that draws rasters, tiles or text results needs the bytes, not only a handle the SQL engine can use. Routing every run through the host keeps one login, one place for the runtime's dialogs and one saved-results store.
 - **What the frame gains.** The bytes of results it was itself issued a handle for in its current document, and tile and format choices for its own UDF runs. Nothing about canvas, environment or confirmation changes.
 - **Rejected.** CORS on the results route: it would open every result to any origin, not only those the frame was issued. Reading by an arbitrary token: a frame could then ask for results of other runs it never started.
+
+## D1503: Cursor sessions get the skills as paths in the instructions file (2026-11-23, cursor-skills-in-instructions)
+
+- **What.** `_cursor_argv` appends a SKILLS paragraph to `cursor_agent/instructions.md`: one line per `SKILL.md` (name, description, absolute path) of fused-render's own skills, and of the workbench skills only when the target is inside the workbench gate. The model is told to read a skill's file before work its description covers. The skills folders are added to the readable directories the same file names.
+- **Why.** Measured against the real CLI (2026.11.22-e9042b2) with an ACP turn: `cursor-agent acp` ignores `--plugin-dir`, `--add-dir` and a workspace `.cursor/skills`; only `~/.cursor/skills` loads. So Cursor sessions saw none of the skills Claude (`--plugin-dir`) and Copilot (generated plugin dir) get.
+- **What the model gains.** The text of skills it chooses to read, as guidance from fused-render. No new tool, grant or write location.
+- **Rejected.** Writing into `~/.cursor/skills`: global state shared with the user's other Cursor use, which fused does not write. Writing `.cursor/skills` or `AGENTS.md` in the user's folder: ignored by ACP, and fused never writes there.
