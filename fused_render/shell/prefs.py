@@ -526,43 +526,13 @@ def canvas_shot_slow_fallback_enabled() -> bool:
     return read_prefs().get("canvas_shot_slow_fallback_enabled") is True
 
 
-def canvas_rail_peek_enabled() -> bool:
-    """Whether the canvas page's collapsed Claude rail shows a chat under the
-    pointer as a floating, live card (hover one of the rail's status rings →
-    the chat itself, scrollable and typeable, beside the rail) instead of the
-    one-line caption alone. Default off. Same idiom as
-    `canvas_shot_slow_fallback_enabled`: only a stored `true` is on.
-    """
-    return read_prefs().get("canvas_rail_peek_enabled") is True
-
-
-def task_favourites_enabled() -> bool:
-    """Whether chats can be FAVOURITED (owner, 2026-11-03): the star on the
-    rail's preview card, the favourites section at the rail's foot, the
-    favourite's own card beside it, the pane's Favourites block. Default off.
-    Same idiom as `canvas_rail_peek_enabled`: only a stored `true` is on.
-    The favourites themselves (`tasks_store.FAVOURITES_FILE`) are kept
-    either way; the switch only shows or hides them.
-    """
-    return read_prefs().get("task_favourites_enabled") is True
-
-
-def task_head_unified_enabled() -> bool:
-    """Whether every task view (the Tasks page side panel, the rail Tasks
-    card, the New task card, the Cards popup) draws ONE shared task header
-    instead of its own. Default off. Same idiom as `canvas_rail_peek_enabled`:
-    only a stored `true` is on.
-    """
-    return read_prefs().get("task_head_unified_enabled") is True
-
-
 def rail_free_pins_enabled() -> bool:
     """Whether the Claude rail's pinned windows are FREE PINS: a pin belongs
     to its task, freezes the window's box where it stood, never moves or
     resizes on its own, and leaves the rail's column to a second, non-pinned
     window (up to four windows: one pin and one non-pin per section). Only
-    read with `task_head_unified_enabled` on (the pin itself). Default off.
-    Same idiom as `canvas_rail_peek_enabled`: only a stored `true` is on.
+    Default off. Same idiom as `canvas_shot_slow_fallback_enabled`: only a
+    stored `true` is on.
     """
     return read_prefs().get("rail_free_pins_enabled") is True
 
@@ -570,9 +540,9 @@ def rail_free_pins_enabled() -> bool:
 def rail_mode_doors_enabled() -> bool:
     """Whether a file page's Claude rail shows the file's other modes (the
     top-right mode menu's entries, the active one left out) as doors above
-    Git, each previewing the file in that mode in a rail card. Only read with
-    `canvas_rail_peek_enabled` on (the rail's doors). Default off. Same idiom
-    as `canvas_rail_peek_enabled`: only a stored `true` is on.
+    Git, each previewing the file in that mode in a rail card. Default off.
+    Same idiom as `canvas_shot_slow_fallback_enabled`: only a stored `true`
+    is on.
     """
     return read_prefs().get("rail_mode_doors_enabled") is True
 
@@ -580,7 +550,7 @@ def rail_mode_doors_enabled() -> bool:
 def rail_expand_enabled() -> bool:
     """Whether the Claude rail can be widened (a button at its top) so each
     item shows its icon and its title. Default off. Same idiom as
-    `canvas_rail_peek_enabled`: only a stored `true` is on.
+    `rail_mode_doors_enabled`: only a stored `true` is on.
     """
     return read_prefs().get("rail_expand_enabled") is True
 
@@ -1314,16 +1284,6 @@ def _prefs_response() -> dict:
         # The slow in-canvas screenshot fallback on a Mac
         # (`canvas_shot_slow_fallback_enabled`; off by default).
         "canvas_shot": {"slow_fallback": canvas_shot_slow_fallback_enabled()},
-        # The collapsed Claude rail's hover preview card on the canvas page
-        # (`canvas_rail_peek_enabled`; off by default). A hover previews, a
-        # click pins; there is no trigger choice (the old
-        # `canvas_rail_peek_trigger` key is ignored if still on disk).
-        "canvas_rail_peek": {"enabled": canvas_rail_peek_enabled()},
-        # Favourite chats (`task_favourites_enabled`; off by default).
-        "task_favourites": {"enabled": task_favourites_enabled()},
-        # One shared task header in every task view (`task_head_unified_enabled`;
-        # off by default).
-        "task_head_unified": {"enabled": task_head_unified_enabled()},
         # Free pins on the Claude rail (`rail_free_pins_enabled`; off by default).
         "rail_free_pins": {"enabled": rail_free_pins_enabled()},
         # A file's other modes as doors on the rail (`rail_mode_doors_enabled`;
@@ -1701,27 +1661,6 @@ def put_prefs(body: dict = Body(...), x_fused: str | None = Header(default=None)
                                     status_code=400)
             prefs["canvas_shot_slow_fallback_enabled"] = value
             changed = True
-        if "canvas_rail_peek_enabled" in body:
-            value = body.get("canvas_rail_peek_enabled")
-            if not isinstance(value, bool):
-                return JSONResponse({"error": "'canvas_rail_peek_enabled' must be a boolean"},
-                                    status_code=400)
-            prefs["canvas_rail_peek_enabled"] = value
-            changed = True
-        if "task_favourites_enabled" in body:
-            value = body.get("task_favourites_enabled")
-            if not isinstance(value, bool):
-                return JSONResponse({"error": "'task_favourites_enabled' must be a boolean"},
-                                    status_code=400)
-            prefs["task_favourites_enabled"] = value
-            changed = True
-        if "task_head_unified_enabled" in body:
-            value = body.get("task_head_unified_enabled")
-            if not isinstance(value, bool):
-                return JSONResponse({"error": "'task_head_unified_enabled' must be a boolean"},
-                                    status_code=400)
-            prefs["task_head_unified_enabled"] = value
-            changed = True
         if "rail_free_pins_enabled" in body:
             value = body.get("rail_free_pins_enabled")
             if not isinstance(value, bool):
@@ -2066,8 +2005,6 @@ def put_prefs(body: dict = Body(...), x_fused: str | None = Header(default=None)
                           "'project_queue_enabled', "
                           "'chat_recap_enabled', 'breakout_enabled', 'experts_enabled', "
                           "'canvas_shot_slow_fallback_enabled', "
-                          "'canvas_rail_peek_enabled', 'task_favourites_enabled', "
-                          "'task_head_unified_enabled', "
                           "'rail_free_pins_enabled', "
                           "'rail_mode_doors_enabled', "
                           "'rail_expand_enabled', "

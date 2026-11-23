@@ -36,7 +36,6 @@ import {
   botCardState,
   resetBotCardForTests,
   setBotCardHeld,
-  setBotCardPinModel,
 } from "./bot-card-store";
 import { aPinned, botOpen, setAPinned, setBotOpen } from "@platform/lib/last-chat";
 import type { Timers } from "./rail-peek-lib";
@@ -300,7 +299,6 @@ describe("bot-card-store with the pin model", () => {
   test("a press is temp; the hold is the pin's; a swap to another bot is temp; the window's mark follows the hold only", () => {
     resetBotCardForTests(manualTimers());
     setBotOpen(null);
-    setBotCardPinModel(true);
     botCardIntent().press("b1");
     expect(botCardState()).toMatchObject({ key: "b1", pinned: true, held: false });
     // Row 19: a temp card is not what a reload brings back.
@@ -315,16 +313,6 @@ describe("bot-card-store with the pin model", () => {
     setBotCardHeld(true);
     botCardIntent().dismiss();
     expect(botCardState()).toMatchObject({ key: null, pinned: false, held: false });
-    expect(botOpen()).toBeNull();
-    resetBotCardForTests();
-  });
-  test("flag off: a press holds where the rail says (favourites on), and marks the window, as before", () => {
-    resetBotCardForTests(manualTimers());
-    setBotOpen(null);
-    botCardIntent().press("b1");
-    expect(botCardState()).toMatchObject({ key: "b1", pinned: true, held: true });
-    expect(botOpen()).toBe("b1");
-    botCardIntent().dismiss();
     expect(botOpen()).toBeNull();
     resetBotCardForTests();
   });

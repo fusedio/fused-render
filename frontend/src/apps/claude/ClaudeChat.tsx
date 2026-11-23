@@ -176,11 +176,10 @@ import { WorktreeMenu, paneChatUrl, type WorktreeRequest } from "./ui";
 import { isLanHost } from "@platform/lib/host";
 import { WorktreeHintChip, breakoutCwdFor, shownWorktreeHint } from "./ui/WorktreeHintChip";
 import { PlaceTags } from "@shell/claude-rail/PlaceTags";
-// THE ONE TASK HEAD (shell/TaskHead; design.md "One task head, everywhere"),
-// behind its flag: with it on, the strip and the identity line below are one
-// head — the same one every other task view draws.
+// THE ONE TASK HEAD (shell/TaskHead; design.md "One task head, everywhere"):
+// the strip and the identity line below are one head — the same one every
+// other task view draws.
 import { TaskHead } from "@shell/TaskHead";
-import { useTaskHeadUnified } from "@shell/task-head-flag";
 import { openInTasksItem, openInTasksProps } from "@platform/ui/openInTasks";
 import { TaskPeekProject } from "@shell/TaskPeekWho";
 import { StatusIcon } from "@shell/ScheduleTaskViews";
@@ -188,7 +187,6 @@ import { shortTaskId } from "@shell/tasks-lib";
 import { AgentMark } from "@platform/ui/AgentMark";
 import { queueCaption } from "@platform/lib/queue";
 import { hasWhereTag, ownPlace, railScope } from "@shell/claude-rail/claude-rail-lib";
-import { useTaskFavourites } from "@platform/lib/favourites-flag";
 import { AllowDeniedContext, TasksContext, TasksPanel, tasksPanelScope, useTasksOpen } from "./ui";
 import { FilePreviewProvider } from "./ui/filePreview";
 import { DockRow } from "./ui/DockRow";
@@ -702,7 +700,7 @@ function ChatBody(props: ChatBodyProps) {
   const showHead = !compact && (!peek || !!props.headerInPeek);
   // THE SHARED HEAD replaces the strip and the identity line wherever the chat
   // draws its own head (not compact, not a host's peek).
-  const headUnified = useTaskHeadUnified() && !compact && !peek;
+  const headUnified = !compact && !peek;
   const rootRef = useRef<HTMLDivElement | null>(null);
   const columnRef = useRef<HTMLDivElement | null>(null);
   const ownBox = useRef<HTMLTextAreaElement | null>(null);
@@ -5727,9 +5725,8 @@ function ChatBody(props: ChatBodyProps) {
   // THE PLACE TAGS (shell/claude-rail PlaceTags): the identity row's right
   // end, for a host that said where it stands — the same tags the rail's
   // small window wears.
-  const placeTagOn = useTaskFavourites();
   const placeTag =
-    placeTagOn && head.task && (props.pageRoot !== undefined || props.onSelectNode) ? (
+    head.task && (props.pageRoot !== undefined || props.onSelectNode) ? (
       <PlaceTags
         scope={railScope(head.task, ownPlace(head.task))}
         at={ownPlace(head.task)}
@@ -5946,7 +5943,7 @@ function ChatBody(props: ChatBodyProps) {
   const kebabMenu = (
       <Kebab
         {...(breakoutGate ? { breakout: { picking, onToggle: togglePicking } } : {})}
-        // OPEN IN TASKS (flag on, off the Tasks page): only a chat with a task
+        // OPEN IN TASKS (off the Tasks page): only a chat with a task
         // row — the landing and a never-run chat have none to open.
         {...openInTasksProps(
           openInTasksItem({
@@ -6004,7 +6001,7 @@ function ChatBody(props: ChatBodyProps) {
     </>
   );
   /**
-   * THE SHARED HEAD (flag on; shell/TaskHead): the strip and the identity line
+   * THE SHARED HEAD (shell/TaskHead): the strip and the identity line
    * as ONE row, in every task view's order —
    *
    *   [× hide pane][← Back to chats] │ ring ★ TASK-nnn title [queue][paused]
@@ -6101,8 +6098,7 @@ function ChatBody(props: ChatBodyProps) {
       // Two lines, the rail window's layout (Akshil, 2026-11-17) — but one row
       // in full screen, where the head is a seat inside the pane's own header.
       twoLine={inChat && !leadHost}
-      // No star seat while favourites are off (`placeTagOn` is that switch).
-      star={placeTagOn}
+      star
       {...(fallbackTitle ? { title: fallbackTitle } : {})}
       pending={inChat && head.pending && !headLine}
       running={running}

@@ -39,7 +39,7 @@ let following = false;
 /** The first answer (or the one published since): what `expertsEnabledNow` reads once it settles. */
 export function readExpertsFlag(): Promise<void> {
   if (!following) {
-    // The toggle flipped in another window lands like a publish here (as favourites-flag.ts does).
+    // The toggle flipped in another window lands like a publish here.
     following = true;
     onPrefsWrittenElsewhere((p) => { if (p.experts !== undefined) publishExpertsEnabled(p.experts.enabled === true); });
   }

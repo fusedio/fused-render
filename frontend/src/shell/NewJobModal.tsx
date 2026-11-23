@@ -27,12 +27,10 @@ import { paneChatUrl, taskPane } from "@apps/claude/ui/list-rows";
 import { ChatMount } from "@apps/claude";
 import { homePlaceholderFor, type TargetNoun } from "@apps/claude/pane/paneUrl";
 import { runAppEntry } from "@apps/claude/protocol/agent";
-import { TaskPeekWho } from "./TaskPeekWho";
-// THE SHARED TASK HEAD on the open chat (design.md, "One task head,
-// everywhere"), behind its flag; off, the chat's head below is unchanged.
+// THE SHARED TASK HEAD on the open chat and the form (design.md, "One task
+// head, everywhere").
 import { TaskHead } from "./TaskHead";
 import { TaskPrChip } from "./TaskPrChip";
-import { useTaskHeadUnified } from "./task-head-flag";
 import { useUrlVersion } from "@platform/lib/hooks";
 import { openInTasksItem, openInTasksProps } from "@platform/ui/openInTasks";
 import { usePlusCardHidden } from "./claude-rail/plus-card-store";
@@ -42,7 +40,6 @@ import { Kebab } from "@apps/claude/ui/Kebab";
 import { AgentProvider } from "@apps/claude/ui/agent-context";
 import type { BreakoutControl } from "@apps/claude/ClaudeChat";
 import { opensInSidePane, requestSideMaximized } from "@platform/lib/side-maximized-store";
-import { ArrowLeft } from "lucide-react";
 import { breakoutOpener } from "@platform/lib/breakouts";
 import { useRecentTasks } from "@apps/claude/ui/useRecentTasks";
 import { useLandingReads } from "@apps/claude/ui/useLandingReads";
@@ -5313,7 +5310,6 @@ export default function NewJobModal({
   const chatFile = liveChat ? taskChatTarget(liveChat) : landingTarget;
   const chatTitle = liveChat ? (cardTitleLine(liveChat).text || liveChat.title || "Chat") : "";
   const chatHref = liveChat ? taskHref(liveChat) : null;
-  const unified = useTaskHeadUnified();
   // "Open in Tasks" reads the page's path: a card kept across a hop re-reads it.
   useUrlVersion();
   /** The shared head's chip seat (ChatMount `headChipsHost`): the chat's
@@ -5354,8 +5350,7 @@ export default function NewJobModal({
     onClose();
     void navigateUrl(href);
   };
-  /** THE OPEN CHAT'S ⋮ on the shared head — the same `Kebab`, with the same
-   *  props, the old head below renders inline. */
+  /** THE OPEN CHAT'S ⋮ on the shared head. */
   const chatKebab = liveChat?.session_id ? (
     <AgentProvider backend={liveChat.backend ?? ""}>
       <Kebab
@@ -5367,7 +5362,7 @@ export default function NewJobModal({
         queued={taskColumn(liveChat) === "queued"}
         onErased={leaveChat}
         onArchived={leaveChat}
-        {...openInTasksProps(openInTasksItem({ on: unified, taskKey: liveChat.key, onOpen: openInTasksFromCard }))}
+        {...openInTasksProps(openInTasksItem({ on: true, taskKey: liveChat.key, onOpen: openInTasksFromCard }))}
         {...(chatHref && opensInSidePane(chatHref) ? {
           fullScreen: {
             on: false,
@@ -6083,88 +6078,15 @@ export default function NewJobModal({
           </div>
         </>
       )}
-      // THE OPEN CHAT'S HEAD (see `landingChat`): Back where the agent stood,
-      // the chat's title, and Open — the chat's own page — against the ✕.
-      // Later props win, so this is the whole swap.
-      {...(chatOpen ? {
-        ariaLabel: `${chatTitle || "New task"} — chat`,
-        titleLead: (
-          <button
-            type="button"
-            className="nt-chat-back"
-            aria-label="Back"
-            data-hint="Back"
-            onClick={leaveChat}
-          >
-            <ArrowLeft size={16} strokeWidth={1.6} aria-hidden="true" />
-          </button>
-        ),
-        // The Tasks card's own identity line (TaskPeekWho): status ring,
-        // star, number, title — renamable in place.
-        title: liveChat
-          ? <span className="nt-chat-title"><TaskPeekWho task={liveChat} star /></span>
-          : <span className="nt-chat-title">{name || fields.title || "New task"}</span>,
-        headActions: (
-          <>
-          {chatHref && (
-          <a
-            className="nt-chat-open"
-            href={chatHref}
-            aria-label="Open this chat"
-            data-hint="Open this chat"
-            onClick={(e) => {
-              if (e.metaKey || e.ctrlKey || e.shiftKey || e.altKey || e.button !== 0) return;
-              e.preventDefault();
-              openFromLanding(chatHref);
-            }}
-          >
-            Open
-          </a>
-          )}
-          {/* THE CHAT'S ⋮, the Tasks card's own (TasksPeek): same items,
-              Full screen and Breakout included. */}
-          {liveChat?.session_id && (
-            <span className="claude-rail-peek-kebab nt-chat-kebab">
-              <AgentProvider backend={liveChat.backend ?? ""}>
-                <Kebab
-                  key={liveChat.key}
-                  file={taskChatTarget(liveChat)}
-                  sessionId={liveChat.session_id}
-                  running={taskColumn(liveChat) === "in_progress" || taskColumn(liveChat) === "queued"}
-                  asking={taskColumn(liveChat) === "needs_attention"}
-                  queued={taskColumn(liveChat) === "queued"}
-                  onErased={leaveChat}
-                  onArchived={leaveChat}
-                  {...openInTasksProps(openInTasksItem({ on: unified, taskKey: liveChat.key, onOpen: openInTasksFromCard }))}
-                  {...(chatHref && opensInSidePane(chatHref) ? {
-                    fullScreen: {
-                      on: false,
-                      onToggle: () => {
-                        // Made once the hop went: the request is keyed to
-                        // the page the side-pane chat mounts on.
-                        const sid = liveChat.session_id;
-                        void Promise.resolve(openFromLanding(chatHref)).then((went) => {
-                          if (went !== false && sid) requestSideMaximized(sid);
-                        });
-                      },
-                    },
-                  } : {})}
-                  {...(chatBreakout?.available ? {
-                    breakout: { picking: chatBreakout.picking, onToggle: chatBreakout.toggle },
-                  } : {})}
-                />
-              </AgentProvider>
-            </span>
-          )}
-          </>
-        ),
-      } : {})}
-      // THE FORM'S OWN HEAD, with the shared head on (design.md "One task
-      // head, everywhere"): the same pieces the chassis' head is given above —
+      // THE OPEN CHAT'S NAME (see `landingChat`): its head is the shared one
+      // below.
+      {...(chatOpen ? { ariaLabel: `${chatTitle || "New task"} — chat` } : {})}
+      // THE FORM'S OWN HEAD (design.md "One task head, everywhere"): the same
+      // pieces the chassis' head is given above —
       // the agent crumb, the name, the source chip, Folder and When — on the
       // shared chassis, × in the lead corner. The ✕'s two states carry over:
       // gone while busy, armed after a dirty close (the chassis' `ctx`).
-      {...(!chatOpen && unified ? {
+      {...(!chatOpen ? {
         head: ({ titleId, close, busy: closing, armed, parts }: ModalHeadContext) => (
           <TaskHead
             className="nt-form-head"
@@ -6193,10 +6115,10 @@ export default function NewJobModal({
           />
         ),
       } : {})}
-      // …AND WITH THE SHARED HEAD ON, that whole swap is one `TaskHead` in
-      // place of the chassis' head (Modal `head`): Back, the identity, ↗ Open
-      // and the ⋮, at every task view's height.
-      {...(chatOpen && unified ? {
+      // …AND THE OPEN CHAT'S HEAD is one `TaskHead` in place of the chassis'
+      // head (Modal `head`): Back, the identity, ↗ Open and the ⋮, at every
+      // task view's height.
+      {...(chatOpen ? {
         head: ({ titleId }: ModalHeadContext) => (
           <TaskHead
             reveal="window"
@@ -6261,7 +6183,8 @@ export default function NewJobModal({
             onNavigate={(href) => openFromLanding(href)}
             smallCard
             smallCardShown
-            {...(unified ? { headChipsHost: chipsHost, headStatusHost: statusHost } : {})}
+            headChipsHost={chipsHost}
+            headStatusHost={statusHost}
           />
         </div>
       )}

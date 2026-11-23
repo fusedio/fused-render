@@ -69,12 +69,8 @@ import { folderHref } from "./schedule-lib";
 import { EraseTaskModal } from "./EraseTaskModal";
 import { ICON_OPEN_FOLDER_PATH } from "./ScheduleTaskViews";
 import { useChatTemplates } from "./TaskCards";
-// The header's identity block — status ring, number, title, project — lives in
-// its own module because the native chat's top line draws the SAME block for the
-// task behind the conversation it is showing (see that file's note).
-import { TaskPeekWho, useTaskHeadline } from "./TaskPeekWho";
+import { useTaskHeadline } from "./TaskPeekWho";
 import { agentLabel, agentNamed, isBackendOff, useAgentBackends } from "@platform/lib/agent-backends";
-import { PEEK_HEAD_DROPS, useStripFit } from "./row-fit";
 import {
   PREVIEW_KEY_STEP,
   PREVIEW_LOAD_TIMEOUT_MS,
@@ -138,8 +134,6 @@ import { breakoutOpener } from "@platform/lib/breakouts";
 // THE SHARED TASK HEAD (design.md, "One task head, everywhere"), behind its
 // flag: with it on, this panel's head is `TaskHead` and its ⋮ is the chat's own
 // `Kebab`; with it off, the head below is the one this panel has always drawn.
-import { useTaskHeadUnified } from "@shell/task-head-flag";
-import { useTaskFavourites } from "@platform/lib/favourites-flag";
 import { TaskHead } from "./TaskHead";
 import { Kebab } from "@apps/claude/ui/Kebab";
 import { AgentProvider } from "@apps/claude/ui/agent-context";
@@ -378,23 +372,6 @@ const ICON = {
   "aria-hidden": true,
 };
 
-/** CLOSE, and it is the header's FIRST control in every mode (Akshil,
- *  2026-09-14 — design.md, Polish batch 4, item 11). It wore a panel glyph for
- *  a day — "hide the right panel", and in cover "show the list" — which is a
- *  picture of a LAYOUT, and a reader who wants this task off their screen
- *  should not have to work out which layout they are in first. One mark, one
- *  meaning, in the corner every panel in this app puts it. */
-const ICON_CLOSE = (
-  <svg {...ICON}><path d="M6 6l12 12M18 6L6 18" /></svg>
-);
-/** CHEVRONS, not arrows (design.md, Header + list state v2). Prev/next step
- *  through a list that is on screen; an arrow would promise travel. */
-const ICON_UP = (
-  <svg {...ICON}><polyline points="18 15 12 9 6 15" /></svg>
-);
-const ICON_DOWN = (
-  <svg {...ICON}><polyline points="6 9 12 15 18 9" /></svg>
-);
 /** VERTICAL, because it sits at the end of a row rather than in one: the kebab
  *  every list in this app wears (design.md). */
 const ICON_DOTS = (
@@ -694,11 +671,6 @@ export function TaskPeek({
     });
   }, [key, tasks]);
 
-  // THE HEADER'S OWN FIT LADDER (shell/row-fit.ts `PEEK_HEAD_DROPS`): measured,
-  // never a breakpoint, and armed only while the panel is actually up.
-  const [headFit, headRef] = useStripFit(PEEK_HEAD_DROPS, key !== null);
-  const unified = useTaskHeadUnified();
-  const favsOn = useTaskFavourites();
   /** The shared head's chip seat, for the chat's worktree menu to portal into
    *  (ChatMount `headChipsHost`). State, so the chat re-renders once it lands. */
   const [chipsHost, setChipsHost] = useState<HTMLElement | null>(null);
@@ -1078,12 +1050,8 @@ export function TaskPeek({
     const items: MenuEntry[] = [];
     // BREAKOUT, from the chat's own report: the peek's head hides the chat's ⋮.
     items.push(...breakoutMenuEntries(breakoutCtl));
-    // The shared head never folds its ↗ Open, so only the old head's ladder
-    // puts the door in this menu.
-    if (SHOW_PAGE_DOOR && page && !unified && headFit >= PEEK_HEAD_DROPS.length) {
-      items.push({ label: pageDoorLabel(task), icon: ICON_OPEN_DOOR, onClick: openAsPage });
-      items.push("separator");
-    }
+    // The shared head never folds its ↗ Open, so the door is never in this
+    // menu.
     if (SHOW_PAGE_DOOR && gone) {
       items.push({
         label: pageDoorLabel(task),
@@ -1328,15 +1296,13 @@ export function TaskPeek({
             `data-fit` is measured, never a breakpoint (shell/row-fit.ts): at
             the narrowest widths the Open door folds —
             and the door reappears in the ⋮ so the act is never unreachable. */}
-        {unified ? (
-          <TaskHead
+        <TaskHead
             lead={{ kind: "close", label: "Close the task panel", hint: "Close · Esc", onPress: () => closePeek() }}
             nav={{ prev: ends.prev, next: ends.next, step: (d) => void step(d), keyHints: true }}
             task={task}
-            // Two lines, the rail window's layout (Akshil, 2026-11-17) — and
-            // no star seat while favourites are off, so the count stays put.
+            // Two lines, the rail window's layout (Akshil, 2026-11-17).
             twoLine
-            star={favsOn}
+            star
             fitEnabled={key !== null}
             chipsRef={setChipsHost}
             statusRef={setStatusHost}
@@ -1351,105 +1317,6 @@ export function TaskPeek({
               if (kind === "archive" && task) advancePast(task.key, lastOrderWithKey.current);
             }}
           />
-        ) : (
-        <header className="task-side-peek-head" ref={headRef} data-fit={headFit}>
-          <div className="task-side-peek-acts">
-            {/* CLOSE, IN EVERY MODE (Akshil, 2026-09-14 — design.md, Polish
-                batch 4, item 11). This was a panel glyph whose meaning changed
-                with the layout — "hide the right panel", and in cover "show the
-                list" — so the one control every reader reaches for first was
-                the one control they had to decode. A × in the panel's leading
-                corner is the same promise every other panel in this app makes,
-                and it no longer has to live in the ⋮ as well. */}
-            <button
-              type="button"
-              className="task-side-peek-btn"
-              aria-label="Close the task panel"
-              data-hint="Close · Esc"
-              onClick={() => closePeek()}
-            >
-              {ICON_CLOSE}
-            </button>
-            {/* NO "RESIZE PANEL" ANY MORE (Akshil, 2026-09-15). The way out of
-                cover is the sidebar: expanding it by hand hands the panel back
-                to its default split (task-peek-store `expandUncovers`), and the
-                × closes. A third control for a state two others already leave
-                was one more thing to read. */}
-            {/* CHEVRONS, not arrows (design.md): prev/next here walk a list the
-                reader can see, one step at a time — the gesture a chevron means
-                everywhere else in this app. A full arrow is for travel. */}
-            <button
-              type="button"
-              className="task-side-peek-btn"
-              aria-label="Previous task"
-              data-hint="Previous task · ↑"
-              disabled={!ends.prev}
-              onClick={() => step(-1)}
-            >
-              {ICON_UP}
-            </button>
-            <button
-              type="button"
-              className="task-side-peek-btn"
-              aria-label="Next task"
-              data-hint="Next task · ↓"
-              disabled={!ends.next}
-              onClick={() => step(1)}
-            >
-              {ICON_DOWN}
-            </button>
-          </div>
-          {task ? (
-            <TaskPeekWho task={task} star />
-          ) : (
-            <span className="task-side-peek-idle" aria-hidden />
-          )}
-          {task && (
-            <div className="task-side-peek-marks">
-              {/* The project and agent labels were dropped from the peek header to
-                  declutter it; the chat's own Topbar still shows them. */}
-              {/* "OPEN" — A WORD (design.md, Polish batches 4 and 5; the mark
-                  that led it went on 2026-11-16, Akshil: no arrow beside
-                  "Open", anywhere). The folder glyph it replaced was the
-                  page's one door picture, which is a good rule everywhere
-                  except beside a folder NAME, where it read as "open that
-                  folder" and did not; the label says the act. It is a quiet
-                  ghost button: no outline at rest, a wash and full ink on
-                  hover.
-
-                  A real link with a real href, so ⌘-click opens a tab, exactly
-                  like the row's own door. */}
-              {SHOW_PAGE_DOOR && page && (
-                <a
-                  className="task-side-peek-open"
-                  href={page}
-                  aria-label={pageDoorLabel(task)}
-                  data-hint={pageDoorLabel(task)}
-                  onClick={(e) => {
-                    if (e.metaKey || e.ctrlKey || e.shiftKey || e.altKey || e.button !== 0) return;
-                    e.preventDefault();
-                    openAsPage();
-                  }}
-                >
-                  Open
-                </a>
-              )}
-              <button
-                type="button"
-                className="task-side-peek-btn task-side-peek-kebab"
-                aria-label="More actions"
-                data-hint="More actions"
-                onClick={(e) => {
-                  const r = e.currentTarget.getBoundingClientRect();
-                  setMenuAt({ x: r.right - 200, y: r.bottom + 4 });
-                }}
-              >
-                {ICON_DOTS}
-              </button>
-            </div>
-          )}
-        </header>
-        )}
 
         <div className="task-side-peek-body" ref={bodyRef}>
           {showPreview && previewSrc && (
@@ -1598,10 +1465,9 @@ export function TaskPeek({
                 chatOnly
                 peek
                 // The shared head seats the chat's worktree pieces itself
-                // (`headChipsHost`); the old head keeps the chat's slim line.
-                {...(unified
-                  ? { headChipsHost: chipsHost, headStatusHost: statusHost }
-                  : { headerInPeek: true, headerExtra: <TaskPrChip task={task} /> })}
+                // (`headChipsHost`).
+                headChipsHost={chipsHost}
+                headStatusHost={statusHost}
                 paramsSource="memory"
                 // THE RECAP OPT-IN (ChatMount `recap`): the peek is the one chat
                 // the reader opened on this page, so it gets the "While you were

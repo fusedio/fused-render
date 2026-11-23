@@ -8,10 +8,9 @@ import { act, create, type ReactTestRenderer } from "react-test-renderer";
 import type { RailGitDoor } from "./rail-git-store";
 
 const { GitPeek, GIT_FOLLOW_MS } = await import("./GitPeek");
-const { publishCanvasRailPeek, resetCanvasRailPeekFlagForTests } = await import("./rail-peek-flag");
 const { registerRail, resetFavPeekStoreForTests } = await import("./fav-peek-store");
 const { publishRailGit, resetRailGitStoreForTests } = await import("./rail-git-store");
-const { GIT_CARD_KEY, forgetGitCardRail, gitCardIntent, gitCardState, resetGitCardForTests, setGitCardRail } = await import(
+const { GIT_CARD_KEY, forgetGitCardRail, gitCardIntent, gitCardState, gitCardStore, resetGitCardForTests, setGitCardRail } = await import(
   "./git-peek-store"
 );
 const { DoorCard } = await import("./DoorCard");
@@ -36,14 +35,12 @@ beforeEach(() => {
   installPortalContainer();
   const body = (globalThis as unknown as { document: { body?: { createNodeMock?: unknown } } }).document.body;
   if (body) body.createNodeMock = node;
-  resetCanvasRailPeekFlagForTests();
   resetFavPeekStoreForTests();
   resetRailGitStoreForTests();
   resetGitCardForTests();
 });
 afterEach(() => {
   removePortalContainer();
-  resetCanvasRailPeekFlagForTests();
   resetFavPeekStoreForTests();
   resetRailGitStoreForTests();
   resetGitCardForTests();
@@ -56,7 +53,6 @@ const flush = () =>
 
 describe("GitPeek", () => {
   test("registered only while its rail has a repository or is reading; the answer 'none' closes a pinned card after the follow window", async () => {
-    publishCanvasRailPeek({ enabled: true });
     const rail = { isConnected: true } as unknown as HTMLElement;
     registerRail(rail);
     let r!: ReactTestRenderer;
@@ -67,8 +63,12 @@ describe("GitPeek", () => {
     expect(gitCardState().ready).toBe(false);
     act(() => publishRailGit(rail, door));
     expect(gitCardState().ready).toBe(true);
-    act(() => gitCardIntent().press(GIT_CARD_KEY));
-    expect(gitCardState()).toMatchObject({ up: true, pinned: true });
+    // Pinned: a press, then its pin (a press alone is a temp card).
+    act(() => {
+      gitCardIntent().press(GIT_CARD_KEY);
+      gitCardStore.setHeld(true);
+    });
+    expect(gitCardState()).toMatchObject({ up: true, pinned: true, held: true });
     // A path change: the rail reads again — the pinned card waits.
     act(() => publishRailGit(rail, "reading"));
     expect(gitCardState()).toMatchObject({ up: true, pinned: true, ready: true });
@@ -84,7 +84,6 @@ describe("GitPeek", () => {
   });
 
   test("beside the rail that opened it, not the top rail; that rail going: a preview closes, a pinned card falls back to the top", async () => {
-    publishCanvasRailPeek({ enabled: true });
     const left = { isConnected: true } as unknown as HTMLElement;
     const right = { isConnected: true } as unknown as HTMLElement;
     registerRail(left);
@@ -113,6 +112,7 @@ describe("GitPeek", () => {
     act(() => {
       setGitCardRail(left);
       gitCardIntent().press(GIT_CARD_KEY);
+      gitCardStore.setHeld(true);
     });
     expect(standsBy()).toBe(left);
     act(() => forgetGitCardRail(left));

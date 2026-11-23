@@ -9,9 +9,6 @@ import {
   putAppSharingEnabled,
   putCanvasesEmbedProxy,
   putCanvasesEnabled,
-  putCanvasRailPeekEnabled,
-  putTaskFavouritesEnabled,
-  putTaskHeadUnifiedEnabled,
   putRailFreePinsEnabled,
   putRailExpandEnabled,
   putRailModeDoorsEnabled,
@@ -32,12 +29,9 @@ import {
 } from "@platform/lib/api";
 import { publishContribFlags } from "@platform/lib/contrib-flags";
 import { publishCanvasesEnabled } from "@apps/canvases/feature-flag";
-import { publishTaskHeadUnified } from "../task-head-flag";
 import { publishRailFreePins } from "../claude-rail/rail-free-pins-flag";
 import { publishRailExpand } from "../claude-rail/rail-expand-flag";
 import { publishRailModeDoors } from "../claude-rail/rail-mode-doors-flag";
-import { publishCanvasRailPeek } from "@shell/claude-rail/rail-peek-flag";
-import { publishFavouritesParent, publishTaskFavourites } from "@platform/lib/favourites-flag";
 import { publishTaskIcons } from "@platform/lib/task-icons-flag";
 import { publishAppSharingEnabled } from "@platform/lib/share-app-flag";
 import { publishLivePreviewsEnabled } from "@platform/lib/live-previews-flag";
@@ -293,60 +287,7 @@ export function CanvasesEmbedProxyControl({ prefs, onChange }: PrefControlProps)
   );
 }
 
-// Published (rail-peek-flag.ts), so a page with a rail in THIS tab follows the
-// switch at once. Another tab's shell holds its first answer until it reloads
-// — the same deal every published flag here offers.
-export function CanvasRailPeekControl({ prefs, onChange }: PrefControlProps) {
-  const on = prefs.canvas_rail_peek?.enabled === true;
-  return (
-    <PrefToggleRow
-      id="canvases-rail-peek"
-      checked={on}
-      put={putCanvasRailPeekEnabled}
-      // …and to the favourites flag, which is on only under this one.
-      after={(next) => {
-        publishCanvasRailPeek(next.canvas_rail_peek);
-        publishFavouritesParent(next.canvas_rail_peek);
-      }}
-      onChange={onChange}
-    />
-  );
-}
-
-// Published (favourites-flag.ts), like the rail preview above. A CHILD of that
-// preview: the star lives on its card, so with the preview off every reader
-// treats favourites as off whatever this says — the row reads inert then
-// (greyed, switch disabled, the call-log children's idiom in advanced.tsx),
-// still shown so the stored answer stays visible.
-export function TaskFavouritesControl({ prefs, onChange }: PrefControlProps) {
-  const on = prefs.task_favourites?.enabled === true;
-  return (
-    <PrefToggleRow
-      id="tasks-favourites"
-      checked={on}
-      put={putTaskFavouritesEnabled}
-      after={(next) => publishTaskFavourites(next.task_favourites)}
-      onChange={onChange}
-    />
-  );
-}
-
-export function TaskHeadUnifiedControl({ prefs, onChange }: PrefControlProps) {
-  const on = prefs.task_head_unified?.enabled === true;
-  return (
-    <PrefToggleRow
-      id="tasks-unified-head"
-      checked={on}
-      put={putTaskHeadUnifiedEnabled}
-      after={(next) => publishTaskHeadUnified(next.task_head_unified)}
-      onChange={onChange}
-    />
-  );
-}
-
-// FREE PINS ON THE RAIL (owner, 2026-11-18): a child of the unified header —
-// the pin icon is drawn only with it on, so with it off the row reads inert
-// (the favourites row's idiom above), the stored answer still shown.
+// FREE PINS ON THE RAIL (owner, 2026-11-18).
 export function RailFreePinsControl({ prefs, onChange }: PrefControlProps) {
   const on = prefs.rail_free_pins?.enabled === true;
   return (
@@ -360,8 +301,7 @@ export function RailFreePinsControl({ prefs, onChange }: PrefControlProps) {
   );
 }
 
-// A FILE'S OTHER MODES AS DOORS ON THE RAIL (owner, 2026-11-20): a child of
-// the rail preview — the doors are the rail's nav doors'.
+// A FILE'S OTHER MODES AS DOORS ON THE RAIL (owner, 2026-11-20).
 export function RailModeDoorsControl({ prefs, onChange }: PrefControlProps) {
   const on = prefs.rail_mode_doors?.enabled === true;
   return (
