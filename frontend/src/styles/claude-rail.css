@@ -180,6 +180,29 @@
   background: rgba(var(--tint), 0.14);
   box-shadow: inset 0 0 0 1px rgba(var(--tint), 0.22);
 }
+/* …AND SO DOES THE EXPAND BUTTON (Akshil, 2026-11-23: "hover should not have
+   two styles — stick to the lower ones, follow the task ring hover style"):
+   it stands outside `.claude-rail-nav` and wore the sidebar's 28px wash
+   (sidebar.css `.sidebar-rail-btn:hover`). It takes the rings' box too. */
+.claude-rail > .sidebar-rail-btn {
+  position: relative;
+  isolation: isolate;
+}
+.claude-rail > .sidebar-rail-btn::after {
+  content: "";
+  position: absolute;
+  inset: -2px -9px;
+  border-radius: 8px;
+  z-index: -1;
+}
+.claude-rail > .sidebar-rail-btn:hover {
+  background: none;
+  box-shadow: none;
+  color: var(--fg);
+}
+.claude-rail > .sidebar-rail-btn:hover::after {
+  background: rgba(var(--tint), 0.08);
+}
 /* The rail's inner edge (ClaudeRail `.claude-rail-seam`): pulled left, it opens
    the pane. 6px of hit area straddling the rail's border, and the app's seam
    hairline on hover — the explorer's reopen edge (.preview-side-reopen). */
