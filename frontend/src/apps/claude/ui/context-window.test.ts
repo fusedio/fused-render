@@ -173,6 +173,15 @@ describe("the user's autoCompactWindow", () => {
     }
   });
 
+  it("a configured window at or above the model's own is still enforced (CLI: source settings/env, threshold window - 33k)", () => {
+    // `vy` returns `{window: min(model, configured), source: "settings"|"env"}`
+    // whatever the configured size, and the threshold is `window - 20k - 13k`.
+    const t = contextThresholds("claude-opus-5-5", opus({ compact_window: 1_000_000 }));
+    expect(t.window).toBe(1_000_000);
+    expect(t.compactAt).toBe(967_000);
+    expect(t.enforced).toBe(true);
+  });
+
   it("moves the compaction point the CLI's /context draws (33k buffer)", () => {
     const t = contextThresholds("claude-opus-5-5", opus({ compact_window: 200_000 }));
     expect(t.window).toBe(200_000);

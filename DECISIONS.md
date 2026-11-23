@@ -8210,5 +8210,25 @@ reports `maxTokens 200000` and a 33,000 buffer (13k margin + 20k reserve), again
 non-stale breakdown the popover header takes `max_tokens - buffer rows` outright,
 the CLI's own answer, so header and grid cannot disagree whatever the setting.
 
+Auto-compact off (CLI 2.1.328, `dm()`): `DISABLE_COMPACT` or `DISABLE_AUTO_COMPACT`
+(truthy: `1`/`true`/`yes`/`on`, also from a settings `env` block) turns it off;
+otherwise the highest settings layer that sets `autoCompactEnabled` decides
+(default on). The CLI never compacts then, so `_compact_window` returns nothing
+and the meter keeps the non-enforced "x% context used" reading.
+
+Per-model entries (`Hyn` / `vy`): a model's own entry, if present, wins over the
+top-level value; `"auto"` there means the model default (not the top-level
+number), so no number is stamped. An entry with an invalid value is dropped by
+the settings schema (`.catch`), so the top-level number applies. A key that is
+the canonical model name beats its `[1m]`-style spellings whatever the file
+order (`g===k||!hasOwn`), else the first spelling wins. Env names are matched
+case-sensitively.
+
+A configured window at or above the model's own still resolves to source
+`settings`/`env` with `window = min(model, configured)`, and the threshold is
+`window - 20k - 13k` regardless of source, so the user branch (33k head-room,
+enforced) is right for it too.
+
 Not mirrored: the SDK's runtime `ceiling` / `raisedTo` overrides in `vy`, the
-managed `managed-settings.d` drop-ins, and `CLAUDE_CODE_DISABLE_1M_CONTEXT`.
+managed `managed-settings.d` drop-ins, the legacy `~/.claude.json`
+`autoCompactEnabled`, and `CLAUDE_CODE_DISABLE_1M_CONTEXT`.

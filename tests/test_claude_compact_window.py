@@ -28,7 +28,12 @@ def agent(tmp_path, monkeypatch):
     monkeypatch.setattr(
         mod, "_managed_settings_path", lambda: str(tmp_path / "managed-settings.json")
     )
-    monkeypatch.delenv("CLAUDE_CODE_AUTO_COMPACT_WINDOW", raising=False)
+    for name in (
+        "CLAUDE_CODE_AUTO_COMPACT_WINDOW",
+        "DISABLE_COMPACT",
+        "DISABLE_AUTO_COMPACT",
+    ):
+        monkeypatch.delenv(name, raising=False)
     return mod
 
 
@@ -191,3 +196,116 @@ def test_poll_stamps_the_configured_window(agent, tmp_path):
     assert "compact_window" not in agent._poll("run")["context"]
     _user(agent, {"autoCompactWindow": 200000})
     assert agent._poll("run")["context"]["compact_window"] == 200000
+
+
+# --- review fixes -----------------------------------------------------------
+
+
+def test_auto_compact_disabled_in_settings_means_no_window(agent, tmp_path):
+    _user(agent, {"autoCompactWindow": 200000, "autoCompactEnabled": False})
+    assert agent._compact_window("claude-opus-5-5", str(tmp_path)) is None
+    # a higher layer can turn it back on
+    cwd = _project(tmp_path, "settings.json", {"autoCompactEnabled": True})
+    assert agent._compact_window("claude-opus-5-5", cwd) == 200000
+
+
+@pytest.mark.parametrize("name", ["DISABLE_COMPACT", "DISABLE_AUTO_COMPACT"])
+def test_disable_env_means_no_window(agent, tmp_path, monkeypatch, name):
+    _user(agent, {"autoCompactWindow": 200000})
+    monkeypatch.setenv(name, "1")
+    assert agent._compact_window("m", str(tmp_path)) is None
+    monkeypatch.setenv(name, "false")
+    assert agent._compact_window("m", str(tmp_path)) == 200000
+
+
+def test_disable_env_in_settings_env_block(agent, tmp_path):
+    _user(
+        agent,
+        {"autoCompactWindow": 200000, "env": {"DISABLE_AUTO_COMPACT": "true"}},
+    )
+    assert agent._compact_window("m", str(tmp_path)) is None
+
+
+def test_env_window_also_off_when_disabled(agent, tmp_path, monkeypatch):
+    monkeypatch.setenv("CLAUDE_CODE_AUTO_COMPACT_WINDOW", "200k")
+    monkeypatch.setenv("DISABLE_COMPACT", "1")
+    assert agent._compact_window("m", str(tmp_path)) is None
+
+
+def test_per_model_auto_is_the_model_default_not_the_top_level(agent, tmp_path):
+    # The CLI: a per-model entry that is present wins, and "auto" means the
+    # model's own default, not the layer's top-level number.
+    _user(
+        agent,
+        {
+            "autoCompactWindow": 200000,
+            "modelSettings": {"claude-opus-5-5": {"autoCompactWindow": "auto"}},
+        },
+    )
+    assert agent._compact_window("claude-opus-5-5", str(tmp_path)) is None
+    assert agent._compact_window("claude-sonnet-5", str(tmp_path)) == 200000
+
+
+@pytest.mark.parametrize("bad", [50000, "banana", True])
+def test_invalid_per_model_entry_falls_through_to_default(agent, tmp_path, bad):
+    # The CLI's schema drops an invalid per-model entry.
+    _user(
+        agent,
+        {
+            "autoCompactWindow": 200000,
+            "modelSettings": {"claude-opus-5-5": {"autoCompactWindow": bad}},
+        },
+    )
+    assert agent._compact_window("claude-opus-5-5", str(tmp_path)) == 200000
+
+
+def test_env_names_are_case_sensitive(agent, tmp_path):
+    _user(agent, {"env": {"claude_code_auto_compact_window": "200k"}})
+    assert agent._compact_window("m", str(tmp_path)) is None
+
+
+def test_exact_per_model_key_beats_stripped_one_whatever_the_order(agent, tmp_path):
+    for entries in (
+        {"claude-opus-5-5[1m]": 300000, "claude-opus-5-5": 200000},
+        {"claude-opus-5-5": 200000, "claude-opus-5-5[1m]": 300000},
+    ):
+        _user(
+            agent,
+            {
+                "modelSettings": {
+                    k: {"autoCompactWindow": v} for k, v in entries.items()
+                }
+            },
+        )
+        assert agent._compact_window("claude-opus-5-5", str(tmp_path)) == 200000
+        assert agent._compact_window("claude-opus-5-5[1m]", str(tmp_path)) == 200000
+
+
+def test_variant_key_alone_still_matches(agent, tmp_path):
+    _user(
+        agent,
+        {"modelSettings": {"claude-opus-5-5[1m]": {"autoCompactWindow": 300000}}},
+    )
+    assert agent._compact_window("claude-opus-5-5", str(tmp_path)) == 300000
+
+
+def test_settings_layers_are_cached_by_mtime(agent, tmp_path, monkeypatch):
+    _user(agent, {"autoCompactWindow": 200000})
+    cwd = str(tmp_path)
+    assert agent._compact_window("m", cwd) == 200000
+    opened = []
+    real_open = open
+
+    def spy(path, *a, **kw):
+        opened.append(str(path))
+        return real_open(path, *a, **kw)
+
+    monkeypatch.setattr("builtins.open", spy)
+    assert agent._compact_window("m", cwd) == 200000
+    assert not [p for p in opened if p.endswith("settings.json")]
+    # a rewrite (new mtime) is re-read
+    path = os.path.join(agent.CLAUDE_DIR, "settings.json")
+    _user(agent, {"autoCompactWindow": 300000})
+    st = os.stat(path)
+    os.utime(path, ns=(st.st_atime_ns, st.st_mtime_ns + 5_000_000_000))
+    assert agent._compact_window("m", cwd) == 300000
