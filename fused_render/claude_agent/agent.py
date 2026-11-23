@@ -12981,7 +12981,8 @@ def _poll(run_id: str, file: str = "", app_reads: bool = False,
                         tool_names[tid] = str(cb.get("name") or "")
                     tools_open[tid] = {
                         "id": tid, "name": str(cb.get("name") or "tool"),
-                        "detail": _tool_detail(cb.get("name"), tool_inputs.get(tid, {}))}
+                        "detail": _tool_detail(cb.get("name"),
+                                           tool_inputs.get(tid) or cb.get("input") or {})}
                     tool_input_bytes = 0
                     streaming_tid = tid
                     if cb.get("name") in ("Agent", "Task"):
