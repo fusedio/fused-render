@@ -20,7 +20,7 @@ import { SidebarFrame, NavItem } from "@platform/ui/sidebar/SidebarFrame";
 import { setSidebarSectionOpen } from "@platform/ui/sidebar/sidebar-accordion";
 import type { SidebarRailItem } from "@platform/ui/sidebar/SidebarFrame";
 import { botsAvailable, type Config } from "@platform/lib/api";
-import { useSpecialistsEnabled } from "@platform/lib/specialists-flag";
+import { useExpertsEnabled } from "@platform/lib/experts-flag";
 import { navigateUrl } from "@platform/lib/router";
 import { isBrowserHandledClick } from "@platform/lib/appEntry";
 import { TOURS, startTour } from "@platform/lib/tours";
@@ -666,9 +666,9 @@ export default function GlobalSidebar({ config }: { config: Config }) {
   // what the chip says, and both clear when the bot is opened (markSeen), not
   // when the page is.
   // No poll where the server runs no bots (Windows), and no Bots row there
-  // either unless Specialists are on: the page then lists them alone.
+  // either unless Experts are on: the page then lists them alone.
   const botsOn = botsAvailable(config);
-  const specialistsOn = useSpecialistsEnabled();
+  const expertsOn = useExpertsEnabled();
   const botsPulse = useBotsPulse(botsOn);
   // THE CLAUDE RAIL CARRIES TASKS AND BOTS (behind the rail flag,
   // `canvas_rail_peek_enabled`; owner, 2026-11-07): its Tasks door and + at
@@ -677,7 +677,7 @@ export default function GlobalSidebar({ config }: { config: Config }) {
   // (the Tasks visit stamp, the rail's dots read the same stores). Off, as
   // ever.
   const railNav = useCanvasRailPeek();
-  const botsRow = (botsOn || specialistsOn) && !railNav;
+  const botsRow = (botsOn || expertsOn) && !railNav;
   const botsTip = botsPulseTitle(botsPulse);
   const botsDot = botsPulse.waiting > 0 ? (
     <span className="sidebar-rail-dot is-attention" title={botsTip} />

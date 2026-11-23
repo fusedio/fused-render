@@ -168,18 +168,18 @@ describe("Bots are hidden where the server runs none (Windows)", () => {
     expect(botsAvailable(null)).toBe(true);
   });
 
-  it("the sidebar drops the poll always, and the row and rail item unless Specialists are on", () => {
+  it("the sidebar drops the poll always, and the row and rail item unless Experts are on", () => {
     expect(SIDEBAR).toContain("useBotsPulse(botsOn)");
-    // `botsRow` = Bots or Specialists here, and not moved to the Claude rail (rail flag). With Specialists on and no
-    // bots (Windows) the row stays: the page lists the specialists alone.
-    expect(SIDEBAR).toContain("const botsRow = (botsOn || specialistsOn) && !railNav;");
+    // `botsRow` = Bots or Experts here, and not moved to the Claude rail (rail flag). With Experts on and no
+    // bots (Windows) the row stays: the page lists the experts alone.
+    expect(SIDEBAR).toContain("const botsRow = (botsOn || expertsOn) && !railNav;");
     expect(SIDEBAR).toContain("{botsRow && (");
     expect(SIDEBAR).toMatch(/\.\.\.\(botsRow\s*\?\s*\[\s*\{\s*key: "bots"/);
   });
 
-  it("the route redirects Home and the page never mounts — once Specialists are KNOWN off", () => {
-    // Not on the first render: the specialists flag is "not read yet" there, and a bookmarked /bots must survive it.
-    expect(APP).toContain("const botsPageOn = botsOn || specialistsKnown !== false;");
+  it("the route redirects Home and the page never mounts — once Experts are KNOWN off", () => {
+    // Not on the first render: the experts flag is "not read yet" there, and a bookmarked /bots must survive it.
+    expect(APP).toContain("const botsPageOn = botsOn || expertsKnown !== false;");
     expect(APP).toContain("isBotsPath(pathname) && botsPageOn");
     expect(APP).toMatch(/!botsPageOn && isBotsPath\(location\.pathname\)/);
   });

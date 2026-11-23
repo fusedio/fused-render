@@ -378,7 +378,7 @@ export interface ComposerCardProps {
   /** The landing card's kind-dependent placeholder (`homePlaceholderFor`,
    *  T:5392). Unset keeps the markup's own kind-free wording. */
   placeholder?: string;
-  /** No "Schedule this as a task" seat (a specialist's chat). */
+  /** No "Schedule this as a task" seat (an expert's chat). */
   noSchedule?: boolean;
   /**
    * Follow-ups the CLI never delivered, handed BACK to the box they were typed

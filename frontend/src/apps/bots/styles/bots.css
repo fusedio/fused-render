@@ -36,7 +36,7 @@
 div.bots-page { flex: 1 1 auto; min-width: 0; min-height: 0; position: relative; }
 div.bots-page { margin: 0; display: flex; flex-direction: column; font-family: "Inter", -apple-system, BlinkMacSystemFont, "SF Pro Text", "Segoe UI", system-ui, sans-serif;
   font-size: 13px; line-height: 1.45; color: var(--text); background: var(--bg); -webkit-font-smoothing: antialiased; }
-/* The page's element defaults stop at a specialist's task chat (.chat-root, components/SpecialistChat.tsx), which styles its own. */
+/* The page's element defaults stop at an expert's task chat (.chat-root, components/ExpertChat.tsx), which styles its own. */
 .bots-page button:where(:not(.chat-root *)) { background: var(--raised); color: var(--text); border: none; border-radius: 999px; padding: 6px 12px; cursor: pointer; font: inherit; font-size: 12px; font-weight: 300; }
 .bots-page button:where(:not(.chat-root *)):hover { background: var(--hover); }
 .bots-page button:where(:not(.chat-root *)):disabled { opacity: .4; cursor: default; }
@@ -259,9 +259,9 @@ div.bots-page.lanim .bots header #add svg { width: 20px; height: 20px; }
 .bots-page .bot .name .rt { display: inline-block; vertical-align: -2px; margin-left: 5px; color: var(--muted); }
 .bots-page .bot .name .rt svg { width: 12px; height: 12px; display: block; }
 .bots-page .bot .name .super { font-size: 9px; font-weight: 600; margin-left: 5px; padding: 1px 5px; border-radius: 6px; background: #d97757; color: #fff; vertical-align: 1px; letter-spacing: .04em; }
-/* A specialist (docs/specialists.md): SUPER's badge on a neutral fill; on the selected row, whose own fill that is, the hover fill. */
-.bots-page .bot .name .specialist { font-size: 9px; font-weight: 600; margin-left: 5px; padding: 1px 5px; border-radius: 6px; background: var(--bots-shell-selected); color: var(--text); vertical-align: 1px; letter-spacing: .04em; }
-.bots-page .bot.sel .name .specialist { background: var(--raised); }
+/* An expert (docs/experts.md): SUPER's badge on a neutral fill; on the selected row, whose own fill that is, the hover fill. */
+.bots-page .bot .name .expert { font-size: 9px; font-weight: 600; margin-left: 5px; padding: 1px 5px; border-radius: 6px; background: var(--bots-shell-selected); color: var(--text); vertical-align: 1px; letter-spacing: .04em; }
+.bots-page .bot.sel .name .expert { background: var(--raised); }
 /* "nopick", not "fixed": Tailwind's .fixed utility is in this bundle and would float the avatar over the Name field. */
 .bots-page .bot .name .rt.warn, .bots-page .bot .sub .warn, .bots-page .r .s .warn { color: var(--err); }
 .bots-page .r .s .msg { display: block; color: var(--text); opacity: .85; white-space: pre-wrap; margin-top: 2px; }
@@ -454,7 +454,7 @@ div.bots-page.stage .chat header #rcol { display: none; }  /* same: the preview 
 .bots-page .thread .cleared .lbl::before, .bots-page .thread .cleared .lbl::after { content: ""; flex: 1; height: 1px; background: var(--raised); }
 .bots-page .thread .cleared button { padding: 2px 10px; font-size: 11px; border-radius: 999px; background: var(--inset); color: var(--text); }
 .bots-page .thread .cleared button:hover { background: var(--hover); }
-/* A specialist's earlier chats (SpecialistChat.tsx): above its task chat, which takes the rest of the column. */
+/* An expert's earlier chats (ExpertChat.tsx): above its task chat, which takes the rest of the column. */
 .bots-page .thread.earlier { flex: none; max-height: 45%; padding-bottom: 0; }
 .bots-page .ptog:disabled { opacity: .45; cursor: default; background: var(--bg); }
 /* Hover actions beside a message: reply (quotes it above the composer) and react (emoji picker). */
@@ -619,7 +619,7 @@ div.bots-page.sideapp .preview > :is(.shotwrap, .viewsw, .termwrap, .toast, .cap
 .bots-page .termwrap { position: relative; margin: 0 14px; height: 320px; border-radius: 14px; background: #000; overflow: hidden; box-shadow: 0 1px 0 var(--line); }
 .bots-page:not(.stage) .shotwrap.termup { display: none; }
 div.bots-page.stage .preview > :is(.viewsw, .termwrap) { display: none; }
-/* A specialist's preview column (components/SpecialistPane.tsx): no browser; its tabs on the Browser | Terminal
+/* An expert's preview column (components/ExpertPane.tsx): no browser; its tabs on the Browser | Terminal
    strip (.viewsw .satab). */
 .bots-page .xpane { flex: 1; min-height: 0; display: flex; flex-direction: column; overflow: hidden auto; padding-bottom: 14px; }
 .bots-page .xp-panel { margin: 0 14px; color: var(--muted); font-size: 12px; line-height: 1.5; min-width: 0; }
@@ -1014,5 +1014,5 @@ div.bots-page.bots-portal-host { position: fixed; top: 0; left: 0; width: 0; hei
 .bots-page.bots-peek { flex: 1 1 auto; min-height: 0; }
 .bots-page.bots-peek .chat { flex: 1 1 auto; min-height: 0; --chatgut: 12px; }
 .bots-page.bots-peek > .empty { flex: 1 1 auto; display: flex; align-items: center; justify-content: center; padding: 16px; color: var(--muted); text-align: center; }
-/* A specialist's task chat (SpecialistChat.tsx) sits on the thread's ground, not the task chat's lighter panel. */
+/* An expert's task chat (ExpertChat.tsx) sits on the thread's ground, not the task chat's lighter panel. */
 .bots-page .chat-root :is(.c-chat, .c-anntools) { background: var(--bg); }

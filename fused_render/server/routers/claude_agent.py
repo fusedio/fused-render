@@ -343,16 +343,16 @@ def _mark_breakout(params: dict, envelope: dict) -> None:
         logger.exception("claude agent: could not mark the breakout")
 
 
-def _specialist_after(params: dict, envelope: dict) -> None:
-    """A specialist's main chat or breakout (`specialist: "<id>:<kind>"`)
+def _expert_after(params: dict, envelope: dict) -> None:
+    """An expert's main chat or breakout (`expert: "<id>:<kind>"`)
     started: record its session, for the pane's chat and the breakout's inbox
-    file (specialists/chat.py)."""
+    file (experts/chat.py)."""
     res = envelope.get("result")
-    if params.get("action") == "start" and params.get("specialist") \
+    if params.get("action") == "start" and params.get("expert") \
             and isinstance(res, dict) and res.get("session_id"):
-        from fused_render.specialists import chat
+        from fused_render.experts import chat
 
-        spec_id, _, kind = str(params["specialist"]).partition(":")
+        spec_id, _, kind = str(params["expert"]).partition(":")
         chat.record_start(spec_id, kind, str(res["session_id"]))
 
 
@@ -421,7 +421,7 @@ async def agent_dispatch(body: dict, call: dict | None) -> Response:
         gate._file_owner(params, _envelope_of(fut), body,
                          late=(action == "start"))
         _mark_breakout(params, _envelope_of(fut))
-        _specialist_after(params, _envelope_of(fut))
+        _expert_after(params, _envelope_of(fut))
         git_status.invalidate_status_cache()
 
     def _on_cancel(fut):
@@ -469,7 +469,7 @@ async def agent_dispatch(body: dict, call: dict | None) -> Response:
         # placeholder dropped, a send's spent claim restored) with no `_late`.
         gate._file_owner(params, envelope, body)
         _mark_breakout(params, envelope)
-        _specialist_after(params, envelope)
+        _expert_after(params, envelope)
     if action == "cancel" and status == 200:
         # THE TASKS PAGE HEARS THE STOP NOW. Its own readers (the CLI's
         # registry row, the transcript tail) only notice a stop once the CLI

@@ -1,6 +1,6 @@
 // The bot-level flows behind the dialogs and the bot menu (OpenBot dialogs.js): create, save settings, delete,
 // clone, export (transcript, and the opener of the Export bot… dialog). Each runs its calls through act() so the page shows the effect and errors land in the banner.
-import { api, specialistApi, type AllowRule, type Bot, type Face } from "../lib/api";
+import { api, expertApi, type AllowRule, type Bot, type Face } from "../lib/api";
 import { loginValue } from "../lib/botform";
 import { act, cur, getState, openDialog, select, setState } from "../state/store";
 import { askConfirm } from "./ask";
@@ -105,8 +105,8 @@ export async function cloneBot(id: string | undefined = getState().sel || undefi
 /** Export transcript: the thread as Markdown, downloaded. Defaults to the selected bot. */
 export async function exportBot(b: Bot | undefined = cur()): Promise<void> {
   if (!b) return;
-  // A specialist with no chat yet answers "There is no chat to export yet."; say so instead of doing nothing.
-  const r = await act(() => (b.specialist ? specialistApi.exportChat(b.id) : api.exportTranscript(b.id)), !b.specialist);
+  // An expert with no chat yet answers "There is no chat to export yet."; say so instead of doing nothing.
+  const r = await act(() => (b.expert ? expertApi.exportChat(b.id) : api.exportTranscript(b.id)), !b.expert);
   if (!r?.text) return;
   const a = document.createElement("a");
   a.href = URL.createObjectURL(new Blob([r.text], { type: "text/markdown" })); a.download = r.name; a.click();

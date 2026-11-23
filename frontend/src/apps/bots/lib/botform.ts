@@ -25,7 +25,7 @@ export const browserOf = (b: Pick<Bot, "id" | "browser_id">): string => b.browse
 export function loginGroups(bots: Bot[], self?: string): { id: string; name: string; names: string[] }[] {
   const out = new Map<string, { id: string; name: string; names: string[] }>();
   for (const b of bots) {
-    // A specialist has no browser: never a set of logins to share.
+    // An expert has no browser: never a set of logins to share.
     if (b.id === self || noBrowser(b)) continue;
     const k = browserOf(b), g = out.get(k) || { id: k, name: "", names: [] };
     g.names.push(b.name);

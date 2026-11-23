@@ -11,8 +11,8 @@ import { useSyncExternalStore } from "react";
 import { isLanHost } from "@platform/lib/host";
 import { api, apiHooks, isWorkspaceBusy, markBotSeen, type Bot, type BotEvent, type Face, type ImessageState, type SlowCall, type StatusReply, type UsageSummary, ApiError } from "../lib/api";
 import { readBotsMissing } from "@platform/lib/bots-available";
-import { listSpecialists, type Specialist } from "@platform/lib/specialists";
-import { readSpecialistsFlag, specialistsEnabledNow } from "@platform/lib/specialists-flag";
+import { listExperts, type Expert } from "@platform/lib/experts";
+import { readExpertsFlag, expertsEnabledNow } from "@platform/lib/experts-flag";
 import { SEEN_KEY, newMarkFor, parseSeenMap, unreadOf, unviewedOf } from "../lib/unread";
 import { landingBot } from "../lib/landing";
 import { botHasUnread } from "@platform/lib/botsPulse";
@@ -316,8 +316,8 @@ function pushSeen(id: string, seq: number): void {
   });
 }
 export function markSeen(id: string | null | undefined, seq: number): void {
-  // A specialist's read mark is its own (its Learning tab); the bots backend does not know it.
-  if (!id || S.seen[id] >= seq || botById(id)?.specialist) return;
+  // An expert's read mark is its own (its Learning tab); the bots backend does not know it.
+  if (!id || S.seen[id] >= seq || botById(id)?.expert) return;
   pushSeen(id, seq);
   commit({ seen: { ...S.seen, [id]: seq } });
   // The sidebar's chip counts this bot until it hears the mark moved; the next poll is up to 3 s away (CodeRabbit, #1796).
@@ -332,7 +332,7 @@ function publishPulse(): void {
   // these rows while this page is the feeder (CodeRabbit, #2136).
   // …and the page's own recency (BotList `recency`: your last message, else when it was made), so the rail's pinned
   // bots sort as this list does while the page feeds them (owner, 2026-11-09: the foot's order disagreed with the page).
-  publishBots(S.bots.filter((b) => !b.specialist).map((b) => ({
+  publishBots(S.bots.filter((b) => !b.expert).map((b) => ({
     id: b.id, status: b.status, seq: b.seq, news_seq: b.news_seq, seen_seq: S.seen[b.id], hidden: b.hidden, pinned: b.pinned,
     name: b.name, face: b.face, last_user_ts: lastUserTs(eventsOf(b.id)) || b.last_user_ts || 0, created: b.created,
   })));
@@ -430,8 +430,8 @@ const OPEN_RETRY_MS = 3_000;
  *  OPEN_RETRY_MS so linking Claude later, or a measure landing, still starts it. The server rate-limits the measure
  *  itself (one a minute) and finishes a recent open on its own once it lands, so asking often is cheap and a fallback. */
 function sendOpen(id: string): void {
-  // A specialist's dot is its learning, cleared by its Learning tab (SpecialistPane), not by opening the chat.
-  if (botById(id)?.specialist) return;
+  // An expert's dot is its learning, cleared by its Learning tab (ExpertPane), not by opening the chat.
+  if (botById(id)?.expert) return;
   if (openedOnce.has(id) || (openRetryAt[id] || 0) > Date.now()) return;
   openedOnce.add(id);
   void act(() => api.open(id), true).then((r) => {
@@ -457,7 +457,7 @@ function applySel(id: string | null): void {
   const b = cur(); if (b) { setNewMark(b); markSeen(b.id, b.seq); }
   // A bot waiting for you in its browser opens Stage the moment you pick it.
   if (b && stageable(b)) requestStage(b.id);
-  // A specialist has no browser: a Stage left open for the previous bot closes rather than show it nothing.
+  // An expert has no browser: a Stage left open for the previous bot closes rather than show it nothing.
   else if (S.fast && noBrowser(b)) closeStage();
 }
 
@@ -534,29 +534,29 @@ export const closeMenu = (): void => { if (S.ui.menu) { commit({ ui: { ...S.ui, 
 /** builds/ owns the numbers; the list footer renders them. */
 export const setBuildsChip = (patch: Partial<BuildsChip>): void => commit({ buildsChip: { ...S.buildsChip, ...patch } });
 
-// ------------------------------------------------------------------ specialists ----
-// The page lists specialists (docs/specialists.md) as rows of their own kind: read from /api/specialists at most
-// every SPECIALISTS_MS and right after a specialist action, never off the page or on the phone. The bots backend
+// ------------------------------------------------------------------ experts ----
+// The page lists experts (docs/experts.md) as rows of their own kind: read from /api/experts at most
+// every EXPERTS_MS and right after an expert action, never off the page or on the phone. The bots backend
 // does not know them. With the switch off nothing is asked; the first poll waits for the switch, so a fresh load of
-// /bots/<specialist> finds its row.
-const SPECIALISTS_MS = 10_000;
+// /bots/<expert> finds its row.
+const EXPERTS_MS = 10_000;
 let specRows: Bot[] = [], specAt = 0;
-const asBot = (s: Specialist): Bot => ({
-  id: s.id, name: s.name, kind: "specialist", specialist: s, status: s.working ? "running" : "idle", seq: 0, events: [],
+const asBot = (s: Expert): Bot => ({
+  id: s.id, name: s.name, kind: "expert", expert: s, status: s.working ? "running" : "idle", seq: 0, events: [],
   model: "", effort: "", face: s.face as Face | null, created: s.last?.at || 0,
 });
-async function specialistBots(): Promise<Bot[]> {
+async function expertBots(): Promise<Bot[]> {
   if (isLanHost()) return [];
-  await readSpecialistsFlag();
-  if (!specialistsEnabledNow()) { specAt = 0; return []; }
-  if (Date.now() - specAt < SPECIALISTS_MS) return specRows;
+  await readExpertsFlag();
+  if (!expertsEnabledNow()) { specAt = 0; return []; }
+  if (Date.now() - specAt < EXPERTS_MS) return specRows;
   specAt = Date.now();
-  // A failed refresh keeps the rows it had: emptying them would also throw the user out of an open specialist chat.
-  specRows = await listSpecialists().then((r) => r.map(asBot), () => specRows);
+  // A failed refresh keeps the rows it had: emptying them would also throw the user out of an open expert chat.
+  specRows = await listExperts().then((r) => r.map(asBot), () => specRows);
   return specRows;
 }
-/** A specialist action, then a poll that reads the specialists again. */
-export function actSpecialist<T>(call: () => Promise<T>): Promise<T | undefined> {
+/** An expert action, then a poll that reads the experts again. */
+export function actExpert<T>(call: () => Promise<T>): Promise<T | undefined> {
   return act(() => call().then((r) => { specAt = 0; return r; }));
 }
 
@@ -588,15 +588,15 @@ export async function pollOnce(): Promise<void> {
   // ran mounted.
   const page = botsMounted();
   try {
-    // No bots on this server (Windows): the page lists the specialists alone, and `/api/bots` (a 503 there) is
-    // never asked — its failure would also take the specialists' rows down with it. Off the page this poll is the
+    // No bots on this server (Windows): the page lists the experts alone, and `/api/bots` (a 503 there) is
+    // never asked — its failure would also take the experts' rows down with it. Off the page this poll is the
     // rail's bot card's, which only stands where the server has bots (useBotsAvailable), so nothing is read there.
     const botsOff = page && await readBotsMissing();
     const [r, spec] = await Promise.all([
       botsOff ? NO_BOTS : api.status({ cursors: S.cursors, shot_for: page ? S.sel || "" : "", fast: page && S.fast }),
-      page ? specialistBots() : [],
+      page ? expertBots() : [],
     ]);
-    // What landing picks from: the bots, or with none on this server the specialists (on a Mac a specialist is never
+    // What landing picks from: the bots, or with none on this server the experts (on a Mac an expert is never
     // landed on by itself, as before).
     const landRows = botsOff ? spec : r.bots;
     batch(() => {
@@ -808,7 +808,7 @@ export function startStore(): () => void {
     document.removeEventListener("visibilitychange", onVisible);
     if (S.ui.dialog || S.ui.menu) commit({ ui: { dialog: null, menu: null } });  // a route change closes them
     pendingStage = null; if (S.fast) closeStage();  // Stage does not outlive the route (and a queued auto-open must not fire into it)
-    commit({ bots: S.bots.filter((b) => !b.specialist) });  // the rail's bot card lists bots only
+    commit({ bots: S.bots.filter((b) => !b.expert) });  // the rail's bot card lists bots only
     window.removeEventListener("popstate", syncFromUrl);
     window.removeEventListener("fused:navigate", syncFromUrl);
     window.removeEventListener("fused:urlchange", syncFromUrl);

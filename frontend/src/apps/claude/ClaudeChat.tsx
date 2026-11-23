@@ -44,8 +44,8 @@ import {
 } from "@platform/lib/drafts";
 import { TaskPrChip } from "@platform/ui/TaskPrChip";
 import { draftUpdatedAt, isDraftTask } from "@shell/tasks-lib";
-import { COMPOSER_DRAFT_EVENT, buildBreakoutContext, exchangeKeys, liveKeys, type BreakoutSpecialist, type ComposerDraftDetail } from "@platform/lib/breakouts";
-import { listSpecialists } from "@platform/lib/specialists";
+import { COMPOSER_DRAFT_EVENT, buildBreakoutContext, exchangeKeys, liveKeys, type BreakoutExpert, type ComposerDraftDetail } from "@platform/lib/breakouts";
+import { listExperts } from "@platform/lib/experts";
 
 import { createUrlParamsStore, type ParamsStore } from "./params/store";
 import { useChatParam } from "./params/useChatParams";
@@ -158,7 +158,7 @@ import {
 } from "./ui";
 import { ComposerGate, waitingKind } from "./ui/WaitingBar";
 import { BreakoutSelectionBar } from "./ui/BreakoutSelectionBar";
-import { SPECIALIST_BREAKOUT_TOOL } from "./specialists/tool-labels";
+import { EXPERT_BREAKOUT_TOOL } from "./experts/tool-labels";
 import { pickDefault, pickPlan } from "./ui/TurnPick";
 import { AGENT_PREFS_URL, agentLabel, capsOf, isBackendEnabled, useAgentBackends } from "@platform/lib/agent-backends";
 import { debugSentEnabled } from "./ui/debug-sent";
@@ -386,8 +386,8 @@ export interface ClaudeChatProps {
     /** Send `text` as a new message in this chat, the way a typed one goes. */
     send?: (text: string) => void;
   }) => void;
-  /** Fields merged into every `start` body (a specialist's chat:
-   *  `{specialist: "<id>:main"}`). Such a chat opens as a chat and has no
+  /** Fields merged into every `start` body (an expert's chat:
+   *  `{expert: "<id>:main"}`). Such a chat opens as a chat and has no
    *  Schedule seat. */
   extraParams?: Record<string, string>;
   /** `/clear` calls this instead of going back to Chats. */
@@ -3987,7 +3987,7 @@ function ChatBody(props: ChatBodyProps) {
    *  allowed while a run is active: the breakout is its own session. */
   const breakoutCwdRef = useRef<string | undefined>(undefined);
   const openBreakoutFor = useCallback(
-    (keys: readonly string[], prompt?: string, specialist?: BreakoutSpecialist) => {
+    (keys: readonly string[], prompt?: string, expert?: BreakoutExpert) => {
       const st = controller.getState();
       const sid = st.sessionId || params.get("session_id") || "";
       if (!props.onBreakout || !sid || !file) return;
@@ -4000,7 +4000,7 @@ function ChatBody(props: ChatBodyProps) {
         context,
         forkKey: [...keys].sort().join("|"),
         ...(prompt?.trim() ? { prompt: prompt.trim() } : {}),
-        ...(specialist ? { specialist } : {}),
+        ...(expert ? { expert } : {}),
       });
     },
     [controller, params, file, props.onBreakout],
@@ -4014,8 +4014,8 @@ function ChatBody(props: ChatBodyProps) {
   pickingRef.current = picking;
   /** The turns picked for the next breakout (whole exchanges). */
   const [pickedKeys, setBreakoutSel] = useState<ReadonlySet<string>>(new Set());
-  /** The pick bar's "With": the specialist the breakout runs with, or none. */
-  const [withSpecialist, setWithSpecialist] = useState<BreakoutSpecialist>();
+  /** The pick bar's "With": the expert the breakout runs with, or none. */
+  const [withExpert, setWithExpert] = useState<BreakoutExpert>();
   // Only keys of turns still on screen count: a re-keyed transcript or another
   // session leaves the old keys behind, and they must not size the selection
   // or reach the context.
@@ -4564,18 +4564,18 @@ function ChatBody(props: ChatBodyProps) {
 
   const actions = useMemo(
     () => ({
-      // Allowing a task's specialist_breakout opens the breakout it asked for,
+      // Allowing a task's expert_breakout opens the breakout it asked for,
       // seeded with the task's last exchange, with its reason as the question,
       // once the allow has landed.
       decidePermission: (...a: Parameters<typeof controller.decidePermission>) => {
         return controller.decidePermission(...a).then(() => {
           // The row as the server answered (a held or failed decision is not an allow).
           const row = controller.getState().permissions.find((p) => p.id === a[0]);
-          if (row?.tool !== SPECIALIST_BREAKOUT_TOOL || row.decision !== "allow" || row.queuedAhead !== undefined) return;
-          const { specialist, reason } = row.input as { specialist?: string; reason?: string };
+          if (row?.tool !== EXPERT_BREAKOUT_TOOL || row.decision !== "allow" || row.queuedAhead !== undefined) return;
+          const { expert, reason } = row.input as { expert?: string; reason?: string };
           // By id, or by name ignoring case and spacing, as the server's `store.find`.
-          const key = (specialist || "").split(/\s+/).filter(Boolean).join(" ");
-          void listSpecialists().then((all) => {
+          const key = (expert || "").split(/\s+/).filter(Boolean).join(" ");
+          void listExperts().then((all) => {
             const s = all.find((x) => x.id === key || x.name.toLowerCase() === key.toLowerCase());
             const turns = controller.getState().turns;
             const last = turns[turns.length - 1];
@@ -5438,7 +5438,7 @@ function ChatBody(props: ChatBodyProps) {
             pickSubmit: {
               canStart: breakoutSel.size > 0,
               onStart: (text: string) => {
-                openBreakoutFor([...breakoutSel], text, withSpecialist);
+                openBreakoutFor([...breakoutSel], text, withExpert);
                 setPicking(false);
                 setBreakoutSel(new Set());
               },
@@ -5475,7 +5475,7 @@ function ChatBody(props: ChatBodyProps) {
       props.extraParams,
       picking,
       breakoutSel,
-      withSpecialist,
+      withExpert,
       openBreakoutFor,
       file,
       state.sessionId,
@@ -5854,7 +5854,7 @@ function ChatBody(props: ChatBodyProps) {
     }
     const pre = pickDefault(controller.getState().turns);
     setBreakoutSel(new Set(pre));
-    setWithSpecialist(undefined);
+    setWithExpert(undefined);
     setPicking(true);
   };
   const startBreakout = () => {
@@ -5862,7 +5862,7 @@ function ChatBody(props: ChatBodyProps) {
     // The composer spends its words into the breakout's first message.
     if (pickStartRef.current) pickStartRef.current();
     else {
-      openBreakoutFor([...breakoutSel], undefined, withSpecialist);
+      openBreakoutFor([...breakoutSel], undefined, withExpert);
       setPicking(false);
       setBreakoutSel(new Set());
     }
@@ -6614,8 +6614,8 @@ function ChatBody(props: ChatBodyProps) {
             {breakoutGate && picking ? (
               <BreakoutSelectionBar
                 count={state.turns.filter((t) => t.role === "user" && breakoutSel.has(t.key)).length}
-                specialist={withSpecialist}
-                onSpecialist={setWithSpecialist}
+                expert={withExpert}
+                onExpert={setWithExpert}
                 onStart={startBreakout}
                 onCancel={() => {
                   setPicking(false);

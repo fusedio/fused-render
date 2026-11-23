@@ -3,7 +3,7 @@ forwards every tool call to the fused-render server, where the agent engine runs
 it against the bot's browser.
 
     argv: <server origin> <bot id> <task token> [<base path> <server name>]
-          (a specialist's session: `api/specialists/<id>/<server>`, specialists/launch.py)
+          (an expert's session: `api/experts/<id>/<server>`, experts/launch.py)
 
     initialize   -> capabilities.tools
     tools/list   -> GET  <origin>/api/bots/<id>/tools?token=<token>   (cached for the process)
