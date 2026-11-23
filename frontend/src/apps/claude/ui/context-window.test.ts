@@ -147,6 +147,64 @@ describe("autoCompactWindow", () => {
   });
 });
 
+describe("the user's autoCompactWindow", () => {
+  // agent.py stamps `compact_window` (env var / `autoCompactWindow` setting);
+  // the CLI runs `min(model window, configured)` and treats it as enforced.
+  const opus = (extra: Partial<ContextUsage> = {}) =>
+    usage({ cache_read_input_tokens: 75_000, model: "claude-opus-5-5", window: 1_000_000, ...extra });
+
+  it("caps a 1M model at the configured window, enforced, source user", () => {
+    expect(autoCompactWindow("claude-opus-5-5", opus({ compact_window: 200_000 }))).toEqual({
+      window: 200_000,
+      source: "user",
+      enforced: true,
+    });
+  });
+
+  it("never exceeds the model's own window", () => {
+    const small = usage({ model: "claude-haiku-4-5", window: 200_000, compact_window: 500_000 });
+    expect(autoCompactWindow("claude-haiku-4-5", small).window).toBe(200_000);
+    expect(autoCompactWindow("claude-haiku-4-5", small).source).toBe("user");
+  });
+
+  it("ignores a missing, null or junk value", () => {
+    for (const bad of [undefined, null, 0, -1, Number.NaN, Number.POSITIVE_INFINITY]) {
+      expect(autoCompactWindow("claude-opus-5-5", opus({ compact_window: bad })).source, String(bad)).toBe("auto");
+    }
+  });
+
+  it("a configured window at or above the model's own is still enforced (CLI: source settings/env, threshold window - 33k)", () => {
+    // `vy` returns `{window: min(model, configured), source: "settings"|"env"}`
+    // whatever the configured size, and the threshold is `window - 20k - 13k`.
+    const t = contextThresholds("claude-opus-5-5", opus({ compact_window: 1_000_000 }));
+    expect(t.window).toBe(1_000_000);
+    expect(t.compactAt).toBe(967_000);
+    expect(t.enforced).toBe(true);
+  });
+
+  it("moves the compaction point the CLI's /context draws (33k buffer)", () => {
+    const t = contextThresholds("claude-opus-5-5", opus({ compact_window: 200_000 }));
+    expect(t.window).toBe(200_000);
+    expect(t.model).toBe(1_000_000);
+    expect(t.compactAt).toBe(167_000);
+    expect(t.warnAt).toBe(147_000);
+    expect(t.enforced).toBe(true);
+  });
+
+  it("drives the ring, the level and the countdown line off it", () => {
+    const u = opus({ compact_window: 200_000, cache_read_input_tokens: 150_000 });
+    expect(usedPct("claude-opus-5-5", u)).toBe(90);
+    expect(contextLevel("claude-opus-5-5", contextTotal(u), u)).toBe("warn");
+    expect(contextHint("claude-opus-5-5", u)).toBe(
+      "Context: 150k of 167k tokens before auto-compact (90%)",
+    );
+  });
+
+  it("leaves the model-default numbers alone without it", () => {
+    expect(contextThresholds("claude-opus-5-5", opus()).compactAt).toBe(997_000);
+  });
+});
+
 describe("contextThresholds", () => {
   it("lands on 997,000 for a 1M model, warning at 977,000", () => {
     const t = contextThresholds("claude-sonnet-5");
@@ -461,6 +519,48 @@ describe("contextBreakdownReport", () => {
     expect(stale.legend.find((row) => row.label === "Free space")!.tokens)
       .toBe(1_000_000 - 50_778 - 3_000);
     expect(stale.legend.find((row) => row.label === "Skills")!.tokens).toBe(9_949);
+  });
+
+  describe("with the user's autoCompactWindow", () => {
+    // The user's setting caps Opus 5.5 at 200k; the CLI's own /context says
+    // maxTokens 200,000 with a 33,000 compact buffer, and the header must
+    // read the same window the grid is drawn on.
+    const CAPPED: ContextBreakdown = {
+      ...PROBE,
+      categories: PROBE.categories.map((c) =>
+        c.id === "compact_buffer" ? { ...c, tokens: 33_000 }
+        : c.id === "free_space" ? { ...c, tokens: 200_000 - 33_000 - 41_206 }
+        : c,
+      ),
+      max_tokens: 200_000,
+    };
+    const u = input(41_206, "claude-opus-5-5");
+
+    it("takes compactAt from the live window minus its buffer", () => {
+      const out = contextBreakdownReport("claude-opus-5-5", u, CAPPED);
+      expect(out.compactAt).toBe(167_000);
+      expect(out.pct).toBe(Math.round((41_206 / 167_000) * 100));
+      expect(out.window).toBe(200_000);
+      expect(out.used).toBe(41_206);
+    });
+
+    it("agrees with the ring when the page also knows the setting", () => {
+      const withSetting = { ...u, window: 1_000_000, compact_window: 200_000 };
+      const out = contextBreakdownReport("claude-opus-5-5", withSetting, CAPPED);
+      expect(out.compactAt).toBe(contextThresholds("claude-opus-5-5", withSetting).compactAt);
+      expect(out.pct).toBe(usedPct("claude-opus-5-5", withSetting));
+    });
+
+    it("keeps the base numbers for a stale breakdown", () => {
+      const out = contextBreakdownReport("claude-opus-5-5", u, { ...CAPPED, stale: true });
+      expect(out.compactAt).toBe(contextReport("claude-opus-5-5", u).compactAt);
+    });
+
+    it("keeps the base numbers when the breakdown names no buffer", () => {
+      const noBuffer = { ...CAPPED, categories: CAPPED.categories.filter((c) => c.kind !== "buffer") };
+      const out = contextBreakdownReport("claude-opus-5-5", u, noBuffer);
+      expect(out.compactAt).toBe(contextReport("claude-opus-5-5", u).compactAt);
+    });
   });
 
   it("falls back to the one-row view when there is no window to draw", () => {

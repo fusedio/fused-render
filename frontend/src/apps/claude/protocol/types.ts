@@ -1061,6 +1061,11 @@ export interface ContextUsage {
    *  A Copilot session's comes from its host instead (ACP
    *  `usage_update.size`, docs/COPILOT_BACKEND.md §4). */
   window?: number | null;
+  /** The auto-compact window the USER configured (the
+   *  `CLAUDE_CODE_AUTO_COMPACT_WINDOW` env var or the `autoCompactWindow`
+   *  setting, resolved by agent.py for the run's folder). Absent when none is
+   *  set; the CLI compacts at `min(window, compact_window)`. */
+  compact_window?: number | null;
   compacted: boolean;
 }
 

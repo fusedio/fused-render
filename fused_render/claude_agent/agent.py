@@ -12939,6 +12939,11 @@ def _poll(run_id: str, file: str = "", app_reads: bool = False,
     # same batch.
     elif context is not None and saw_result and context.get("window") is None:
         context["window"] = _known_window(context.get("model", ""))
+    # The user's own auto-compact window (env var / `autoCompactWindow`
+    # setting, per the run's folder), which the CLI honours over the model's
+    # window: the page takes `min(window, compact_window)`.
+    if not _non_claude(backend) and isinstance(context, dict):
+        context = _stamp_compact_window(context, wt_cwd)
 
     # The task registry (SPEC T-1) and the command list (SPEC C-2): the rows
     # this window holds that the persisted registry has not absorbed yet,
@@ -14321,6 +14326,190 @@ def _known_window(model: str) -> int | None:
     return known.get(model) or known.get(model.lower())
 
 
+# THE AUTO-COMPACT WINDOW THE USER CONFIGURED, mirrored from the CLI
+# (2.1.328, `vy`): `min(model window, configured)`, where `configured` is
+#   1. the CLAUDE_CODE_AUTO_COMPACT_WINDOW env var (a "200k"/"1m" shorthand or a
+#      plain count; under the 100k minimum it counts as 100k; unusable is
+#      ignored), else
+#   2. the `autoCompactWindow` setting, `"auto"` meaning "no setting": the
+#      model's own default.
+# Settings layers apply user < project < local < managed; a layer that sets the
+# top-level value replaces everything below it (its own `modelSettings` entries
+# included), otherwise per-model entries merge, and a model's own entry beats
+# the default. The env var also counts when it is set in a layer's `env` block.
+# Only the CONFIGURED number is stamped here; the page takes the `min` against
+# the model window it already holds. Nothing is stamped when auto-compact is
+# off (DISABLE_COMPACT / DISABLE_AUTO_COMPACT truthy, or the highest settings
+# layer setting `autoCompactEnabled` says false): the CLI never compacts then.
+# A per-model "auto" is the model default (no number); an invalid per-model
+# value is dropped by the CLI's schema, so the layer's top-level number applies.
+_COMPACT_WINDOW_ENV = "CLAUDE_CODE_AUTO_COMPACT_WINDOW"
+_COMPACT_ENV_NAMES = (_COMPACT_WINDOW_ENV, "DISABLE_COMPACT", "DISABLE_AUTO_COMPACT")
+_COMPACT_WINDOW_MIN = 100_000
+_COMPACT_QUALIFIER = re.compile(r"\[[^\]]*\]\s*$")
+
+
+def _managed_settings_path() -> str:
+    """Where the CLI reads enterprise-managed settings on this OS."""
+    if sys.platform == "darwin":
+        return "/Library/Application Support/ClaudeCode/managed-settings.json"
+    if sys.platform.startswith("win"):
+        return r"C:\Program Files\ClaudeCode\managed-settings.json"
+    return "/etc/claude-code/managed-settings.json"
+
+
+_SETTINGS_LAYER_CACHE: dict[str, tuple[int, int, dict]] = {}
+
+
+def _read_settings_layer(path: str) -> dict:
+    """One settings file, parsed; re-read only when its mtime or size changes
+    (`_poll` asks for four of them on every tick)."""
+    try:
+        st = os.stat(path)
+    except OSError:
+        _SETTINGS_LAYER_CACHE.pop(path, None)
+        return {}
+    stamp = (st.st_mtime_ns, st.st_size)
+    hit = _SETTINGS_LAYER_CACHE.get(path)
+    if hit is not None and hit[:2] == stamp:
+        return hit[2]
+    try:
+        with open(path, encoding="utf-8") as fh:
+            data = json.load(fh)
+    except (OSError, ValueError):
+        data = {}
+    layer = data if isinstance(data, dict) else {}
+    _SETTINGS_LAYER_CACHE[path] = (stamp[0], stamp[1], layer)
+    return layer
+
+
+def _compact_tokens(value: object, clamp: bool) -> int | None:
+    """A configured size as tokens, or None when the CLI would ignore it.
+    `clamp` is the env var's rule: under the minimum reads as the minimum."""
+    if isinstance(value, bool):
+        return None
+    tokens: float
+    if isinstance(value, (int, float)):
+        tokens = value
+    elif isinstance(value, str):
+        text = value.strip()
+        mult = {"k": 1000, "m": 1_000_000}.get(text[-1:].lower())
+        try:
+            tokens = float(text[:-1]) * mult if mult else float(int(text))
+        except ValueError:
+            return None
+    else:
+        return None
+    if tokens != tokens or tokens < 1 or tokens > 2**53:
+        return None
+    count = int(round(tokens))
+    if count < _COMPACT_WINDOW_MIN:
+        return _COMPACT_WINDOW_MIN if clamp else None
+    return count
+
+
+def _compact_model_key(model: str) -> str:
+    return _COMPACT_QUALIFIER.sub("", str(model or "").strip().lower())
+
+
+def _env_flag(value: object) -> bool:
+    """The CLI's truthy env spelling (`Oe`): 1 / true / yes / on."""
+    return str(value).strip().lower() in ("1", "true", "yes", "on")
+
+
+def _compact_window(model: str, cwd: str) -> int | None:
+    """The auto-compact window the user configured for `model` in `cwd`, or
+    None when nothing (usable) is configured or auto-compact is switched off.
+    See the block comment above."""
+    layers = [_read_settings_layer(os.path.join(CLAUDE_DIR, "settings.json"))]
+    if cwd:
+        proj = os.path.join(cwd, ".claude")
+        layers.append(_read_settings_layer(os.path.join(proj, "settings.json")))
+        layers.append(_read_settings_layer(os.path.join(proj, "settings.local.json")))
+    layers.append(_read_settings_layer(_managed_settings_path()))
+
+    # Env names are case-sensitive; a settings `env` block lands in the CLI's
+    # environment, later layers over earlier ones.
+    env = {k: os.environ.get(k) for k in _COMPACT_ENV_NAMES}
+    for layer in layers:
+        block = layer.get("env")
+        if isinstance(block, dict):
+            for key, val in block.items():
+                if key in env:
+                    env[key] = str(val)
+
+    # `dm()`: off when DISABLE_COMPACT / DISABLE_AUTO_COMPACT is truthy, else
+    # the highest layer that sets `autoCompactEnabled` (default on). Off means
+    # the window is never enforced, so there is nothing to count down to.
+    if _env_flag(env["DISABLE_COMPACT"]) or _env_flag(env["DISABLE_AUTO_COMPACT"]):
+        return None
+    for layer in reversed(layers):
+        if isinstance(layer.get("autoCompactEnabled"), bool):
+            if not layer["autoCompactEnabled"]:
+                return None
+            break
+
+    env_value = env[_COMPACT_WINDOW_ENV]
+    env_tokens = _compact_tokens(env_value, True) if env_value else None
+    if env_tokens is not None:
+        return env_tokens
+
+    wanted = _compact_model_key(model)
+    default: int | None = None
+    # None in `by_model` is an explicit "auto": the model's own default, which
+    # the CLI uses for that model INSTEAD of the layer's top-level number.
+    by_model: dict[str, int | None] = {}
+    for layer in layers:
+        own: dict[str, int | None] = {}
+        canonical: set[str] = set()
+        settings = layer.get("modelSettings")
+        if isinstance(settings, dict):
+            for key, entry in settings.items():
+                if not (
+                    isinstance(key, str)
+                    and isinstance(entry, dict)
+                    and "autoCompactWindow" in entry
+                ):
+                    continue
+                raw = entry["autoCompactWindow"]
+                if isinstance(raw, str) and raw.strip().lower() == "auto":
+                    value = None
+                else:
+                    value = _compact_tokens(raw, False)
+                    if value is None:
+                        continue  # the CLI's schema drops an invalid entry
+                lowered = key.strip().lower()
+                stripped = _compact_model_key(key)
+                # A key that IS the canonical name beats its [1m]-style
+                # spellings, whatever the file order; else the first wins.
+                if lowered == stripped:
+                    own[stripped] = value
+                    canonical.add(stripped)
+                elif stripped not in canonical:
+                    own.setdefault(stripped, value)
+        if "autoCompactWindow" in layer:
+            default = _compact_tokens(layer["autoCompactWindow"], False)
+            by_model = own
+        else:
+            by_model = {**by_model, **own}
+    if wanted and wanted in by_model:
+        return by_model[wanted]
+    return default
+
+
+def _stamp_compact_window(context: dict | None, cwd: str) -> dict | None:
+    """`context` with `compact_window` set to the user's configured window for
+    its model, or without the key when none is configured. A copy; None stays
+    None."""
+    if not isinstance(context, dict):
+        return context
+    out = {k: v for k, v in context.items() if k != "compact_window"}
+    configured = _compact_window(str(out.get("model") or ""), cwd)
+    if configured is not None:
+        out["compact_window"] = configured
+    return out
+
+
 def _learn_windows(row: dict) -> None:
     """Record `modelUsage.<model>.contextWindow` off one `result` row.
 
@@ -14894,6 +15083,11 @@ def _history(file: str, session_id: str, app_reads: bool = False,
         window = _run_context_window(last_run)
         if window:
             context = {**context, "window": window}
+    # The user's configured auto-compact window rides beside `window` (see
+    # `_poll`); it survives the compaction rebuild above because it is
+    # re-read here rather than carried.
+    if not _non_claude(backend) and isinstance(context, dict):
+        context = _stamp_compact_window(context, _workdir(file))
     # A TURN ITS PROCESS NEVER FINISHED reads as a failure, not as a reply
     # still being written: the pending tool chips of the last reply settle as
     # errors and a red line says what happened and what to do
