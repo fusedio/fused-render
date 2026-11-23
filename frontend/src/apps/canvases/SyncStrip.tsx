@@ -7,7 +7,7 @@
 // clock tick so the ageing embed_to_disk leg and "Published 12 s ago" never
 // re-render the whole workspace (and its two iframes' parents) every second.
 import { ArrowLeftIcon } from "lucide-react";
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState, type MouseEvent as ReactMouseEvent } from "react";
 import { ENV_NAMES, type WorkbenchEnv } from "./api";
 import {
   LEG_LABEL,
@@ -96,6 +96,7 @@ export function SyncStrip({
   onToggle,
   onBack,
   workbenchUrl,
+  explorerLink = null,
   pushErrors = null,
 }: {
   /** The canvas's environment, shown as a chip beside the way back: with a
@@ -124,6 +125,11 @@ export function SyncStrip({
    *  until the base URL and handle are known. Shown as "Open in workbench"
    *  while every leg is green. */
   workbenchUrl: string | null;
+  /** The canvas's folder on this machine, in the explorer (router
+   *  `spaLinkProps`): an anchor, so a plain click hops in place and
+   *  Cmd/middle-click opens a tab. Null until the folder is known. Shown
+   *  whatever the sync state — the folder is there either way. */
+  explorerLink?: { href: string; onClick: (e: ReactMouseEvent<HTMLAnchorElement>) => void } | null;
   /** A failed push's errors, as a count pill at the strip's right: click
    *  folds the detail panel (reason, Fix with Claude, the CLI's lines) open
    *  and shut under the strip. Null while the push leg is not in error. */
@@ -306,6 +312,21 @@ export function SyncStrip({
             {publish.busy ? "Publishing…" : "Publish now"}
           </button>
         </span>
+      )}
+      {explorerLink && (
+        <a
+          href={explorerLink.href}
+          className="btn"
+          style={{ padding: "1px 10px", fontSize: 12, flex: "none", textDecoration: "none" }}
+          onClick={(e) => {
+            e.stopPropagation();
+            explorerLink.onClick(e);
+          }}
+          onKeyDown={(e) => e.stopPropagation()}
+          title="Open this canvas's folder in the explorer"
+        >
+          Open in Explorer
+        </a>
       )}
       {!owned && server && level === "ok" && !inFlight && workbenchUrl && (
         // All green and nothing moving: the canvas on the server is what
