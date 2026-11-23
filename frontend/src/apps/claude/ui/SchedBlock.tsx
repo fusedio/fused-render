@@ -22,6 +22,7 @@
 // ID because you are already there" (Akshil, 2026-08-17).
 import { useCallback, useEffect, useRef } from "react";
 import { shortTaskId } from "@platform/lib/task-id";
+import { LIMIT_RETRY_HINT, LIMIT_RETRY_LABEL } from "@platform/lib/usage-limit";
 import "../styles/sched.css";
 import {
   schedIsRepeat,
@@ -59,6 +60,15 @@ export interface SchedBlockProps {
   onStop(): void;
   /** The card's own node, for the outside-press disarm (`useSchedule`). */
   cardRef?: React.MutableRefObject<HTMLDivElement | null>;
+  /** RETRY NOW, on the usage-limit comeback only: continue the chat now
+   *  instead of at the reset (another account, an early reset). Absent = no
+   *  button. */
+  onRetry?: () => void;
+  /** A retry is in flight — the button is dead for its duration. */
+  retrying?: boolean;
+  /** What the last retry press came back with when it did not simply go: the
+   *  scheduler's sentence, or the refusal. "" says nothing. */
+  retryNote?: string;
 }
 
 export function SchedBlock({
@@ -70,6 +80,9 @@ export function SchedBlock({
   tick,
   onStop,
   cardRef,
+  onRetry,
+  retrying = false,
+  retryNote = "",
 }: SchedBlockProps) {
   const nameRef = useRef<HTMLSpanElement | null>(null);
   const next = blockers[0];
@@ -157,8 +170,19 @@ export function SchedBlock({
           <span className="sb-grow" />
           <span className="sb-meta">{label + " · " + when}</span>
         </div>
-        <div className="sb-note">{refused ? schedRefusalNote(repeat) : ""}</div>
+        <div className="sb-note">{refused ? schedRefusalNote(repeat) : comeback ? retryNote : ""}</div>
         <div className="sb-acts">
+          {comeback && onRetry ? (
+            <button
+              type="button"
+              data-testid="sb-retry"
+              title={LIMIT_RETRY_HINT}
+              disabled={retrying || stopping}
+              onClick={onRetry}
+            >
+              {LIMIT_RETRY_LABEL}
+            </button>
+          ) : null}
           <button
             type="button"
             className={armed ? "armed" : undefined}

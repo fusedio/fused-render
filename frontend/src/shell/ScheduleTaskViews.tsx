@@ -49,11 +49,13 @@ import {
   markTaskMessageRead,
   markWholeTaskRead,
   resendScheduledMessage,
+  retryAfterLimit,
   runScheduledNow,
   scheduleMessage,
   archiveTask,
   unarchiveTask,
 } from "@platform/lib/api";
+import { isUsageLimited, LIMIT_RETRY_HINT, LIMIT_RETRY_LABEL } from "@platform/lib/usage-limit";
 import { notify } from "@platform/lib/notifications";
 import { useNow } from "@platform/lib/clock";
 import { EraseTaskModal } from "./EraseTaskModal";
@@ -2018,6 +2020,22 @@ interface RunOutcome {
  *  the right thing to show. */
 async function performForceStart(task: Task): Promise<void> {
   await forceStart({ key: task.key });
+}
+
+/** RETRY NOW on a row the plan's usage limit paused — the continue prompt goes
+ *  now instead of at the reset (`POST /api/tasks/limit/retry`; the booked
+ *  comeback stays until a reply retires it). Returns the server's note when
+ *  the continue could not go this second, "" when it went. Refusals THROW,
+ *  like performForceStart, so each caller puts them in its own note line. */
+async function performLimitRetry(task: Task): Promise<string> {
+  const res = await retryAfterLimit(task.key);
+  return res.note || "";
+}
+
+/** Whether a row offers Retry now: paused on the usage limit, with a
+ *  conversation to continue (a `pending:` row has none). */
+function canRetryLimit(task: Task): boolean {
+  return isUsageLimited(task) && !!task.session_id;
 }
 
 /**
@@ -4005,6 +4023,23 @@ function TaskNode({
       onReload?.();
     }
   };
+  // Retry now on a usage-limited row: same shape as `force`, the note line
+  // carries whatever the server said when the continue did not simply go.
+  const [retrying, setRetrying] = useState(false);
+  const retryLimit = async () => {
+    setActing(true);
+    setRetrying(true);
+    setNote("");
+    try {
+      setNote(await performLimitRetry(task));
+    } catch (e) {
+      setNote((e as Error).message);
+    } finally {
+      setActing(false);
+      setRetrying(false);
+      onReload?.();
+    }
+  };
 
   // Filing, either direction. One call each, and the same ones the board's drops
   // make: the server cancels the work and files the session going in, and drops
@@ -5003,6 +5038,26 @@ function TaskNode({
             }}
           >
             {FORCE_START_LABEL}
+          </button>
+        )}
+        {/* RETRY NOW, on a row the usage limit paused ("Usage limit · resumes
+            4:00 AM") — the same seat and register as Force start, and like it
+            not behind SHOW_ROW_ACTIONS: switching accounts makes the wait
+            pointless, and this is the press that says so. */}
+        {canRetryLimit(task) && (
+          <button
+            type="button"
+            className="tasks-act tasks-act--skip"
+            title={LIMIT_RETRY_HINT}
+            aria-label={`${LIMIT_RETRY_LABEL} for ${task.task_id}`}
+            data-testid="task-limit-retry"
+            disabled={acting}
+            onClick={(e) => {
+              e.stopPropagation();
+              void retryLimit();
+            }}
+          >
+            {retrying ? "Retrying\u2026" : LIMIT_RETRY_LABEL}
           </button>
         )}
         {SHOW_ROW_ACTIONS && seen && (
@@ -6136,6 +6191,16 @@ export function TaskBoard({
     }
     onReload();
   };
+  const retryLimit = async (task: Task) => {
+    setNote(null);
+    try {
+      const said = await performLimitRetry(task);
+      if (said) setNote(said);
+    } catch (e) {
+      setNote((e as Error).message);
+    }
+    onReload();
+  };
 
   const refile = async (task: Task, intent: FilingIntent) => {
     if (intent.kind === "archive") {
@@ -6453,6 +6518,7 @@ export function TaskBoard({
                     onFile={(intent) => refile(task, intent)}
                     onRun={(intent) => runNow(task, intent)}
                     onForceStart={() => force(task)}
+                    onRetryLimit={() => retryLimit(task)}
                     onErased={onReload}
                     onOpen={(intent) => openCard(task, intent)}
                     {...(onOpenDraft ? { onOpenDraft } : {})}
@@ -6507,6 +6573,7 @@ function TaskCard({
   onFile,
   onRun,
   onForceStart,
+  onRetryLimit,
   onOpen,
   onOpenDraft,
   onErased,
@@ -6557,6 +6624,9 @@ function TaskCard({
    * may be reachable. The drag onto In Progress presses the same verb. The
    * board owns the call, so its refusal lands in the one note. */
   onForceStart: () => Promise<void>;
+  /** Retry now on a card the usage limit paused (`canRetryLimit`). The board
+   *  owns the call, so its refusal lands in the one note, like Force start. */
+  onRetryLimit: () => Promise<void>;
   /** Open the conversation, marking the thread read on the way. The board owns
    * it because the board owns the read set — and it is only ever called with a
    * non-null intent, so this card cannot navigate to nowhere. */
@@ -6675,6 +6745,8 @@ function TaskCard({
   /** …and what a waiting card is waiting on — the List row's sentence. */
   const asking = attentionCaption(task);
   const [busy, setBusy] = useState(false);
+  /** Retry now is the press in flight — its button says so. */
+  const [retrying, setRetrying] = useState(false);
   // The Board's own copy of the List row's erase confirm; see the foot.
   const [erasing, setErasing] = useState(false);
   // …and of its discard, for the same reason: one press, not two.
@@ -7032,7 +7104,7 @@ function TaskCard({
           id in the head (`.tasks-idslot` above), the List row's seat, and a
           second copy here would be two filing buttons on one card. */}
       {((peekOn && page) || folderMissing || (hasDraft(task) && !heldInPeek)
-        || canForceStart(task) || jobs || (SHOW_ROW_ACTIONS && run)) && (
+        || canForceStart(task) || canRetryLimit(task) || jobs || (SHOW_ROW_ACTIONS && run)) && (
         <span className="tasks-card-acts">
           {/* DISCARD, the List row's own act in the card's hover strip — same
               glyph, same class, same caption, same silence at rest (design.md,
@@ -7111,6 +7183,28 @@ function TaskCard({
               }}
             >
               {FORCE_START_LABEL}
+            </button>
+          )}
+          {/* RETRY NOW, the List row's own press on a card the usage limit
+              paused — same seat and register as Force start. */}
+          {canRetryLimit(task) && (
+            <button
+              type="button"
+              className="tasks-act tasks-card-act tasks-act--skip"
+              title={LIMIT_RETRY_HINT}
+              aria-label={`${LIMIT_RETRY_LABEL} ${shortTaskId(task.task_id)}`}
+              data-testid="task-limit-retry"
+              disabled={busy}
+              onClick={() => {
+                setBusy(true);
+                setRetrying(true);
+                void onRetryLimit().finally(() => {
+                  setBusy(false);
+                  setRetrying(false);
+                });
+              }}
+            >
+              {retrying ? "Retrying\u2026" : LIMIT_RETRY_LABEL}
             </button>
           )}
           {/* The List row's quick door, in the card's own hover strip — same

@@ -57,6 +57,7 @@ const row = (extra: Partial<WaitingRowData> = {}): WaitingRowData => ({
   due: "2026-09-12T09:59:00Z",
   word: "queued",
   optimistic: false,
+  comeback: false,
   repeat: false,
   stopId: "",
   ...extra,
@@ -180,6 +181,33 @@ describe("the one line under it", () => {
     expect(out).toContain("Sat 12 Sep, 05:12");
     expect(out).not.toContain("behind");
     act(() => r.unmount());
+  });
+
+  it("offers `retry now` before `delete` on the usage-limit comeback only (2026-11-23)", () => {
+    // "this ui doesn't have this": the comeback's row is where the chat shows
+    // the paused message, so the press lives there — and nowhere else.
+    let retried = 0;
+    const r = render(
+      <WaitingRow
+        row={row({ word: "scheduled", comeback: true })}
+        facts={{}}
+        onDelete={() => {}}
+        onRetry={() => { retried += 1; }}
+      />,
+    );
+    const buttons = r.root.findAllByType("button");
+    expect(buttons.map((b) => b.props.children)).toEqual(["retry now", "delete"]);
+    act(() => buttons[0].props.onClick());
+    expect(retried).toBe(1);
+    act(() => r.unmount());
+    const busy = render(
+      <WaitingRow row={row({ comeback: true })} facts={{}} onDelete={() => {}} onRetry={() => {}} retrying />,
+    );
+    expect(busy.root.findAllByType("button")[0].props.disabled).toBe(true);
+    act(() => busy.unmount());
+    const plain = render(<WaitingRow row={row()} facts={{}} onDelete={() => {}} onRetry={() => {}} />);
+    expect(plain.root.findAllByType("button").map((b) => b.props.children)).toEqual(["delete"]);
+    act(() => plain.unmount());
   });
 
   it("deletes on one press, with no arming, and goes dead while it is in flight", () => {
