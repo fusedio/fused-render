@@ -95,9 +95,8 @@ describe("rowKeys", () => {
 
 describe("the phone offer on a greeting", () => {
   const greeting = { ...ev(1, "done", "Hi"), source: "seed" } as BotEvent;
-  test("only Super Bot's seeded greeting offers the phone; an expert's never does", () => {
+  test("only Super Bot's seeded greeting offers the phone", () => {
     expect(offersPhone(greeting, "super")).toBe(true);
-    expect(offersPhone(greeting, "expert")).toBe(false);
     expect(offersPhone(greeting, "bot")).toBe(false);
     expect(offersPhone(greeting, undefined)).toBe(false);
     expect(offersPhone({ ...greeting, source: undefined } as BotEvent, "super")).toBe(false);

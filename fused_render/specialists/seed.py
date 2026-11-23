@@ -1,24 +1,20 @@
-"""The shipped specialists (`shipped/<key>/`: `specialist.json` and `subject.md`), the counterparts of the shipped
-experts (`experts/shipped/<expert>/`, named by `specialist.json`'s `expert`), for comparing the two.
+"""The shipped specialists (`shipped/<key>/`: `specialist.json`, `subject.md` and `skills/*.md`).
 
 Each is installed once, while Specialists and Canvases are both on: their subjects are canvases and the bucket the
 S3 tools read, which the Canvases switch gates. `<root>/.state/seeded.json` lists the keys installed, so one the
 user deletes stays deleted and one shipped later is still installed; one whose name the user already gave a
-specialist of their own is marked done and not installed. Its skills are the expert's (`# Title`, then a
+specialist of their own is marked done and not installed. Its skills are the files in `skills/` (`# Title`, then a
 `trigger:` line) turned into Claude Code skills whose description is the title and the trigger words. `"folder":
-"canvases"` gives it the canvas copies folder, the one the shipped experts are granted, so a task in a canvas copy
-gets its guidance by itself.
+"canvases"` gives it the canvas copies folder, so a task in a canvas copy gets its guidance by itself.
 """
 from __future__ import annotations
 
 import os
-import re
 
 from fused_render.specialists import home as hm
 from fused_render.specialists import paths, store
 
 SHIPPED = os.path.join(os.path.dirname(os.path.abspath(__file__)), "shipped")
-EXPERTS = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "experts", "shipped")
 
 
 def _skill(text: str, stem: str) -> str:
@@ -26,9 +22,7 @@ def _skill(text: str, stem: str) -> str:
     trigger, _, body = rest.partition("\n")
     title = title.removeprefix("# ").strip()
     words = trigger.removeprefix("trigger:").strip()
-    # The experts' files call themselves "this expert".
-    body = re.sub(r"\b(this|the) expert\b", r"\1 specialist", body.strip())
-    return hm.skill_text(stem, f"{title}. Use when the work involves: {words}", f"# {title}\n\n{body}")
+    return hm.skill_text(stem, f"{title}. Use when the work involves: {words}", f"# {title}\n\n{body.strip()}")
 
 
 def seed() -> None:
@@ -45,7 +39,7 @@ def seed() -> None:
         if store.find(man["name"]):  # the user has one by that name: theirs stands
             hm.write_json(marker, done)
             continue
-        skills_dir = os.path.join(EXPERTS, man["expert"], "skills")
+        skills_dir = os.path.join(SHIPPED, key, "skills")
         skills = {n[:-3]: _skill(hm.read_text(os.path.join(skills_dir, n)), n[:-3])
                   for n in sorted(os.listdir(skills_dir)) if n.endswith(".md")}
         folder = canvases.canvases_base() if man.get("folder") == "canvases" else ""

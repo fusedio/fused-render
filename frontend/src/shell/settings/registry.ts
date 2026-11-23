@@ -576,21 +576,9 @@ const ENTRIES = [
     // Only means something while Canvases is offered at all.
     available: ({ prefs }) => prefs.canvases?.enabled === true,
   },
-  // EXPERTS (docs/experts.md §17; owner, 2026-11-19): off by default. Off
-  // hides every expert bot and stops what runs for them; their memory stays
-  // on disk and is there again when this is turned back on.
-  {
-    id: "experts",
-    group: "features",
-    section: "Other",
-    label: "Expert bots",
-    description: "Bots that each keep one memory file about one subject — Canvas Reference and Data Expert ship with the app — and that your Claude, Codex and Copilot tasks can consult. Off hides them and stops their learning; their memory is kept.",
-    keywords: "expert experts memory canvas reference data expert bot learn ask",
-  },
   // SPECIALISTS (docs/specialists.md): a kind of bot on the Bots page, and
   // the task tools and the breakout's "With". Off by default; off, nothing of
-  // it exists. Beside Expert bots, under Other: the two solve the same
-  // problem two ways.
+  // it exists.
   {
     id: "specialists",
     group: "features",

@@ -82,7 +82,7 @@ def _clean(fields: dict, own_id: str = "") -> dict:
     if "about" in fields:
         out["about"] = " ".join(str(fields["about"] or "").split())[:ABOUT_MAX]
         if not out["about"]:
-            raise Invalid("Say what the specialist is an expert on")
+            raise Invalid("Say what the specialist knows")
     if "folder" in fields:
         f = os.path.expanduser(str(fields["folder"] or "").strip())
         if f and not os.path.isdir(f):

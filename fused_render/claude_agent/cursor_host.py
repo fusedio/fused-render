@@ -37,7 +37,8 @@ the CLI's bundle, release 2026.11.19-f005e9d):
     PARTIAL while the model is still streaming the call's arguments, and is
     refreshed by `tool_call_update`s; the host merges them by `toolCallId`
     and raises the tool row only once the call starts (`in_progress`),
-    ends, or asks for permission (D14);
+    ends, or asks for permission (D14). A held EDIT announces its file early
+    as a bare `content_block_start` (live activity only, no transcript row);
   * the CLI calls back into the client with extension requests
     (`cursor/update_todos`, `cursor/task`, …): refused `-32601`, which it
     tolerates; a question card (`askQuestion`, options ending in
@@ -156,8 +157,7 @@ _MCP_SERVER = "fused_render"
 _MCP_TITLE = re.compile(r"^(?P<server>[A-Za-z0-9_.-]+): (?P<tool>[A-Za-z0-9_.-]+)$")
 #: fused's own pane-server tools (permission_server.py).
 _FUSED_TOOLS = frozenset({"app_state", "canvas_screenshot", "terminal_list",
-                          "terminal_read", "terminal_send", "s3_search", "s3_read",
-                          "expert_list", "expert_context", "expert_ask"})
+                          "terminal_read", "terminal_send", "s3_search", "s3_read"})
 # `session/load` answers only AFTER its replay has streamed (Cursor awaits
 # `replayConversationHistory` before replying), so the quiet wait is short;
 # kept, bounded, for an update that trails the reply.
@@ -709,7 +709,9 @@ def _raise_at(call: dict, status) -> bool:
     starts, or ends. An EDIT waits for its end: Cursor announces it with an
     empty `rawInput`, names the path later and sends the diff only with
     `completed` (observed), so a row raised at `in_progress` would show an
-    empty Write. A card raises any call at once (`_park_permission`)."""
+    empty Write. A card raises any call at once (`_park_permission`). The
+    held edit still announces its file early as a bare `content_block_start`
+    (`_announce_tool`)."""
     if status in ("completed", "failed"):
         return True
     return status == "in_progress" and call.get("kind") != "edit"
@@ -885,6 +887,7 @@ class _Host:
         # (`_merge_call`), and the ids announced but not raised yet.
         self.calls = {}
         self.held = set()
+        self.announced = set()  # toolCallIds whose live activity row went out before the call was raised
         # D4: the calls a session-scoped allow covers (`_allow_key`), for the
         # life of this process — answered `allow_once` without a card.
         self.session_allows = set()
@@ -1159,11 +1162,34 @@ class _Host:
                        "isMeta": False, "isSidechain": False})
         self.tail_closed = False
 
+    def _announce_tool(self, tid: str, call: dict) -> None:
+        """A HELD edit's live activity, before its row: `content_block_start`
+        alone, no `assistant` row, so the transcript still gets the call once,
+        complete, from `_raise_tool` (D14). Cursor names an edit's file within
+        a second and then streams the file's text for as long as it takes (21 s
+        of silence for a 250-line file, observed), which the page would
+        otherwise show as a hang. Edits only: a shell call's early `rawInput`
+        is a truncated command. `tail_closed` is left alone: no transcript row
+        is written here, so `_close_message`'s own setting stays true.
+        Caller holds the lock."""
+        if tid in self.tools or tid in self.announced:
+            return
+        if call.get("kind") != "edit" or not _first_path(call["rawInput"], call["locations"]):
+            return
+        self.announced.add(tid)
+        self._close_message()
+        name, inp = _map_tool(call["kind"], call["title"], call["rawInput"],
+                              call["locations"], self.cwd, call["content"])
+        block = {"type": "tool_use", "id": tid, "name": name, "input": inp}
+        self._emit_out({"type": "stream_event", "event": {
+            "type": "content_block_start", "index": 0, "content_block": block}})
+
     def _on_tool_call(self, update: dict) -> None:
         """A call announced. HELD, not raised: Cursor announces a call while
         the model is still streaming its arguments (`partialToolCall`), so
         the first `rawInput` may be a truncated command; the row goes up
-        when the call starts, ends, or asks (D14)."""
+        when the call starts, ends, or asks (D14). A held edit announces its
+        file early as a bare `content_block_start` (`_announce_tool`)."""
         if self.replaying or not self.turn_open:
             return
         tid = str(update.get("toolCallId") or "")
@@ -1174,6 +1200,7 @@ class _Host:
             self._raise_tool(tid, call)
         else:
             self.held.add(tid)
+            self._announce_tool(tid, call)
 
     def _on_tool_call_update(self, update: dict) -> None:
         if self.replaying or not self.turn_open:
@@ -1183,6 +1210,8 @@ class _Host:
         call = self._merge_call(update)
         if tid not in self.tools and _raise_at(call, status):
             self._raise_tool(tid, call)
+        elif tid not in self.tools:
+            self._announce_tool(tid, call)
         if status not in ("completed", "failed"):
             return
         if tid not in self.tools:
@@ -1235,6 +1264,7 @@ class _Host:
                 self.tools = {}
                 self.calls = {}
                 self.held = set()
+                self.announced = set()
                 self.rejected = set()
                 self.cancelling = False
                 self.cancel_deadline = None

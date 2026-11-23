@@ -1409,34 +1409,6 @@ def create_app(start_dir: str, lean: bool = False) -> FastAPI:
 
         await asyncio.to_thread(bots_registry.shutdown)
 
-    # Experts (fused_render/experts/, docs/experts.md): `/api/experts/*`, the
-    # doors task sessions reach through expert_list / expert_context /
-    # expert_ask, plus the task-learn timer (experts/scheduler.py), which only
-    # ticks in the process that owns the bots and holds their workspace claim.
-    # `@on_startup`: a lean `open` never learns. `_shutdown_bots` (bots
-    # registry.shutdown) stops the timer and ends every side session's harness.
-    from fused_render.experts.routes import router as experts_router
-
-    app.include_router(experts_router)
-
-    @on_startup
-    async def _startup_experts():
-        # The spawn side (claude_agent/agent.py) reads these two off sys.modules and never imports them itself:
-        # task sessions are offered the expert tools only once both are loaded, so load them before any spawn.
-        try:
-            import fused_render.bots.registry  # noqa: F401
-            import fused_render.experts.store  # noqa: F401
-        except Exception:  # noqa: BLE001 — no expert tools offered, never a failed startup
-            logger.warning("could not load the experts modules", exc_info=True)
-        if _platform.IS_WINDOWS:
-            return
-        try:
-            from fused_render.experts import scheduler as experts_scheduler
-
-            experts_scheduler.start()
-        except Exception:  # noqa: BLE001 — never worth failing startup
-            logger.warning("could not start the experts scheduler", exc_info=True)
-
     # Specialists (fused_render/specialists/, docs/specialists.md): `/api/specialists*`, every route the
     # unknown-path 404 while the flag is off. The tools router goes first: its literal `/tools/*` paths must win
     # over the `/{id}` routes.
