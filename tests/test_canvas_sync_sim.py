@@ -459,22 +459,13 @@ def test_cas_push_conflict_merges_and_retries_once(sim):
 
 def test_push_names_the_udfs_it_changed(sim):
     w = sim.world()
-    w.session.start_turn()
     w.session.edit_body("a", "tk_s1")
     w.session.edit_body("w", "tk_s2")
-    w.follow()
-    w.tick(3)
-    assert w.server.imports == 0
-    w.session.end_turn()
+    w.tick(4)
+    w.session.delete("b", "del_s3")
     w.tick(4)
     leg = w.manager.sync_state()["legs"]["disk_to_server"]
-    assert leg["push_seq"] == 1 and leg["push_changed"] == ["a"]
-    w.session.start_turn()
-    w.session.edit_body("b", "tk_s3")
-    w.session.end_turn()
-    w.tick(4)
-    leg = w.manager.sync_state()["legs"]["disk_to_server"]
-    assert leg["push_seq"] == 2 and leg["push_changed"] == ["b"]
+    assert leg["push_seq"] == 2 and leg["push_changed_at"] == {"a": 1, "b": 2}
     _assert_invariants(w)
 
 

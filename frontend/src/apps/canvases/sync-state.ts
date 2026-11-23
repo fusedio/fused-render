@@ -57,7 +57,7 @@ export interface DiskToServerLeg extends SyncLeg {
   /** Epoch seconds of the last successful push, or null. */
   last_push_at: number | null;
   push_seq: number;
-  push_changed?: string[];
+  push_changed_at?: Record<string, number>;
   /** The pending publish waits on a Claude session's turn: the strip offers
    *  "Publish now". Absent from an older server. */
   waiting_on_session?: boolean;
