@@ -253,7 +253,7 @@ export interface ChatMountProps {
    *  history says it, and the history's answer outranks it from then on. */
   backend?: string;
   /** `permission` — the mode a chat with nothing recorded starts in, in place
-   *  of the user's default: a specialist's chats start in "auto". A seed like
+   *  of the user's default: an expert's chats start in "auto". A seed like
    *  `model`: the pill's own pick outranks it. */
   permission?: string;
   /** `msg` — ONE TURN inside the conversation, to open scrolled to. The
@@ -290,8 +290,8 @@ export interface ChatMountProps {
   onBreakoutControl?: (ctl: { available: boolean; picking: boolean; toggle: () => void } | null) => void;
   /** With `breakout`: the chat's own session id + transcript, for Send back. */
   onBreakoutState?: (s: { sessionId: string; turns: readonly Turn[]; running?: boolean; stop?: () => void }) => void;
-  /** Fields merged into every `start` body: a specialist's chat sends
-   *  `{specialist: "<id>:main"}` or `"<id>:breakout"`. Such a chat opens as a
+  /** Fields merged into every `start` body: an expert's chat sends
+   *  `{expert: "<id>:main"}` or `"<id>:breakout"`. Such a chat opens as a
    *  chat and has no Schedule seat. */
   extraParams?: Record<string, string>;
   /** `/clear` calls this instead of going back to Chats. */

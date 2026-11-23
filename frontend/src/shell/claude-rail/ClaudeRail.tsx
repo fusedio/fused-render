@@ -251,7 +251,7 @@ import {
 } from "@platform/lib/railstate";
 import { getSchedule, markWholeTaskRead, showLauncher, type Task, type TaskPulseTask } from "@platform/lib/api";
 import { useBotsAvailable, useLauncherAvailable } from "@platform/lib/bots-available";
-import { useSpecialistsEnabled } from "@platform/lib/specialists-flag";
+import { useExpertsEnabled } from "@platform/lib/experts-flag";
 import {
   onDraftChange,
   readListing,
@@ -3308,11 +3308,11 @@ export function ClaudeRail({
   // Tasks one suppressed while the Tasks page is the one on screen).
   const tasksPulse = useTasksPulse();
   // The Bots door where the server offers Bots (`botsOffered`, above) — and
-  // where the specialists are on without them (Windows: the Bots page still
-  // opens there, for the specialists alone; docs/specialists.md). The pulse
+  // where the experts are on without them (Windows: the Bots page still
+  // opens there, for the experts alone; docs/experts.md). The pulse
   // reads `/api/bots*`, so it follows the bots themselves.
-  const specialistsOn = useSpecialistsEnabled();
-  const botsDoor = botsOffered || specialistsOn;
+  const expertsOn = useExpertsEnabled();
+  const botsDoor = botsOffered || expertsOn;
   const botsPulse = useBotsPulse(botsOffered);
   // The Search door only where the app has a launcher panel to show (the
   // Mac desktop app; `useLauncherAvailable`).

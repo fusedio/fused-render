@@ -45,7 +45,7 @@ from pydantic import BaseModel
 
 from fused_render import _platform, agent_oneshot
 from fused_render import claude_health, session_liveness, tasks_store
-from fused_render.specialists import paths as sp_paths
+from fused_render.experts import paths as sp_paths
 from fused_render.agent_backends import roots
 from fused_render.shell import storage
 from fused_render._view_url_codec import canonical_fs_path

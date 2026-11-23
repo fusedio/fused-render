@@ -12,7 +12,7 @@ import { mirrorThumb, openFull } from "../lib/cdp";
 import { fmtAgo, fmtBytes, fmtIn, fmtWhen, fmtWhenShort } from "../lib/format";
 import { closePreview } from "../lib/layout";
 import { noBrowser } from "../lib/derive";
-import { SpecialistPane } from "./SpecialistPane";
+import { ExpertPane } from "./ExpertPane";
 import { LiveView } from "./LiveView";
 import { act, closeMenu, eventsOf, getState, openDialog, openMenu, useBotsSelector } from "../state/store";
 import { Toast } from "./Toast";
@@ -231,7 +231,7 @@ export function PreviewPane() {
     openMenu({ id: s.sel, x: r.right, y: r.bottom + 6, live: true, alignRight: true });
   };
 
-  // A specialist has no browser: its own pane replaces the whole browser stack. The live view stays
+  // An expert has no browser: its own pane replaces the whole browser stack. The live view stays
   // mounted (cdp.ts keeps its elements) but never opens for it.
   const bare = noBrowser(b);
   const asleep = !!b && !!b.shot && !b.browser?.running && !b.control && b.status !== "running" && b.status !== "waiting";
@@ -240,17 +240,17 @@ export function PreviewPane() {
   return (
     <section className="preview">
       <header>
-        <button id="pclose" className="ptog" title={b?.specialist ? "Hide the specialist's memory and skills" : "Hide the browser preview"} onClick={closePreview}>
+        <button id="pclose" className="ptog" title={b?.expert ? "Hide the expert's memory and skills" : "Hide the browser preview"} onClick={closePreview}>
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="m9 6 6 6-6 6" /></svg>
         </button>
         <span style={{ flex: 1 }} />
-        <button id="pmore" className="ptog" title={b?.specialist ? "Settings, delete" : "Open live view, settings, routines, skills, clone, delete"} disabled={!b} onClick={onMore}>
+        <button id="pmore" className="ptog" title={b?.expert ? "Settings, delete" : "Open live view, settings, routines, skills, clone, delete"} disabled={!b} onClick={onMore}>
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" aria-hidden="true"><path d="M4 7h16M4 12h16M4 17h16" /></svg>
         </button>
       </header>
       {/* Side app: a built app running in this column instead of the browser view. The strip switches between the two; × unloads the app. */}
       <SideApp />
-      {b?.specialist ? <SpecialistPane key={b.id} s={b.specialist} /> : null}
+      {b?.expert ? <ExpertPane key={b.id} s={b.expert} /> : null}
       {bare ? null : <>
       {termId ? (
         <div className="viewsw" id="viewsw" role="tablist" aria-label="Preview" onKeyDown={(e) => {
