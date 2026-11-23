@@ -617,6 +617,49 @@ def test_an_uncarded_new_file_edit_shows_its_content(start, tmp_path):
     assert "/dev/null" not in res["content"] and "+hello" in res["content"]
 
 
+def _starts(rows, tid):
+    """Indexes of the `content_block_start` rows for tool id `tid`."""
+    return [i for i, r in enumerate(rows)
+            if r.get("type") == "stream_event"
+            and r["event"].get("type") == "content_block_start"
+            and r["event"]["content_block"].get("id") == tid]
+
+
+def test_a_held_edit_announces_its_file_before_its_row(start, tmp_path):
+    """The edit's row waits for `completed` (D14), but Cursor names the file
+    within a second and then goes quiet while it writes it: the page needs a
+    live "working on <file>" in that gap. That is a bare
+    `content_block_start` (no `assistant` row), so the transcript still gets
+    the call once, complete."""
+    path = str(tmp_path / "proj" / "note.txt")
+    s = start(fake_args=["--edit-new", path])
+    s.say("write")
+    s.wait_results(1)
+    rows = s.out()
+    tid = "call-edit-1"
+    first_assistant = next(i for i, r in enumerate(rows) if r.get("type") == "assistant"
+                           and any(b.get("id") == tid for b in r["message"]["content"]))
+    starts = _starts(rows, tid)
+    # the announce, then the one `_raise_tool` emits right before its row
+    assert len(starts) == 2 and starts[0] < starts[1] < first_assistant
+    assert not any(r.get("type") == "assistant" for r in rows[starts[0]:starts[1]])
+    early = rows[starts[0]]["event"]["content_block"]
+    assert early["name"] == "Write" and early["input"]["file_path"] == path
+    holders = [r for r in rows if r.get("type") == "assistant"
+               and any(b.get("id") == tid for b in r["message"]["content"])]
+    assert len(holders) == 1
+    assert holders[0]["message"]["content"][0]["input"]["content"] == "hello"
+
+
+def test_a_shell_call_is_not_announced_early(start):
+    """A shell call's early `rawInput` is a truncated command: no bare
+    `content_block_start`, only the one that rides with its row."""
+    s = start(fake_args=["--tool"])
+    s.say("list")
+    s.wait_results(1)
+    assert len(_starts(s.out(), "call-1")) == 1
+
+
 def test_normalize_diff_repairs_cursors_new_file_shape(host_mod):
     fixed = host_mod._normalize_diff({"type": "diff", "path": "/p/a.txt",
                                       "oldText": "-- /dev/null",
