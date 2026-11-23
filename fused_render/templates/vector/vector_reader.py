@@ -115,7 +115,7 @@ def _read_parquet(file, cap):
 
     pf = pq.ParquetFile(_Ranged(file) if "://" in file else file, pre_buffer=True)
     schema = pf.schema_arrow
-    geo = json.loads((pf.metadata.metadata or {}).get(b"geo") or "{}")
+    geo = json.loads((schema.metadata or {}).get(b"geo") or (pf.metadata.metadata or {}).get(b"geo") or "{}")
     col = geo.get("primary_column")
     if col not in schema.names:
         h3 = next((c for c in schema.names if c.lower() in H3_NAMES), None)
