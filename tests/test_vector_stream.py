@@ -35,6 +35,7 @@ gdf.drop(columns="geometry").assign(h3_index=1).to_parquet(f"{d}/h3.parquet")
 pyogrio.write_dataframe(gdf.drop(columns="geometry").head(5), f"{d}/m.gpkg", layer="meta")
 gdf.head(1000).to_file(f"{d}/m.gpkg", layer="roads", mode="a")
 gdf.head(600).to_file(f"{d}/six.geojson")
+gdf.to_parquet(f"{d}/arrow.parquet", row_group_size=250, geometry_encoding="geoarrow")
 """
 
 _READ = r"""
@@ -121,3 +122,11 @@ def test_counts_skip_nonspatial_tables_and_an_exact_cap_is_not_truncated(files):
     assert gpkg["layers"] == ["roads"]
     assert (gpkg["count"], gpkg["shown"], gpkg["truncated"]) == (1000, 600, True) and "_layer" not in gpkg["table"][0]
     assert (six["count"], six["shown"], six["truncated"]) == (600, 600, False)
+
+
+def test_geoarrow_encoded_geoparquet_maps_like_wkb_and_still_streams(files, bucket):  # noqa: F811
+    _serve(bucket, files, "arrow.parquet")
+    wkb, local, remote = _read(files / "t.parquet", files / "arrow.parquet", bucket.url("v/arrow.parquet"))
+    assert "error" not in local and remote == local
+    assert {**local, "file_size": 0} == {**wkb, "file_size": 0}
+    assert bucket.sent["/v/arrow.parquet"] < len(bucket.objects["/v/arrow.parquet"]) / 2
