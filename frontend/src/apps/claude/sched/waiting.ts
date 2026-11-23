@@ -31,7 +31,7 @@
 // swapped on that fact dropped every row in the swap; one rule does not.
 import { useEffect, useMemo, useState } from "react";
 import type { QueueFacts } from "@platform/lib/queue";
-import { schedIsRepeat, schedIsWaiting, schedStopTarget } from "./scheduled";
+import { schedIsComeback, schedIsRepeat, schedIsWaiting, schedStopTarget } from "./scheduled";
 import type { SchedEntry } from "./scheduled";
 
 /**
@@ -83,6 +83,11 @@ export interface WaitingRowData {
    *  entry yet. Nothing is drawn differently for it; it is here so a test can
    *  assert the swap happened, and so the reconciliation can count laps. */
   optimistic: boolean;
+  /** THE USAGE-LIMIT COMEBACK ("Continue after usage limit",
+   *  `schedIsComeback`): its row also offers `retry now` — continue now instead
+   *  of at the reset, e.g. after switching Claude accounts (Akshil,
+   *  2026-11-23: "this ui doesn't have this"). */
+  comeback: boolean;
 }
 
 export type WaitingWord = "queued" | "scheduled" | "starting";
@@ -229,6 +234,7 @@ export function waitingRows(
       // not in the line any more, it is being spawned.
       word: entry.state === "sending" ? "starting" : waitingWord(due, now),
       optimistic: false,
+      comeback: schedIsComeback(entry),
       repeat: schedIsRepeat(entry),
       stopId: schedIsRepeat(entry) ? schedStopTarget(entry) : "",
     });
@@ -243,6 +249,7 @@ export function waitingRows(
       due: seed.due,
       word: waitingWord(seed.due, now),
       optimistic: true,
+      comeback: false,
       // A SEED IS ALWAYS A CHAT SEND — the admission minted it out of a composer
       // — and nothing the composer sends repeats.
       repeat: false,

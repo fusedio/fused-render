@@ -511,7 +511,97 @@ def _mark_fate(prompts: list[dict], fate: bool, line: str = "") -> None:
     but wait. See `_LIMIT_HINTS` and the row's `blocked_reason`."""
     if prompts:
         prompts[-1]["failed"] = fate
-        prompts[-1]["limit"] = bool(fate) and _limit_hit(line)
+        limit, resets_at = _limit_facts(line) if fate else (False, 0.0)
+        prompts[-1]["limit"] = limit
+        # WHEN THE WINDOW REOPENS, as the CLI wrote it on the failed row
+        # (`quotaLimits.resetsAt`) — 0.0 when it did not. The chat drops a
+        # limit row whose reset is behind us (agent.py
+        # `_drop_resolved_errors`), and the row has to stop saying blocked at
+        # the same moment (`_limit_resolved`).
+        prompts[-1]["resets_at"] = resets_at
+
+
+def _limit_facts(line: str) -> tuple[bool, float]:
+    """(is this API-error line the plan's usage limit, the epoch its window
+    reopens — 0.0 when the row does not say).
+
+    The same test agent.py `_is_limit_turn` applies to the row the chat draws:
+    the limit's own words, OR the CLI's `quotaLimits.status == "rejected"`
+    riding on it (a bare "API Error: 429" with a rejected window is the limit
+    too). Parsed, unlike every other line here: an API-error row is rare, and
+    the reset is a number only the JSON holds."""
+    words = _limit_hit(line)
+    try:
+        obj = json.loads(line)
+    except ValueError:
+        return words, 0.0
+    limits = obj.get("quotaLimits") if isinstance(obj, dict) else None
+    if not isinstance(limits, dict):
+        return words, 0.0
+    try:
+        resets_at = float(limits.get("resetsAt") or 0.0)
+    except (TypeError, ValueError):
+        resets_at = 0.0
+    return words or limits.get("status") == "rejected", resets_at
+
+
+def _limit_resolved(prompt: dict, now: float | None = None) -> bool:
+    """Is this prompt's usage-limit failure OVER by the clock — its reset (the
+    CLI's own number) behind us? The chat stops drawing the limit row at that
+    moment (`_drop_resolved_errors`), so nothing on screen explains a blocked
+    row any more and the row must not say blocked."""
+    if not prompt.get("limit"):
+        return False
+    resets_at = float(prompt.get("resets_at") or 0.0)
+    return 0.0 < resets_at <= (time.time() if now is None else now)
+
+
+def _assistant_row(line: str) -> bool:
+    """Is this raw line an assistant row of THIS conversation (any content —
+    text or a bare tool call)? Substring screen, like `_reply_fate`'s."""
+    if any(hint in line for hint in _USER_HINTS):
+        return False
+    if any(hint in line for hint in _SIDECHAIN_HINTS):
+        return False
+    return any(hint in line for hint in _ASSISTANT_HINTS)
+
+
+def _note_served(prompts: list[dict], rec: dict | None, line: str,
+                 fate: bool | None) -> None:
+    """What a NON-ERROR assistant row says that `_reply_fate` does not.
+
+    * THE API SERVED A REQUEST, so the plan's window is open: a usage-limit
+      mark on the newest prompt is cleared by ANY later assistant row — a bare
+      tool call included — exactly as the chat retires the limit row
+      (`_drop_resolved_errors`: "the API served the retry"). Cleared back to
+      None, not False: the turn is in flight again, the same reading a prompt
+      had before any reply landed (`_dead_turn` asks for exactly that).
+    * WHEN — `served_at` on the scan record, the newest such row's own stamp.
+      A comeback booked before it is for a chat that has since gone on
+      (`_stale_comebacks`)."""
+    if fate is True or not _assistant_row(line):
+        return
+    if fate is None and prompts and prompts[-1].get("limit"):
+        prompts[-1]["failed"] = None
+        prompts[-1]["limit"] = False
+        prompts[-1]["resets_at"] = 0.0
+    if rec is not None:
+        at = _line_ts(line)
+        if at > float(rec.get("served_at") or 0.0):
+            rec["served_at"] = at
+
+
+_TS_RE = re.compile(r'"timestamp"\s*:\s*"([^"]+)"')
+
+
+def _line_ts(line: str) -> float:
+    """A raw record's own `timestamp`, without parsing the record: Claude Code
+    writes it as the record's LAST key, so it is looked for from the end."""
+    at = line.rfind('"timestamp"')
+    if at < 0:
+        return 0.0
+    match = _TS_RE.match(line, at)
+    return (tasks_store.epoch(match.group(1)) or 0.0) if match else 0.0
 
 
 # A GitHub PR URL as it sits in a transcript line. The trailing lookahead keeps
@@ -727,6 +817,7 @@ def _absorb(rec: dict, line: str) -> None:
     # whether the newest prompt's last answer was an API error. Substring tests
     # only, and it stays on this side of `json.loads`. See `_reply_fate`.
     fate = _reply_fate(line)
+    _note_served(rec["tail"], rec, line, fate)
     if fate is not None:
         _mark_fate(rec["tail"], fate, line)
         # An ordinary reply is also the newest thing Claude has said: keep the
@@ -811,6 +902,7 @@ def _new_scan() -> dict:
     # condensed `reply`; nothing reads it any more, so it is inert.
     return {"offset": 0, "size": -1, "count": 0, "tail": [], "title": "",
             "command": "", "reply_line": "", "reply": "", "reply_at": 0.0,
+            "served_at": 0.0,
             "prs": [], "gh_pr_tool_ids": [], "worktrees": []}
 
 
@@ -1044,6 +1136,7 @@ def _full_prompts(path: str) -> list[dict]:
                 # have to agree about a failed turn or the row and the messages
                 # it opens contradict each other.
                 fate = _reply_fate(line)
+                _note_served(prompts, None, line, fate)
                 if fate is not None:
                     _mark_fate(prompts, fate, line)
                     continue
@@ -1186,7 +1279,28 @@ def _entry_turn(entry: dict) -> str:
 
 
 def _scheduled_message(entry: dict, at: float, ran_at: float,
-                       anchor: str) -> dict:
+                       anchor: str, prompt: dict | None = None) -> dict:
+    state, turn = _entry_state(entry), _entry_turn(entry)
+    limited = False
+    # THE TRANSCRIPT HAS THE LAST WORD ON A FINISHED TURN (Akshil, 2026-11-23:
+    # "even when my task is done it shows blocked … if it is blocked there must
+    # be an error at the bottom of the chat"). The watcher's verdict is a
+    # second-hand reading of the same turn — `unknown` when it lost track,
+    # `failed` off a closing record — while the chat draws what the transcript
+    # holds. So once the turn is over (never while it runs, never over a
+    # Stop) and the prompt it became has a reply on file, that reply decides:
+    # an answer is done, an error row (`_reply_fate`) is blocked — and a
+    # usage-limit row is `limited`, the same fact `_chat_message` carries. A
+    # prompt nothing answered keeps the watcher's word: the chat draws its own
+    # red line for a turn that died (agent.py `_died_mid_turn`).
+    fate = _prompt_fate(prompt)
+    if (fate is not None and str(entry.get("state") or "") == schedule.SENT
+            and turn not in ("", "cancelled")):
+        if fate:
+            state = "error"
+            limited = bool(prompt.get("limit"))
+        else:
+            state, turn = schedule.SENT, "done"
     return {
         "message_id": "",
         "kind": "scheduled",
@@ -1201,11 +1315,10 @@ def _scheduled_message(entry: dict, at: float, ran_at: float,
         # tell a queued message from one scheduled for later: a Run-now on
         # tomorrow's message is in the line today.
         "queue_at": _queue_at(entry),
-        "state": _entry_state(entry),
-        # One shape for both kinds. A scheduled run's verdict comes from the
-        # watcher and not from the transcript, so nothing sets this on that
-        # road; the field is here so no reader has to branch on `kind` to ask.
-        "limited": False,
+        "state": state,
+        # One shape for both kinds: true when the transcript says this run
+        # ended on the plan's usage limit (see above).
+        "limited": limited,
         # When the turn's verdict LANDED — 0.0 until it has (and for entries a
         # pre-stamp version of the store wrote). `ran_at` is when the run
         # started; this is when it was pronounced over, which is the moment
@@ -1221,12 +1334,25 @@ def _scheduled_message(entry: dict, at: float, ran_at: float,
         # False for every entry stored before the flag existed, which is the
         # right reading: they all came from a form that asked for a time.
         "immediate": bool(entry.get("immediate")),
-        "turn": _entry_turn(entry),
+        "turn": turn,
         "anchor": anchor,
     }
 
 
+def _prompt_fate(prompt: dict | None) -> bool | None:
+    """What the CHAT shows under this prompt, as the status reads it: True for
+    an error row at the bottom of its turn, False for an answer (or a limit row
+    the chat has stopped drawing — `_limit_resolved`), None for nothing yet."""
+    if prompt is None:
+        return None
+    fate = prompt.get("failed")
+    if fate and _limit_resolved(prompt):
+        return False
+    return fate
+
+
 def _chat_message(prompt: dict) -> dict:
+    fate = _prompt_fate(prompt)
     return {
         "message_id": "",
         "kind": "chat",
@@ -1251,14 +1377,14 @@ def _chat_message(prompt: dict) -> dict:
         # `done` here was the whole of R2-3/R2-14: a turn that died with the
         # Wi-Fi sat in the Done lane looking answered. `state` stays `sent` —
         # the message really was delivered, and the verdict is what changes.
-        "turn": "error" if prompt.get("failed") else "done",
+        "turn": "error" if fate else "done",
         # …AND WHETHER THAT FAILURE WAS THE PLAN'S USAGE LIMIT, which is a
         # different thing to a reader and to the row: nothing is broken, there
         # is nothing to retry, and the chat has already scheduled the
         # continuation for the moment the window reopens (PR #1107). The row
         # turns it into `blocked_reason: "usage_limit"` and `resumes_at`; the
         # verdict itself stays `error`, because the turn really did not finish.
-        "limited": bool(prompt.get("limit")),
+        "limited": bool(fate) and bool(prompt.get("limit")),
         "anchor": prompt["anchor"],
     }
 
@@ -1378,6 +1504,7 @@ def _merge(prompts: list[dict], entries: list[dict]) -> list[dict]:
         at = _entry_at(entry)
         ran_at = _entry_ran_at(entry)
         anchor = ""
+        matched = None
         if str(entry.get("state") or "") in _IN_TRANSCRIPT:
             body = _body_key(entry.get("message"))
             best = None
@@ -1392,7 +1519,7 @@ def _merge(prompts: list[dict], entries: list[dict]) -> list[dict]:
                 matched = prompts[best[1]]
                 ran_at = matched["at"] or ran_at
                 anchor = matched["anchor"]
-        messages.append(_scheduled_message(entry, at, ran_at, anchor))
+        messages.append(_scheduled_message(entry, at, ran_at, anchor, matched))
     for j, prompt in enumerate(prompts):
         if j not in taken:
             messages.append(_chat_message(prompt))
@@ -3910,7 +4037,7 @@ def _next_run(entries: list[dict]) -> tuple[float, str, bool]:
 # CONTINUE_TITLE, restated here because it is a wire fact between the chat that
 # schedules the continuation and the row that times it. The chat is the only
 # thing that writes it, and it writes it on that entry alone.
-COMEBACK_TITLE = "Continue after usage limit"
+COMEBACK_TITLE = schedule.COMEBACK_TITLE
 
 
 def _comeback_at(entries: list[dict]) -> float:
@@ -3940,6 +4067,34 @@ def _comeback_at(entries: list[dict]) -> float:
         if not best or at < best:
             best = at
     return best
+
+
+def _stale_comebacks(task: dict) -> list[str]:
+    """THE COMEBACKS THIS CONVERSATION HAS OUTLIVED — pending usage-limit
+    continuations booked BEFORE the newest row the API served into its
+    transcript (`served_at`, `_note_served`).
+
+    A reply after the limit means the window is open again — another account,
+    the terminal, a Retry now, the reset — and "continue where it stopped"
+    fired into a chat that already went on redoes work. The chat used to be the
+    only thing that cancelled it (`run-controller.retireErrors`), which needed
+    that chat mounted and watching the reply land; this is the same rule read
+    off the transcript, so a task finished elsewhere or a page reloaded later
+    drops it too. Read off the scan the row was just built from — no IO."""
+    rec = _SCAN.get(task["path"]) if task.get("path") else None
+    served = float((rec or {}).get("served_at") or 0.0)
+    if not served:
+        return []
+    stale = []
+    for entry in task["entries"]:
+        if str(entry.get("state") or "") != schedule.PENDING:
+            continue
+        if not schedule.is_comeback(entry):
+            continue
+        booked = tasks_store.epoch(entry.get("created")) or 0.0
+        if booked and served > booked:
+            stale.append(str(entry.get("id") or ""))
+    return [entry_id for entry_id in stale if entry_id]
 
 
 # ---------------------------------------------- stable AI titles (haiku queue)
@@ -6372,6 +6527,19 @@ def _build_task_rows(only: frozenset | set | None = None) -> list[dict]:
             "slow tasks build: %.1fs for %d rows (collect %.1fs, parked %.1fs, "
             "rows %.1fs)%s", total, len(rows), t_collect, t_parked, t_rows,
             "" if only is None else " [narrowed]")
+    # COMEBACKS THE CONVERSATION OUTLIVED, called off (`_stale_comebacks`).
+    # After the loop for the same reason `revived` is: the rows are built,
+    # and a cancel that fails costs one poll, never the listing.
+    retired: set[str] = set()
+    for task in listed.values():
+        for entry_id in _stale_comebacks(task):
+            try:
+                if schedule.cancel(entry_id) is not None:
+                    retired.add(task["key"])
+            except OSError:
+                pass
+    if retired:
+        tasks_watch.notify(retired)
     for session_id in revived:
         # THE WAY OUT OF ARCHIVE IS ACTIVITY, and it has to be a real way out:
         # the row already reads as its derived lane above, and leaving the
@@ -10189,6 +10357,65 @@ def api_queue_skip(body: dict = Body(...),
             "ahead_title": place["ahead_title"],
             "ahead_session": place["ahead_session"],
             "ahead_target": place["ahead_target"]}
+
+
+@router.post("/api/tasks/limit/retry")
+def api_limit_retry(body: dict = Body(...),
+                    x_fused: str | None = Header(default=None)):
+    """RETRY NOW on a conversation the plan's usage limit paused (Akshil,
+    2026-11-23: "add retry / force start when I have a message queued because
+    I hit my session limit — I can switch Claude accounts and then the wait is
+    gone"). `{key}` → `{"ok", "entry", "note", "queued", "comeback"}`.
+
+    Sends the continue prompt NOW, into the same session, and leaves the booked
+    comeback in place: `schedule.retry_after_limit` says why that is what keeps
+    one comeback whichever way the retry goes. `note` is the scheduler's
+    sentence when the message could not go this second (a turn is still
+    closing, the folder is held — `queued`) and "" when it went.
+
+    A conversation with no comeback booked may still be retried, but only one
+    the transcript says the limit stopped (`_scan`'s newest prompt): this
+    endpoint sends a fixed "continue" prompt, which into any other chat is a
+    message nobody wrote.
+
+    404 for no such task, 409 for one that is not paused on the limit, 400 for
+    a body without a key or a key with no conversation behind it yet."""
+    guard = _require_fused(x_fused)
+    if guard is not None:
+        return guard
+    key = str(body.get("key") or body.get("session_id") or "").strip()
+    if not key:
+        return _error("key: required", status=400)
+    if tasks_store.pending_entry(key):
+        return _error("this task has no conversation to continue yet",
+                      status=400)
+    session = key
+    target = backend = ""
+    if not schedule.pending_comebacks(session):
+        task = _collect().get(key)
+        if task is None:
+            return _error(f"no task with key {key!r}", status=404)
+        rec = _scan(task["path"]) if task["path"] else None
+        newest = rec["tail"][-1] if rec and rec["tail"] else None
+        if newest is None or not _prompt_fate(newest) or not newest.get("limit"):
+            return _error("This task is not paused on the usage limit",
+                          status=409)
+        _place(task)
+        target = str(task.get("target") or task.get("project") or "")
+        backend = _row_backend(task, tasks_store.settings_state())
+    try:
+        result = schedule.retry_after_limit(session, target=target,
+                                            backend=backend)
+    except schedule.BackendRefused as exc:
+        return JSONResponse(exc.body, status_code=400)
+    except ValueError as exc:
+        return _error(str(exc), status=400)
+    if not result["ok"]:
+        return _error(result["reason"],
+                      status=404 if not result["found"] else 409)
+    tasks_watch.notify({key})
+    return {"ok": True, "entry": result["entry"], "note": result["reason"],
+            "queued": result["queued"], "comeback": result["comeback"]}
 
 
 @router.post("/api/tasks/queue/force")

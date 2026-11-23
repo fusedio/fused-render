@@ -43,6 +43,7 @@ import { runAgent } from "../protocol/agent";
 import { CardStack, type CardActions } from "./CardStack";
 import { useHoldTail } from "./cardPolicy";
 import { TroubleView } from "./TroubleView";
+import { LIMIT_RETRY_LABEL } from "@platform/lib/usage-limit";
 import type { Viewable } from "./attachApi";
 import { isOneLiner, Turn } from "./Turn";
 import { pickPlan, type TurnPick } from "./TurnPick";
@@ -149,6 +150,12 @@ export interface TranscriptProps {
    *  (`useSchedule.blocked`) — the limit card's "a follow-up is scheduled"
    *  sentence is only true while it is. */
   comebackPending?: boolean;
+  /** RETRY NOW on the usage-limit card (`trouble.kind === "limit"`): continue
+   *  now instead of at the reset. The chat passes it only while no comeback
+   *  banner over the composer is carrying the same press. */
+  onLimitRetry?: () => void;
+  /** A retry is in flight — the card's button is dead for its duration. */
+  limitRetrying?: boolean;
   /**
    * THE FOLLOW FLAG, LENT OUT (T:12758, T:17211-17213).
    *
@@ -205,6 +212,8 @@ export const Transcript = memo(function Transcript({
   paneNoun,
   what,
   comebackPending,
+  onLimitRetry,
+  limitRetrying,
   followRef,
   onOpenCardVisible,
   jumpRef,
@@ -1359,6 +1368,9 @@ export const Transcript = memo(function Transcript({
                 messageShownAbove={newestErrorText(state.turns) === state.trouble.message.trim()}
                 {...(what ? { what } : {})}
                 {...(comebackPending !== undefined ? { comebackPending } : {})}
+                {...(state.trouble.kind === "limit" && onLimitRetry
+                  ? { onRetry: onLimitRetry, retryLabel: limitRetrying ? "Retrying\u2026" : LIMIT_RETRY_LABEL }
+                  : {})}
               />
             ) : null}
             {/* THE RECAP LINE, last in the log (after the error row, if any):
