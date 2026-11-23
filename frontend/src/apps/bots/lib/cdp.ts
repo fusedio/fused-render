@@ -186,7 +186,7 @@ export function focusCtl(): void {
 /** Open the live view on the selected bot (the thumbnail, the bot menu, the Browsers dialog's Sign in…). */
 /** `focus: false` (a hand-over landing while the composer holds unsent text) opens Stage without taking the keyboard. */
 export function openFull({ focus = true }: { focus?: boolean } = {}): void {
-  // An expert has no browser: nothing to show, nothing to wake.
+  // A specialist has no browser: nothing to show, nothing to wake.
   const b = cur(); if (!b || noBrowser(b)) return;
   flushSync(() => setFast(true));  // #full must be showing before anything in it can take focus
   const shot = $<HTMLImageElement>("shot"), fshot = $<HTMLImageElement>("fshot");

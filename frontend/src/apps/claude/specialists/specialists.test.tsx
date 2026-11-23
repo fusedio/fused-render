@@ -16,7 +16,7 @@ test("the three labels name the specialist from the tool input", () => {
 
 test("tools that are not the three get no label", () => {
   expect(specialistToolLabel(T("list"), "Canvas", true)).toBeNull();
-  expect(specialistToolLabel("mcp__fused_render__expert_ask", "Canvas", true)).toBeNull();
+  expect(specialistToolLabel("mcp__fused_render__s3_read", "Canvas", true)).toBeNull();
 });
 
 test("the status line says it while it runs, without the name repeated as detail", () => {

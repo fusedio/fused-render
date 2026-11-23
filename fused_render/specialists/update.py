@@ -25,7 +25,7 @@ PROMPT = ("Time to learn. These files in inbox/ wait for you; read each one:\n{f
           "the line to start from. Leave the transcripts to cheap readers: for every conversation start one Agent with model "
           "haiku and run_in_background false, all in a single message so they run together, and give each this brief "
           "with its transcript and start line filled in, followed by your memory.md lines as they are now:\n\n"
-          "You read one conversation for the {name} specialist, an expert on {about}. Transcript: <path>, from line "
+          "You read one conversation for the {name} specialist, whose subject is: {about}. Transcript: <path>, from line "
           "<n>. Its lines are huge, so do not Read it; search it with grep and skip matches numbered before the start "
           "line: grep -o -n -E '\"type\":\"text\",\"text\":\".{1,300}' <path> gives the user's and the assistant's "
           "words in order (the last ones say how it ended), '\"name\":\"[A-Za-z_]+\",\"input\":.{0,160}' the tool "

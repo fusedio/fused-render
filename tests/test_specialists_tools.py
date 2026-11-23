@@ -11,11 +11,10 @@ import pytest
 @pytest.fixture
 def used(monkeypatch, tmp_path):
     """Run "run1" is a task in `proj`; returns the `update.point` calls (the task's inbox pointer)."""
-    from fused_render.experts import learn
-    from fused_render.specialists import update
+    from fused_render.specialists import tools, update
 
     proj = str(tmp_path / "proj")
-    monkeypatch.setattr(learn, "caller", lambda run_id: {"run_id": run_id, "session_id": "sess-1",
+    monkeypatch.setattr(tools, "caller", lambda run_id: {"run_id": run_id, "session_id": "sess-1",
                                                          "backend": "claude", "target": proj})
     calls = []
     monkeypatch.setattr(update, "point", lambda spec, sid, target, kind: calls.append((spec.id, sid, target, kind)))
