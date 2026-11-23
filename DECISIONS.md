@@ -8178,3 +8178,37 @@ A user redid a canvas's folders through Claude; the five old folders stayed on s
 - **Why.** A page that draws rasters, tiles or text results needs the bytes, not only a handle the SQL engine can use. Routing every run through the host keeps one login, one place for the runtime's dialogs and one saved-results store.
 - **What the frame gains.** The bytes of results it was itself issued a handle for in its current document, and tile and format choices for its own UDF runs. Nothing about canvas, environment or confirmation changes.
 - **Rejected.** CORS on the results route: it would open every result to any origin, not only those the frame was issued. Reading by an arbitrary token: a frame could then ask for results of other runs it never started.
+
+## Context meter honours the user's auto-compact window
+
+The meter used to compact at `model window - 3k` whatever the user had
+configured. Claude Code 2.1.328 resolves the window as `min(model window,
+configured)` (`vy`), where `configured` is, in order:
+
+1. the `CLAUDE_CODE_AUTO_COMPACT_WINDOW` env var (also honoured when set in a
+   settings layer's `env` block): `200k` / `1m` shorthand or a plain count;
+   under the 100k minimum (`nH`) it counts as 100k; unusable values are ignored;
+2. the `autoCompactWindow` setting, `"auto"` meaning "no setting". Layers apply
+   user < project < local < flag < managed (`Pdr`/`Hyn`); a layer that sets the
+   top-level value replaces everything below it, including their
+   `modelSettings.<model>.autoCompactWindow` entries; otherwise per-model entries
+   merge, and a model's own entry beats the default;
+3. otherwise the model default (`h4s`, server-side tables; not readable here).
+
+`fused_render/claude_agent/agent.py` `_compact_window(model, cwd)` mirrors 1 and
+2 (cwd = the run's folder, for the project and local layers; env from the
+server process, which is what the CLI is launched with) and
+`_stamp_compact_window` adds it as `compact_window` beside `window` on every
+Claude reading in `_poll` and `_history`; absent when unset or invalid. The page
+takes the `min` with the model window and marks the window `source: "user"`,
+enforced.
+
+Compaction point: `/context` on a 1M model with `autoCompactWindow: 200000`
+reports `maxTokens 200000` and a 33,000 buffer (13k margin + 20k reserve), against
+3k when nobody set a window, so a user window uses a 33k head-room
+(`USER_WINDOW_HEADROOM`) and the ring, warning and popover agree. With a live,
+non-stale breakdown the popover header takes `max_tokens - buffer rows` outright,
+the CLI's own answer, so header and grid cannot disagree whatever the setting.
+
+Not mirrored: the SDK's runtime `ceiling` / `raisedTo` overrides in `vy`, the
+managed `managed-settings.d` drop-ins, and `CLAUDE_CODE_DISABLE_1M_CONTEXT`.
