@@ -1327,74 +1327,69 @@
   min-height: 33px;
   padding: 4px 4px 7px;
 }
-/* ONE GAP BETWEEN EVERY MARK OF ROW 1, ONE INSET AT ITS ENDS (Akshil,
-   2026-11-22: "check the spacing we have on left and spacing on right … add
-   proper uniform spacing, and also padding inside and outside the Open
-   button and between that and the star"). Measured on the drawn ink in the
-   Tasks page panel, the side panel's chat, the rail's task / favourite
-   window (pinned and not) and the Tasks door's chat, dark and light:
+/* ONE GAP BETWEEN EVERY MARK, ONE WASH ROUND EACH (Akshil, 2026-11-22/23:
+   "uniform spacing … padding inside and outside the Open button and
+   between that and the star"; "add 4px horizontally"; then "check the more
+   button and Open … hover and take a screenshot, you will notice not equal
+   spacing"). Measured on the drawn ink, dark and light, at rest and under
+   the pointer, in the Tasks page panel, the side panel's chat, the rail's
+   task / favourite windows (pinned and not) and the Tasks door's chat:
 
      14 | × 12 ↑ 12 ↓ 12 [tag] ……… ★ 12 Open 12 ⋮ | 14
      14 | ◯ 12 T667 12 title ……………… 1 💬 12 3h ago | 14
 
-   (12px since 2026-11-22: "add 4px padding horizontally between these
-   things … in header", row 1 and row 2.)
-
-   The head's buttons are 28px boxes round a 14px glyph, and each glyph
-   draws a different width inside its box (the × and the chevrons 8px, the
-   pin 12, the ← 10), so the boxes overlap by what the glyphs leave empty:
-   the margins below are those measured differences, not a scale. The Open
-   door keeps 6px of its own wash a side, the same on every head. */
+   Every control of row 1 is its glyph plus 6px a side, 24px tall, and the
+   boxes stand edge to edge — so the hover wash has the same 6px round each
+   glyph, no wash runs under its neighbour (the 28px buttons overlapped by
+   8px, and the ⋮'s by 7px over Open's word), and the ink falls 12px apart.
+   The glyphs draw at different widths inside their 14px icons, hence one
+   width per glyph: × and the chevrons 8px of ink (20px boxes), the ← 10
+   (22), the pin 12 (24), the star 14 (26), the ⋮ 2 (14). */
 .task-head.task-head.is-two-line .task-head-acts,
 .task-head.task-head.is-two-line .task-head-nav,
 .task-head.task-head.is-two-line .task-head-facts.is-split > .task-head-facts-layer.is-b {
   gap: 0;
 }
-/* The row's ends. */
-.task-head.is-two-line .task-head-row > .task-head-acts:first-child {
-  margin-left: -3px;
+.task-head.task-head.is-two-line .task-head-row .task-head-acts .task-head-btn,
+.task-head.task-head.is-two-line .task-head-row .task-head-nav > * {
+  width: 20px;
+  height: 24px;
+  margin: 0;
 }
-.task-head.is-two-line .task-head-row > .task-head-acts:first-child > :is(.task-head-lead, .rail-pin-btn).is-close:first-child {
-  margin-left: -3px;
+.task-head.task-head.is-two-line .task-head-row .task-head-acts .rail-pin-btn:not(.is-close) {
+  width: 24px;
 }
-.task-head.is-two-line .task-head-row > .task-head-acts:first-child > .task-head-lead.is-back:first-child {
-  margin-left: -2px;
+.task-head.task-head.is-two-line .task-head-row .task-head-acts .task-head-lead.is-back {
+  width: 22px;
 }
-.task-head.is-two-line .task-head-facts.is-split .task-head-kebab {
-  margin-right: -9px;
+.task-head.task-head.is-two-line .task-head-facts.is-split :is(.task-star, .claude-rail-peek-star) {
+  width: 26px;
+  height: 24px;
+  margin: 0;
 }
-/* Left: the lead, the chevrons, the place. */
-.task-head.task-head.is-two-line .task-head-acts > .rail-pin-btn:not(.is-close) {
-  margin-right: 2px;
-}
-.task-head.task-head.is-two-line .task-head-acts > .rail-pin-btn + .task-head-lead.is-back {
-  margin-left: -7px;
-}
-.task-head.task-head.is-two-line .task-head-acts > .task-head-nav > :first-child {
-  margin-left: -8px;
-}
-.task-head.task-head.is-two-line .task-head-nav > * + * {
-  margin-left: -8px;
-}
-.task-head.task-head.is-two-line .task-head-acts + .task-head-crumb {
-  margin-left: -8px;
-}
-.task-head.task-head.is-two-line .task-head-acts:has(> .task-head-lead.is-back:last-child) + .task-head-crumb {
-  margin-left: -7px;
-}
-/* Right: the star, the door with its own 6px wash a side, the ⋮. */
 .task-head.task-head.is-two-line .task-head-facts.is-split .task-head-open {
+  height: 24px;
   padding: 0 6px;
-  margin-left: 4px;
-}
-.task-head.task-head.is-two-line .task-head-facts.is-split .claude-rail-peek-star + .task-head-open {
-  margin-left: 2px;
+  margin: 0;
 }
 .task-head.task-head.is-two-line .task-head-facts.is-split .task-head-kebab {
-  margin-left: -7px;
+  margin: 0 -2px 0 0;
 }
-.task-head.task-head.is-two-line .task-head-facts.is-split .task-star + .task-head-kebab {
-  margin-left: -3px;
+.task-head.task-head.is-two-line .task-head-facts.is-split .task-head-kebab :is(.c-kebabbtn, button) {
+  width: 14px;
+  height: 24px;
+}
+.task-head.task-head.is-two-line .task-head-row :is(.task-head-btn, .task-star, .claude-rail-peek-star, .task-head-open, .c-kebabbtn) {
+  border-radius: 5px;
+}
+/* The row's ends: a box's 6px inside the 14px, so the head's 10px padding
+   gives 2px back; the place's tag stands 6px past the last lead's box (its
+   own border is ink), the row's 10px gap less 4. */
+.task-head.task-head.is-two-line .task-head-row > .task-head-acts:first-child {
+  margin-left: -2px;
+}
+.task-head.task-head.is-two-line .task-head-acts + .task-head-crumb {
+  margin-left: -4px;
 }
 /* Row 2's id and title stand 12px apart too; the rename pencil hands back
    its 16px and that gap (TaskPeekWho measures the gap it reads). */
