@@ -266,6 +266,39 @@ def test_an_update_for_the_throwaway_session_never_reaches_the_real_chat(spare_h
     assert "Hello world" in json.dumps(h.out())
 
 
+def test_an_idle_spare_whose_cli_dies_withdraws_ready_before_exiting(spare_host):
+    h = spare_host()
+    h.wait_ready()
+    pid = h.cli_pid()
+    assert pid
+    _kill(pid)
+    assert _wait_for(lambda: h.proc.poll() is not None), "spare host did not exit"
+    # `agent._claim_cursor_spare` requires `ready`, so a gone file = no claim.
+    assert not h.ready
+
+
+def test_only_the_throwaway_session_id_is_dropped_from_updates():
+    host_mod = _load("cursor_host_for_spare_update_filter", HOST)
+    seen = []
+    h = object.__new__(host_mod._Host)
+    h.lock = threading.RLock()
+    h.sid = "real-sid"
+    h.throwaway_sid = "throwaway-sid"
+    h.replaying = False
+    h.replay_gap = False
+    h.last_update_at = 0.0
+    h._on_chunk = lambda kind, text: seen.append(text)
+
+    def push(sid, text):
+        h._on_notification("session/update", {"sessionId": sid, "update": {
+            "sessionUpdate": "agent_message_chunk",
+            "content": {"type": "text", "text": text}}})
+
+    push("throwaway-sid", "DROPPED")
+    push("some-third-sid", "KEPT")
+    assert seen == ["KEPT"]
+
+
 # ----------------------------------------------------------- agent.py: claim
 
 class _Sleeper:

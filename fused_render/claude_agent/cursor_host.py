@@ -808,12 +808,15 @@ def _allow_key(call: dict) -> str:
 
 class _Host:
     def __init__(self, agent, req: dict, cli, peer: _Peer,
-                 initialized: bool = False, throwaway_sid: str = ""):
+                 initialized: bool = False, throwaway_sid: str = "",
+                 pump=None):
         self.agent = agent
         # A spare already ran `initialize`; `handshake` skips only that.
         self.initialized = initialized
         # The spare's warm-up session: updates addressed to it are never ours.
         self.throwaway_sid = throwaway_sid
+        # A claimed spare's stderr copier: joined before `err.log` is read.
+        self.pump = pump
         self.req = req
         self.cli = cli
         self.peer = peer
@@ -1297,6 +1300,8 @@ class _Host:
                     self.cli.wait(timeout=1)   # EOF can beat the exit status
                 except subprocess.TimeoutExpired:
                     pass
+                if self.pump is not None:
+                    self.pump.join(1)   # the last stderr chunk, before the read
                 tail = _err_tail(self.run_dir)
                 text = "cursor exited (code %s)%s" % (
                     self.cli.poll(), (": " + tail) if tail else "")
@@ -1361,13 +1366,11 @@ class _Host:
         if not isinstance(update, dict):
             return
         kind = str(update.get("sessionUpdate") or "")
-        # An update for another session — a spare's throwaway one, whose
-        # trailing updates may land after adoption — is not this chat's.
-        # Only when the id is known: `session/new`'s own updates can arrive
-        # before its reply names the session.
+        # An update addressed to a spare's throwaway warm-up session — whose
+        # trailing updates may land after adoption — is not this chat's. Any
+        # other id passes through, as it always did.
         upd_sid = params.get("sessionId")
-        if isinstance(upd_sid, str) and upd_sid and (
-                upd_sid == self.throwaway_sid or (self.sid and upd_sid != self.sid)):
+        if self.throwaway_sid and upd_sid == self.throwaway_sid:
             return
         with self.lock:
             self.last_update_at = time.monotonic()
@@ -2065,6 +2068,8 @@ class _Host:
                 self.cli.wait(timeout=2)
             except subprocess.TimeoutExpired:
                 pass
+            if self.pump is not None:
+                self.pump.join(1)
             text = "cursor exited during %s (code %s)" % (step, self.cli.poll())
         tail = _err_tail(self.run_dir)
         if tail:
@@ -2319,6 +2324,11 @@ def _run_spare(req: dict) -> None:
     def _watch() -> None:
         while not stop_watch.wait(0.5):
             if cli.poll() is not None:
+                # Un-ready first: a claim must not find a host about to vanish.
+                try:
+                    os.unlink(os.path.join(req["spare_dir"], "ready"))
+                except OSError:
+                    pass
                 _kill_cli(cli)
                 os._exit(0)
 
@@ -2353,7 +2363,7 @@ def _run_spare(req: dict) -> None:
         pass
     _write_pid_and_host_json(agent, real, cli)
     _Host(agent, real, cli, peer, initialized=True,
-          throwaway_sid=throwaway_sid).run()
+          throwaway_sid=throwaway_sid, pump=pump).run()
 
 
 def main() -> None:
