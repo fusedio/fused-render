@@ -1,4 +1,4 @@
-// The card a specialist's `show` tool puts in its main chat (docs/specialists.md §15), drawn in place of that
+// The card a specialist's `show` tool puts in its main chat (docs/specialists.md §14), drawn in place of that
 // tool's row: one line with the kind, the title and an Open button, in the shape of the Bots thread's app card.
 // Collapsed it mounts nothing of the work, so a long chat never runs a workbench frame per card; Open raises the
 // shared overlay (platform/ui/ViewModal), which draws the node or canvas live, and closing unmounts it.

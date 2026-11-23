@@ -53,7 +53,7 @@ def write_json_atomic(path: str, obj) -> None:
 # stays ONE dict: read_meta merges, write_meta splits, and nothing outside this module knows there are two files.
 PUBLIC_KEYS = frozenset({"id", "name", "model", "effort", "instructions", "face", "preset", "kind", "approval",
                          "build_access", "terminal", "engine", "max_steps", "step_cap", "super_access", "created",
-                         "apps", "routines", "expert"})
+                         "apps", "routines"})
 # A routine row is split the same way, by its `id`: the definition is public; last, last_result, last_message,
 # last_done, next, fails, runs, … are run state and private.
 # `enabled` is NOT public: the runtime flips it (a once-routine completing, the failure circuit breaker), and

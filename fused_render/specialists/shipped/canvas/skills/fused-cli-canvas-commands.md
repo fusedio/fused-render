@@ -27,7 +27,7 @@ These are the exact forms in fused-render's code:
 | `fused workbench canvas delete <name>` | delete a canvas |
 | `fused workbench --format json canvas mirror --output <env root>` | fill `user/`, `team/`, `public/` with read-only reference copies |
 
-Flags not listed here are not covered by this expert; check `fused --help` or the `workbench:fused-workbench-cli` skill a clone session is handed.
+Flags not listed here are not covered by this specialist; check `fused --help` or the `workbench:fused-workbench-cli` skill a clone session is handed.
 
 ## Inside a live clone
 

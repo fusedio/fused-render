@@ -16,7 +16,6 @@ import {
   putRailExpandEnabled,
   putRailModeDoorsEnabled,
   putTaskIconsEnabled,
-  putExpertsEnabled,
   putGitAutoSyncEnabled,
   putLivePreviewsEnabled,
   putMonitorEnabled,
@@ -402,21 +401,6 @@ export function TaskIconsControl({ prefs, onChange }: PrefControlProps) {
       checked={on}
       put={putTaskIconsEnabled}
       after={(next) => publishTaskIcons(next.task_icons)}
-      onChange={onChange}
-    />
-  );
-}
-
-// EXPERTS (docs/experts.md §17): no publish — the server leaves experts out
-// of every bot listing while this is off, so the Bots page and the sidebar
-// follow on their next poll. Off hides them; nothing is deleted.
-export function ExpertsControl({ prefs, onChange }: PrefControlProps) {
-  const on = prefs.experts?.enabled === true;
-  return (
-    <PrefToggleRow
-      id="experts"
-      checked={on}
-      put={putExpertsEnabled}
       onChange={onChange}
     />
   );

@@ -1,4 +1,4 @@
-// A specialist's `show` tool row as a card (docs/specialists.md §15). The tool's answer ends with one line,
+// A specialist's `show` tool row as a card (docs/specialists.md §14). The tool's answer ends with one line,
 // `[fused-card] {json}` (fused_render/specialists/show.py CARD), carrying what the card opens; this reads it back
 // from the settled tool row. Any other row, a failed call, or a row without the line is not a card and stays a
 // plain tool row.
