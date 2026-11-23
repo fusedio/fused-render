@@ -4716,6 +4716,31 @@ export function forceStart(
   return postJson<ForceResult>("/api/tasks/queue/force", what);
 }
 
+/** What `POST /api/tasks/limit/retry` answers. `note` is the scheduler's
+ *  sentence when the continue could not go this second (a turn still closing,
+ *  the folder held — `queued`), "" when it went. */
+export interface LimitRetryResult {
+  ok: boolean;
+  entry: ScheduledMessage | null;
+  note: string;
+  queued: boolean;
+  /** The booked comeback this retry ran ahead of, "" when none was booked. */
+  comeback: string;
+}
+
+/**
+ * RETRY NOW on a conversation the plan's usage limit paused — the reader
+ * switched accounts, or the window lifted early, and does not want to wait
+ * for the booked comeback. Sends the continue prompt now into the same
+ * session; the comeback stays booked until a reply retires it (server-side),
+ * so a retry that is still limited leaves exactly one comeback behind.
+ * `key` is the task key, which for a conversation is its session id.
+ * Refusals THROW (404 no such task, 409 not paused on the limit).
+ */
+export function retryAfterLimit(key: string): Promise<LimitRetryResult> {
+  return postJson<LimitRetryResult>("/api/tasks/limit/retry", { key });
+}
+
 /** A card decision routed through the queue: the same body the agent's own
  *  `decide` action takes, plus the session and folder the server needs to find
  *  the line. `held: false` carries the ordinary decide result straight through;

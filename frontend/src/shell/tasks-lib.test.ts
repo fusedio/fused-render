@@ -4478,10 +4478,11 @@ describe("the archive action", () => {
     // strip now asks) because, like Archive, it is NOT behind SHOW_ROW_ACTIONS:
     // with that flag down it would otherwise be the Board's only way to start a
     // waiting message other than dragging a card out of a lane that is rolled
-    // up whenever it is empty.
+    // up whenever it is empty. Retry now (usage limit) joined on 2026-11-23 on
+    // the same grounds.
     expect(card).toContain(
       "{((peekOn && page) || (file && !ab) || folderMissing || (hasDraft(task) && !heldInPeek)\n"
-      + "        || canForceStart(task) || jobs || (SHOW_ROW_ACTIONS && run)) && (",
+      + "        || canForceStart(task) || canRetryLimit(task) || jobs || (SHOW_ROW_ACTIONS && run)) && (",
     );
     expect(card).toContain('className="tasks-card-acts"');
     expect(TASKS_CSS).toMatch(/\.tasks-card-acts\s*\{[^}]*position: absolute/);
@@ -5072,7 +5073,7 @@ describe("the delete affordance", () => {
     // The strip is drawn for a gone folder even with nothing to file.
     expect(VIEWS_SRC).toContain(
       "{((peekOn && page) || (file && !ab) || folderMissing || (hasDraft(task) && !heldInPeek)\n"
-      + "        || canForceStart(task) || jobs || (SHOW_ROW_ACTIONS && run)) && (",
+      + "        || canForceStart(task) || canRetryLimit(task) || jobs || (SHOW_ROW_ACTIONS && run)) && (",
     );
     // And the foot is back to the sentence alone — no trash before it there.
     const foot = VIEWS_SRC.slice(

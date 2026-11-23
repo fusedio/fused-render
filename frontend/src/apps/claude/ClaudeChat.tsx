@@ -207,6 +207,7 @@ import { copyToTaskShots } from "./ui/SchedButton";
 import type { DraftAttachment } from "@platform/lib/drafts";
 import { troubleFromError } from "./protocol/trouble";
 import { useSchedule } from "./sched/useSchedule";
+import { schedIsComeback } from "./sched/scheduled";
 import type { QueueFacts } from "@platform/lib/queue";
 import { PENDING_KEY_PREFIX, QUEUED_PARAM } from "@platform/lib/queue";
 import {
@@ -241,6 +242,7 @@ import {
   cancelScheduledMessage,
   forceStart,
   getClaudeSessionLiveness,
+  retryAfterLimit,
   type Task,
 } from "@platform/lib/api";
 import { hasAgentPeeks, openAgentPeek, publishPeekTurns, useAgentPeeks } from "./agent-peeks";
@@ -1169,6 +1171,10 @@ function ChatBody(props: ChatBodyProps) {
   /** Force start is in flight: the card's one button is dead for its
    *  duration. */
   const [forcing, setForcing] = useState(false);
+  /** Retry now (usage limit) is in flight, and what its last press said when
+   *  it did not simply go — the banner's note line. */
+  const [limitRetrying, setLimitRetrying] = useState(false);
+  const [limitRetryNote, setLimitRetryNote] = useState("");
   /**
    * RUN NEXT WAS ACCEPTED, AND NO ROW HAS ANSWERED SINCE — the row generation as
    * it stood at the press (`useSchedule.recGen`), or null for "no claim".
@@ -5023,6 +5029,45 @@ function ChatBody(props: ChatBodyProps) {
   }, [controller, schedRefresh, sched.rec, waiting]);
 
   /**
+   * RETRY NOW, on a chat the plan's usage limit paused (Akshil, 2026-11-23:
+   * "I can switch Claude accounts and then the limit-reset wait is gone").
+   * The server sends the continue prompt now and keeps the booked comeback
+   * until a reply retires it (`POST /api/tasks/limit/retry`), so a press that
+   * is still limited leaves exactly one comeback behind. The run it starts is
+   * adopted like any other run on this session (`sched/scheduled` tick), and
+   * the schedule poll is asked for a lap at once so the banner reads it.
+   */
+  /** The banner over the composer is showing the usage-limit comeback — the
+   *  Retry now seat. Without it (cancelled, never booked) the limit card in
+   *  the log carries the press instead, so it is on screen exactly once. */
+  const comebackBanner = schedIsComeback(sched.blockers[0]);
+  const limitRetryLive = useRef(false);
+  const retryLimitNow = useCallback(async () => {
+    const sid = state.sessionId;
+    // One press at a time: the card's button cannot be disabled, so a second
+    // press while the first is out is swallowed here.
+    if (!sid || limitRetryLive.current) return;
+    limitRetryLive.current = true;
+    setLimitRetrying(true);
+    setLimitRetryNote("");
+    try {
+      const res = await retryAfterLimit(sid);
+      setLimitRetryNote(res.note || "");
+      // The limit card has no note line of its own: a press from it that did
+      // not simply go says so in the log, where the card is.
+      if (res.note && !comebackBanner) controller.addNote(res.note);
+      schedRefresh();
+    } catch (err) {
+      const said = "Could not retry: " + (err instanceof Error ? err.message : String(err));
+      setLimitRetryNote(said);
+      if (!comebackBanner) controller.addNote(said);
+    } finally {
+      limitRetryLive.current = false;
+      setLimitRetrying(false);
+    }
+  }, [comebackBanner, controller, schedRefresh, state.sessionId]);
+
+  /**
    * DELETE, from a waiting row: the words are dropped and nothing runs.
    *
    * THE SAME ENDPOINT the Tasks page's cancel posts — `POST /api/schedule/cancel`
@@ -6466,6 +6511,8 @@ function ChatBody(props: ChatBodyProps) {
               cwd={chatWorkdir(file, pane.noun)}
               state={transcriptState}
               comebackPending={sched.blocked}
+              {...(state.sessionId && !comebackBanner ? { onLimitRetry: () => void retryLimitNow() } : {})}
+              limitRetrying={limitRetrying}
               actions={actions}
               liveMode={state.permissionMode}
               tail={tail}
@@ -6599,6 +6646,9 @@ function ChatBody(props: ChatBodyProps) {
               tick={sched.tick}
               onStop={sched.onStop}
               cardRef={sched.cardRef}
+              {...(state.sessionId ? { onRetry: () => void retryLimitNow() } : {})}
+              retrying={limitRetrying}
+              retryNote={limitRetryNote}
             />
             {/* FORK NOTICE: the next send starts a NEW session from the message
                 above; Cancel puts the hidden turns back. */}

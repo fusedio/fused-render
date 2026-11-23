@@ -550,6 +550,16 @@ def api_schedule_create(body: dict = Body(...),
     except ValueError as exc:
         return _error(str(exc), status=400)
 
+    # ONE USAGE-LIMIT COMEBACK PER CONVERSATION. A chat that hits the limit
+    # again (a Retry now that was still limited, a second window, a reload)
+    # books a fresh comeback; the older ones on the same session are the same
+    # promise and go (`schedule.supersede_comebacks`). Best-effort: the new
+    # one is booked either way.
+    try:
+        schedule.supersede_comebacks(entry)
+    except OSError:
+        pass
+
     # THE TASK NUMBER SURVIVES AN EDIT. Editing a scheduled message is cancel +
     # re-create — there is no PATCH — so the entry the user was looking at stops
     # existing and this one, with a brand new id, takes its place. A task that
