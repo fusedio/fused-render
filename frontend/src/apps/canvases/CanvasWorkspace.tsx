@@ -217,7 +217,7 @@ import { addCurrentApp } from "@platform/lib/api";
 import { CURRENT_APPS_CHANGED_EVENT } from "@platform/lib/tasksChanged";
 import { ChatMount, ShotViewer, type CanvasShot, type CanvasShotAnswer, type CanvasShotBy, type CanvasShotWhat, type Viewable } from "@apps/claude";
 import { statPath } from "@platform/lib/api";
-import { EMBED_PREFIX, NAV_EVENT, VIEW_PREFIX, confirmLeave, embedUrlForFsPath, navigateUrl, viewUrlForFsPath } from "@platform/lib/router";
+import { EMBED_PREFIX, NAV_EVENT, VIEW_PREFIX, confirmLeave, embedUrlForFsPath, navigateUrl, spaLinkProps, viewUrlForFsPath } from "@platform/lib/router";
 import { ErrorBanner } from "@platform/ui/ErrorBanner";
 import {
   CanvasOwnedError,
@@ -3380,6 +3380,7 @@ export default function CanvasWorkspace({
         // Back to the environment this canvas lives in, not the default.
         onBack={() => navigateUrl(catalogPath(env))}
         workbenchUrl={workbenchUrl}
+        explorerLink={dir ? spaLinkProps(dir, { isDir: true }) : null}
         pushErrors={
           pushError
             ? { count: pushErrorCount, open: pushDetailOpen, onToggle: () => setPushDetailOpen((o) => !o) }
