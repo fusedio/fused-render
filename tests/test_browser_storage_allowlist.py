@@ -53,6 +53,7 @@ ALLOWED = {
     "shell/TerminalDrawer.tsx": "cache",            # pty ids re-checked against GET /api/terminal
     "shell/UpdateCard.tsx": "tab",
     "shell/claude-rail/rail-free-pins-flag.ts": "cache",  # flag's last prefs answer, re-read
+    "shell/claude-rail/rail-expand-flag.ts": "cache",  # flag's last prefs answer, re-read
     "shell/claude-rail/rail-mode-doors-flag.ts": "cache",  # flag's last prefs answer, re-read
     "shell/notifications-seen-store.ts": "import",
     "shell/task-peek-store.ts": "display",          # peek width + per-tab autocollapse marker

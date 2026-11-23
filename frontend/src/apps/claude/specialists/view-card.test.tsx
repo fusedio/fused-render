@@ -1,4 +1,4 @@
-// A specialist's `show` row as a card (docs/specialists.md §15): which tool rows are cards, that a card never
+// A specialist's `show` row as a card (docs/specialists.md §14): which tool rows are cards, that a card never
 // folds behind "more", and that the collapsed card mounts nothing of the work.
 import { describe, expect, test } from "bun:test";
 import { renderToStaticMarkup } from "react-dom/server";

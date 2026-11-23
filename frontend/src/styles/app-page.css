@@ -73,8 +73,8 @@
   background: var(--bg);
 }
 .app-page-claude:has(~ .claude-rail:not([hidden])) {
-  min-width: min(380px, calc(100% - 320px - 48px));
-  max-width: calc(100% - 320px - 48px);
+  min-width: min(380px, calc(100% - 320px - var(--claude-rail-w, 48px)));
+  max-width: calc(100% - 320px - var(--claude-rail-w, 48px));
 }
 
 .app-page-claude-chat {

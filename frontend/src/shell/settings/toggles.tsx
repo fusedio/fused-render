@@ -10,9 +10,9 @@ import {
   putCanvasesEmbedProxy,
   putCanvasesEnabled,
   putRailFreePinsEnabled,
+  putRailExpandEnabled,
   putRailModeDoorsEnabled,
   putTaskIconsEnabled,
-  putExpertsEnabled,
   putGitAutoSyncEnabled,
   putLivePreviewsEnabled,
   putMonitorEnabled,
@@ -30,6 +30,7 @@ import {
 import { publishContribFlags } from "@platform/lib/contrib-flags";
 import { publishCanvasesEnabled } from "@apps/canvases/feature-flag";
 import { publishRailFreePins } from "../claude-rail/rail-free-pins-flag";
+import { publishRailExpand } from "../claude-rail/rail-expand-flag";
 import { publishRailModeDoors } from "../claude-rail/rail-mode-doors-flag";
 import { publishTaskIcons } from "@platform/lib/task-icons-flag";
 import { publishAppSharingEnabled } from "@platform/lib/share-app-flag";
@@ -314,6 +315,20 @@ export function RailModeDoorsControl({ prefs, onChange }: PrefControlProps) {
   );
 }
 
+// THE EXPANDABLE RAIL: a child of the rail preview, like the mode doors.
+export function RailExpandControl({ prefs, onChange }: PrefControlProps) {
+  const on = prefs.rail_expand?.enabled === true;
+  return (
+    <PrefToggleRow
+      id="rail-expand"
+      checked={on}
+      put={putRailExpandEnabled}
+      after={(next) => publishRailExpand(next.rail_expand)}
+      onChange={onChange}
+    />
+  );
+}
+
 // TASK ICONS (owner, 2026-11-10, experiment): a FAVOURITE wears one of 299
 // glyphs in place of its status ring (2026-11-11: only a starred task); the
 // icon pressed while a title is being edited opens a picker. Off, the ring
@@ -326,21 +341,6 @@ export function TaskIconsControl({ prefs, onChange }: PrefControlProps) {
       checked={on}
       put={putTaskIconsEnabled}
       after={(next) => publishTaskIcons(next.task_icons)}
-      onChange={onChange}
-    />
-  );
-}
-
-// EXPERTS (docs/experts.md §17): no publish — the server leaves experts out
-// of every bot listing while this is off, so the Bots page and the sidebar
-// follow on their next poll. Off hides them; nothing is deleted.
-export function ExpertsControl({ prefs, onChange }: PrefControlProps) {
-  const on = prefs.experts?.enabled === true;
-  return (
-    <PrefToggleRow
-      id="experts"
-      checked={on}
-      put={putExpertsEnabled}
       onChange={onChange}
     />
   );

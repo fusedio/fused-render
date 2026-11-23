@@ -1,8 +1,7 @@
 """Opening a `.fusedbot` package: what installing it would do, and the install (docs/bots.md §17, D1459).
 
 A package is the app container (`appfile_container`, kind "bot") holding the bot's public half: `bot.json`,
-`skills/<name>.md`, an optional `README.md`, `icon.svg` and `.fused/memory.md` (an expert's also
-`.fused/memory-archive.md`), plus one nested
+`skills/<name>.md`, an optional `README.md`, `icon.svg` and `.fused/memory.md`, plus one nested
 `apps/<folder>.fused` per bundled app. The index's `apps` rows name every app the bot comes with; a row's
 `source` says how it travels: `bundled` (the nested app file), `starter` (a key of bots/starters/, copied
 from this install), `marketplace` (a slug fetched at install time; never a bundled fallback) or `github` (a
@@ -49,9 +48,6 @@ SOURCE_KINDS = ("bundled", "starter", "marketplace", "github")
 _NOT_COPIED = frozenset({"id", "created", "apps", "routines"})
 _SKILL_RE = re.compile(r"^skills/([^/]+)\.md$")
 _BUNDLED_RE = re.compile(r"^apps/([^/]+)\.fused$")
-MEMORY_MEMBER = ".fused/memory.md"
-ARCHIVE_MEMBER = ".fused/memory-archive.md"  # an expert's memory archive (docs/experts.md §10); a bot has none
-_MEMORY_MEMBERS = (MEMORY_MEMBER, ARCHIVE_MEMBER)
 
 
 class BotFileError(Exception):
@@ -212,27 +208,24 @@ def _check_text_budget(idx: dict) -> None:
     declared = 0
     for f in idx.get("files") or []:
         rel = f.get("path") or ""
-        if _SKILL_RE.match(rel) or rel in _MEMORY_MEMBERS:
+        if _SKILL_RE.match(rel) or rel == ".fused/memory.md":
             declared += f.get("size") if isinstance(f.get("size"), int) and f["size"] > 0 else 0
     if declared > text_cap:
         raise BotFileError(f"skills and memory in this package are {declared} bytes; the cap is {text_cap}")
 
 
-def _check_skill_limits(idx: dict, bodies: list[tuple[str, str]] | None = None, expert: bool = False) -> None:
-    """The bot's own playbook limits (Bot.SKILL_MAX playbooks, Bot.SKILL_BODY_CAP characters of steps; an
-    expert's reference files Bot.EXPERT_SKILL_BODY_CAP), which skill_save enforces: playbooks install verbatim
-    (_write_skills), so a package past either is REFUSED, never truncated (a cut playbook would neither run as
-    written nor digest like its package). The count is index-only; `bodies` ([(name, parsed body)]) is checked
-    when the members were read."""
+def _check_skill_limits(idx: dict, bodies: list[tuple[str, str]] | None = None) -> None:
+    """The bot's own playbook limits (Bot.SKILL_MAX playbooks, Bot.SKILL_BODY_CAP characters of steps), which
+    skill_save enforces: playbooks install verbatim (_write_skills), so a package past either is REFUSED, never
+    truncated (a cut playbook would neither run as written nor digest like its package). The count is index-only;
+    `bodies` ([(name, parsed body)]) is checked when the members were read."""
     from fused_render.bots.bot import Bot
     n = len(_skill_names(idx))
     if n > Bot.SKILL_MAX:
         raise BotFileError(f"this package has {n} playbooks; a bot holds at most {Bot.SKILL_MAX}")
-    cap = Bot.EXPERT_SKILL_BODY_CAP if expert else Bot.SKILL_BODY_CAP
     for name, body in bodies or []:
-        if len(body) > cap:
-            raise BotFileError(f"{'skill' if expert else 'playbook'} {name} has more than {cap} characters"
-                               + ("" if expert else " of steps"))
+        if len(body) > Bot.SKILL_BODY_CAP:
+            raise BotFileError(f"playbook {name} has more than {Bot.SKILL_BODY_CAP} characters of steps")
 
 
 def _skill_names(idx: dict) -> list[str]:
@@ -293,7 +286,7 @@ def _validate(path: str, idx: dict, *, members: bool = True,
     """Every read-only check a package must pass before anything opens it -> (public bot.json, app rows, skills).
     The probe and the upload route both call this, so a file the upload saves is one the install page can open:
     the text budget, bot.json, the `apps` list, and (with `members`) every playbook member and `.fused/memory.md`
-    (and an expert's `.fused/memory-archive.md`) read in full through _member_bytes' size + sha256 check. `members=False` is the light probe's peek (no member
+    read in full through _member_bytes' size + sha256 check. `members=False` is the light probe's peek (no member
     reads; skills None). `bundled` (the upload only: a probe must not pay for it on every open) also
     stream-verifies every `apps/*.fused` member's size + sha256."""
     _check_text_budget(idx)
@@ -303,10 +296,9 @@ def _validate(path: str, idx: dict, *, members: bool = True,
     skills = None
     if members:
         skills = _skills(path, idx)
-        _check_skill_limits(idx, [(s["name"], s["body"]) for s in skills], expert=_is_expert_pkg(pub))
+        _check_skill_limits(idx, [(s["name"], s["body"]) for s in skills])
         _total, text_cap = _caps()
-        for rel in _MEMORY_MEMBERS:
-            _member_bytes(path, idx, rel, text_cap)  # the reads install(memory=True) makes
+        _member_bytes(path, idx, ".fused/memory.md", text_cap)  # the read install(memory=True) makes
     if bundled:
         for f in idx.get("files") or []:
             if _BUNDLED_RE.match(f.get("path") or ""):
@@ -464,13 +456,9 @@ def _row_state(row: dict, staged: str | None) -> dict:
 # The public settings an install applies beyond name/model/effort/instructions, and the ones an update replaces
 # (a key the package lacks is removed from the bot). `kind` is left out: a non-Super bot is "bot" or unset, and
 # the Super Bot never matches. Permissions (approval/build_access/terminal) never travel (_public_fields).
-_APPLIED_KEYS = ("face", "preset", "engine", "max_steps", "step_cap", "expert")
+_APPLIED_KEYS = ("face", "preset", "engine", "max_steps", "step_cap")
 _ROUTINE_DIGEST_KEYS = ("id", "task", "kind", "minutes", "time", "weekdays", "at")
 _PERMISSION_KEYS = frozenset({"approval", "build_access", "terminal", "super_access"})
-
-
-def _is_expert_pkg(pub: dict) -> bool:
-    return pub.get("kind") == "expert"
 
 
 def _package_id(pub: dict, idx: dict) -> str | None:
@@ -487,18 +475,9 @@ def _applied(pub: dict, name: str) -> dict:
     create() stores them, plus the settings that pass _public_fields' checks."""
     from fused_render.bots import bot as bm
     model, effort = _str(pub.get("model")), _str(pub.get("effort"))
-    instructions = _str(pub.get("instructions")).strip()
-    if _is_expert_pkg(pub):
-        if model in bm.LOCAL_MODELS:
-            model = bm.DEFAULT_MODEL  # an expert runs on Claude Code: a local model maps to the default, as create() does
-        if not instructions:
-            # An expert with no instructions.md runs with the default text (experts.store.instructions), so that
-            # is what it installs with, and what its digest says (package._public reads it back the same way).
-            from fused_render.experts import store as xstore
-            instructions = xstore.DEFAULT_INSTRUCTIONS.strip()
     return {"name": name, "model": model if model in bm.MODELS else bm.DEFAULT_MODEL,
             "effort": effort if effort in bm.EFFORTS else bm.DEFAULT_EFFORT,
-            "instructions": instructions,
+            "instructions": _str(pub.get("instructions")).strip(),
             **_public_fields({}, {k: v for k, v in pub.items() if k not in _PERMISSION_KEYS})}
 
 
@@ -627,7 +606,7 @@ def probe(path: str, light: bool = False) -> dict:
     pub, rows, skills = _validate(path, idx, members=not light)
     out = {"ok": True, "name": _install_name(pub, idx), "public": pub,
            "exported_at": _str(idx.get("exported_at")) or None, "origin": _origin(idx),
-           "memory": any(appfile_container.find(idx, rel) is not None for rel in _MEMORY_MEMBERS),
+           "memory": appfile_container.find(idx, ".fused/memory.md") is not None,
            "icon": appfile_container.find(idx, "icon.svg") is not None,
            "readme": appfile_container.find(idx, "README.md") is not None,
            "bot": _bot_block(path, idx, pub, light=light)}
@@ -833,22 +812,12 @@ def _public_fields(meta: dict, pub: dict) -> dict:
                 out[k] = int(v)
             elif k == "step_cap" and isinstance(v, int) and not isinstance(v, bool) and v >= 0:
                 out[k] = v
-            elif k == "kind" and v in ("bot", "expert"):
-                out[k] = v  # an expert keeps its kind (docs/experts.md §5); "super" never travels
-            elif k == "expert" and isinstance(v, dict) and pub.get("kind") == "expert":
-                out[k] = _imported_expert(v)  # the expert's manifest (experts.store.manifest fills defaults on read)
+            elif k == "kind" and v == "bot":
+                out[k] = v
             elif v not in (None, "", 0):
                 logger.info("bot package: %s=%r not applied", k, v)
         except ValueError as e:
             logger.info("bot package: %s refused: %s", k, e)
-    return out
-
-
-def _imported_expert(manifest: dict) -> dict:
-    """An imported expert's manifest, made safe to arrive (docs/experts.md §5): `shipped` is dropped (that key
-    names an expert this app ships, and a file must not claim to be one)."""
-    out = copy.deepcopy(manifest)
-    out.pop("shipped", None)
     return out
 
 
@@ -984,11 +953,6 @@ def _install(path: str, *, apps: list[str], memory: bool, mode: str, target: str
     pub = _bot_json(path, idx)
     if pub.get("kind") == "super":
         raise BotFileError("this package is a Super Bot; there is one per Mac and it cannot be imported")
-    if _is_expert_pkg(pub):
-        from fused_render import experts
-        if not experts.enabled():  # docs/experts.md §17: it would install hidden
-            raise BotFileError("this package is an expert, and experts are turned off; "
-                               "turn them on in Settings > Experimental flags first")
     registry.require_owner()
     if bot_id:
         return _install_into(path, idx, bot_id, apps)
@@ -1143,61 +1107,14 @@ def _mint_id() -> str:
             return bid
 
 
-def _skill_members(path: str, idx: dict, expert: bool = False) -> list[tuple[str, bytes]]:
+def _skill_members(path: str, idx: dict) -> list[tuple[str, bytes]]:
     """[(name, bytes)] of every playbook member, read (and size + hash checked) in full."""
     from fused_render.bots.bot import Bot
     _total, text_cap = _caps()
     _check_skill_limits(idx)
     out = [(n, _member_bytes(path, idx, f"skills/{n}.md", text_cap) or b"") for n in _skill_names(idx)]
-    _check_skill_limits(idx, [(n, Bot._parse_skill(raw.decode("utf-8", errors="replace"))[2]) for n, raw in out],
-                        expert=expert)
+    _check_skill_limits(idx, [(n, Bot._parse_skill(raw.decode("utf-8", errors="replace"))[2]) for n, raw in out])
     return out
-
-
-def _memory_members(path: str, idx: dict) -> tuple[str | None, str | None]:
-    """(memory.md, memory-archive.md) text from the package, None for one it does not carry."""
-    _total, text_cap = _caps()
-    return tuple(_member_text(path, idx, rel, text_cap) for rel in _MEMORY_MEMBERS)
-
-
-#: How long an install waits for an expert's memory writers (a task-learn, a dream) to finish before giving up.
-EXPERT_MEMORY_WAIT_S = 30
-
-
-def _write_expert_files(b, instructions: str | None, mem: tuple[str | None, str | None] | None,
-                        warnings: list[str]) -> None:
-    """An expert's own files from the package (docs/experts.md §5): `instructions` into instructions.md, and
-    (when the importer asked for memory and the package has some) memory.md and memory-archive.md REPLACED as a
-    unit (a part the package lacks is emptied / removed), under the
-    expert's write lock so no task-learn or dream writes between. A busy lock or a failed write is a warning:
-    the bot exists by now."""
-    from fused_render.experts import store as xstore
-    if instructions is not None:
-        try:
-            xstore.write_text(xstore.instructions_path(b), instructions.strip() + "\n")
-        except OSError as e:
-            logger.warning("bot package: instructions.md not written for %s", b.id, exc_info=True)
-            warnings.append(f"instructions: {e or e.__class__.__name__}")
-    text, archive = mem or (None, None)
-    if text is None and archive is None:  # not asked, or the package carries no memory: the expert keeps its own
-        return
-    lock = xstore.write_lock(b)
-    if not lock.acquire(timeout=EXPERT_MEMORY_WAIT_S):
-        warnings.append("memory: the expert was busy writing its own memory; not replaced")
-        return
-    try:
-        # memory.md and its archive are one memory: the expert's becomes the package's as a whole (as an update's
-        # README.md and icon.svg do), so a part the package lacks is emptied or removed, never left over.
-        xstore.write_text(xstore.memory_path(b), text or xstore.EMPTY_MEMORY)
-        if archive:
-            xstore.write_text(xstore.archive_path(b), archive)
-        elif os.path.lexists(xstore.archive_path(b)):
-            os.unlink(xstore.archive_path(b))
-    except OSError as e:
-        logger.warning("bot package: memory not written for %s", b.id, exc_info=True)
-        warnings.append(f"memory: {e or e.__class__.__name__}")
-    finally:
-        lock.release()
 
 
 def _case_unique(names) -> tuple[set[str], list[str]]:
@@ -1213,13 +1130,12 @@ def _case_unique(names) -> tuple[set[str], list[str]]:
     return keep, drop
 
 
-def _write_skills(b, members: list[tuple[str, bytes]], warnings: list[str], expert: bool = False) -> None:
+def _write_skills(b, members: list[tuple[str, bytes]], warnings: list[str]) -> None:
     """REPLACE the bot's `skills/` with the package's playbooks, each written VERBATIM under its member name (so
     the bot digests like its package, public_digest): built in a scratch dir beside it and swapped in by rename,
     so a failure while writing leaves the old folder whole. A `*.md` file the package lacks is gone afterwards;
     anything else in the folder (not a playbook: export never ships it) is carried over. A playbook with no
-    trigger or no steps is still written (it never runs until edited) and said in a warning; an expert's skills
-    are reference files, never triggered, so it gets no such warning."""
+    trigger or no steps is still written (it never runs until edited) and said in a warning."""
     from fused_render.bots.bot import Bot
     d = b.skills_dir
     parent = os.path.dirname(d)
@@ -1235,7 +1151,7 @@ def _write_skills(b, members: list[tuple[str, bytes]], warnings: list[str], expe
             if n not in keep:
                 continue
             _title, trigger, body = Bot._parse_skill(raw.decode("utf-8", errors="replace"))
-            if not expert and (not trigger or not body):
+            if not trigger or not body:
                 warnings.append(f"playbook {n}: it has no {'trigger' if not trigger else 'steps'}; it never runs until you add one")
             with open(os.path.join(tmp, n + ".md"), "xb") as f:
                 f.write(raw)
@@ -1318,23 +1234,18 @@ def _install_update(path: str, idx: dict, pub: dict, target, apps, memory: bool)
         raise NoSuchBot(f"no such bot {os.path.basename(target)}") from None
     if bm.is_super(b.meta):
         raise BotFileError("Super Bot is never updated from a package")
-    expert = _is_expert_pkg(pub)
-    if expert != bm.is_expert(b.meta):
-        raise BotFileError("this package is a different kind of bot; install it as a new bot")
     _refuse_busy(b)
     rows = _app_rows(idx)
     # Every read from the file happens before any app installs or the bot is touched (as _install_new).
     _check_text_budget(idx)
     name = _install_name(pub, idx)
     applied = _applied(pub, name)
-    expert_instructions = None
-    if expert:
-        # An expert's instructions are its instructions.md (written below); the bot.json key is a legacy extra
-        # that would be appended to them a second time, so it is cleared.
-        expert_instructions, applied["instructions"] = applied["instructions"], ""
     routines = _routines(pub.get("routines"))
-    skills = _skill_members(path, idx, expert=expert)
-    mem = _memory_members(path, idx) if memory else None
+    skills = _skill_members(path, idx)
+    mem_text = None
+    if memory:
+        _total, text_cap = _caps()
+        mem_text = _member_text(path, idx, ".fused/memory.md", text_cap)
     origin = {**_origin(idx), "package_sha": _package_sha(idx), "public_sha": _package_public_sha(path, idx, pub)}
 
     orig = {id(r): r["folder"] for r in rows}  # the index spelling, before _install_apps follows the disk
@@ -1344,7 +1255,7 @@ def _install_update(path: str, idx: dict, pub: dict, target, apps, memory: bool)
         _refuse_busy(b)  # again: a task may have started while the apps installed
         snapshot = copy.deepcopy(b.meta)
         try:
-            _write_skills(b, skills, warnings, expert=expert)  # first: a failure here leaves the bot as it was
+            _write_skills(b, skills, warnings)  # first: a failure here leaves the bot as it was
             for k in _APPLIED_KEYS:
                 b.meta.pop(k, None)
             b.meta.update(applied)
@@ -1359,14 +1270,12 @@ def _install_update(path: str, idx: dict, pub: dict, target, apps, memory: bool)
             b.meta.update(snapshot)
             raise BotFileError(f"could not update {_str(b.meta.get('name')) or b.id}: {e or e.__class__.__name__}") from e
         _copy_folder_members(path, idx, b.id, warnings, replace=True)
-        if not expert and mem is not None and mem[0] is not None:
+        if mem_text is not None:
             try:
-                b.set_memory(mem[0])
+                b.set_memory(mem_text)
             except OSError as e:
                 logger.warning("bot package: memory not replaced for %s", b.id, exc_info=True)
                 warnings.append(f"memory: {e or e.__class__.__name__}")
-    if expert:  # outside b.lock: the memory write may wait for the expert's own writers
-        _write_expert_files(b, expert_instructions, mem, warnings)
     try:
         b._sync_wake()
     except Exception:  # noqa: BLE001 - the scheduler's next pass picks the routines up anyway
@@ -1386,12 +1295,14 @@ def _install_new(path: str, idx: dict, pub: dict, apps, memory: bool) -> dict:
     # Everything read from the file is read BEFORE any app is installed and before the bot exists: a bad member
     # fails the request while nothing irreversible has happened, so a retry is still harmless.
     _check_text_budget(idx)
-    expert = _is_expert_pkg(pub)
     settings = _public_fields({}, pub)
     routines = _routines(pub.get("routines"))
-    skills = _skill_members(path, idx, expert=expert)
+    skills = _skill_members(path, idx)
     public_sha = _package_public_sha(path, idx, pub)
-    mem = _memory_members(path, idx) if memory else None
+    mem_text = None
+    if memory:
+        _total, text_cap = _caps()
+        mem_text = _member_text(path, idx, ".fused/memory.md", text_cap)
 
     results, done, paths = _install_apps(path, idx, rows, apps)
     # Trust ("use without asking") only what THIS call installed or found installed by its own install_target
@@ -1415,11 +1326,8 @@ def _install_new(path: str, idx: dict, pub: dict, apps, memory: bool) -> dict:
     bid = pkg_id if pkg_id and pkg_id not in bpaths.raw_ids() and not _has_folder(pkg_id) else _mint_id()
     warnings: list[str] = []
     try:
-        # An expert's instructions go to its instructions.md (below), not the bot.json key create() would set.
-        b = bm.create(name, _str(pub.get("model")), _str(pub.get("effort")),
-                      "" if expert else _str(pub.get("instructions")),
-                      greet=False, bot_id=bid, kind="expert" if expert else "",
-                      expert=settings.get("expert") if expert else None)
+        b = bm.create(name, _str(pub.get("model")), _str(pub.get("effort")), _str(pub.get("instructions")),
+                      greet=False, bot_id=bid)
     except bm.BotIdTaken:
         raise BotFileError("could not create the bot: id taken, retry") from None
     except Exception as e:  # noqa: BLE001 - see above
@@ -1483,12 +1391,9 @@ def _install_new(path: str, idx: dict, pub: dict, apps, memory: bool) -> dict:
         logger.warning("bot package: settings failed for %s", b.id, exc_info=True)
         warnings.append(f"settings: {e or e.__class__.__name__}")
         _unlinked(results, paths, e)
-    step("playbooks", lambda: _write_skills(b, skills, warnings, expert=expert))
-    if expert:
-        step("expert files", lambda: _write_expert_files(b, _applied(pub, name)["instructions"], mem, warnings))
-    elif mem and mem[0]:
-        step("memory", lambda: b.set_memory(mem[0]))
+    step("playbooks", lambda: _write_skills(b, skills, warnings))
+    if mem_text:
+        step("memory", lambda: b.set_memory(mem_text))
     step("transcript", lambda: b.emit("system", f"Imported from {os.path.basename(path)}"))
-    if not bm.is_expert(b.meta):  # an expert's fixed greeting was written by create()
-        step("greeting", b.greet)
+    step("greeting", b.greet)
     return {"ok": True, "bot_id": b.id, "updated": False, "apps": results, "warnings": warnings}

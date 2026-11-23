@@ -2,8 +2,7 @@
 
 Written 2026-11-19 from the code as built (`fused_render/specialists/`, the specialist parts of
 `fused_render/claude_agent/agent.py` and `permission_server.py`, `frontend/src/apps/bots/components/Specialist*.tsx`).
-Where this page and the code disagree, the code wins; fix the page. Why it is kept apart from Expert bots is §13;
-what was left out on purpose is §14.
+Where this page and the code disagree, the code wins; fix the page. What was left out on purpose is §13.
 
 ## 1. What a specialist is
 
@@ -20,7 +19,7 @@ pointers to the tasks, breakouts and chats that involved it) into memory and ski
 
 **The switch.** `shell/prefs.specialists_enabled()`: env `FUSED_RENDER_SPECIALISTS` `"1"` or `"0"` wins both ways,
 else only a stored `specialists_enabled: true` in `prefs.json` is on. Off by default (the "Specialists" switch
-on the Experimental flags page of Preferences, under Bots, beside "Expert bots"; `shell/settings/registry.ts`). Off
+on the Experimental flags page of Preferences, under Bots; `shell/settings/registry.ts`). Off
 means:
 
 - every `/api/specialists*` request is the unknown-path 404 before routing (`flag.off_middleware`);
@@ -67,7 +66,7 @@ object or null. `store.update` rewrites the manifest and the charter (keeping it
 "Settings". `store.find` (id, then name ignoring case) serves the tools.
 
 The charter (`home.CHARTER`) tells the specialist: memory is `memory.md`, one fact per line, each one sentence starting with a count and the date
-it was last seen, as experts write it (`- [4 · 2026-11-17] <the fact>`; a line without a count counts as 1), a new
+it was last seen (`- [4 · 2026-11-17] <the fact>`; a line without a count counts as 1), a new
 fact on a new line after checking the file ends with a newline; when the user tells it to remember or change
 something it edits `memory.md` or the skill at once and says what it changed, a new fact at count 1 with today's
 date, a line the user confirms raised and dated today. Nothing in the app reads, checks or enforces the format;
@@ -107,7 +106,7 @@ A breakout start passes the plain breakout's checks first, then runs as an ordin
 pinned to Ask mode.
 
 Specialist agents run free (the owner's decision): nothing in the spec limits what a session may do, except that
-a new canvas asks (§15). A main chat or
+a new canvas asks (§14). A main chat or
 breakout with nothing recorded opens in Auto, the freest mode the pill offers (`ChatMount permission`, a default the
 user can change); the CLI's own classifier then decides, and what it refuses reaches the model as a refusal, never a
 card. A learning run always runs in Auto: the task engine offers no mode without any check (`bypassPermissions` is
@@ -117,7 +116,7 @@ not in `PERMISSION_MODES`).
 writes into the run dir as `specialist.json` and `_claude_argv` folds into the CLI's argv:
 
 - `mcp_servers`: the services server (§8), the same for all three kinds; a main chat also gets the canvas server
-  (§15) while Canvases is on.
+  (§14) while Canvases is on.
 - `append`: one sentence after the usual appended prompt: this is the main chat; or this is a breakout beside a
   task, which the next learning run reads; or this is the learning run, nobody is watching.
 - `policy_env`: for the update only, `FUSED_SPECIALIST_UNATTENDED=1` in the permission server's env: anything that
@@ -125,7 +124,7 @@ writes into the run dir as `specialist.json` and `_claude_argv` folds into the C
   "Nobody is here to approve this; it is refused.", so the run never waits on nobody.
 
 Otherwise a specialist session is an ordinary Claude session of the task engine: the same built-in tools, the same
-S3 and expert tools when those are on, `Bash(fused:*)` pre-allowed when the `fused` wrapper exists. It never gets the
+S3 tools when those are on, `Bash(fused:*)` pre-allowed when the `fused` wrapper exists. It never gets the
 specialist task tools (a run has a launch spec or the task tools, never both).
 
 Recording: a main start's session id goes to `chat.record_start` (`routers/claude_agent._specialist_after`): a new
@@ -182,7 +181,7 @@ nothing fetches the guidance for it.
   framed as data), which is how a task recovers from a wrong name or reaches one created after it started; a
   missing or too long field is a 400.
 
-Every call that names a specialist puts the calling task in its inbox (`experts.learn.caller(run_id)` resolves the run
+Every call that names a specialist puts the calling task in its inbox (`tools.caller(run_id)` resolves the run
 to its session and folder; `update.point`, §5).
 
 ## 5. The inbox
@@ -235,8 +234,7 @@ contradicted, each with the evidence in a few words, a task only repeating the s
 nothing; or only "nothing useful for this subject". The run then weighs the reports and notes as data; it may read
 the project's code or run a command to check a claim; keeps only what concerns its subject and has shown its
 outcome; makes targeted edits to `memory.md` and its skills, leaving every other line exactly as it is, one fact per line
-(checking the file ends with a newline before it appends). Counts as experts keep them (`experts/store.py`
-`MEMORY_RULES`): a line confirmed in practice is raised and dated today, never repeated; a contradicted line is
+(checking the file ends with a newline before it appends). Counts: a line confirmed in practice is raised and dated today, never repeated; a contradicted line is
 corrected; a new fact starts at 1; a line without a count is count 1 once touched, and lines it has no reason to
 touch are not reformatted. Size: under about 200 lines; over that it merges lines that say the same thing (counts
 added, newest date) and moves the oldest, lowest-count lines to `memory-archive.md` unchanged. All of it is prompt
@@ -325,24 +323,19 @@ services and local app tools: the bots' roster (`bots/apptools.registry()`), wit
 
 ## 9. The shipped specialists
 
-`specialists/shipped/<key>/` holds `specialist.json` (`name`, `about`, `face`, `expert`, and optionally `folder`) and
-`subject.md`, the charter's `## Subject` section. They are the counterparts of the shipped experts, for comparing
-the two kinds on one subject:
+`specialists/shipped/<key>/` holds `specialist.json` (`name`, `about`, `face`, and optionally `folder`),
+`subject.md`, the charter's `## Subject` section, and `skills/*.md`:
 
 - `canvas` — "Canvas": canvas folders, nodes, edges and folders, the `fused` CLI, running UDFs, live clones and
-  reference copies. `"folder": "canvases"`: it gets the canvas copies folder (`canvases.canvases_base()`, the one
-  the shipped experts are granted, created if missing), so a task in a canvas copy is told to pull its guidance.
-  Skills from the expert `canvas-reference`.
-- `data` — "Data": the datasets the user's tasks can reach (today the `fused-asset` bucket). No folder. Skills from
-  the expert `data-expert`.
+  reference copies. `"folder": "canvases"`: it gets the canvas copies folder (`canvases.canvases_base()`, created if missing), so a task in a canvas copy is told to pull its guidance.
+- `data` — "Data": the datasets the user's tasks can reach (today the `fused-asset` bucket). No folder.
 
 **When they are created** (`seed.seed`): only while both Specialists and Canvases are on (their subjects need the
 S3 tools and canvas copies): at server startup, and when either switch is turned on. Each key is installed once;
 `.state/seeded.json` lists the keys done, so one the user deletes stays deleted and a key shipped later is still
 installed. A shipped specialist whose name the user has already given one of their own is marked done and not
-installed, so a taken name never stops the server starting. The skills are the expert's skill files turned into Claude Code skills (`seed._skill`): the `# Title`
-and `trigger:` line become the description "<title>. Use when the work involves: <trigger words>", and "this
-expert" becomes "this specialist". Later changes to the shipped files or the expert's skills do not reach an
+installed, so a taken name never stops the server starting. The skills are the files in `skills/` turned into Claude Code skills (`seed._skill`): the `# Title`
+and `trigger:` line become the description "<title>. Use when the work involves: <trigger words>". Later changes to the shipped files do not reach an
 installed specialist.
 
 ## 10. HTTP API
@@ -384,7 +377,7 @@ last reply, or after Clear the last folded chat's, so the row keeps its place; o
     POST   /api/specialists/tools/breakout {run_id, specialist, reason}  {"text"}
 
 A body key outside `name, about, folder, face` is a 400; so is a `{server}` other than `specialist_services` (§8)
-and `specialist_canvas` (§15).
+and `specialist_canvas` (§14).
 
 ## 11. UI
 
@@ -409,7 +402,7 @@ false`; a failed config read counts as bots being there) drive it:
   so Windows has no way into the page.
 
 - **+ New bot** (`PresetPicker.tsx`) shows a Specialist card while the flag is on; it opens `SpecialistDialog.tsx`:
-  face, Name, "What it is an expert on", "Folder (optional)" ("A task working in this folder gets its guidance by
+  face, Name, "What it knows", "Folder (optional)" ("A task working in this folder gets its guidance by
   itself"). The same form is Settings… for an existing one (PATCH). A refusal shows in the banner.
 - **Its colours** are the Bots thread's: `bots.css` maps the task chat's `--c-*` roles onto the page's tokens for
   `.chat-root` inside `.bots-page` only (user bubble, accent, surfaces, borders, links, code), so the task chat
@@ -427,7 +420,7 @@ false`; a failed config read counts as bots being there) drive it:
   the entries newest first as kind, title and age, a note opening to its text, a conversation to "It will read this
   conversation from where it last stopped.", each with Delete; then **Learned**: a run as "Learned from n entries"
   or "Read n entries, changed nothing", opening to what it read, its reply and its diff (or "It changed nothing."),
-  any other change to its diff (the Expert pane's `DiffView`). Opening the tab posts `seen`. Memory, skills and
+  any other change to its diff (`PaneParts.tsx` `DiffView`). Opening the tab posts `seen`. Memory, skills and
   entries reload on mount, when the row moves, and every 10 s; the Learned list only while the tab is open.
 - **The `≡` menu** (`menuIcons.tsx`, `BotMenu.tsx`): Settings…, Export transcript (`GET …/chat/export`, `{name,
   text}`: the current main chat through the task chat's own `routers/tasks._export_markdown`, titled with the
@@ -456,29 +449,10 @@ with the task's last exchange, the `reason` as its question.
 
 That is the only one; `FUSED_RENDER_SPECIALIST_ORIGIN` (§4) and `FUSED_SPECIALIST_UNATTENDED` (§3) are the app's.
 
-## 13. Specialist and Expert
-
-The two kinds solve nearly the same problem and are kept apart on purpose, to compare them (`docs/experts.md`).
-
-| | Expert | Specialist |
-|---|---|---|
-| On disk | Bot folder: `instructions.md`, `memory.md`, `skills/` | Claude Code project: `CLAUDE.md`, `memory.md`, `.claude/skills/`, `inbox/`, git |
-| Own chat | Bots agent engine, fixed write limits, auto mode | Task chat engine, the chat's permission modes |
-| Tasks that get the tools | Claude, Codex, Copilot | Claude only |
-| How a task uses it | Reads its memory, or asks one question | Pulls guidance (told to, first thing, in its folder), sends a note, offers a breakout |
-| User in the loop | No | Yes, in the breakout card |
-| Learning from tasks | Reads a task minutes after it consulted | A task that named it, each breakout and its own chat get an inbox pointer; a background learning run reads their transcripts |
-| Takes effect | Minutes later | Next learning run (daily when something waits, or Learn now); its own chat at once |
-| Task that never named it | Teaches nothing | Teaches nothing; any Claude task can send it a note |
-| Memory format | Fact per line with count and date | The same, kept by instruction only |
-| Trace | Changes: a row per session with diff | Learning tab: what waits, and per run what it read, said and changed |
-| Undo | Edit the memory file | Tell it in its chat, or edit `memory.md` |
-| Messaging people | No | Connected services, under the session's permission mode |
-
-## 14. Deliberately not there
+## 13. Deliberately not there
 
 - No undo link, no "Reverted" mark, no tracing a memory line to its note. The Learned list is the git log.
-- No limits on a specialist's sessions, by the owner's decision: no allow or deny rules, no ask rule for sends (the one ask rule is a new canvas, §15), no
+- No limits on a specialist's sessions, by the owner's decision: no allow or deny rules, no ask rule for sends (the one ask rule is a new canvas, §14), no
   read-only folders. The main chat and breakouts start in Auto; the learning run always runs in Auto, unattended.
   It acts on what it reads in transcripts, which is other programs' output, and it can use the connected services
   (send a message, create a page) without anyone approving; the only check is the CLI's own Auto classifier.
@@ -493,11 +467,11 @@ The two kinds solve nearly the same problem and are kept apart on purpose, to co
 - No export, clone or import of a specialist; no editing skills from the pane (ask the specialist).
 - Only Claude runs a specialist, and only Claude tasks get its tools; plain breakouts get none.
 
-## 15. Showing work in the chat
+## 14. Showing work in the chat
 
 A specialist can build something and hand it back: a UDF that pulls a dataset, a widget that charts it, shown in
 its main chat as a card the user opens live, and changed when the user says so. The chat renders none of it
-inline; the card opens an overlay. Built in `specialists/show.py`. Expert bots have nothing like it.
+inline; the card opens an overlay. Built in `specialists/show.py`.
 
 **When** (`show.on`, decided in `launch.spec`): the main chat only, while the Canvases preference is on and the
 `fused` CLI wrapper exists. A breakout and a learning run get neither the server nor the sentence about it.

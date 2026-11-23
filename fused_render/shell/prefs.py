@@ -547,6 +547,14 @@ def rail_mode_doors_enabled() -> bool:
     return read_prefs().get("rail_mode_doors_enabled") is True
 
 
+def rail_expand_enabled() -> bool:
+    """Whether the Claude rail can be widened (a button at its top) so each
+    item shows its icon and its title. Default off. Same idiom as
+    `rail_mode_doors_enabled`: only a stored `true` is on.
+    """
+    return read_prefs().get("rail_expand_enabled") is True
+
+
 def task_icons_enabled() -> bool:
     """Whether a task can wear a GLYPH in place of its status ring (owner,
     2026-11-10, experiment): one of 299 line drawings, chosen from the
@@ -557,17 +565,6 @@ def task_icons_enabled() -> bool:
     either way — the switch only changes what the shell draws.
     """
     return read_prefs().get("task_icons_enabled") is True
-
-
-def experts_enabled() -> bool:
-    """Whether EXPERTS are offered (docs/experts.md §17; experiment, owner
-    2026-11-19): expert bots in the Bots page and the sidebar, the expert
-    tools in task sessions, the task-learn timer, the shipped-expert seed and
-    expert package imports. Default off; only a stored `true` is on. Off
-    HIDES experts and never deletes one: their folders and memory stay on
-    disk, and turning this on again brings them back as they were.
-    """
-    return read_prefs().get("experts_enabled") is True
 
 
 def task_summary_titles_enabled() -> bool:
@@ -1292,10 +1289,10 @@ def _prefs_response() -> dict:
         # A file's other modes as doors on the rail (`rail_mode_doors_enabled`;
         # off by default).
         "rail_mode_doors": {"enabled": rail_mode_doors_enabled()},
+        # The expandable rail (`rail_expand_enabled`; off by default).
+        "rail_expand": {"enabled": rail_expand_enabled()},
         # Task icons in place of the status ring (`task_icons_enabled`; off).
         "task_icons": {"enabled": task_icons_enabled()},
-        # Expert bots (`experts_enabled`; off — hidden, never deleted).
-        "experts": {"enabled": experts_enabled()},
         # Stable AI Tasks titles (`task_summary_titles_enabled`).
         "task_summary_titles": {"enabled": task_summary_titles_enabled()},
         # Lean Claude sessions (`claude_strict_mcp_enabled`, default off).
@@ -1678,19 +1675,19 @@ def put_prefs(body: dict = Body(...), x_fused: str | None = Header(default=None)
                                     status_code=400)
             prefs["rail_mode_doors_enabled"] = value
             changed = True
+        if "rail_expand_enabled" in body:
+            value = body.get("rail_expand_enabled")
+            if not isinstance(value, bool):
+                return JSONResponse({"error": "'rail_expand_enabled' must be a boolean"},
+                                    status_code=400)
+            prefs["rail_expand_enabled"] = value
+            changed = True
         if "task_icons_enabled" in body:
             value = body.get("task_icons_enabled")
             if not isinstance(value, bool):
                 return JSONResponse({"error": "'task_icons_enabled' must be a boolean"},
                                     status_code=400)
             prefs["task_icons_enabled"] = value
-            changed = True
-        if "experts_enabled" in body:
-            value = body.get("experts_enabled")
-            if not isinstance(value, bool):
-                return JSONResponse({"error": "'experts_enabled' must be a boolean"},
-                                    status_code=400)
-            prefs["experts_enabled"] = value
             changed = True
         if "task_summary_titles_enabled" in body:
             value = body.get("task_summary_titles_enabled")
@@ -2010,7 +2007,8 @@ def put_prefs(body: dict = Body(...), x_fused: str | None = Header(default=None)
                           "'canvas_shot_slow_fallback_enabled', "
                           "'rail_free_pins_enabled', "
                           "'rail_mode_doors_enabled', "
-                          "'task_icons_enabled', 'experts_enabled', "
+                          "'rail_expand_enabled', "
+                          "'task_icons_enabled', "
                           "'task_summary_titles_enabled', "
                           "'claude_strict_mcp_enabled', 'claude_default_permission', "
                           "'bots_autostage', 'bots_sounds', 'bots_clear_enabled', "

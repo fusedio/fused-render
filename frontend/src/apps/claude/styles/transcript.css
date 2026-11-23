@@ -2194,6 +2194,26 @@
 .chat-root .runbtn {
   right: 60px;
 }
+/* A reply's code fence is `white-space: pre` and scrolls SIDEWAYS (the
+   `.assistant pre` rule below), and an absolute pill inside a scroller rides
+   along with its content: scrolled to a long command's end, "run" and "copy"
+   landed on top of the code mid-block. The anchor span sticks to the left of
+   the scrollport instead (Chrome keeps it inside the pre's padding), which also
+   makes it the pills' containing block — so the offsets are the usual 6px from
+   the pre's edge minus that padding (10px 12px). Chip and card `pre`s are
+   pre-wrap, never scroll sideways, and keep their own anchors above. */
+.chat-root .assistant pre:not(.toolchip pre, .perm pre) > .copywrap {
+  position: sticky;
+  left: 0;
+}
+.chat-root .assistant pre:not(.toolchip pre, .perm pre) > .copywrap > .copybtn {
+  top: -4px;
+  right: -6px;
+}
+.chat-root .assistant pre:not(.toolchip pre, .perm pre) > .copywrap > .runbtn {
+  top: -4px;
+  right: 48px;
+}
 .chat-root pre:hover .copybtn,
 .chat-root .copybtn:focus-visible,
 .chat-root pre:hover .runbtn,
@@ -3045,6 +3065,17 @@
   width: 16px;
   height: 16px;
 }
+/* ↑ (Akshil 2026-11-21): the same box before the log, sticky to the port's
+   top edge, so it sits just under the head. */
+.chat-root .chat-jump.is-top {
+  top: 0;
+  bottom: auto;
+}
+.chat-root .chat-jump.is-top .chat-jump-btn {
+  top: 12px;
+  bottom: auto;
+  animation-name: chat-jump-in-top;
+}
 .chat-root .chat-jump-btn:focus-visible {
   outline: 2px solid var(--c-accent);
   outline-offset: 2px;
@@ -3055,6 +3086,12 @@
     transform: translateY(6px);
   }
 }
+@keyframes chat-jump-in-top {
+  from {
+    opacity: 0;
+    transform: translateY(-6px);
+  }
+}
 @media (prefers-reduced-motion: reduce) {
   .chat-root .chat-jump-btn {
     animation: none;
@@ -3062,8 +3099,8 @@
 }
 
 /* ── the NEW rule (the bots thread's `.new`, in the chat's own accent) ──── */
-/* Above the first reply that landed since you last sat at the end of this
-   conversation; placed on open and kept until another conversation opens. */
+/* Above the message of yours that the first unseen reply answers (or the
+   reply, when it came on its own); placed on open, kept until you leave. */
 .chat-root .chat-newrule {
   display: flex;
   align-items: center;

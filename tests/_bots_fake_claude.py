@@ -172,9 +172,6 @@ def main():
         with lock:
             state["turn"], state["result_sent"] = True, False
         emit({"type": "system", "subtype": "init", "model": model, "session_id": session_id,
-              # the mode the CLI really started in: the one asked for, unless it is not available (BOTS_FAKE_MODE)
-              "permissionMode": os.environ.get("BOTS_FAKE_MODE") or (
-                  sys.argv[sys.argv.index("--permission-mode") + 1] if "--permission-mode" in sys.argv else "default"),
               "tools": ["mcp__bot__" + n for n in names], "mcp_servers": [{"name": "bot", "status": "connected"}]})
         # --replay-user-messages echo
         emit({"type": "user", "message": {"role": "user", "content": [{"type": "text", "text": text}]}})

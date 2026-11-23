@@ -89,6 +89,8 @@ import {
 } from "./rail-move-lib";
 import { commitWindowBox, magnetBox, usePusher, useWindowBox, windowPos } from "./rail-move-store";
 import { useRailFreePins } from "./rail-free-pins-flag";
+import { useRailExpand } from "./rail-expand-flag";
+import { watchRailWidth } from "./rail-width-watch";
 import { drawnBox, useCardMove, useRailResizing } from "./useCardMove";
 import {
   FAV_HEIGHT,
@@ -263,6 +265,9 @@ export const BotPeek = forwardRef<BotPeekHandle, BotPeekProps>(function BotPeek(
   const wish = () => favCardWish(FAV_SIZE, storedPeekSize(), pinCtl.pinned ? Infinity : window.innerHeight);
   const railLeft = useRef(0);
   const row = useMemo(() => rowOf(railEl), [railEl]);
+  // THE EXPANDABLE RAIL (rail-width-watch): its edge moves with no window
+  // resize and no row reshaping — the card follows it too.
+  const followRailWidth = useRailExpand();
   // WHERE IT STANDS (header): the rail is the anchor — with `align:
   // "bottom"` the card's bottom lands on the rail's, clamped inside the row
   // — bottom right, whichever ring opened it (FavouritePeek `anchorOf`).
@@ -507,13 +512,15 @@ export const BotPeek = forwardRef<BotPeekHandle, BotPeekProps>(function BotPeek(
     railEl.addEventListener("scroll", re, true);
     const ro = row && typeof ResizeObserver !== "undefined" ? new ResizeObserver(re) : null;
     if (row && ro) ro.observe(row);
+    const unwatch = followRailWidth ? watchRailWidth(railEl, re) : null;
     return () => {
       window.removeEventListener("resize", re);
       railEl.removeEventListener("scroll", re, true);
       ro?.disconnect();
+      unwatch?.();
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [shownKey, railEl]);
+  }, [shownKey, railEl, followRailWidth]);
   useEffect(() => {
     if (!shownKey || resizing) return;
     const next = place(shownKey);

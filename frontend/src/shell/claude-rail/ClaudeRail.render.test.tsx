@@ -28,6 +28,9 @@ const { resetRailGitCacheForTests } = await import("./rail-git");
 const { GitPeek, GIT_FOLLOW_MS } = await import("./GitPeek");
 const { modeCardStore, railModesOf, resetModeCardsForTests } = await import("./mode-peek-store");
 const { publishRailModeDoors, resetRailModeDoorsFlagForTests } = await import("./rail-mode-doors-flag");
+const { publishRailExpand, resetRailExpandFlagForTests } = await import("./rail-expand-flag");
+const { RAIL_DEFAULT_WIDTH, getRailState, setRailState } = await import("@platform/lib/railstate");
+const { _setUiLayoutForTest } = await import("@platform/lib/ui-layout");
 const { DoorCard } = await import("./DoorCard");
 const { PEEK_OPEN_MS } = await import("./rail-peek-lib");
 const { botsCardState, registerBotsCard, resetBotsCardForTests } = await import("./bots-peek-store");
@@ -158,6 +161,9 @@ afterEach(() => {
   // for every later suite in the process once a mounted flag has joined it.
   dropSharedPrefsRead();
   resetClaudeFlagsForTests();
+  // The expandable rail: its switch, and the rail collapsed again.
+  resetRailExpandFlagForTests();
+  setRailState({ width: RAIL_DEFAULT_WIDTH, expanded: false }, false);
   for (const [name, was] of saved) {
     if (was === MISSING) delete g[name];
     else g[name] = was;
@@ -178,6 +184,8 @@ async function mountRail(o: {
   fileModes?: { path: string; modes: string[]; onOpen?: (mode: string) => void };
   /** The mode doors' own switch (`rail_mode_doors_enabled`); on unless said. */
   modeDoors?: boolean;
+  /** The expandable rail's switch (`rail_expand_enabled`); OFF unless said. */
+  expand?: boolean;
   /** Mount the shell's bot card (BotCardHost) beside the rail, as App does. */
   botHost?: boolean;
   /** The rail's place; the demo folder unless said. */
@@ -185,6 +193,7 @@ async function mountRail(o: {
   onSelectNode?: (udfName: string | null) => void;
 }) {
   publishRailModeDoors({ enabled: o.modeDoors ?? true });
+  publishRailExpand({ enabled: o.expand ?? false });
   const rows = o.chats ?? [];
   rememberListing(rows);
   publishTasks(rows as unknown as TaskPulseTask[]);
@@ -1253,4 +1262,120 @@ describe("ClaudeRail's ring hover: the task's row, not a title tooltip (owner, 2
     expect(ring!.props["data-hint-count"]).toBe("");
   });
 
+});
+
+// THE EXPANDABLE RAIL (`rail_expand_enabled`; owner, 2026-11-21): off, the
+// rail of before — no button, no titles; on and collapsed, the button and
+// nothing more; expanded, every seat a row with its title, and the document
+// told the rail's width.
+describe("ClaudeRail: the expandable rail", () => {
+  const BOT = { id: "b1", status: "idle", seq: 1, pinned: true, name: "Helper" };
+  const titles = (r: ReactTestRenderer): string[] =>
+    r.root.findAll((n) => n.props?.className === "claude-rail-title").map((n) => n.children.join(""));
+  const titleIn = (n: ReactTestInstance): string | null => {
+    const t = n.findAll((c) => c.props?.className === "claude-rail-title");
+    return t.length === 1 ? t[0]!.children.join("") : null;
+  };
+  const expanded = (r: ReactTestRenderer) => String(aside(r).props.className).includes("is-expanded");
+  // The document's root, which the test renderer's document lacks: what the
+  // rail says to it (`railUp`).
+  const doc = (globalThis as unknown as { document: Record<string, unknown> }).document;
+  let said: Map<string, string>;
+  let hadRoot = false;
+  let wasRoot: unknown;
+  beforeEach(() => {
+    _setUiLayoutForTest({ v: 1 });
+    setRailState({ width: RAIL_DEFAULT_WIDTH, expanded: false }, false);
+    resetBotsPulseForTests();
+    said = new Map();
+    hadRoot = "documentElement" in doc;
+    wasRoot = doc.documentElement;
+    doc.documentElement = {
+      style: {
+        setProperty: (k: string, v: string) => said.set(k, v),
+        removeProperty: (k: string) => said.delete(k),
+      },
+      classList: { add() {}, remove() {}, toggle() {}, contains: () => false },
+    };
+  });
+  afterEach(() => {
+    resetBotsPulseForTests();
+    if (hadRoot) doc.documentElement = wasRoot;
+    else delete doc.documentElement;
+  });
+
+  test("flag off: no button, no titles, no rows — even with the layout saying expanded", async () => {
+    setRailState({ width: 260, expanded: true }, false);
+    const r = await mountRail({ paneOpen: false, chats: [chat("a")] });
+    expect(byLabel(r, "Expand rail").length + byLabel(r, "Collapse rail").length).toBe(0);
+    expect(titles(r)).toEqual([]);
+    expect(expanded(r)).toBe(false);
+    expect(aside(r).props.style).toBeUndefined();
+    expect(said.get("--claude-rail-w")).toBe("48px");
+  });
+
+  test("flag on, collapsed: the button says Expand rail, above the nav doors; no titles, no rows", async () => {
+    const r = await mountRail({ paneOpen: false, chats: [chat("a")], expand: true });
+    const [btn] = byLabel(r, "Expand rail");
+    expect(btn).toBeDefined();
+    expect(btn!.props["aria-expanded"]).toBe(false);
+    expect(btn!.props["data-hint"]).toBe("Expand rail");
+    expect(btn!.props["data-hint-side"]).toBe("left");
+    expect(btn!.props.title).toBeUndefined();
+    expect(navOrder(r)).toEqual(["Bots", "Tasks", "New task"]);
+    expect(titles(r)).toEqual([]);
+    expect(expanded(r)).toBe(false);
+    expect(said.get("--claude-rail-w")).toBe("48px");
+    // The seam is still the pull that opens the pane.
+    expect(seam(r)).toBe(1);
+  });
+
+  test("flag on, beside the open pane: the button stands there too", async () => {
+    const open = await mountRail({ paneOpen: true, chats: [chat("a")], expand: true });
+    expect(byLabel(open, "Expand rail").length).toBe(1);
+  });
+
+  test("flag on, expanded: rows with titles, the button says Collapse rail, the width said to the document", async () => {
+    setRailState({ width: 260, expanded: true }, false);
+    const r = await mountRail({ paneOpen: false, chats: [chat("a")], expand: true, botHost: false });
+    await act(async () => {
+      publishBots([BOT]);
+    });
+    expect(expanded(r)).toBe(true);
+    expect(aside(r).props.style).toEqual({ flexBasis: 260, width: 260 });
+    const [btn] = byLabel(r, "Collapse rail");
+    expect(btn!.props["aria-expanded"]).toBe(true);
+    expect(titleIn(byLabel(r, "Tasks")[0]!)).toBe("Tasks");
+    expect(titleIn(byLabel(r, "New task")[0]!)).toBe("New task");
+    const [ring] = r.root.findAll((n) => n.type === "a" && n.props["data-task-key"] === "a");
+    expect(titleIn(ring!)).toBe("a");
+    const bot = r.root.find((n) => n.type === "a" && n.props["data-bot-id"] === "b1");
+    expect(titleIn(bot)).toBe("Helper");
+    // The accessible names are untouched: the titles are for the eye.
+    for (const t of r.root.findAll((n) => n.props?.className === "claude-rail-title")) expect(t.props["aria-hidden"]).toBe("true");
+    expect(byLabel(r, "Tasks").length).toBe(1);
+    // The dots and the pin mark ride the icon's own box, not the row.
+    const icon = byLabel(r, "Tasks")[0]!.find((n) => n.props?.className === "claude-rail-icon");
+    expect(icon).toBeDefined();
+    expect(said.get("--claude-rail-w")).toBe("260px");
+    // Expanded, the seam is the rail's resize, not the pull.
+    expect(seam(r)).toBe(0);
+    expect(byLabel(r, "Drag to resize the rail").length).toBe(1);
+  });
+
+  test("a press on the button toggles the store, and the document follows", async () => {
+    const r = await mountRail({ paneOpen: false, chats: [chat("a")], expand: true });
+    await act(async () => {
+      byLabel(r, "Expand rail")[0]!.props.onClick();
+    });
+    expect(getRailState().expanded).toBe(true);
+    expect(expanded(r)).toBe(true);
+    expect(said.get("--claude-rail-w")).toBe(`${RAIL_DEFAULT_WIDTH}px`);
+    await act(async () => {
+      byLabel(r, "Collapse rail")[0]!.props.onClick();
+    });
+    expect(getRailState().expanded).toBe(false);
+    expect(said.get("--claude-rail-w")).toBe("48px");
+    expect(titles(r)).toEqual([]);
+  });
 });

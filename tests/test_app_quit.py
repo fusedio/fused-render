@@ -399,6 +399,9 @@ def test_children_rung_arms_the_spawn_latches_before_any_killer_runs(monkeypatch
                         lambda: order.append("latch-contrib-claude"))
     monkeypatch.setattr(contrib_ai, "stop_children",
                         lambda: order.append("contrib-claude"))
+    from fused_render.sql import runner as sql_runner
+    monkeypatch.setattr(sql_runner, "refuse_new", lambda: order.append("latch-sql"))
+    monkeypatch.setattr(sql_runner, "shutdown", lambda: order.append("sql-engine"))
     monkeypatch.setattr(engine_host, "stop_all", lambda: order.append("engines"))
     monkeypatch.setattr(supervisor, "unload_all", lambda: order.append("ai"))
     monkeypatch.setattr(pty_session.REGISTRY, "shutdown_all",
@@ -411,10 +414,11 @@ def test_children_rung_arms_the_spawn_latches_before_any_killer_runs(monkeypatch
 
     app_mod._stop_children(budget_s=2.0)
 
-    assert order[:6] == ["latch-engines", "latch-ai", "latch-bots", "latch-canvases",
-                         "latch-warm-run", "latch-contrib-claude"]
-    assert set(order[6:]) == {"engines", "warm-run", "ai", "terminals", "index", "bots",
-                              "canvas-sync", "canvas-mirror", "contrib-claude", "discovery"}
+    assert order[:7] == ["latch-engines", "latch-ai", "latch-bots", "latch-canvases",
+                         "latch-warm-run", "latch-contrib-claude", "latch-sql"]
+    assert set(order[7:]) == {"engines", "warm-run", "ai", "terminals", "index", "bots",
+                              "canvas-sync", "canvas-mirror", "contrib-claude",
+                              "sql-engine", "discovery"}
     assert len(mirror_budget) == 1 and 0 < mirror_budget[0] < 2.0
 
 
@@ -447,6 +451,9 @@ def test_children_rung_is_bounded_by_its_budget(monkeypatch):
     from fused_render.contrib import ai as contrib_ai
     monkeypatch.setattr(contrib_ai, "refuse_children", lambda: None)
     monkeypatch.setattr(contrib_ai, "stop_children", lambda: None)
+    from fused_render.sql import runner as sql_runner
+    monkeypatch.setattr(sql_runner, "refuse_new", lambda: None)
+    monkeypatch.setattr(sql_runner, "shutdown", lambda: None)
     monkeypatch.setattr(engine_host, "stop_all", lambda: never.wait(30))
     monkeypatch.setattr(supervisor, "unload_all", lambda: None)
     # Every other killer stubbed too: the real index path would cancel live runs

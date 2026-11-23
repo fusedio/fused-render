@@ -179,7 +179,7 @@ describe("visibility", () => {
     const on = ctx({}, { chromium_windows: { available: true, enabled: false } } as unknown as Partial<Prefs>);
     const secs = sectionsOf(visibleSettings(on), "features");
     expect(secs.map((s) => s.section)).toEqual(["Chats & rail", "Other"]);
-    expect(secs[1].entries.map((e) => e.id)).toEqual(["canvases", "experts", "specialists", "chromium-windows"]);
+    expect(secs[1].entries.map((e) => e.id)).toEqual(["canvases", "specialists", "chromium-windows"]);
     // Without the capability the Chromium row is simply missing.
     expect(sectionsOf(visibleSettings(ctx()), "features").map((s) => s.section)).toEqual(["Chats & rail", "Other"]);
   });

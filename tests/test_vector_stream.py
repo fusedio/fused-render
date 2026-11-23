@@ -24,17 +24,22 @@ pytestmark = pytest.mark.skipif(not _venv_ready(),
                                 reason="the vector template venv is not built here")
 
 _WRITE = r"""
-import sys, geopandas as gpd, pyogrio, shapely
+import sys, geopandas as gpd, pyarrow.parquet as pq, pyogrio, shapely
 d = sys.argv[1]
 geoms = [shapely.Point(10 + i % 60 * 0.01, 50 + i // 60 * 0.01).buffer(0.004) for i in range(3000)]
 gdf = gpd.GeoDataFrame({"id": range(3000), "name": [f"n{i % 13}" for i in range(3000)]},
                        geometry=geoms, crs=4326)
 gdf.to_crs(32632).to_file(f"{d}/t.shp")
 gdf.to_parquet(f"{d}/t.parquet", row_group_size=250)
+t = pq.read_table(f"{d}/t.parquet")
+with pq.ParquetWriter(f"{d}/footer.parquet", t.schema.remove_metadata()) as w:
+    w.write_table(t, row_group_size=250)
+    w.add_key_value_metadata({"geo": t.schema.metadata[b"geo"]})
 gdf.drop(columns="geometry").assign(h3_index=1).to_parquet(f"{d}/h3.parquet")
 pyogrio.write_dataframe(gdf.drop(columns="geometry").head(5), f"{d}/m.gpkg", layer="meta")
 gdf.head(1000).to_file(f"{d}/m.gpkg", layer="roads", mode="a")
 gdf.head(600).to_file(f"{d}/six.geojson")
+gdf.to_parquet(f"{d}/arrow.parquet", row_group_size=250, geometry_encoding="geoarrow")
 """
 
 _READ = r"""
@@ -87,6 +92,14 @@ def test_geoparquet_streams_only_the_row_groups_it_shows(files, bucket):  # noqa
     assert "H3 mode" in h3["error"]
 
 
+def test_geoparquet_with_geo_only_in_the_footer_streams_like_one_with_it_in_the_schema(files, bucket):  # noqa: F811
+    _serve(bucket, files, "footer.parquet")
+    local, remote = _read(files / "footer.parquet", bucket.url("v/footer.parquet"))
+    assert "error" not in local and remote == local
+    assert (local["count"], local["shown"], local["crs"]["epsg"]) == (3000, 600, 4326)
+    assert bucket.sent["/v/footer.parquet"] < len(bucket.objects["/v/footer.parquet"]) / 2
+
+
 def test_a_vrt_is_refused_and_odd_parquet_columns_still_render(tmp_path):
     import struct
 
@@ -121,3 +134,11 @@ def test_counts_skip_nonspatial_tables_and_an_exact_cap_is_not_truncated(files):
     assert gpkg["layers"] == ["roads"]
     assert (gpkg["count"], gpkg["shown"], gpkg["truncated"]) == (1000, 600, True) and "_layer" not in gpkg["table"][0]
     assert (six["count"], six["shown"], six["truncated"]) == (600, 600, False)
+
+
+def test_geoarrow_encoded_geoparquet_maps_like_wkb_and_still_streams(files, bucket):  # noqa: F811
+    _serve(bucket, files, "arrow.parquet")
+    wkb, local, remote = _read(files / "t.parquet", files / "arrow.parquet", bucket.url("v/arrow.parquet"))
+    assert "error" not in local and remote == local
+    assert {**local, "file_size": 0} == {**wkb, "file_size": 0}
+    assert bucket.sent["/v/arrow.parquet"] < len(bucket.objects["/v/arrow.parquet"]) / 2

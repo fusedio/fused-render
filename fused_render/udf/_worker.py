@@ -13,7 +13,8 @@ may reach stdout, so whatever the SDK prints is sent to stderr.
 
   {"op": "run", "id", "source", "collection", "params",
    "format": "auto" | "view" | "html" | "png" | "json" | "parquet",
-   "cache": bool, "confirmed": bool, "out": "<path>"}
+   "cache": bool, "confirmed": bool, "out": "<path>",
+   "tile": {"x", "y", "z"} (optional: a tile run)}
       -> {"id", "event": "started", "kind", "code_sha256"}
       -> {"id", "event": "done", "ok": true, "content_type", "size",
           "stdout", "stderr", "fused_cached", "seconds", "code_sha256"}
@@ -120,18 +121,21 @@ async def run(req: dict) -> None:
     send({"id": rid, "event": "started", "kind": kind, "code_sha256": code_sha})
     params = req.get("params") if isinstance(req.get("params"), dict) else {}
     cache = req.get("cache") is not False
+    tile = req.get("tile")
+    # A tile run: the SDK takes the coordinates as `x`, `y`, `z`.
+    tile_kw = {k: tile[k] for k in ("x", "y", "z")} if isinstance(tile, dict) else {}
     try:
         if kind == canvas_node_exec.NONE:
             result = await fused.run_async(
                 udf, engine="remote", _return_response=True,
                 cache=cache, parameters=params,
-                _cancel_callback=lambda: rid in _cancelled, **sdk_kw)
+                _cancel_callback=lambda: rid in _cancelled, **tile_kw, **sdk_kw)
         else:
             # A batch job is waited for by the sync call; on a thread, so the
             # worker's other runs go on.
             result = await asyncio.to_thread(
                 lambda: fused.run(udf, engine="remote", _return_response=True,
-                                  cache=cache, parameters=params, **sdk_kw))
+                                  cache=cache, parameters=params, **tile_kw, **sdk_kw))
     except Exception as exc:  # noqa: BLE001 — the SDK raises some run errors
         if rid in _cancelled:
             send({"id": rid, "event": "done", "ok": False, "error": "cancelled",
@@ -151,7 +155,8 @@ async def run(req: dict) -> None:
             # may answer it from its cache; under cache=False ("fresh") it
             # evaluates the UDF again.
             png = await fused.run_async(udf, engine="remote", _return_response=True,
-                                        cache=cache, parameters=params, _format="png")
+                                        cache=cache, parameters=params, _format="png",
+                                        **tile_kw)
             done = answer(rid, png, "png", req["out"], code_sha)
         send(done)
     except Exception as exc:  # noqa: BLE001 — writing the body failed

@@ -19,6 +19,7 @@ def _doc():
     return {
         "v": 1,
         "sidebar": {"width": 240, "collapsed": False},
+        "rail": {"width": 220, "expanded": True},
         "bookmarksCollapsed": True,
         "currentAppsCollapsed": False,
         "canvasesCollapsed": True,
@@ -58,6 +59,7 @@ def test_put_roundtrips_and_drops_unknown_keys(tmp_path, monkeypatch):
         "canvasRailFav": doc["canvasRailFav"],
         "chatTextScale": doc["chatTextScale"],
         "chatSeen": doc["chatSeen"],
+        "rail": doc["rail"],
     }
 
 
@@ -67,13 +69,15 @@ def test_put_without_canvas_rail_peek_keeps_the_stored_size(tmp_path, monkeypatc
     client = _client(tmp_path, monkeypatch)
     doc = _doc()
     assert client.put("/api/ui-layout", json=doc, headers=FUSED).status_code == 200
-    older = {k: v for k, v in doc.items() if k not in ("canvasRailPeek", "canvasRailFav")}
+    older = {k: v for k, v in doc.items() if k not in ("canvasRailPeek", "canvasRailFav", "rail")}
     older["sidebar"] = {"width": 300, "collapsed": True}
     assert client.put("/api/ui-layout", json=older, headers=FUSED).status_code == 200
     got = client.get("/api/ui-layout").json()["layout"]
     assert got["sidebar"] == {"width": 300, "collapsed": True}
     assert got["canvasRailPeek"] == {"width": 520, "height": 720}
     assert got["canvasRailFav"] == {"width": 400, "height": 480}
+    # …and the rail's expanded state and width, the same way.
+    assert got["rail"] == {"width": 220, "expanded": True}
     newer = {**older, "canvasRailPeek": {"width": 600, "height": 500}}
     assert client.put("/api/ui-layout", json=newer, headers=FUSED).status_code == 200
     assert client.get("/api/ui-layout").json()["layout"]["canvasRailPeek"] == {"width": 600, "height": 500}
@@ -95,6 +99,12 @@ def test_put_invalid_is_400(tmp_path, monkeypatch):
         {**base, "sidebar": {"width": 401, "collapsed": False}},
         {**base, "sidebar": {"width": 240.5, "collapsed": False}},
         {**base, "sidebar": {"width": 240, "collapsed": 0}},
+        {**base, "rail": {"width": 179, "expanded": True}},
+        {**base, "rail": {"width": 401, "expanded": True}},
+        {**base, "rail": {"width": 220.5, "expanded": True}},
+        {**base, "rail": {"width": 220, "expanded": 1}},
+        {**base, "rail": {"width": 220}},
+        {**base, "rail": "wide"},
         {**base, "bookmarksCollapsed": "yes"},
         {**base, "explorerSide": {"width": -1}},
         {**base, "explorerSide": {"hidden": 1}},

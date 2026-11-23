@@ -236,6 +236,19 @@ import {
   type ReactNode,
 } from "react";
 import { Plus, Search } from "lucide-react";
+import PanelIcon from "@platform/ui/PanelIcon";
+import { useRailState } from "@platform/lib/hooks";
+import { resizeWidth } from "@platform/lib/panel-drag";
+import {
+  RAIL_COLLAPSED_WIDTH,
+  RAIL_MAX_WIDTH,
+  RAIL_MIN_WIDTH,
+  getRailState,
+  saveRailState,
+  setRailState,
+  toggleRailExpanded,
+  type RailState,
+} from "@platform/lib/railstate";
 import { getSchedule, markWholeTaskRead, showLauncher, type Task, type TaskPulseTask } from "@platform/lib/api";
 import { useBotsAvailable, useLauncherAvailable } from "@platform/lib/bots-available";
 import { useSpecialistsEnabled } from "@platform/lib/specialists-flag";
@@ -351,6 +364,7 @@ import { railFreePinsNow, useRailFreePins } from "./rail-free-pins-flag";
 import { aPinTask, pinOf, placeColumn } from "./rail-slots-lib";
 import { SLOTS, focusPin, freeSlot, otherSlot, registerPinFocus, setFreeSlot, setPinTitle, useFreeSlot, type Slot } from "./rail-slots-store";
 import { PIN_A_ID, usePinHasBox } from "./use-pin-box";
+import { PANE_SLIDE_MS } from "@platform/lib/pane-presence";
 import { publishListCards, useListHosted, withdrawListCards } from "./rail-list-host-store";
 
 /** With free pins off the list's card has the one slot it always had. */
@@ -367,7 +381,7 @@ let pageRailPath = typeof location !== "undefined" ? location.pathname : "";
 const pinNoop = () => {};
 const pinNoRing = () => null;
 import { setRailResizing, useCardMove } from "./useCardMove";
-import { aPinWord, cardMode, doorSelector, inRailView, pinnedTaskLands, readAPin, ringClick, ringSelector, viewPress } from "./rail-pin-lib";
+import { aPinWord, cardMode, doorSelector, inFullModal, inRailView, pinnedTaskLands, readAPin, ringClick, ringSelector, viewPress } from "./rail-pin-lib";
 import { PinAngle, RailPinButton, useTempOutside, type PressFlag } from "./RailPin";
 import {
   dismissFavHover,
@@ -465,6 +479,8 @@ import {
   type RailModeDoor,
 } from "./mode-peek-store";
 import { useRailModeDoorsAnswer } from "./rail-mode-doors-flag";
+import { useRailExpand } from "./rail-expand-flag";
+import { watchRailWidth } from "./rail-width-watch";
 import type { DoorCardState } from "./door-card-store";
 
 /** No mode doors (a stable empty list). */
@@ -479,11 +495,14 @@ const NO_MODE_DOORS: RailModeDoor[] = [];
  *  off it. A hidden rail says nothing. Counted: a page's rail and the shell's
  *  fallback never stand together, but the count makes that a fact, not a hope. */
 let railsUp = 0;
-function railUp(): () => void {
+// THE EXPANDABLE RAIL (`rail_expand_enabled`; owner, 2026-11-21) says its
+// live width: 48 collapsed, its own width expanded — again on every toggle
+// and every move of its resize drag (the effect re-runs on `width`).
+function railUp(width: number = RAIL_COLLAPSED_WIDTH): () => void {
   // A test renderer's document has no root element: nothing to say it to.
   const root = typeof document !== "undefined" ? document.documentElement : null;
   railsUp += 1;
-  root?.style.setProperty("--claude-rail-w", "48px");
+  root?.style.setProperty("--claude-rail-w", `${width}px`);
   return () => {
     railsUp -= 1;
     if (railsUp <= 0) {
@@ -940,6 +959,36 @@ export function ClaudeRail({
   // rail stands whatever it holds and whatever the pane does (the shell's
   // fallback stands on every page without a page rail, claude-rail-lib
   // `fallbackRailUp`).
+  // THE EXPANDABLE RAIL (owner, 2026-11-21; `rail_expand_enabled`): an expand / collapse button at the rail's
+  // top, the left sidebar's own (SidebarFrame). Collapsed, the 48px rail of
+  // before plus the button. Expanded, the same rail, wider (its width
+  // dragged on its inner edge, platform/lib/railstate), each item drawn as
+  // its icon and its title (`seatBody`); every behaviour unchanged. Off,
+  // nothing of it is drawn, whatever the layout document says.
+  const expandFlag = useRailExpand();
+  const railState = useRailState();
+  const expandOn = expandFlag;
+  const expanded = expandOn && railState.expanded;
+  // THE TUCK (SidebarFrame `tucking`): a collapse keeps the expanded rows —
+  // icon left, no title — for the length of the width glide, so the icons
+  // glide back with the rail's edge instead of jumping to its middle first.
+  const [tucking, setTucking] = useState(false);
+  const wasExpanded = useRef(expanded);
+  useLayoutEffect(() => {
+    const collapsing = wasExpanded.current && !expanded;
+    wasExpanded.current = expanded;
+    if (!collapsing) {
+      setTucking(false);
+      return;
+    }
+    setTucking(true);
+    const t = window.setTimeout(() => setTucking(false), PANE_SLIDE_MS);
+    return () => window.clearTimeout(t);
+  }, [expanded]);
+  // Rows (icon + title) while expanded or tucking; titles only expanded.
+  const asRows = expanded || (tucking && expandOn);
+  // The width the rail stands at: its own expanded, 48 otherwise.
+  const railWidth = expanded ? railState.width : RAIL_COLLAPSED_WIDTH;
   // THE GIT SECTION BECOMES A DOOR with the nav doors (owner, 2026-11-10:
   // "move Git to a door on the rail, under the task rings"): the rail reads
   // the page's repository, draws the Git door (below the rings, past a
@@ -1326,7 +1375,7 @@ export function ClaudeRail({
         }
       : undefined;
   }, []);
-  useLayoutEffect(() => railUp(), []);
+  useLayoutEffect(() => railUp(railWidth), [railWidth]);
   // …and WHERE THE PAGE STANDS, for the favourite card's where-chip (fav-
   // peek-store `setRailPage`): said again on every hop this rail makes in
   // place and every node selected. After the register above, in the same
@@ -1799,6 +1848,72 @@ export function ClaudeRail({
   useEffect(() => {
     setBotNoRoom(false);
   }, [favBox]);
+
+  // THE RAIL CHANGED WIDTH (the expandable rail; rail-width-watch): every
+  // frame of the glide and every move of the drag. Its cards follow on their
+  // own; here the +'s popover re-places (`popPlaceKey`), and the two "no
+  // room" answers are asked again, as a window resize asks them — the room
+  // beside the rail is what changed.
+  const [railBoxW, setRailBoxW] = useState(0);
+  useLayoutEffect(() => (expandOn ? watchRailWidth(railRef.current, setRailBoxW) : undefined), [expandOn]);
+  useEffect(() => {
+    if (railBoxW === 0) return;
+    setNoRoom(false);
+    setBotNoRoom(false);
+  }, [railBoxW, setBotNoRoom]);
+  // THE RESIZE (expanded only; SidebarFrame's seam, mirrored for a right-
+  // hand panel): the rail's inner edge drags its width between the floor and
+  // the ceiling, live and unsaved per move, saved on release; past the floor
+  // by half of it the rail collapses (platform/lib/panel-drag `resizeWidth`),
+  // and a double press collapses it. Collapsed, the same seam is the pull
+  // that opens the pane (`onPullStart`), untouched.
+  const [edgeDrag, setEdgeDrag] = useState(false);
+  const edgeDragRef = useRef<{ pointerId: number; startX: number; startEdge: number; restoreWidth: number } | null>(null);
+  // Double press detected by hand (SidebarFrame `lastHandlePressRef`): the
+  // pointerdown's preventDefault swallows the engines' dblclick.
+  const lastEdgePress = useRef<{ time: number; x: number } | null>(null);
+  const onEdgeDown = (e: ReactPointerEvent<HTMLDivElement>) => {
+    if (e.button !== 0) return;
+    e.preventDefault();
+    const last = lastEdgePress.current;
+    if (last && e.timeStamp - last.time < 350 && Math.abs(e.clientX - last.x) < 5) {
+      lastEdgePress.current = null;
+      toggleRailExpanded();
+      return;
+    }
+    lastEdgePress.current = { time: e.timeStamp, x: e.clientX };
+    const width = getRailState().width;
+    edgeDragRef.current = { pointerId: e.pointerId, startX: e.clientX, startEdge: width, restoreWidth: width };
+    e.currentTarget.setPointerCapture(e.pointerId);
+    setEdgeDrag(true);
+  };
+  const onEdgeMove = (e: ReactPointerEvent<HTMLDivElement>) => {
+    const drag = edgeDragRef.current;
+    if (!drag || e.pointerId !== drag.pointerId) return;
+    if (Math.abs(e.clientX - drag.startX) >= 5) lastEdgePress.current = null;
+    // IMPLIED WIDTH (panel-drag): a RIGHT-hand panel grows as the pointer
+    // goes left, measured from where its edge stood at the press.
+    const next = resizeWidth(drag.startEdge - (e.clientX - drag.startX), RAIL_MIN_WIDTH, RAIL_MAX_WIDTH);
+    // Shut by the drag: it keeps the width it had at the press.
+    const value: RailState = next === null ? { width: drag.restoreWidth, expanded: false } : { width: next, expanded: true };
+    setRailState((s) => (s.width === value.width && s.expanded === value.expanded ? s : value), false);
+  };
+  const onEdgeUp = (e: ReactPointerEvent<HTMLDivElement>) => {
+    const drag = edgeDragRef.current;
+    if (!drag || e.pointerId !== drag.pointerId) return;
+    edgeDragRef.current = null;
+    setEdgeDrag(false);
+    saveRailState(getRailState());
+  };
+  // While the drag is held: the cursor, no selection, and the windows
+  // against the rail following its edge without their glide (claude-rail.css
+  // `html.claude-rail-resizing`). On <html>: never a `:has()` on the root.
+  useLayoutEffect(() => {
+    if (!edgeDrag) return;
+    const root = document.documentElement;
+    root.classList.add("claude-rail-resizing");
+    return () => root.classList.remove("claude-rail-resizing");
+  }, [edgeDrag]);
   const dismissBotToRing = useCallback(() => {
     const key = botIntent.current;
     botIntent.dismiss(true);
@@ -1978,6 +2093,11 @@ export function ClaudeRail({
       tick = window.setTimeout(() => {
         const a = document.activeElement;
         if (!(a instanceof HTMLIFrameElement)) return;
+        // A frame inside a full modal (a chat's file preview — a zip, a PDF —
+        // portals to the body over everything) is that modal's content, not
+        // the page's workbench frame: closing the card here unmounted the chat
+        // and the preview with it on the first click inside the preview.
+        if (inFullModal(a)) return;
         if (pinnedNow.current.task && !heldRef.current && !document.getElementById(PEEK_ID)?.contains(a)) intent.dismiss();
         if (pinnedNow.current.bot && !botHeldRef.current && !document.getElementById(BOT_PEEK_ID)?.contains(a)) botIntent.dismiss();
         // WITH THE PIN (rail-pin-lib `frameBlurCloses`): only a TEMP card
@@ -3478,6 +3598,24 @@ export function ClaudeRail({
     "data-hint": cardIsCaption ? "" : words,
     "data-hint-side": "left",
   });
+  // A SEAT'S INSIDE (the expandable rail, `asRows`): collapsed, what it always
+  // held — the glyph, its dots, its pin mark. Expanded, the same in a 28px
+  // box of its own at the row's left (the dots and the pin mark are placed
+  // against that box, as against the 28px seat before), then the title. The
+  // title is for the eye: every seat's name already says it (aria-hidden).
+  const seatBody = (icon: ReactNode, title: string): ReactNode =>
+    asRows ? (
+      <>
+        <span className="claude-rail-icon">{icon}</span>
+        {expanded && (
+          <span className="claude-rail-title" aria-hidden="true">
+            {title}
+          </span>
+        )}
+      </>
+    ) : (
+      icon
+    );
 
   // ONE RING, as the list draws it (and as the favourites' section does).
   const ringOf = ({ pulse: t, row, off }: RailRow, foot = false) => {
@@ -3765,6 +3903,8 @@ export function ClaudeRail({
                     pressRing(t, href, e.detail);
                   }}
                 >
+                  {seatBody(
+                  <>
                   <StatusIcon
                     // The full row's column where it is held: a draft row is
                     // `draft` only once `kind` is known (the pulse has no kind).
@@ -3801,6 +3941,9 @@ export function ClaudeRail({
                           ? popHeld && card?.door === t.key
                           : peeked && held,
                   )}
+                  </>,
+                  label,
+                  )}
                 </a>
                 </div>
               );
@@ -3811,7 +3954,9 @@ export function ClaudeRail({
   // render, and draws it itself only with no host (a rail rendered alone).
   const hosted = usePlusHosted();
   // …and where window A floats: a drag or a dock re-places the card.
-  const popPlaceKey = useMemo(() => ({ favBox, at: popMove.pos }), [favBox, popMove.pos]);
+  // …and the rail changing width (`railBoxW`; the expandable rail): the card
+  // stands against its new edge.
+  const popPlaceKey = useMemo(() => ({ favBox, at: popMove.pos, railBoxW }), [favBox, popMove.pos, railBoxW]);
   const renderCard = (card: Card) => (
         <NewJobModal
         // Keyed on the press: the card reads its props in `useState`
@@ -4203,8 +4348,12 @@ export function ClaudeRail({
         "claude-rail" +
         (favs.length + bots.length > 0 ? " has-favs" : "") +
         " is-scroll has-nav" +
-        (favouritesOnly ? " is-fallback" : "")
+        (favouritesOnly ? " is-fallback" : "") +
+        // THE EXPANDABLE RAIL: its rows, and its own drag (no glide under it).
+        (asRows ? " is-expanded" : "") +
+        (edgeDrag ? " is-resizing" : "")
       }
+      {...(asRows ? { style: { flexBasis: railWidth, width: railWidth } } : {})}
       aria-label="Claude"
       onPointerMove={(e) => {
         lastPointer.current = { x: e.clientX, y: e.clientY };
@@ -4218,14 +4367,42 @@ export function ClaudeRail({
           width the pointer takes it to — the explorer sidebar's reopen edge
           (SideReopenEdge) and the global sidebar's rail, the same gesture on
           the same kind of edge. The Show button stays the click. */}
-      {chrome && (
+      {/* EXPANDED (the expandable rail) the seam is the rail's own resize,
+          wherever the rail stands — and it stays mounted for the whole of a
+          drag that collapses the rail, which would otherwise lose its
+          pointer capture with the element (SidebarFrame's one handle). */}
+      {(chrome || expanded || edgeDrag) && (
         <div
           className="claude-rail-seam"
           role="separator"
           aria-orientation="vertical"
-          aria-label="Drag to show the Claude panel"
-          onPointerDown={onPullStart}
+          aria-label={expanded || edgeDrag ? "Drag to resize the rail" : "Drag to show the Claude panel"}
+          onPointerDown={expanded ? onEdgeDown : onPullStart}
+          {...(expandOn ? { onPointerMove: onEdgeMove, onPointerUp: onEdgeUp, onPointerCancel: onEdgeUp } : {})}
         />
+      )}
+      {/* THE EXPAND / COLLAPSE BUTTON (the expandable rail): the left
+          sidebar's own (SidebarFrame), mirrored — first on the rail, then the
+          hairline the left sidebar draws under its button, then the nav
+          doors. Expanded it moves to the rail's top-left, into the rows' icon
+          column above Search (claude-rail.css; owner, 2026-11-21). */}
+      {expandOn && (
+        <>
+          <button
+            type="button"
+            className="sidebar-rail-btn claude-rail-expand"
+            {...doorHint(expanded ? "Collapse rail" : "Expand rail", false)}
+            aria-label={expanded ? "Collapse rail" : "Expand rail"}
+            aria-expanded={expanded}
+            onClick={() => {
+              hideHint();
+              toggleRailExpanded();
+            }}
+          >
+            <PanelIcon side="right" />
+          </button>
+          <span className="sidebar-rail-sep is-tight claude-rail-expand-sep" aria-hidden="true" />
+        </>
       )}
       {/* THE NAV DOORS' TOP: Search, Bots, Tasks and the +, in
           that order, where the panel glyph stood — on every rail, always; no
@@ -4252,7 +4429,7 @@ export function ClaudeRail({
               showLauncher().catch(() => launcher.failed());
             }}
           >
-            <Search size={16} aria-hidden="true" />
+            {seatBody(<Search size={16} aria-hidden="true" />, "Search")}
           </button>
         )}
         {/* THE BOTS DOOR (owner, 2026-11-08: "search, bots, tasks, +"): the
@@ -4284,9 +4461,14 @@ export function ClaudeRail({
               }
             }}
           >
-            {BOTS_ICON}
-            {botsDot && <span className={`sidebar-rail-dot ${botsDot}`} aria-hidden="true" />}
-            {pinMark(botsUp && botsCard.held)}
+            {seatBody(
+              <>
+                {BOTS_ICON}
+                {botsDot && <span className={`sidebar-rail-dot ${botsDot}`} aria-hidden="true" />}
+                {pinMark(botsUp && botsCard.held)}
+              </>,
+              "Bots",
+            )}
           </a>
         )}
         <a
@@ -4314,9 +4496,14 @@ export function ClaudeRail({
             }
           }}
         >
-          {TASKS_ICON}
-          {tasksDot && <span className={`sidebar-rail-dot ${tasksDot}`} aria-hidden="true" />}
-          {pinMark(tasksUp && tasksCard.held)}
+          {seatBody(
+            <>
+              {TASKS_ICON}
+              {tasksDot && <span className={`sidebar-rail-dot ${tasksDot}`} aria-hidden="true" />}
+              {pinMark(tasksUp && tasksCard.held)}
+            </>,
+            "Tasks",
+          )}
         </a>
         <button
           ref={plusRef}
@@ -4340,8 +4527,13 @@ export function ClaudeRail({
           }}
           onPointerLeave={() => plusIntent.leavePlus()}
         >
-          <Plus size={16} aria-hidden="true" />
-          {pinMark(popHeld && card?.door === PLUS_DOOR)}
+          {seatBody(
+            <>
+              <Plus size={16} aria-hidden="true" />
+              {pinMark(popHeld && card?.door === PLUS_DOOR)}
+            </>,
+            plusLabel,
+          )}
         </button>
       </div>
       <div className="sidebar-rail-items">
@@ -4417,10 +4609,15 @@ export function ClaudeRail({
                       }
                     }}
                   >
-                    <span className="claude-rail-mode-glyph" aria-hidden="true">
-                      {d.icon}
-                    </span>
-                    {pinMark(up && c.held)}
+                    {seatBody(
+                      <>
+                        <span className="claude-rail-mode-glyph" aria-hidden="true">
+                          {d.icon}
+                        </span>
+                        {pinMark(up && c.held)}
+                      </>,
+                      d.title,
+                    )}
                   </button>
                 );
               })}
@@ -4464,10 +4661,15 @@ export function ClaudeRail({
                   }
                 }}
               >
-                {GIT_ICON}
-                {gitDots?.top && <span className={`sidebar-rail-dot is-${gitDots.top}`} aria-hidden="true" />}
-                {gitDots?.second && <span className={`sidebar-rail-dot is-${gitDots.second} is-second`} aria-hidden="true" />}
-                {pinMark(gitUp && gitCard.held)}
+                {seatBody(
+                  <>
+                    {GIT_ICON}
+                    {gitDots?.top && <span className={`sidebar-rail-dot is-${gitDots.top}`} aria-hidden="true" />}
+                    {gitDots?.second && <span className={`sidebar-rail-dot is-${gitDots.second} is-second`} aria-hidden="true" />}
+                    {pinMark(gitUp && gitCard.held)}
+                  </>,
+                  `Git · ${gitBranch(gitRepo)}`,
+                )}
               </button>
             </div>
           </>
@@ -4609,15 +4811,20 @@ export function ClaudeRail({
                         pressBotRing(b.id, href);
                       }}
                     >
-                      <span className="claude-rail-bot-face" aria-hidden="true">
-                        <Face b={subject} />
-                      </span>
-                      {waiting ? (
-                        <span className="sidebar-rail-dot is-attention" aria-hidden="true" />
-                      ) : unread ? (
-                        <span className="sidebar-rail-dot is-unread" aria-hidden="true" />
-                      ) : null}
-                      {pinMark(freePins ? pinnedBotId === b.id : peeked && botHeld)}
+                      {seatBody(
+                        <>
+                          <span className="claude-rail-bot-face" aria-hidden="true">
+                            <Face b={subject} />
+                          </span>
+                          {waiting ? (
+                            <span className="sidebar-rail-dot is-attention" aria-hidden="true" />
+                          ) : unread ? (
+                            <span className="sidebar-rail-dot is-unread" aria-hidden="true" />
+                          ) : null}
+                          {pinMark(freePins ? pinnedBotId === b.id : peeked && botHeld)}
+                        </>,
+                        name,
+                      )}
                     </a>
                   </div>
                 );

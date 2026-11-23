@@ -198,12 +198,9 @@ export interface Bot {
   /** Folders on this Mac the bot may READ (`ls` / `find` / `readfile`; Settings › Permissions › Folders it may read).
    *  Plain absolute paths, the user's own: the bot never writes there and only the dialog edits the list. */
   folders?: string[];
-  /** "super": the one bot per Mac with Claude Code's own tools (docs §5 "Super Bot"); "expert": no browser, one
-   *  memory file it keeps itself, tapped by task sessions (docs/experts.md); "specialist": a row the page makes from
-   *  /api/specialists (docs/specialists.md), not a bot the bots backend knows; absent for an ordinary bot. */
-  kind?: "bot" | "super" | "expert" | "specialist";
-  /** Expert only: its settings (experts.store.manifest). */
-  expert?: ExpertManifest | null;
+  /** "super": the one bot per Mac with Claude Code's own tools (docs §5 "Super Bot"); "specialist": a row the page
+   *  makes from /api/specialists (docs/specialists.md), not a bot the bots backend knows; absent for an ordinary bot. */
+  kind?: "bot" | "super" | "specialist";
   /** Specialist only: its row (state/store.ts specialistBots). */
   specialist?: Specialist;
   /** Super Bot's permission posture: ask before writes / edits / shell, or unattended (Claude's own judgement). */
@@ -266,41 +263,6 @@ export interface Bot {
   viewport?: [number, number];
   /** Events past the page's cursor for this bot (merged into the store, then dropped). */
   events: BotEvent[];
-}
-
-// ------------------------------------------------------------------ experts (docs/experts.md) ----
-/** bot.meta["expert"] (experts.store.manifest): the one-line description expert_list shows, and the shipped key ("" if none). */
-export interface ExpertManifest { ask_me_about?: string; shipped?: string }
-/** A session that changed memory.md (the change log), as GET …/memory lists it: newest first, at most 20. */
-export interface ExpertChange { id: string; kind: ExpertSessionKind | (string & {}); started: number; trigger?: ExpertTrigger | null }
-/** GET /api/experts/<id>/memory: memory.md as it stands, where it is, its size against the compaction limit, whether
- *  it was edited by hand since the last session wrote it, and the sessions that changed it. */
-export interface ExpertMemory {
-  text: string; path: string; lines: number; bytes: number; limit_lines: number; limit_bytes: number;
-  edited_by_hand?: boolean; writing?: boolean; changes?: ExpertChange[];
-}
-/** GET / POST /api/experts/<id>/instructions: what the expert is told (instructions.md, the default text when there
- *  is none, then a legacy Settings extra), where the file is, the most characters a save takes, whether the text
- *  ends with that legacy extra, the shipped key ("" if none) and whether the file is still a shipped version (the
- *  app replaces it when the shipped one changes; false once it was edited). */
-export interface ExpertInstructions { text: string; path: string; limit: number; legacy?: boolean; shipped?: string; follows_shipped?: boolean }
-/** "chat": a row only for a main-thread chat turn that changed memory (no transcript). */
-export type ExpertSessionKind = "chat" | "ask" | "task-learn" | "dream";
-/** What started a session, by kind: chat {message}; ask {asker, question, session_id?}; task-learn {session_id,
- *  run_id?, target, backend, from_size, to_size}; dream (memory compaction) {lines, bytes}. Every key optional here. */
-export interface ExpertTrigger {
-  message?: string; asker?: string; question?: string; session_id?: string; run_id?: string; target?: string; backend?: string;
-  from_size?: number; to_size?: number; lines?: number; bytes?: number; [k: string]: unknown;
-}
-export type ExpertSessionStatus = "running" | "done" | "error" | "interrupted";
-/** One line of a side session's transcript. */
-export interface ExpertTurn { role: "prompt" | "expert" | "tool" | "refused" | (string & {}); text: string }
-/** One side session (`.fused/expert/sessions/<id>.json`). The list leaves `transcript` out; `memory_diff` is the
- *  unified diff of memory.md before / after ("" when it changed nothing). Times are unix seconds. */
-export interface ExpertSession {
-  id: string; kind: ExpertSessionKind | (string & {}); started: number; ended: number | null;
-  status: ExpertSessionStatus | (string & {}); trigger?: ExpertTrigger | null;
-  transcript?: ExpertTurn[]; memory_diff?: string; answer?: string; error?: string; cost_usd?: number;
 }
 
 export interface UsageBotRow { id: string; name: string; today: number; week: number; models: Record<string, number>; errors: number; last: number; live: boolean }
@@ -494,8 +456,6 @@ export interface SettingsBody {
   allow_rules_remove?: AllowRule[];
   /** The whole list of folders the bot may read (the dialog is its only writer). */
   folders?: string[];
-  /** Expert only: the one-line description task sessions see in expert_list. */
-  ask_me_about?: string;
   /** "" or the bot's own id = a browser of its own; another bot's `browser_id` = share its logins. Refused while a task runs. */
   browser_id?: string;
 }
@@ -585,17 +545,6 @@ export const api = {
   workspaceTake: () => post<{ taken: boolean; error: string }>(`${B}/workspace/take`, {}, "workspace/take"),
   /** Slow (runs each installed starter's setup tool): call after the strip is drawn. null = could not tell. */
   starterStatus: () => get<{ ok: true; ready: Record<string, boolean | null>; why: Record<string, string> }>("/api/bot-apps/starters/status", "starter_status"),
-};
-
-const xid = (id: string) => `/api/experts/${encodeURIComponent(id)}`;
-/** /api/experts/<id>/… (experts/routes.py). An expert's id is its bot id. */
-export const expertApi = {
-  memory: (id: string) => get<ExpertMemory>(`${xid(id)}/memory`, "expert memory"),
-  sessions: (id: string) => get<{ sessions: ExpertSession[] }>(`${xid(id)}/sessions`, "expert sessions"),
-  session: (id: string, sid: string) => get<ExpertSession>(`${xid(id)}/sessions/${encodeURIComponent(sid)}`, "expert session"),
-  instructions: (id: string) => get<ExpertInstructions>(`${xid(id)}/instructions`, "expert instructions"),
-  /** Writes instructions.md whole. Refused (400, a sentence) when empty or over the limit: nothing is cut. */
-  saveInstructions: (id: string, text: string) => post<ExpertInstructions>(`${xid(id)}/instructions`, { text }, "expert instructions"),
 };
 
 const sid = (id: string) => `/api/specialists/${encodeURIComponent(id)}`;

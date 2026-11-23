@@ -69,6 +69,8 @@ import { commitWindowBox, freezeFromDock, magnetBox, usePusher, useWindowBox } f
 import { drawnBox, useCardMove, useRailResizing } from "./useCardMove";
 import { railFreePinsNow, useRailFreePins } from "./rail-free-pins-flag";
 import { placeColumn } from "./rail-slots-lib";
+import { useRailExpand } from "./rail-expand-flag";
+import { watchRailWidth } from "./rail-width-watch";
 import {
   PEEK_MAX_WIDTH,
   PEEK_MIN_HEIGHT,
@@ -224,6 +226,9 @@ export function DoorCard({ store, href, onNoRoomPress, rail: railProp, className
   const [box, setBox] = useState<Box | null>(null);
   const [shownOn, setShownOn] = useState(false);
   const row = useMemo(() => rowOf(rail), [rail]);
+  // THE EXPANDABLE RAIL (rail-width-watch): its edge moves with no window
+  // resize and no row reshaping — the card follows it too.
+  const followRailWidth = useRailExpand();
   const railLeft = useRef(0);
   const door = store.doorOf(rail);
   const want = up && !!rail && !!door && !noRoom;
@@ -418,11 +423,13 @@ export function DoorCard({ store, href, onNoRoomPress, rail: railProp, className
     window.addEventListener("resize", re);
     const ro = row && typeof ResizeObserver !== "undefined" ? new ResizeObserver(re) : null;
     if (row && ro) ro.observe(row);
+    const unwatch = followRailWidth ? watchRailWidth(rail, re) : null;
     return () => {
       window.removeEventListener("resize", re);
       ro?.disconnect();
+      unwatch?.();
     };
-  }, [want, rail, row, favBox]);
+  }, [want, rail, row, favBox, followRailWidth]);
   useEffect(() => {
     if (!want || resizing || !box) return;
     const next = place();

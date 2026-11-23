@@ -7916,6 +7916,7 @@
               format: opts.format || "auto",
               cache: opts.cache || "auto",
               confirmed: confirmed === true,
+              ...(opts.tile ? { tile: opts.tile } : {}),
             },
             (frame) => {
               // A cancelled run has already rejected: nothing after it is

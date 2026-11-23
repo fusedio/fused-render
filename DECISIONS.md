@@ -8145,3 +8145,108 @@ A user redid a canvas's folders through Claude; the five old folders stayed on s
 - **Never `allow-always`.** Cursor persists that answer into the user's GLOBAL allowlist (`~/.cursor/cli-config.json`). "Always approve" is the card's `allow-once` plus a host-side allow for the same call for the rest of the host process.
 - **The appended prompt rides the first prompt.** ACP's `session/new` takes no instructions and the only prompt files Cursor reads live in the user's folder, which fused never writes; the prompt goes ahead of the user's words on each host process's first `session/prompt`, wrapped in `<fused_render_context>`, and is stripped off a replayed prompt before the backfill compares texts.
 - **Rejected.** `cursor-agent -p --output-format stream-json` per turn for sessions (no permission round trip, a respawn per message). Writing `AGENTS.md`/`.cursor/rules` into the user's project. Spawning with `--force` for `auto` (team admins can restrict it, and it cannot be switched live). Offering Cursor on `/api/ai` (no flag limits a one-shot's MCP roster).
+
+## D1499: A node's framed page is offered the local SQL engine, relayed by the template (2026-11-22, node-sql-engine)
+
+- **What.** SPEC §53.3 NW-7. With the SQL engine installed and the frame not behind the embed proxy, `canvas_widget`'s token message adds `caps: ["sql"]` and `sqlEngine: {name, version}` (also `sql_engine` in `GET /api/canvases/status`), and the template relays the frame's `fused-embed-sql` messages to the `/api/sql/*` routes and answers with `fused-embed-sql-result`. Session scope is the node's environment; the session is created lazily, kept alive, and deleted on `pagehide`.
+- **Why a relay, not CORS.** The template is the only path, as for the AI gateway (D1433, which rejected a CORS-open route): the routes are `X-Fused`-guarded because a custom header forces a preflight, and opening them to the workbench's origin would let any site framed there, or any page that guesses the port, call them directly. The relay accepts messages only from the frame's own window and origin, validates every field, and fixes the scope itself.
+- **What the frame gains.** SQL on the local engine, confined to the engine's `files/` directory (§55.4) and `https://` reads; it spends CPU, memory and disk on this machine, and files it registers stay for the engine's life.
+- **What it does not gain.** No local file path (a file reaches SQL only as bytes, text, or a `udf:` handle the page names), and no direct route access, session ids, or other sessions' temporary tables. Registered files and permanent tables are the engine's, so every session of that environment's engine can read them.
+- **Off through the embed proxy.** That frame's origin is a loopback listener, so there is no distinct framed origin to trust; the offer is made only when the frame loads from the workbench's own origin.
+- **Rejected.** CORS-open `/api/sql/*` for the workbench origin (above). A preference switch (the frame already holds the user's token and the host already relays AI calls to it without one, D1433; the engine's confinement, §55.4, is the boundary, not a switch). One engine session per message, or per frame load (temp tables would not outlive a call). A session id handed to the frame (it would then address the routes itself).
+
+## D1500: A node's framed page is handed the canvas as the sync last read it (2026-11-22, node-canvas-seed)
+
+- **What.** SPEC §53.3 NW-8. The sync's remote probe also stores the service's whole answer for the canvas at `<canvas root>/.sync/<canvas>.canvas.json` (atomic, 0600, outside the clone); `GET /api/canvases/saved` serves it; `canvas_widget`'s token message adds `"canvas"` to `caps` and the template posts `fused-embed-canvas {canvas, json}` once per frame document, and again when the sync sees the saved canvas change (a push this host made, or `saved_seq` of the sync state moving), only when the text differs from what that document was last sent.
+- **Why.** The host already asks the service for this canvas on every sync poll, so the page can start from that answer and draw at once instead of waiting on its own request, then refresh itself.
+- **What the page gains.** Nothing it could not fetch with the token it already holds, so the capability is offered through the embed proxy too.
+- **Staleness.** Bounded by the poll (at most one `PULL_POLL_S` behind the service while the canvas's sync runs); the page is re-handed the document when the sync stores a different one, so the existing sync drives the updates and the template adds no polling of its own. A canvas no sync probes (a reference copy) gets its document from the route itself: with none stored it runs the same probe once (15 s bound, one probe shared by concurrent requests), and a document older than 30 s is refreshed in the background after it is served. With no document and no probe possible (signed out, no CLI), the message carries `null`.
+- **No switch.** The page already holds the token the host hands it, and the host already relays AI calls to it without a preference (D1433).
+- **Rejected.** Sending the local files instead: the local copy can be ahead of or behind the saved canvas. Parsing the document in the host: it is opaque here, stored and relayed as text.
+
+## D1501: A node's framed page can ask the host to run UDFs of its own canvas (2026-11-22, node-udf-relay)
+
+- **What.** SPEC §53.3 NW-9. With the SQL engine offered, `caps` also holds `"udf"`; the frame sends `fused-embed-udf {req, name, params, fresh}` and the template runs that UDF of this node's own canvas with `fused.workbench.udf(...)` and answers `fused-embed-udf-result` with a `udf:<token>` handle, its size, content type, version, whether it was cached and whether it is final.
+- **Why.** The host already runs UDFs for local pages and keeps their results, so the framed page can register a result with the SQL engine by handle instead of carrying the bytes through the message channel.
+- **What the frame gains.** A run of a UDF of its own canvas, which it could already do with the token it holds. Canvas and environment are this node's own; the frame supplies only the UDF's name, its params and whether to skip the saved answer.
+- **Dialogs.** The runtime's own dialogs (batch runs, large results) are shown as for any page; the frame cannot answer them.
+- **Rejected.** A route the frame calls itself: the frame has no route access, and every call goes through the template's checks. Forwarding a confirmation flag from the frame: that would let the frame skip the dialogs.
+
+## D1502: The framed page can run every kind of UDF through the host and read the bytes it was issued (2026-11-23, node-udf-formats)
+
+- **What.** SPEC §53.3 NW-9. `caps` also holds `"udf-read"` with `"udf"`. `fused-embed-udf` gains `format` (`parquet` default, `png`, `json`, `html`) and `tile {x, y, z}`; a tile run carries the tile through the runtime options, the socket message, the run key and the worker to the SDK's `x`, `y`, `z`. New `fused-embed-udf-read {req, handle}` is answered `fused-embed-udf-read-result` with the result's bytes (transferred) and content type, or an error.
+- **Why.** A page that draws rasters, tiles or text results needs the bytes, not only a handle the SQL engine can use. Routing every run through the host keeps one login, one place for the runtime's dialogs and one saved-results store.
+- **What the frame gains.** The bytes of results it was itself issued a handle for in its current document, and tile and format choices for its own UDF runs. Nothing about canvas, environment or confirmation changes.
+- **Rejected.** CORS on the results route: it would open every result to any origin, not only those the frame was issued. Reading by an arbitrary token: a frame could then ask for results of other runs it never started.
+
+## Context meter honours the user's auto-compact window
+
+The meter used to compact at `model window - 3k` whatever the user had
+configured. Claude Code 2.1.328 resolves the window as `min(model window,
+configured)` (`vy`), where `configured` is, in order:
+
+1. the `CLAUDE_CODE_AUTO_COMPACT_WINDOW` env var (also honoured when set in a
+   settings layer's `env` block): `200k` / `1m` shorthand or a plain count;
+   under the 100k minimum (`nH`) it counts as 100k; unusable values are ignored;
+2. the `autoCompactWindow` setting, `"auto"` meaning "no setting". Layers apply
+   user < project < local < flag < managed (`Pdr`/`Hyn`); a layer that sets the
+   top-level value replaces everything below it, including their
+   `modelSettings.<model>.autoCompactWindow` entries; otherwise per-model entries
+   merge, and a model's own entry beats the default;
+3. otherwise the model default (`h4s`, server-side tables; not readable here).
+
+`fused_render/claude_agent/agent.py` `_compact_window(model, cwd)` mirrors 1 and
+2 (cwd = the run's folder, for the project and local layers; env from the
+server process, which is what the CLI is launched with) and
+`_stamp_compact_window` adds it as `compact_window` beside `window` on every
+Claude reading in `_poll` and `_history`; absent when unset or invalid. The page
+takes the `min` with the model window and marks the window `source: "user"`,
+enforced.
+
+Compaction point: `/context` on a 1M model with `autoCompactWindow: 200000`
+reports `maxTokens 200000` and a 33,000 buffer (13k margin + 20k reserve), against
+3k when nobody set a window, so a user window uses a 33k head-room
+(`USER_WINDOW_HEADROOM`) and the ring, warning and popover agree. With a live,
+non-stale breakdown the popover header takes `max_tokens - buffer rows` outright,
+the CLI's own answer, so header and grid cannot disagree whatever the setting.
+
+Auto-compact off (CLI 2.1.328, `dm()`): `DISABLE_COMPACT` or `DISABLE_AUTO_COMPACT`
+(truthy: `1`/`true`/`yes`/`on`, also from a settings `env` block) turns it off;
+otherwise the highest settings layer that sets `autoCompactEnabled` decides
+(default on). The CLI never compacts then, so `_compact_window` returns nothing
+and the meter keeps the non-enforced "x% context used" reading.
+
+Per-model entries (`Hyn` / `vy`): a model's own entry, if present, wins over the
+top-level value; `"auto"` there means the model default (not the top-level
+number), so no number is stamped. An entry with an invalid value is dropped by
+the settings schema (`.catch`), so the top-level number applies. A key that is
+the canonical model name beats its `[1m]`-style spellings whatever the file
+order (`g===k||!hasOwn`), else the first spelling wins. Env names are matched
+case-sensitively.
+
+A configured window at or above the model's own still resolves to source
+`settings`/`env` with `window = min(model, configured)`, and the threshold is
+`window - 20k - 13k` regardless of source, so the user branch (33k head-room,
+enforced) is right for it too.
+
+Not mirrored: the SDK's runtime `ceiling` / `raisedTo` overrides in `vy`, the
+managed `managed-settings.d` drop-ins, the legacy `~/.claude.json`
+`autoCompactEnabled`, and `CLAUDE_CODE_DISABLE_1M_CONTEXT`.
+
+## D1503: Cursor sessions get the skills as paths in the instructions file (2026-11-23, cursor-skills-in-instructions)
+
+- **What.** `_cursor_argv` appends a SKILLS paragraph to `cursor_agent/instructions.md`: one line per `SKILL.md` (name, description, absolute path) of fused-render's own skills, and of the workbench skills only when the target is inside the workbench gate. The model is told to read a skill's file before work its description covers. The skills folders are added to the readable directories the same file names.
+- **Why.** Measured against the real CLI (2026.11.22-e9042b2) with an ACP turn: `cursor-agent acp` ignores `--plugin-dir`, `--add-dir` and a workspace `.cursor/skills`; only `~/.cursor/skills` loads. So Cursor sessions saw none of the skills Claude (`--plugin-dir`) and Copilot (generated plugin dir) get.
+- **What the model gains.** The text of skills it chooses to read, as guidance from fused-render. No new tool, grant or write location.
+- **Rejected.** Writing into `~/.cursor/skills`: global state shared with the user's other Cursor use, which fused does not write. Writing `.cursor/skills` or `AGENTS.md` in the user's folder: ignored by ACP, and fused never writes there.
+
+## D1504: Codex sessions get the skills as paths in the developer instructions (2026-11-23, codex-skills-in-instructions)
+
+- **Why.** codex-cli 0.164 has no option naming an extra skills root; `.agents/skills` would write into the user's folder, and CODEX_HOME holds the credential, so neither is touched. Codex was the one backend left with no fused-render or workbench skills.
+- **What.** `_Host._developer_instructions` appends `_skills_note(target)` (Cursor's note from D1503, now shared) to the `_appended_prompt` text: name, description and SKILL.md path per skill, workbench skills only in a canvas root. No readable-directory text: Codex's sandboxes read the whole filesystem.
+
+## D1507: The skills note says the skills are the whole reference (2026-11-23, agents-skills-are-the-reference)
+
+- **Why.** Cursor and Codex get the skills as SKILL.md paths (D1503, D1504). In a real Cursor app-building run the model read two skills, then spent about two minutes on `find / -name runtime.js` and reading fused-render's installed source (`static/runtime.js`, `server/fs_mutate.py`, `server/routers/ai_runtime.py`) to double-check `fused.ai` and `fused.writeFile`: 20 of its 38 tool calls. Re-running the same prompt with one added sentence, 0 of 16 calls left the folder and the turn took 246 s instead of 308 s (one run each).
+- **What.** `_skills_note` ends with that sentence: the listed SKILL.md files are the complete page-API reference, never read or search fused-render's installed code or outside the working folder, and use the documented call as written when a skill leaves a detail unsaid. Only present when there are skills.
+- **Not changed.** No tool, grant or readable directory; the sentence is guidance, not enforcement.

@@ -457,7 +457,7 @@ function applySel(id: string | null): void {
   const b = cur(); if (b) { setNewMark(b); markSeen(b.id, b.seq); }
   // A bot waiting for you in its browser opens Stage the moment you pick it.
   if (b && stageable(b)) requestStage(b.id);
-  // An expert has no browser: a Stage left open for the previous bot closes rather than show it nothing.
+  // A specialist has no browser: a Stage left open for the previous bot closes rather than show it nothing.
   else if (S.fast && noBrowser(b)) closeStage();
 }
 

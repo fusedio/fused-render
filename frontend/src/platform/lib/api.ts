@@ -1625,14 +1625,14 @@ export interface Prefs {
   // left out, above Git, each previewing the file that way in a rail card.
   // Read only with the rail flag on. Optional: absent (older server) reads as off.
   rail_mode_doors?: { enabled: boolean };
+  // The expandable Claude rail (`rail_expand_enabled`, shell/prefs.py; off by
+  // default): a button at its top widens it to icon + title. Optional: absent
+  // (older server) reads as off.
+  rail_expand?: { enabled: boolean };
   // Task icons (`task_icons_enabled`, shell/prefs.py; off by default,
   // experiment 2026-11-10): a favourite wears one of 299 glyphs in place of
   // its status ring. Optional: absent (older server) reads as off.
   task_icons?: { enabled: boolean };
-  // Expert bots (`experts_enabled`, shell/prefs.py; off by default,
-  // docs/experts.md §17). Off hides experts — the server leaves them out of
-  // every bot listing — and deletes nothing. Optional: absent reads as off.
-  experts?: { enabled: boolean };
   // Stable AI titles: Tasks rows titled only by the stable `title` (`task_summary_titles_enabled`,
   // shell/prefs.py; off by default). Optional: absent reads as off.
   task_summary_titles?: { enabled: boolean };
@@ -2213,16 +2213,16 @@ export function putRailFreePinsEnabled(enabled: boolean): Promise<Prefs> {
   return putJson<Prefs>("/api/prefs", { rail_free_pins_enabled: enabled });
 }
 
+export function putRailExpandEnabled(enabled: boolean): Promise<Prefs> {
+  return putJson<Prefs>("/api/prefs", { rail_expand_enabled: enabled });
+}
+
 export function putRailModeDoorsEnabled(enabled: boolean): Promise<Prefs> {
   return putJson<Prefs>("/api/prefs", { rail_mode_doors_enabled: enabled });
 }
 
 export function putTaskIconsEnabled(enabled: boolean): Promise<Prefs> {
   return putJson<Prefs>("/api/prefs", { task_icons_enabled: enabled });
-}
-
-export function putExpertsEnabled(enabled: boolean): Promise<Prefs> {
-  return putJson<Prefs>("/api/prefs", { experts_enabled: enabled });
 }
 
 /** One PUT per Bots page-wide switch (`Prefs.bots`). */
@@ -2254,6 +2254,8 @@ export function putPinnedTasks(keys: string[]): Promise<Prefs> {
 export interface UiLayoutDoc {
   v: 1;
   sidebar?: { width: number; collapsed: boolean };
+  /** The right rail's width and expanded flag (platform/lib/railstate.ts). */
+  rail?: { width: number; expanded: boolean };
   bookmarksCollapsed?: boolean;
   currentAppsCollapsed?: boolean;
   /** The sidebar's Canvases section fold (the desk's canvas half). */

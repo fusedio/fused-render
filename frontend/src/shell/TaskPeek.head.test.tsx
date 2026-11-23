@@ -140,14 +140,17 @@ test("the shared head — ×, chevrons, identity, ↗ Open and the chat's own �
   const idSlot = hostAll(r, (n) => hasClass(n, "task-head-idslot"))[0]!;
   expect(idSlot.findAll((n) => typeof n.type === "string" && hasClass(n, "task-head-file"))).toHaveLength(1);
   // TWO LINES (2026-11-17), the rail window's layout, under the panel's own
-  // reveal (no `is-window`): the facts and the acts (the star, Open) trade
-  // in one box.
+  // reveal (no `is-window`): the acts (the star, the door) stand on row 1
+  // (2026-11-22, the split), and the count and the time close row 2 —
+  // nothing trades.
   const headEl = hostAll(r, (n) => hasClass(n, "task-head"))[0]!;
   expect(hasClass(headEl, "is-two-line")).toBe(true);
   expect(hasClass(headEl, "is-window")).toBe(false);
-  const facts = hostAll(r, (n) => hasClass(n, "task-head-facts"));
-  expect(facts).toHaveLength(1);
-  expect(facts[0]!.findAll((n) => typeof n.type === "string" && hasClass(n, "task-head-open"))).toHaveLength(1);
+  expect(hostAll(r, (n) => hasClass(n, "task-head-timeslot"))).toHaveLength(0);
+  const acts = hostAll(r, (n) => hasClass(n, "task-head-facts") && hasClass(n, "is-split"))[0]!;
+  expect(acts.findAll((n) => typeof n.type === "string" && hasClass(n, "task-head-open"))).toHaveLength(1);
+  const rowFacts = hostAll(r, (n) => hasClass(n, "task-head-rowfacts"))[0]!;
+  expect(rowFacts.findAll((n) => typeof n.type === "string" && hasClass(n, "task-head-time"))).toHaveLength(1);
 });
 
 test("a task with no session yet keeps the panel's own menu (Delete of a never-run message)", async () => {

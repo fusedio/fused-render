@@ -1,5 +1,5 @@
 // A specialist's one form (docs/specialists.md), for "+ New bot" › Specialist and for its Settings…: the face,
-// the name, what it is an expert on, and an optional folder it helps in by itself. The New bot form's shell and
+// the name, what it knows, and an optional folder it helps in by itself. The New bot form's shell and
 // layout (CreateBot.tsx). Save closes only when the server took it; a refusal (a name taken) shows in the banner.
 import { useMemo, useRef, useState } from "react";
 import { cn } from "@platform/lib/utils";
@@ -63,7 +63,7 @@ export function SpecialistDialog({ s, onClose, onBack }: SpecialistDialogProps) 
               <Input id="spname" autoFocus placeholder="e.g. Canvas" value={name} onChange={(e) => setName(e.target.value)} />
             </Field>
             <Field>
-              <FieldLabel htmlFor="spabout">What it is an expert on</FieldLabel>
+              <FieldLabel htmlFor="spabout">What it knows</FieldLabel>
               <Textarea id="spabout" rows={3} className="max-h-56" value={about} onChange={(e) => setAbout(e.target.value)}
                 placeholder="e.g. Building canvases: layout, the UDFs they call, and how we name things." />
             </Field>

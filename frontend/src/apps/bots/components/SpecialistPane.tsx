@@ -1,5 +1,6 @@
-// A specialist's preview column (docs/specialists.md), on the Expert pane's markup (ExpertPane.tsx):
-//   Memory    memory.md rendered, with Edit opening the file in the explorer as the Expert pane's does.
+// A specialist's preview column (docs/specialists.md): no browser, so in place of the screenshot, live view and info
+// it shows three tabs in the Browser | Terminal strip's style:
+//   Memory    memory.md rendered, with Edit opening the file in the explorer.
 //   Skills    each skill's name and description; a row opens to its text. Read-only: the user asks the specialist.
 //   Learning  Waiting: the inbox (a note opens to its text, a conversation to one sentence; Delete is the one way to
 //             remove an entry), with Learn now. Learned: its history, newest first; a learning run opens to what it
@@ -10,11 +11,11 @@ import { useEffect, useId, useState, type ReactNode } from "react";
 import { spaLinkProps } from "@platform/lib/router";
 import type { Specialist } from "@platform/lib/specialists";
 import { specialistApi, type SpecialistChange, type SpecialistEntry } from "../lib/api";
-import { agoShort } from "../lib/expert";
 import { fmtWhen, fmtWhenShort } from "../lib/format";
+import { agoShort } from "../lib/memdiff";
 import { actSpecialist, errMsg } from "../state/store";
-import { DiffView, PaneTabs } from "./ExpertPane";
 import { MdDoc } from "./MdDoc";
+import { DiffView, PaneTabs } from "./PaneParts";
 
 type Tab = "memory" | "skills" | "learning";
 const REFRESH_MS = 10_000;
@@ -45,7 +46,7 @@ function useSpecialistData(s: Specialist) {
   return { data, err, reload: () => setTick((n) => n + 1) };
 }
 
-/** One row that opens in place (the Logs tab's .xp-row): its head line, then `children` while open. */
+/** One row that opens in place (.xp-row): its head line, then `children` while open. */
 function Row({ head, open, onOpen, children }: { head: ReactNode; open: boolean; onOpen: () => void; children: ReactNode }) {
   return (
     <li className={`xp-row${open ? " open" : ""}`}>

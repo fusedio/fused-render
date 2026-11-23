@@ -1,4 +1,4 @@
-"""Showing work in a specialist's main chat (docs/specialists.md §15): a canvas, or one node of a canvas (a UDF,
+"""Showing work in a specialist's main chat (docs/specialists.md §14): a canvas, or one node of a canvas (a UDF,
 a widget, an HTML node, a note), as a card the user opens live.
 
 The main chat, and only it, gets one more session MCP server, `specialist_canvas`, with two tools:
