@@ -9,10 +9,7 @@ import {
   putAppSharingEnabled,
   putCanvasesEmbedProxy,
   putCanvasesEnabled,
-  putRailFreePinsEnabled,
-  putRailExpandEnabled,
-  putRailModeDoorsEnabled,
-  putTaskIconsEnabled,
+  putRailExtrasEnabled,
   putGitAutoSyncEnabled,
   putLivePreviewsEnabled,
   putMonitorEnabled,
@@ -29,10 +26,7 @@ import {
 } from "@platform/lib/api";
 import { publishContribFlags } from "@platform/lib/contrib-flags";
 import { publishCanvasesEnabled } from "@apps/canvases/feature-flag";
-import { publishRailFreePins } from "../claude-rail/rail-free-pins-flag";
-import { publishRailExpand } from "../claude-rail/rail-expand-flag";
-import { publishRailModeDoors } from "../claude-rail/rail-mode-doors-flag";
-import { publishTaskIcons } from "@platform/lib/task-icons-flag";
+import { publishRailExtras } from "../claude-rail/rail-extras-flag";
 import { publishAppSharingEnabled } from "@platform/lib/share-app-flag";
 import { publishLivePreviewsEnabled } from "@platform/lib/live-previews-flag";
 import { publishMonitorEnabled } from "@platform/lib/monitor-flag";
@@ -287,60 +281,16 @@ export function CanvasesEmbedProxyControl({ prefs, onChange }: PrefControlProps)
   );
 }
 
-// FREE PINS ON THE RAIL (owner, 2026-11-18).
-export function RailFreePinsControl({ prefs, onChange }: PrefControlProps) {
-  const on = prefs.rail_free_pins?.enabled === true;
+// RAIL EXTRAS (owner, 2026-11-23): one switch for the rail's mode doors, the
+// expandable rail and free pins.
+export function RailExtrasControl({ prefs, onChange }: PrefControlProps) {
+  const on = prefs.rail_extras?.enabled === true;
   return (
     <PrefToggleRow
-      id="rail-free-pins"
+      id="rail-extras"
       checked={on}
-      put={putRailFreePinsEnabled}
-      after={(next) => publishRailFreePins(next.rail_free_pins)}
-      onChange={onChange}
-    />
-  );
-}
-
-// A FILE'S OTHER MODES AS DOORS ON THE RAIL (owner, 2026-11-20).
-export function RailModeDoorsControl({ prefs, onChange }: PrefControlProps) {
-  const on = prefs.rail_mode_doors?.enabled === true;
-  return (
-    <PrefToggleRow
-      id="rail-mode-doors"
-      checked={on}
-      put={putRailModeDoorsEnabled}
-      after={(next) => publishRailModeDoors(next.rail_mode_doors)}
-      onChange={onChange}
-    />
-  );
-}
-
-// THE EXPANDABLE RAIL: a child of the rail preview, like the mode doors.
-export function RailExpandControl({ prefs, onChange }: PrefControlProps) {
-  const on = prefs.rail_expand?.enabled === true;
-  return (
-    <PrefToggleRow
-      id="rail-expand"
-      checked={on}
-      put={putRailExpandEnabled}
-      after={(next) => publishRailExpand(next.rail_expand)}
-      onChange={onChange}
-    />
-  );
-}
-
-// TASK ICONS (owner, 2026-11-10, experiment): a FAVOURITE wears one of 299
-// glyphs in place of its status ring (2026-11-11: only a starred task); the
-// icon pressed while a title is being edited opens a picker. Off, the ring
-// is drawn as before.
-export function TaskIconsControl({ prefs, onChange }: PrefControlProps) {
-  const on = prefs.task_icons?.enabled === true;
-  return (
-    <PrefToggleRow
-      id="tasks-icons"
-      checked={on}
-      put={putTaskIconsEnabled}
-      after={(next) => publishTaskIcons(next.task_icons)}
+      put={putRailExtrasEnabled}
+      after={(next) => publishRailExtras(next.rail_extras)}
       onChange={onChange}
     />
   );

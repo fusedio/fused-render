@@ -24,7 +24,6 @@
 // accordion, the thread rows, the id chips, the unread dot) is in
 // styles/tasks.css.
 import { BulkBar, GroupCheck, RowCheck, useBulkArchive, type BulkSelect } from "@shell/TaskBulk";
-import { useTaskIcons } from "@platform/lib/task-icons-flag";
 import { taskFaceShown, taskIconHref } from "./task-icons";
 import { useArchiveConfirm } from "@shell/archive-confirm";
 import { selectableTask } from "@shell/task-selection";
@@ -784,7 +783,7 @@ export function StatusIcon({
    *  seat), and the browser's `title` would say the same word again a second
    *  later. The accessible name stays. */
   quiet?: boolean;
-  /** THE TASK'S FACE (`task_icons_enabled`, 2026-11-10): the task's
+  /** THE TASK'S FACE (task icons, 2026-11-10): the task's
    *  `icon_slot` — null on a task that wears the ring (never given one and
    *  not starred, or its icon removed; 2026-11-16). With the experiment on, the ring becomes that glyph —
    *  same box, same hue, every mark (unread dot, draft dot, "!") in its
@@ -829,12 +828,9 @@ export function StatusIcon({
   // the one a person can still do something about.
   const marks = [draftHeld ? "unsent draft" : null, said]
     .filter(Boolean).join(", ");
-  // The glyph, when the experiment is on and the listing sent this task a
-  // face (picked by hand, or starred and not removed — 2026-11-16). Read
-  // live here, not server-side, where a cached listing would outlast the
-  // flip.
-  const iconsOn = useTaskIcons();
-  const glyph = taskFaceShown(icon, iconsOn) ? taskIconHref(icon) : null;
+  // The glyph, when the listing sent this task a face (picked by hand, or
+  // starred and not removed — 2026-11-16).
+  const glyph = taskFaceShown(icon) ? taskIconHref(icon) : null;
   return (
     <span
       className={

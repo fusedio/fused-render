@@ -4,7 +4,7 @@
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import { setAPinned, setFavPinned } from "@platform/lib/last-chat";
 import { botsPulseAnswered, botsRowsNow, publishBots, resetBotsPulseForTests } from "@platform/lib/botsPulse";
-import { resetRailFreePinsFlagForTests, setRailFreePinsForTests } from "./rail-free-pins-flag";
+import { resetRailExtrasFlagForTests, setRailExtrasForTests } from "./rail-extras-flag";
 import {
   commitWindowBox,
   commitWindowPos,
@@ -368,7 +368,7 @@ describe("the position store, free pins on", () => {
   beforeEach(() => {
     resetRailMoveForTests();
     resetRailSlotsForTests();
-    setRailFreePinsForTests(true);
+    setRailExtrasForTests(true);
     setAPinned("task:k1");
     setFavPinned(null);
   });
@@ -379,7 +379,7 @@ describe("the position store, free pins on", () => {
     // not in whatever suite comes next in this process.
     await new Promise((r) => setTimeout(r, 0));
     resetRailMoveForTests();
-    resetRailFreePinsFlagForTests();
+    resetRailExtrasFlagForTests();
   });
 
   it("the pin's press freezes the non-pin card's box: position and size", () => {
@@ -537,7 +537,7 @@ describe("the position store, free pins on", () => {
   it("off, nothing is pushed and no size is read", () => {
     commitWindowBox("a", box(972, 60, 420, 640));
     publishPusher("a", "list", box(972, 60, 420, 640));
-    setRailFreePinsForTests(false);
+    setRailExtrasForTests(false);
     expect(windowPos("a")).toEqual({ left: 972, top: 60 });
     expect(windowSize("a")).toBeNull();
     publishWindowBox("a", "pin", box(1, 1, 400, 500), true);

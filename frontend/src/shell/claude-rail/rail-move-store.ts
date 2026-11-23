@@ -11,7 +11,7 @@ import { useEffect, useLayoutEffect, useRef, useSyncExternalStore } from "react"
 import { setWindowPosMark, subscribeWindowPosMark, windowPosMark } from "@platform/lib/last-chat";
 import { clampPos, serialisePos, viewportOf, type Pos, type RailWindow, type Size } from "./rail-move-lib";
 import type { Box } from "./rail-peek-lib";
-import { railFreePinsNow, subscribeRailFreePins } from "./rail-free-pins-flag";
+import { railExtrasNow, subscribeRailExtras } from "./rail-extras-flag";
 import { parsePinMark, pushedPins, pushedPos, serialisePinBox, type PinAt, type PinMark, type PushedPos } from "./rail-slots-lib";
 
 const live: Record<RailWindow, Pos | null> = { a: null, b: null };
@@ -94,7 +94,7 @@ export function windowPos(win: RailWindow): PushedPos | null {
   if (live[win]) return live[win];
   const mark = stored(win);
   if (!mark) return null;
-  if (!railFreePinsNow() || pushers.size === 0) return mark.pos;
+  if (!railExtrasNow() || pushers.size === 0) return mark.pos;
   return pushedFor(win, mark);
 }
 
@@ -114,7 +114,7 @@ export function windowSize(win: RailWindow): Size | null {
 }
 /** The size a pin's mark holds — what a move or a freeze writes back. */
 function frozenSize(win: RailWindow): Size | null {
-  return railFreePinsNow() ? (stored(win)?.size ?? null) : null;
+  return railExtrasNow() ? (stored(win)?.size ?? null) : null;
 }
 const cutSize: Record<RailWindow, Size | null> = { a: null, b: null };
 
@@ -260,7 +260,7 @@ export function publishWindowBox(win: RailWindow, owner: string, box: Box | null
   // changes where the pin is drawn, and its readers must hear of it
   // (CodeRabbit on #2349: it stayed covered until something else moved).
   // The same publication again says nothing.
-  if (!railFreePinsNow() || pushers.size === 0) return;
+  if (!railExtrasNow() || pushers.size === 0) return;
   const size = (e: { box: Box; pin: boolean } | undefined) => (e && e.pin ? `${e.box.width}x${e.box.height}` : "");
   if (size(was) === size(box ? { box, pin } : undefined)) return;
   const mark = stored(win);
@@ -280,7 +280,7 @@ export function windowBox(win: RailWindow): Box | null {
  *  ("guides between the two pinned windows"), a docked one (a non-pin) with
  *  the other section's non-pin, the card it shares the rail's column with. */
 export function magnetBox(other: RailWindow, floating: boolean): Box | null {
-  if (!railFreePinsNow()) return windowBox(other);
+  if (!railExtrasNow()) return windowBox(other);
   return floating ? pinBox(other) : dockBox(other);
 }
 
@@ -358,7 +358,7 @@ export function usePusher(win: RailWindow, box: Box | null): void {
 
 // The switch going on or off re-reads every position: a pin is pushed, and
 // its frozen size read, only with free pins on.
-subscribeRailFreePins(notify);
+subscribeRailExtras(notify);
 
 /** Test seam. */
 export function resetRailMoveForTests(): void {

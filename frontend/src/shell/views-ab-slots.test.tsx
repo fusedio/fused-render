@@ -6,8 +6,8 @@
 //   1. THE ID SLOT — TASK-nnn with the filing button over it (`.tasks-idslot`),
 //      no button where the filing cannot change, and no second Archive in the
 //      view's own hover strip;
-//   2. THE RING AS A BUTTON — the icon picker's (TaskIconPick), icons
-//      experiment on, whose press stops there.
+//   2. THE RING AS A BUTTON — the icon picker's (TaskIconPick), whose press
+//      stops there.
 import { installDomShim, installPortalContainer, removePortalContainer } from "@platform/lib/testDomShim";
 installDomShim();
 import { afterEach, beforeEach, expect, mock, test } from "bun:test";
@@ -15,7 +15,6 @@ import { createElement, type ReactElement } from "react";
 import { act, create, type ReactTestInstance, type ReactTestRenderer } from "react-test-renderer";
 import { dropSharedPrefsRead, type Task } from "@platform/lib/api";
 
-const icons = await import("@platform/lib/task-icons-flag");
 const { TaskBoard } = await import("./ScheduleTaskViews");
 const { TaskCards } = await import("./TaskCards");
 const { TaskWorkspace } = await import("./TaskWorkspace");
@@ -24,9 +23,8 @@ const realFetch = globalThis.fetch;
 const mounted: ReactTestRenderer[] = [];
 const store: Record<string, string> = {};
 let posts: { url: string; body: unknown }[] = [];
-// The prefs a mounting view reads: the switch's own answer, so the flag's
-// first read lands where `switches` put it.
-let prefs: Record<string, unknown> = {};
+// The prefs a mounting view reads.
+const prefs: Record<string, unknown> = {};
 
 beforeEach(() => {
   dropSharedPrefsRead();
@@ -63,22 +61,10 @@ beforeEach(() => {
 });
 afterEach(() => {
   for (const r of mounted.splice(0)) act(() => r.unmount());
-  // Off by publish, not by reset: a reset drops the cached read, and the next
-  // render would GET /api/prefs into a later test's fetch log.
-  act(() => {
-    icons.publishTaskIcons({ enabled: false });
-  });
   removePortalContainer();
   delete (globalThis as { localStorage?: unknown }).localStorage;
   globalThis.fetch = realFetch;
 });
-
-function switches(iconsOn: boolean) {
-  prefs = { task_icons: { enabled: iconsOn } };
-  act(() => {
-    icons.publishTaskIcons({ enabled: iconsOn });
-  });
-}
 
 const nodeMock = () => ({
   focus() {},
@@ -148,7 +134,6 @@ const detailed = (tasks: Task[]) =>
 // ---- the Board card ---------------------------------------------------------
 
 test("BOARD a/b: the id slot holds TASK-nnn and the filing button, and the hover strip drops its Archive", async () => {
-  switches(false);
   const r = await board([task({ key: "a", status: "done" })]);
   const [slot] = byClass(r, "tasks-idslot");
   expect(slot).toBeDefined();
@@ -176,15 +161,13 @@ test("BOARD a/b: the id slot holds TASK-nnn and the filing button, and the hover
 });
 
 test("BOARD a/b: no filing button while a run is in flight — the number stays", async () => {
-  switches(false);
   const r = await board([task({ key: "a", status: "in_progress" })]);
   const [slot] = byClass(r, "tasks-idslot");
   expect(text(slot!)).toBe("T012");
   expect(fileActs(r)).toHaveLength(0);
 });
 
-test("BOARD a/b, icons on: a drawn ring is the picker's span-button, and its press stops there", async () => {
-  switches(true);
+test("BOARD a/b: a drawn ring is the picker's span-button, and its press stops there", async () => {
   const r = await board([task({ key: "a", status: "needs_attention" })]);
   const [pick] = pickers(r);
   expect(pick!.type).toBe("span");
@@ -203,7 +186,6 @@ test("BOARD a/b, icons on: a drawn ring is the picker's span-button, and its pre
 // ---- the Cards wall ---------------------------------------------------------
 
 test("CARDS a/b: the id slot holds TASK-nnn and the filing button, and the doors drop their Archive", async () => {
-  switches(false);
   const r = await wall([task({ key: "a", status: "done" })]);
   const [slot] = byClass(r, "tasks-idslot");
   expect(text(byClass(slot!, "tasks-id")[0]!)).toBe("T012");
@@ -223,14 +205,12 @@ test("CARDS a/b: the id slot holds TASK-nnn and the filing button, and the doors
 });
 
 test("CARDS a/b: no filing button while a run is in flight", async () => {
-  switches(false);
   const r = await wall([task({ key: "a", status: "in_progress" })]);
   expect(text(byClass(r, "tasks-idslot")[0]!)).toBe("T012");
   expect(fileActs(r)).toHaveLength(0);
 });
 
-test("CARDS a/b, icons on: the ring is the picker's button, and its press does not open the popup", async () => {
-  switches(true);
+test("CARDS a/b: the ring is the picker's button, and its press does not open the popup", async () => {
   const r = await wall([task({ key: "a", status: "done" })]);
   const [pick] = hosts(r, (n) => n.type === "button" && cls(n) === "task-icon-pick");
   expect(pick).toBeDefined();
@@ -243,7 +223,6 @@ test("CARDS a/b, icons on: the ring is the picker's button, and its press does n
 // ---- the Detailed view ------------------------------------------------------
 
 test("DETAILED a/b: Archive leaves the ring's slot for the id's, and archives with Undo", async () => {
-  switches(false);
   const r = await detailed([task({ key: "a", status: "done" })]);
   const [mark] = byClass(r, "ws-mark");
   expect(fileActs(mark!)).toHaveLength(0);
@@ -261,14 +240,12 @@ test("DETAILED a/b: Archive leaves the ring's slot for the id's, and archives wi
 });
 
 test("DETAILED a/b: no filing button while a run is in flight", async () => {
-  switches(false);
   const r = await detailed([task({ key: "a", status: "in_progress" })]);
   expect(text(byClass(r, "tasks-idslot")[0]!)).toBe("T012");
   expect(fileActs(r)).toHaveLength(0);
 });
 
-test("DETAILED a/b, icons on: the ring is the picker's button, and its press neither selects nor opens", async () => {
-  switches(true);
+test("DETAILED a/b: the ring is the picker's button, and its press neither selects nor opens", async () => {
   const r = await detailed([task({ key: "a", status: "done" })]);
   const [mark] = byClass(r, "ws-mark");
   const [pick] = mark!.findAll((n) => n.type === "button" && cls(n) === "task-icon-pick");
@@ -288,7 +265,6 @@ const fromPortal = () => ({ currentTarget: { contains: () => false }, target: {}
 const fromCard = () => ({ currentTarget: { contains: () => true }, target: {}, stopPropagation() {} });
 
 test("BOARD: a click bubbled from a portal does not open the card; one on the card does", async () => {
-  switches(true);
   const opened: string[] = [];
   const r = await render(
     createElement(TaskBoard, {
@@ -305,7 +281,6 @@ test("BOARD: a click bubbled from a portal does not open the card; one on the ca
 });
 
 test("DETAILED: a click bubbled from a portal neither selects nor opens the card", async () => {
-  switches(true);
   const r = await detailed([task({ key: "a", status: "done" })]);
   const card = () => byClass(r, "ws-card")[0]!;
   act(() => card().props.onClick(fromPortal()));

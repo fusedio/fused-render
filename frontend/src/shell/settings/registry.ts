@@ -462,44 +462,18 @@ const ENTRIES = [
   },
 
   // ── Experimental flags ─────────────────────────────────────────────────────────────
-  // TASK ICONS (owner, 2026-11-10): a face per FAVOURITE, in place of the
-  // ring (2026-11-11: only a starred task wears one).
+  // RAIL EXTRAS (shell/claude-rail/rail-extras-flag; owner, 2026-11-23): one
+  // switch for three rail features — a file's other views as doors above Git,
+  // the expandable rail, and free (exact place and size) pinned windows. With
+  // the rail's other switches gone it is no section of its own (a section of
+  // one row is never drawn): the flags are one untitled card.
   {
-    id: "tasks-icons",
+    id: "rail-extras",
     group: "features",
-    section: "Chats & rail",
-    label: "Task icons",
-    description: "A favourite shows its own small picture — an animal, a food, a thing — instead of the status ring, on the rail, the Tasks list and the task header. Click it while editing the title to pick another.",
-    keywords: "icon glyph picture emoji animal face ring task rail avatar favourite favorite star",
-  },
-  // A FILE'S OTHER MODES AS DOORS ON THE RAIL (shell/claude-rail
-  // rail-mode-doors-flag; owner, 2026-11-20).
-  {
-    id: "rail-mode-doors",
-    group: "features",
-    section: "Chats & rail",
-    label: "File views on the rail",
-    description: "On a file, its other views (Code, Reader and so on) show as icons on the rail above Git. Hover one to preview the file that way in a floating card; click to keep it open, Open switches the page to that view.",
-    keywords: "mode view preview code reader rail door icon file template switch hover card git",
-  },
-  // THE EXPANDABLE RAIL (shell/claude-rail rail-expand-flag): the rail's own
-  // control.
-  {
-    id: "rail-expand",
-    group: "features",
-    section: "Chats & rail",
-    label: "Expandable rail",
-    description: "Adds a button at the top of the rail that widens it, so each item shows its icon and its title. Drag the rail's inner edge to resize it.",
-    keywords: "rail expand widen wide width resize titles labels icon sidebar collapse drag",
-  },
-  // FREE PINS ON THE RAIL (shell/claude-rail/rail-free-pins-flag).
-  {
-    id: "rail-free-pins",
-    group: "features",
-    section: "Chats & rail",
-    label: "Free rail pins",
-    description: "A pinned rail window keeps its exact place and size. Other chats open in a second window beside the rail, so up to four can stand at once: pinned and unpinned, for the list and for favourites.",
-    keywords: "pin pinned window rail float overlap move resize four windows push task favourite bot",
+    section: "Other",
+    label: "Rail extras",
+    description: "Three rail additions: a file's other views (Code, Reader and so on) show as icons above Git, hover to preview, click to keep open; a button at the rail's top left widens it into a list with titles, and its inner edge drags to resize; a pinned rail window keeps its exact place and size while other chats open in a second window, up to four at once.",
+    keywords: "rail extras mode view preview code reader door icon file git expand widen wide width resize titles drag pin pinned window float move four windows",
   },
   {
     id: "canvases",

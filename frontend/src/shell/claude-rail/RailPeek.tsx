@@ -211,9 +211,8 @@ import {
 } from "./rail-move-lib";
 import { commitWindowBox, magnetBox, usePusher, useWindowBox, windowPos } from "./rail-move-store";
 import { drawnBox, useCardMove, useRailResizing } from "./useCardMove";
-import { useRailFreePins } from "./rail-free-pins-flag";
+import { useRailExtras } from "./rail-extras-flag";
 import { placeColumn } from "./rail-slots-lib";
-import { useRailExpand } from "./rail-expand-flag";
 import { watchRailWidth } from "./rail-width-watch";
 
 /** Where a card's dragged size is kept in the ui-layout document: the
@@ -552,7 +551,7 @@ export const RailPeek = forwardRef<RailPeekHandle, RailPeekProps>(function RailP
   // FROZEN — its size and position are the window's mark's, not the shared
   // remembered size — and a non-pin shares the rail's column and pushes the
   // pins it would cover.
-  const freePins = useRailFreePins();
+  const freePins = useRailExtras();
   const freePinsRef = useRef(false);
   freePinsRef.current = freePins;
   // A PINNED WINDOW MOVES (rail-move-lib; owner, 2026-11-17): the list's card
@@ -664,9 +663,10 @@ export const RailPeek = forwardRef<RailPeekHandle, RailPeekProps>(function RailP
   // Resolved once per rail element, not per placement: `rowOf` reads computed
   // style, and `place` runs on every scroll of the rail's list.
   const row = useMemo(() => rowOf(railEl), [railEl]);
-  // THE EXPANDABLE RAIL (rail-width-watch): its edge moves with no window
-  // resize and no row reshaping — the card follows it too.
-  const followRailWidth = useRailExpand();
+  // THE EXPANDABLE RAIL (rail-width-watch; Rail extras, the free pins' own
+  // switch): its edge moves with no window resize and no row reshaping — the
+  // card follows it too.
+  const followRailWidth = freePins;
   const place = (key: string): Box | null => {
     // FLOATING: at the window's position (read live — a drag moves it between
     // renders), at the card's size, inside the viewport; never "no room".

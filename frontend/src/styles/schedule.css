@@ -2907,8 +2907,8 @@ input.schedule-when-field {
   background: var(--status-failed);
 }
 
-/* -- Task icons (`task_icons_enabled`, experiment, 2026-11-10) -------------------
-   With the flag on, a task's ring can become a GLYPH: one of 299 line drawings
+/* -- Task icons (2026-11-10; always on since 2026-11-23) ------------------------
+   A task's ring can become a GLYPH: one of 299 line drawings
    (frontend/public/task-icons.svg, slot order in shell/task-icons.ts) chosen
    once per task by the server (`icon_slot`, sent while starred or once picked
    by hand — 2026-11-16) so every task in a project has a different face. It is still `.schedule-ring` — same 16px box, same lane hue

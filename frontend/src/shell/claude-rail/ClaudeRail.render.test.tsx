@@ -27,8 +27,7 @@ const { gitCardRail, gitCardState, gitCardStore, registerGitCard, resetGitCardFo
 const { resetRailGitCacheForTests } = await import("./rail-git");
 const { GitPeek, GIT_FOLLOW_MS } = await import("./GitPeek");
 const { modeCardStore, railModesOf, resetModeCardsForTests } = await import("./mode-peek-store");
-const { publishRailModeDoors, resetRailModeDoorsFlagForTests } = await import("./rail-mode-doors-flag");
-const { publishRailExpand, resetRailExpandFlagForTests } = await import("./rail-expand-flag");
+const { publishRailExtras, resetRailExtrasFlagForTests } = await import("./rail-extras-flag");
 const { RAIL_DEFAULT_WIDTH, getRailState, setRailState } = await import("@platform/lib/railstate");
 const { _setUiLayoutForTest } = await import("@platform/lib/ui-layout");
 const { DoorCard } = await import("./DoorCard");
@@ -161,8 +160,8 @@ afterEach(() => {
   // for every later suite in the process once a mounted flag has joined it.
   dropSharedPrefsRead();
   resetClaudeFlagsForTests();
-  // The expandable rail: its switch, and the rail collapsed again.
-  resetRailExpandFlagForTests();
+  // Rail extras: its switch, and the rail collapsed again.
+  resetRailExtrasFlagForTests();
   setRailState({ width: RAIL_DEFAULT_WIDTH, expanded: false }, false);
   for (const [name, was] of saved) {
     if (was === MISSING) delete g[name];
@@ -182,18 +181,16 @@ async function mountRail(o: {
   git?: { path: string; onOpenGit?: () => void };
   /** The file's other modes (ClaudeRail `fileModes`). */
   fileModes?: { path: string; modes: string[]; onOpen?: (mode: string) => void };
-  /** The mode doors' own switch (`rail_mode_doors_enabled`); on unless said. */
-  modeDoors?: boolean;
-  /** The expandable rail's switch (`rail_expand_enabled`); OFF unless said. */
-  expand?: boolean;
+  /** Rail extras (`rail_extras_enabled`: mode doors, the expandable rail,
+   *  free pins); OFF unless said. */
+  extras?: boolean;
   /** Mount the shell's bot card (BotCardHost) beside the rail, as App does. */
   botHost?: boolean;
   /** The rail's place; the demo folder unless said. */
   place?: RailPlace;
   onSelectNode?: (udfName: string | null) => void;
 }) {
-  publishRailModeDoors({ enabled: o.modeDoors ?? true });
-  publishRailExpand({ enabled: o.expand ?? false });
+  publishRailExtras({ enabled: o.extras ?? false });
   const rows = o.chats ?? [];
   rememberListing(rows);
   publishTasks(rows as unknown as TaskPulseTask[]);
@@ -638,6 +635,8 @@ describe("ClaudeRail's Bots door and its card (BotsPeek; owner, 2026-11-09)", ()
 // the Git door and in its group, one door per mode the page hands, each with
 // its own window A card (mode-peek-store, ModePeek) — the Git door's rules.
 describe("ClaudeRail's mode doors (owner, 2026-11-20)", () => {
+  // Behind Rail extras: on here unless a test says otherwise.
+  const mountDoors = (o: Parameters<typeof mountRail>[0]) => mountRail({ extras: true, ...o });
   const FILE = DIR + "/index.html";
   const REPO = {
     root: DIR,
@@ -652,7 +651,7 @@ describe("ClaudeRail's mode doors (owner, 2026-11-20)", () => {
   let repo: unknown = null;
   const reset = () => {
     resetModeCardsForTests();
-    resetRailModeDoorsFlagForTests();
+    resetRailExtrasFlagForTests();
     resetRailGitCacheForTests();
     resetRailGitStoreForTests();
     resetGitCardForTests();
@@ -686,7 +685,7 @@ describe("ClaudeRail's mode doors (owner, 2026-11-20)", () => {
     });
 
   test("one door per mode, in the page's order, past one hairline; the facts by rail", async () => {
-    const r = await mountRail({ paneOpen: false, fileModes: { path: FILE, modes: ["code", "reader"] } });
+    const r = await mountDoors({ paneOpen: false, fileModes: { path: FILE, modes: ["code", "reader"] } });
     await settle();
     expect(doors(r).map((d) => [d.props["data-rail-mode"], d.props["aria-label"], d.props["data-hint"]])).toEqual([
       ["code", "Code", "Code"],
@@ -703,7 +702,7 @@ describe("ClaudeRail's mode doors (owner, 2026-11-20)", () => {
 
   test("with Git: the mode doors, then the Git door, one hairline for the group", async () => {
     repo = REPO;
-    const r = await mountRail({
+    const r = await mountDoors({
       paneOpen: false,
       git: { path: FILE },
       fileModes: { path: FILE, modes: ["code"] },
@@ -716,10 +715,10 @@ describe("ClaudeRail's mode doors (owner, 2026-11-20)", () => {
     ]);
   });
 
-  test("their own switch off: no door, no hairline, nothing published", async () => {
-    const r = await mountRail({
+  test("Rail extras off: no door, no hairline, nothing published", async () => {
+    const r = await mountDoors({
       paneOpen: false,
-      modeDoors: false,
+      extras: false,
       fileModes: { path: FILE, modes: ["code", "reader"] },
     });
     await settle();
@@ -729,7 +728,7 @@ describe("ClaudeRail's mode doors (owner, 2026-11-20)", () => {
   });
 
   test("no modes: no door, no hairline, nothing published", async () => {
-    const none = await mountRail({ paneOpen: false, fileModes: { path: FILE, modes: [] } });
+    const none = await mountDoors({ paneOpen: false, fileModes: { path: FILE, modes: [] } });
     await settle();
     expect(doors(none)).toHaveLength(0);
     expect(items(none)).not.toContain("sidebar-rail-sep is-tight");
@@ -738,7 +737,7 @@ describe("ClaudeRail's mode doors (owner, 2026-11-20)", () => {
 
   test("no card behind the doors: a press is the page's own switch", async () => {
     const opened: string[] = [];
-    const r = await mountRail({
+    const r = await mountDoors({
       paneOpen: false,
       fileModes: { path: FILE, modes: ["code", "reader"], onOpen: (m) => opened.push(m) },
     });
@@ -752,7 +751,7 @@ describe("ClaudeRail's mode doors (owner, 2026-11-20)", () => {
 
   test("a card behind each: a press pins that mode's, the same door's next press closes it", async () => {
     const offs = [modeCardStore("code").registerCard(), modeCardStore("reader").registerCard()];
-    const r = await mountRail({ paneOpen: false, fileModes: { path: FILE, modes: ["code", "reader"] } });
+    const r = await mountDoors({ paneOpen: false, fileModes: { path: FILE, modes: ["code", "reader"] } });
     await settle();
     press(r, "code");
     expect(modeCardStore("code").state()).toMatchObject({ up: true, pinned: true });
@@ -765,7 +764,7 @@ describe("ClaudeRail's mode doors (owner, 2026-11-20)", () => {
 
   test("another mode's door opens ITS card and puts the first one down (one non-pinned window A card)", async () => {
     const offs = [modeCardStore("code").registerCard(), modeCardStore("reader").registerCard()];
-    const r = await mountRail({ paneOpen: false, fileModes: { path: FILE, modes: ["code", "reader"] } });
+    const r = await mountDoors({ paneOpen: false, fileModes: { path: FILE, modes: ["code", "reader"] } });
     await settle();
     press(r, "code");
     press(r, "reader");
@@ -778,7 +777,7 @@ describe("ClaudeRail's mode doors (owner, 2026-11-20)", () => {
     repo = REPO;
     const offMode = modeCardStore("code").registerCard();
     const offGit = registerGitCard();
-    const r = await mountRail({
+    const r = await mountDoors({
       paneOpen: false,
       git: { path: FILE },
       fileModes: { path: FILE, modes: ["code"] },
@@ -1267,7 +1266,7 @@ describe("ClaudeRail's ring hover: the task's row, not a title tooltip (owner, 2
 
 });
 
-// THE EXPANDABLE RAIL (`rail_expand_enabled`; owner, 2026-11-21): off, the
+// THE EXPANDABLE RAIL (Rail extras, `rail_extras_enabled`; owner, 2026-11-21): off, the
 // rail of before — no button, no titles; on and collapsed, the button and
 // nothing more; expanded, every seat a row with its title, and the document
 // told the rail's width.
@@ -1318,7 +1317,7 @@ describe("ClaudeRail: the expandable rail", () => {
   });
 
   test("flag on, collapsed: the button says Expand rail, above the nav doors; no titles, no rows", async () => {
-    const r = await mountRail({ paneOpen: false, chats: [chat("a")], expand: true });
+    const r = await mountRail({ paneOpen: false, chats: [chat("a")], extras: true });
     const [btn] = byLabel(r, "Expand rail");
     expect(btn).toBeDefined();
     expect(btn!.props["aria-expanded"]).toBe(false);
@@ -1334,13 +1333,13 @@ describe("ClaudeRail: the expandable rail", () => {
   });
 
   test("flag on, beside the open pane: the button stands there too", async () => {
-    const open = await mountRail({ paneOpen: true, chats: [chat("a")], expand: true });
+    const open = await mountRail({ paneOpen: true, chats: [chat("a")], extras: true });
     expect(byLabel(open, "Expand rail").length).toBe(1);
   });
 
   test("flag on, expanded: rows with titles, the button says Collapse rail, the width said to the document", async () => {
     setRailState({ width: 260, expanded: true }, false);
-    const r = await mountRail({ paneOpen: false, chats: [chat("a")], expand: true, botHost: false });
+    const r = await mountRail({ paneOpen: false, chats: [chat("a")], extras: true, botHost: false });
     await act(async () => {
       publishBots([BOT]);
     });
@@ -1367,7 +1366,7 @@ describe("ClaudeRail: the expandable rail", () => {
   });
 
   test("a press on the button toggles the store, and the document follows", async () => {
-    const r = await mountRail({ paneOpen: false, chats: [chat("a")], expand: true });
+    const r = await mountRail({ paneOpen: false, chats: [chat("a")], extras: true });
     await act(async () => {
       byLabel(r, "Expand rail")[0]!.props.onClick();
     });

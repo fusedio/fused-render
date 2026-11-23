@@ -963,36 +963,24 @@ test("the stylesheet trades a slot's occupants on hover — the window's in a ra
 
 // ---- the ring is a button (TaskIconPick, 2026-11-15; any task 2026-11-16) ----
 
-test("the status icon opens the icon picker outside a rename — a favourite's face AND any task's plain ring", async () => {
-  const icons = await import("@platform/lib/task-icons-flag");
-  act(() => {
-    icons.publishTaskIcons({ enabled: true });
-  });
-  try {
-    const fav = render(head({ task: task({ starred: true, icon_slot: 3 } as Partial<Task>) }));
-    const btn = byClass(fav, "task-icon-pick")[0]!;
-    expect(btn.type).toBe("button");
-    expect(btn.props["aria-label"]).toBe("Choose icon");
-    expect(btn.props["aria-expanded"]).toBe(false);
-    // Inside the status seat, and no title input anywhere: this is not a rename.
-    expect(JSON.stringify(byClass(fav, "task-side-peek-status")[0])).toContain("task-icon-pick");
-    expect(flat(fav).some((n) => n.type === "input")).toBe(false);
-    // Not starred, no face (owner, 2026-11-16: the icon is not the star's):
-    // the plain ring is the same button, in the same seat.
-    const ring = render(head());
-    const ringBtn = byClass(ring, "task-icon-pick")[0]!;
-    expect(ringBtn.type).toBe("button");
-    expect(JSON.stringify(byClass(ring, "task-side-peek-status")[0])).toContain("task-icon-pick");
-    expect(JSON.stringify(ringBtn)).not.toContain("schedule-ring--glyph");
-    // A task with no number yet has nothing to stamp a pick on: no button.
-    expect(byClass(render(head({ task: task({ task_id: "" }) })), "task-icon-pick")).toHaveLength(0);
-    // The experiment off: no button on either.
-    act(() => icons.publishTaskIcons({ enabled: false }));
-    expect(byClass(render(head({ task: task({ starred: true, icon_slot: 3 } as Partial<Task>) })), "task-icon-pick")).toHaveLength(0);
-    expect(byClass(render(head()), "task-icon-pick")).toHaveLength(0);
-  } finally {
-    icons.resetTaskIconsFlagForTests();
-  }
+test("the status icon opens the icon picker outside a rename — a favourite's face AND any task's plain ring", () => {
+  const fav = render(head({ task: task({ starred: true, icon_slot: 3 } as Partial<Task>) }));
+  const btn = byClass(fav, "task-icon-pick")[0]!;
+  expect(btn.type).toBe("button");
+  expect(btn.props["aria-label"]).toBe("Choose icon");
+  expect(btn.props["aria-expanded"]).toBe(false);
+  // Inside the status seat, and no title input anywhere: this is not a rename.
+  expect(JSON.stringify(byClass(fav, "task-side-peek-status")[0])).toContain("task-icon-pick");
+  expect(flat(fav).some((n) => n.type === "input")).toBe(false);
+  // Not starred, no face (owner, 2026-11-16: the icon is not the star's):
+  // the plain ring is the same button, in the same seat.
+  const ring = render(head());
+  const ringBtn = byClass(ring, "task-icon-pick")[0]!;
+  expect(ringBtn.type).toBe("button");
+  expect(JSON.stringify(byClass(ring, "task-side-peek-status")[0])).toContain("task-icon-pick");
+  expect(JSON.stringify(ringBtn)).not.toContain("schedule-ring--glyph");
+  // A task with no number yet has nothing to stamp a pick on: no button.
+  expect(byClass(render(head({ task: task({ task_id: "" }) })), "task-icon-pick")).toHaveLength(0);
 });
 
 test("no where-tag, no seat for it (a whole folder, a file: the place alone)", () => {

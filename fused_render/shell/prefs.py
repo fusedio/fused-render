@@ -526,45 +526,19 @@ def canvas_shot_slow_fallback_enabled() -> bool:
     return read_prefs().get("canvas_shot_slow_fallback_enabled") is True
 
 
-def rail_free_pins_enabled() -> bool:
-    """Whether the Claude rail's pinned windows are FREE PINS: a pin belongs
-    to its task, freezes the window's box where it stood, never moves or
-    resizes on its own, and leaves the rail's column to a second, non-pinned
-    window (up to four windows: one pin and one non-pin per section). Only
-    Default off. Same idiom as `canvas_shot_slow_fallback_enabled`: only a
-    stored `true` is on.
-    """
-    return read_prefs().get("rail_free_pins_enabled") is True
-
-
-def rail_mode_doors_enabled() -> bool:
-    """Whether a file page's Claude rail shows the file's other modes (the
-    top-right mode menu's entries, the active one left out) as doors above
-    Git, each previewing the file in that mode in a rail card. Default off.
+def rail_extras_enabled() -> bool:
+    """Whether the Claude rail's extras are on (owner, 2026-11-23: one switch
+    for three): a file page's other views (the mode menu's entries, the
+    active one left out) as doors above Git, each previewing the file that
+    way in a rail card; the expandable rail (a button at its top left widens
+    it to icon + title, its inner edge drags its width); and FREE PINS — a
+    pinned rail window keeps its exact place and size and the rail's column
+    goes to a second, non-pinned window (up to four windows). Default off.
     Same idiom as `canvas_shot_slow_fallback_enabled`: only a stored `true`
-    is on.
+    is on. The three switches it replaced (file views on the rail, the
+    expandable rail, free rail pins) are ignored if still on disk.
     """
-    return read_prefs().get("rail_mode_doors_enabled") is True
-
-
-def rail_expand_enabled() -> bool:
-    """Whether the Claude rail can be widened (a button at its top) so each
-    item shows its icon and its title. Default off. Same idiom as
-    `rail_mode_doors_enabled`: only a stored `true` is on.
-    """
-    return read_prefs().get("rail_expand_enabled") is True
-
-
-def task_icons_enabled() -> bool:
-    """Whether a task can wear a GLYPH in place of its status ring (owner,
-    2026-11-10, experiment): one of 299 line drawings, chosen from the
-    task's number (`tasks_store.icon_slot`) or picked — pressing the ring or
-    icon opens a picker. A favourite wears one unless it was removed, any
-    other task once one is picked (2026-11-16, `tasks_store.worn_icons`).
-    Default off; only a stored `true` is on. The listing sends `icon_slot`
-    either way — the switch only changes what the shell draws.
-    """
-    return read_prefs().get("task_icons_enabled") is True
+    return read_prefs().get("rail_extras_enabled") is True
 
 
 def task_summary_titles_enabled() -> bool:
@@ -1284,15 +1258,9 @@ def _prefs_response() -> dict:
         # The slow in-canvas screenshot fallback on a Mac
         # (`canvas_shot_slow_fallback_enabled`; off by default).
         "canvas_shot": {"slow_fallback": canvas_shot_slow_fallback_enabled()},
-        # Free pins on the Claude rail (`rail_free_pins_enabled`; off by default).
-        "rail_free_pins": {"enabled": rail_free_pins_enabled()},
-        # A file's other modes as doors on the rail (`rail_mode_doors_enabled`;
-        # off by default).
-        "rail_mode_doors": {"enabled": rail_mode_doors_enabled()},
-        # The expandable rail (`rail_expand_enabled`; off by default).
-        "rail_expand": {"enabled": rail_expand_enabled()},
-        # Task icons in place of the status ring (`task_icons_enabled`; off).
-        "task_icons": {"enabled": task_icons_enabled()},
+        # The rail's extras — mode doors, the expandable rail, free pins
+        # (`rail_extras_enabled`; off by default).
+        "rail_extras": {"enabled": rail_extras_enabled()},
         # Stable AI Tasks titles (`task_summary_titles_enabled`).
         "task_summary_titles": {"enabled": task_summary_titles_enabled()},
         # Lean Claude sessions (`claude_strict_mcp_enabled`, default off).
@@ -1661,33 +1629,12 @@ def put_prefs(body: dict = Body(...), x_fused: str | None = Header(default=None)
                                     status_code=400)
             prefs["canvas_shot_slow_fallback_enabled"] = value
             changed = True
-        if "rail_free_pins_enabled" in body:
-            value = body.get("rail_free_pins_enabled")
+        if "rail_extras_enabled" in body:
+            value = body.get("rail_extras_enabled")
             if not isinstance(value, bool):
-                return JSONResponse({"error": "'rail_free_pins_enabled' must be a boolean"},
+                return JSONResponse({"error": "'rail_extras_enabled' must be a boolean"},
                                     status_code=400)
-            prefs["rail_free_pins_enabled"] = value
-            changed = True
-        if "rail_mode_doors_enabled" in body:
-            value = body.get("rail_mode_doors_enabled")
-            if not isinstance(value, bool):
-                return JSONResponse({"error": "'rail_mode_doors_enabled' must be a boolean"},
-                                    status_code=400)
-            prefs["rail_mode_doors_enabled"] = value
-            changed = True
-        if "rail_expand_enabled" in body:
-            value = body.get("rail_expand_enabled")
-            if not isinstance(value, bool):
-                return JSONResponse({"error": "'rail_expand_enabled' must be a boolean"},
-                                    status_code=400)
-            prefs["rail_expand_enabled"] = value
-            changed = True
-        if "task_icons_enabled" in body:
-            value = body.get("task_icons_enabled")
-            if not isinstance(value, bool):
-                return JSONResponse({"error": "'task_icons_enabled' must be a boolean"},
-                                    status_code=400)
-            prefs["task_icons_enabled"] = value
+            prefs["rail_extras_enabled"] = value
             changed = True
         if "task_summary_titles_enabled" in body:
             value = body.get("task_summary_titles_enabled")
@@ -2005,10 +1952,7 @@ def put_prefs(body: dict = Body(...), x_fused: str | None = Header(default=None)
                           "'project_queue_enabled', "
                           "'chat_recap_enabled', 'breakout_enabled', 'experts_enabled', "
                           "'canvas_shot_slow_fallback_enabled', "
-                          "'rail_free_pins_enabled', "
-                          "'rail_mode_doors_enabled', "
-                          "'rail_expand_enabled', "
-                          "'task_icons_enabled', "
+                          "'rail_extras_enabled', "
                           "'task_summary_titles_enabled', "
                           "'claude_strict_mcp_enabled', 'claude_default_permission', "
                           "'bots_autostage', 'bots_sounds', 'bots_clear_enabled', "

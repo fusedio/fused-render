@@ -1,4 +1,4 @@
-// THE RAIL CHANGED WIDTH (the expandable rail, `rail_expand_enabled`; owner,
+// THE RAIL CHANGED WIDTH (the expandable rail, `rail_extras_enabled`; owner,
 // 2026-11-21): expanded, collapsed, or dragged wider or narrower — every frame
 // of the width glide and every move of the drag. The rail's cards are placed
 // against the rail's left edge and re-place on a window resize or on their

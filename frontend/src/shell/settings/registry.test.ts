@@ -101,8 +101,17 @@ describe("visibility", () => {
 
   test("the rail's own switches are top-level rows: the rail, favourites and the shared header are always on", () => {
     const ids = visibleSettings(ctx({}, { canvases: { enabled: false } } as Partial<Prefs>)).map((s) => s.id as string);
-    for (const id of ["tasks-icons", "rail-mode-doors", "rail-free-pins"]) expect(ids).toContain(id);
     for (const gone of ["canvases-rail-peek", "tasks-favourites", "tasks-unified-head"]) expect(ids).not.toContain(gone);
+  });
+
+  test("Rail extras is one top-level switch in place of three, and task icons are always on", () => {
+    const all = SETTINGS.map((s) => s.id as string);
+    for (const gone of ["tasks-icons", "rail-mode-doors", "rail-expand", "rail-free-pins"]) expect(all).not.toContain(gone);
+    const row = SETTINGS.find((s) => s.id === "rail-extras")!;
+    expect(row.label).toBe("Rail extras");
+    expect("child" in row).toBe(false);
+    expect("parent" in row).toBe(false);
+    expect(visibleSettings(ctx()).map((s) => s.id as string)).toContain("rail-extras");
   });
 
   test("the nav has no Claude Code section; it is the Claude Code page", () => {
@@ -175,13 +184,13 @@ describe("visibility", () => {
     expect(visibleSettings(on).map((s) => s.id)).toContain("chromium-windows");
   });
 
-  test("Experimental flags: the chat and rail flags, then everything else", () => {
+  test("Experimental flags: one card, Rail extras first", () => {
     const on = ctx({}, { chromium_windows: { available: true, enabled: false } } as unknown as Partial<Prefs>);
     const secs = sectionsOf(visibleSettings(on), "features");
-    expect(secs.map((s) => s.section)).toEqual(["Chats & rail", "Other"]);
-    expect(secs[1].entries.map((e) => e.id)).toEqual(["canvases", "experts", "chromium-windows"]);
+    expect(secs.map((s) => s.section)).toEqual(["Other"]);
+    expect(secs[0].entries.map((e) => e.id)).toEqual(["rail-extras", "canvases", "experts", "chromium-windows"]);
     // Without the capability the Chromium row is simply missing.
-    expect(sectionsOf(visibleSettings(ctx()), "features").map((s) => s.section)).toEqual(["Chats & rail", "Other"]);
+    expect(sectionsOf(visibleSettings(ctx()), "features").map((s) => s.section)).toEqual(["Other"]);
   });
 });
 

@@ -67,9 +67,8 @@ import {
 } from "./rail-move-lib";
 import { commitWindowBox, freezeFromDock, magnetBox, usePusher, useWindowBox } from "./rail-move-store";
 import { drawnBox, useCardMove, useRailResizing } from "./useCardMove";
-import { railFreePinsNow, useRailFreePins } from "./rail-free-pins-flag";
+import { railExtrasNow, useRailExtras } from "./rail-extras-flag";
 import { placeColumn } from "./rail-slots-lib";
-import { useRailExpand } from "./rail-expand-flag";
 import { watchRailWidth } from "./rail-width-watch";
 import {
   PEEK_MAX_WIDTH,
@@ -214,7 +213,7 @@ export function DoorCard({ store, href, onNoRoomPress, rail: railProp, className
   // FREE PINS (rail-slots-lib): pinned, the card is frozen at the box the
   // window's mark holds; not pinned, it shares the rail's column with window
   // B's non-pin and pushes the pins it would cover.
-  const freePins = useRailFreePins();
+  const freePins = useRailExtras();
   const freePinsRef = useRef(false);
   freePinsRef.current = freePins;
 
@@ -226,9 +225,10 @@ export function DoorCard({ store, href, onNoRoomPress, rail: railProp, className
   const [box, setBox] = useState<Box | null>(null);
   const [shownOn, setShownOn] = useState(false);
   const row = useMemo(() => rowOf(rail), [rail]);
-  // THE EXPANDABLE RAIL (rail-width-watch): its edge moves with no window
-  // resize and no row reshaping — the card follows it too.
-  const followRailWidth = useRailExpand();
+  // THE EXPANDABLE RAIL (rail-width-watch; Rail extras, the free pins' own
+  // switch): its edge moves with no window resize and no row reshaping — the
+  // card follows it too.
+  const followRailWidth = freePins;
   const railLeft = useRef(0);
   const door = store.doorOf(rail);
   const want = up && !!rail && !!door && !noRoom;
@@ -593,13 +593,13 @@ export function DoorCard({ store, href, onNoRoomPress, rail: railProp, className
     // The card's own close (`close`), not the store's alone: it hands the
     // keyboard back to the door first (CodeRabbit on #2349 — the × pressed
     // by keyboard left the focus in a card gone inert).
-    if (held && railFreePinsNow()) {
+    if (held && railExtrasNow()) {
       close();
       return;
     }
     // …and the pin's press freezes the window where it stands, before the
     // hold makes it float (rail-move-store `freezeFromDock`).
-    if (!held && railFreePinsNow()) freezeFromDock("a");
+    if (!held && railExtrasNow()) freezeFromDock("a");
     store.setHeld(!held);
   }, [store, close]);
   const api = useMemo<DoorCardApi>(

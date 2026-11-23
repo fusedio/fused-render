@@ -1700,61 +1700,43 @@ def test_canvas_shot_slow_fallback_defaults_off_toggles_and_rejects_junk(tmp_pat
     assert prefs_mod.canvas_shot_slow_fallback_enabled() is False
 
 
-def test_rail_free_pins_defaults_off_toggles_and_rejects_junk(tmp_path, monkeypatch):
-    """The rail's free-pins flag: same opt-in idiom."""
+def test_rail_extras_defaults_off_toggles_and_rejects_junk(tmp_path, monkeypatch):
+    """The rail's extras (mode doors, the expandable rail, free pins): one
+    switch, same opt-in idiom — only a stored `true` is on."""
     client, home = _client(tmp_path, monkeypatch)
-    assert client.get("/api/prefs").json()["rail_free_pins"] == {"enabled": False}
-    body = client.put("/api/prefs", json={"rail_free_pins_enabled": True},
+    assert client.get("/api/prefs").json()["rail_extras"] == {"enabled": False}
+    body = client.put("/api/prefs", json={"rail_extras_enabled": True},
                       headers=FUSED).json()
-    assert body["rail_free_pins"]["enabled"] is True
+    assert body["rail_extras"]["enabled"] is True
     stored = json.loads((home / "prefs.json").read_text(encoding="utf-8"))
-    assert stored["rail_free_pins_enabled"] is True
-    assert prefs_mod.rail_free_pins_enabled() is True
-    bad = client.put("/api/prefs", json={"rail_free_pins_enabled": "yes"},
+    assert stored["rail_extras_enabled"] is True
+    assert prefs_mod.rail_extras_enabled() is True
+    bad = client.put("/api/prefs", json={"rail_extras_enabled": "yes"},
                      headers=FUSED)
     assert bad.status_code == 400
-    assert "rail_free_pins_enabled" in bad.json()["error"]
-    (home / "prefs.json").write_text(json.dumps({"rail_free_pins_enabled": 1}),
+    assert "rail_extras_enabled" in bad.json()["error"]
+    (home / "prefs.json").write_text(json.dumps({"rail_extras_enabled": 1}),
                                      encoding="utf-8")
-    assert prefs_mod.rail_free_pins_enabled() is False
+    assert prefs_mod.rail_extras_enabled() is False
 
 
-def test_rail_mode_doors_defaults_off_toggles_and_rejects_junk(tmp_path, monkeypatch):
-    """The rail's mode-doors flag: same opt-in idiom."""
+def test_retired_rail_extras_and_task_icons_switches_are_ignored(tmp_path, monkeypatch):
+    """Task icons are always on, and the three rail switches folded into
+    `rail_extras_enabled` (no migration): their old keys left in prefs.json
+    are ignored — even `true` does not turn Rail extras on — the payload no
+    longer names them, and a PUT of one alone names nothing known."""
     client, home = _client(tmp_path, monkeypatch)
-    assert client.get("/api/prefs").json()["rail_mode_doors"] == {"enabled": False}
-    body = client.put("/api/prefs", json={"rail_mode_doors_enabled": True},
-                      headers=FUSED).json()
-    assert body["rail_mode_doors"]["enabled"] is True
-    stored = json.loads((home / "prefs.json").read_text(encoding="utf-8"))
-    assert stored["rail_mode_doors_enabled"] is True
-    assert prefs_mod.rail_mode_doors_enabled() is True
-    bad = client.put("/api/prefs", json={"rail_mode_doors_enabled": "yes"},
-                     headers=FUSED)
-    assert bad.status_code == 400
-    assert "rail_mode_doors_enabled" in bad.json()["error"]
-    (home / "prefs.json").write_text(json.dumps({"rail_mode_doors_enabled": 1}),
-                                     encoding="utf-8")
-    assert prefs_mod.rail_mode_doors_enabled() is False
-
-
-def test_rail_expand_defaults_off_toggles_and_rejects_junk(tmp_path, monkeypatch):
-    """The rail's expandable-rail flag: same opt-in idiom."""
-    client, home = _client(tmp_path, monkeypatch)
-    assert client.get("/api/prefs").json()["rail_expand"] == {"enabled": False}
-    body = client.put("/api/prefs", json={"rail_expand_enabled": True},
-                      headers=FUSED).json()
-    assert body["rail_expand"]["enabled"] is True
-    stored = json.loads((home / "prefs.json").read_text(encoding="utf-8"))
-    assert stored["rail_expand_enabled"] is True
-    assert prefs_mod.rail_expand_enabled() is True
-    bad = client.put("/api/prefs", json={"rail_expand_enabled": "yes"},
-                     headers=FUSED)
-    assert bad.status_code == 400
-    assert "rail_expand_enabled" in bad.json()["error"]
-    (home / "prefs.json").write_text(json.dumps({"rail_expand_enabled": 1}),
-                                     encoding="utf-8")
-    assert prefs_mod.rail_expand_enabled() is False
+    retired = {"rail_mode_doors_enabled": True, "rail_expand_enabled": True,
+               "rail_free_pins_enabled": True, "task_icons_enabled": False}
+    home.mkdir(parents=True, exist_ok=True)
+    (home / "prefs.json").write_text(json.dumps(retired), encoding="utf-8")
+    got = client.get("/api/prefs")
+    assert got.status_code == 200
+    for name in ("rail_mode_doors", "rail_expand", "rail_free_pins", "task_icons"):
+        assert name not in got.json()
+    assert got.json()["rail_extras"] == {"enabled": False}
+    for key in retired:
+        assert client.put("/api/prefs", json={key: True}, headers=FUSED).status_code == 400
 
 
 def test_retired_rail_and_task_head_switches_are_ignored(tmp_path, monkeypatch):

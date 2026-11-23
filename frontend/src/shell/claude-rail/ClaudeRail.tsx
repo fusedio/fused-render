@@ -357,7 +357,7 @@ import {
   publishWindowBox,
   windowPos,
 } from "./rail-move-store";
-import { railFreePinsNow, useRailFreePins } from "./rail-free-pins-flag";
+import { railExtrasNow, useRailExtras, useRailExtrasAnswer } from "./rail-extras-flag";
 import { aPinTask, pinOf, placeColumn } from "./rail-slots-lib";
 import { SLOTS, focusPin, freeSlot, otherSlot, registerPinFocus, setFreeSlot, setPinTitle, useFreeSlot, type Slot } from "./rail-slots-store";
 import { PIN_A_ID, usePinHasBox } from "./use-pin-box";
@@ -475,8 +475,6 @@ import {
   useModeCards,
   type RailModeDoor,
 } from "./mode-peek-store";
-import { useRailModeDoorsAnswer } from "./rail-mode-doors-flag";
-import { useRailExpand } from "./rail-expand-flag";
 import { watchRailWidth } from "./rail-width-watch";
 import type { DoorCardState } from "./door-card-store";
 
@@ -492,7 +490,7 @@ const NO_MODE_DOORS: RailModeDoor[] = [];
  *  off it. A hidden rail says nothing. Counted: a page's rail and the shell's
  *  fallback never stand together, but the count makes that a fact, not a hope. */
 let railsUp = 0;
-// THE EXPANDABLE RAIL (`rail_expand_enabled`; owner, 2026-11-21) says its
+// THE EXPANDABLE RAIL (Rail extras, `rail_extras_enabled`; owner, 2026-11-21) says its
 // live width: 48 collapsed, its own width expanded — again on every toggle
 // and every move of its resize drag (the effect re-runs on `width`).
 function railUp(width: number = RAIL_COLLAPSED_WIDTH): () => void {
@@ -783,7 +781,7 @@ export function ClaudeRail({
    *  with its own window A card (ModePeek, mode-peek-store) that draws the
    *  file in that mode — an item of its own, as the Git door is. `doors` is the page's mode menu less the active
    *  entry; `src` the frame for a mode; `onOpen` the menu's own switch.
-   *  Only with the doors' own switch (`rail_mode_doors_enabled`), and only a file page hands it. */
+   *  Only with Rail extras on (`rail_extras_enabled`), and only a file page hands it. */
   fileModes?: {
     path: string;
     doors: RailModeDoor[];
@@ -894,12 +892,12 @@ export function ClaudeRail({
   // HOVER / TEMP / PIN (rail-pin-lib; owner, 2026-11-16): a press makes a
   // card TEMP — one press outside closes it — and only its pin icon or a
   // double-click on its ring PINS it (held).
-  // FREE PINS (rail-slots-lib header; `rail_free_pins_enabled`): the pin is
+  // FREE PINS (rail-slots-lib header; Rail extras, `rail_extras_enabled`): the pin is
   // the TASK'S. A chat window is then two slots
   // that swap roles (rail-slots-store) — its non-pin, which this rail's rings
   // drive, and its pin, frozen where it stood; a door's card and the + pin
   // where they are — and a ring's click never swaps what a pin shows.
-  const freePins = useRailFreePins();
+  const freePins = useRailExtras();
   const freePinsRef = useRef(freePins);
   freePinsRef.current = freePins;
   /** Section A's pin, as its mark spells it (last-chat `aPinned`). */
@@ -956,15 +954,15 @@ export function ClaudeRail({
   // rail stands whatever it holds and whatever the pane does (the shell's
   // fallback stands on every page without a page rail, claude-rail-lib
   // `fallbackRailUp`).
-  // THE EXPANDABLE RAIL (owner, 2026-11-21; `rail_expand_enabled`): an expand / collapse button at the rail's
+  // THE EXPANDABLE RAIL (owner, 2026-11-21; Rail extras, `rail_extras_enabled`):
+  // an expand / collapse button at the rail's
   // top, the left sidebar's own (SidebarFrame). Collapsed, the 48px rail of
   // before plus the button. Expanded, the same rail, wider (its width
   // dragged on its inner edge, platform/lib/railstate), each item drawn as
   // its icon and its title (`seatBody`); every behaviour unchanged. Off,
   // nothing of it is drawn, whatever the layout document says.
-  const expandFlag = useRailExpand();
+  const expandOn = useRailExtras();
   const railState = useRailState();
-  const expandOn = expandFlag;
   const expanded = expandOn && railState.expanded;
   // THE TUCK (SidebarFrame `tucking`): a collapse keeps the expanded rows —
   // icon left, no title — for the length of the width glide, so the icons
@@ -1336,9 +1334,9 @@ export function ClaudeRail({
   // functions are read through a ref (they are new on every render).
   const fileModesRef = useRef(fileModes);
   fileModesRef.current = fileModes;
-  // Behind their own switch (`rail_mode_doors_enabled`, rail-mode-doors-flag):
+  // Behind Rail extras (`rail_extras_enabled`, rail-extras-flag):
   // off, no door is drawn and nothing is published, so no card stands.
-  const modeDoorsAnswer = useRailModeDoorsAnswer();
+  const modeDoorsAnswer = useRailExtrasAnswer();
   const modeDoorsOn = modeDoorsAnswer === true;
   const modeDoors = modeDoorsOn && fileModes ? fileModes.doors : NO_MODE_DOORS;
   const modeSig =
@@ -4082,7 +4080,7 @@ export function ClaudeRail({
                       onResize: (size, changed, box) => {
                         // A FREE PIN'S RESIZE IS THE PIN'S ALONE: the
                         // window's frozen box, never the shared size.
-                        if (railFreePinsNow()) {
+                        if (railExtrasNow()) {
                           commitWindowBox("a", { left: box.left, top: box.top, width: size.width, height: size.height });
                           return;
                         }

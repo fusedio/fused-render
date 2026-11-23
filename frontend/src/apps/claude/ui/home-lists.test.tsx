@@ -1061,43 +1061,32 @@ test("A/B ROW: a Recent row wears the star in its count slot — filled when sta
   }
 });
 
-test("A/B ROW, ICONS ON: every numbered row's status icon is the icon picker's button, ring or face", async () => {
+test("A/B ROW: every numbered row's status icon is the icon picker's button, ring or face", async () => {
   // Akshil, 2026-11-15: "click on status icon, when it is fav … change icon";
   // 2026-11-16: the icon is not the star's — the plain ring of any task opens
   // the picker too. A row with no number yet has nothing to stamp a pick on.
-  const { publishTaskIcons } = await import("@platform/lib/task-icons-flag");
-  act(() => {
-    publishTaskIcons({ enabled: true });
-  });
-  try {
-    const r = mount(
-      <Lists
-        file="/repo/x.py"
-        recent={[chat("s1"), chat("fav1", { starred: true, icon_slot: 3 }), chat("s3", { task_id: "" })]}
-        artifacts={[]}
-        onOpen={() => {}}
-      />,
-    );
-    const rows = all(r.toJSON() as Json, "tasks-row");
-    expect(rows.length).toBe(3);
-    const picks = rows.map((row) => all(all(row, "tasks-rowmark")[0], "task-icon-pick"));
-    expect(picks[0].length).toBe(1);
-    expect(picks[1].length).toBe(1);
-    expect(picks[2].length).toBe(0);
-    for (const pick of picks.slice(0, 2)) {
-      expect((pick[0].props as { "aria-label"?: string })["aria-label"]).toBe("Choose icon");
-    }
-    // The ring is drawn inside the button on s1, the glyph on fav1.
-    expect(JSON.stringify(picks[0][0])).not.toContain("schedule-ring--glyph");
-    expect(JSON.stringify(picks[1][0])).toContain("schedule-ring--glyph");
-    // The ring's slot holds no filing button on either: Archive is the id's.
-    for (const row of rows) expect(all(all(row, "tasks-rowmark")[0], "tasks-act").length).toBe(0);
-  } finally {
-    // Off by publish, not by reset (the star test's own note).
-    act(() => {
-      publishTaskIcons({ enabled: false });
-    });
+  const r = mount(
+    <Lists
+      file="/repo/x.py"
+      recent={[chat("s1"), chat("fav1", { starred: true, icon_slot: 3 }), chat("s3", { task_id: "" })]}
+      artifacts={[]}
+      onOpen={() => {}}
+    />,
+  );
+  const rows = all(r.toJSON() as Json, "tasks-row");
+  expect(rows.length).toBe(3);
+  const picks = rows.map((row) => all(all(row, "tasks-rowmark")[0], "task-icon-pick"));
+  expect(picks[0].length).toBe(1);
+  expect(picks[1].length).toBe(1);
+  expect(picks[2].length).toBe(0);
+  for (const pick of picks.slice(0, 2)) {
+    expect((pick[0].props as { "aria-label"?: string })["aria-label"]).toBe("Choose icon");
   }
+  // The ring is drawn inside the button on s1, the glyph on fav1.
+  expect(JSON.stringify(picks[0][0])).not.toContain("schedule-ring--glyph");
+  expect(JSON.stringify(picks[1][0])).toContain("schedule-ring--glyph");
+  // The ring's slot holds no filing button on either: Archive is the id's.
+  for (const row of rows) expect(all(all(row, "tasks-rowmark")[0], "tasks-act").length).toBe(0);
 });
 
 test("a Recent press moves the list's last mark, never the rail favourites' own", async () => {
