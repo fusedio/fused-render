@@ -793,15 +793,14 @@ describe("fallbackRailUp", () => {
 
 // ---- THE + AND A RING'S PRESS BY THE PANE (owner, 2026-11-05) --------------
 describe("plusDoor", () => {
-  it("pane open, favourites on, a page with a home: the New task card all the same (owner, 2026-11-08: the + never focuses the expanded sidebar)", () => {
-    expect(plusDoor({ paneOpen: true, favsOn: true, paneHome: true })).toBe("modal");
+  it("pane open, a page with a home: the New task card all the same (owner, 2026-11-08: the + never focuses the expanded sidebar)", () => {
+    expect(plusDoor({ paneOpen: true, paneHome: true })).toBe("modal");
   });
   it("pane shut: the New task card, as today", () => {
-    expect(plusDoor({ paneOpen: false, favsOn: true, paneHome: true })).toBe("modal");
+    expect(plusDoor({ paneOpen: false, paneHome: true })).toBe("modal");
   });
-  it("no home to show, or favourites off: the card", () => {
-    expect(plusDoor({ paneOpen: true, favsOn: true, paneHome: false })).toBe("modal");
-    expect(plusDoor({ paneOpen: true, favsOn: false, paneHome: true })).toBe("modal");
+  it("no home to show: the card", () => {
+    expect(plusDoor({ paneOpen: true, paneHome: false })).toBe("modal");
   });
 });
 

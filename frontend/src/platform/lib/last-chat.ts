@@ -1,14 +1,14 @@
 // THE CHAT THE READER LAST PICKED (owner, 2026-11-02: "last selected stuff
 // should be in expanded claude sidebar view as well").
 //
-// The canvas rail marks the ring pressed last (ClaudeRail `.is-last`); the
-// pane's Recent chats list (apps/claude ui/Lists) marks the same row once the
+// The canvas rail's list lights the ring pressed last (ClaudeRail
+// `activeRing`); the pane's Recent chats list (apps/claude ui/Lists) marks the same row once the
 // pane is open. One answer for both, so collapsing or expanding the pane
 // keeps the mark where the reader left it.
 //
 // TWO MARKS, NOT ONE (owner, 2026-11-04: "last select of fav is diff from
 // last selected of the list, both of them should show their last selected"):
-// the FAVOURITES keep their own (`useLastFav`, sessionStorage
+// the FAVOURITES keep their own (`setLastFav`, sessionStorage
 // `fused-render:last-fav`) — a press on a favourite's ring (the rail's
 // favourites section, the pane's Favourites row) moves only that one, and a
 // press on a list ring (the rail's chats, the pane's Recent row) only the
@@ -173,11 +173,6 @@ export function onLastFavStorage(e: Pick<StorageEvent, "key" | "storageArea">): 
 /** `subscribeLastChat`, for the favourites' mark. */
 export function subscribeLastFav(fn: () => void): () => void {
   return fav.subscribe(fn);
-}
-
-/** The favourites' last pick, live. */
-export function useLastFav(): string | null {
-  return useSyncExternalStore(subscribeLastFav, lastFav, lastFav);
 }
 
 const favOpenMark = markStore("fused-render:fav-open");

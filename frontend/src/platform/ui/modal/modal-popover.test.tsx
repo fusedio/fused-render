@@ -307,4 +307,11 @@ describe("popoverDrag (Modal `popover.resize`; the rail's + card resizes as wind
     expect(at.left + at.width).toBe(1200 - POPOVER_INSET);
     expect(at.width).toBe(start.width);
   });
+  test("a row shortened under a top drag pulls the bottom back inside it (CodeRabbit on #2407)", () => {
+    const row = { left: 232, top: 40, width: 1320, height: 600 };
+    const at = popoverDrag("t", start, 0, -20, view, limits, undefined, row);
+    expect(at.top + at.height).toBe(row.top + row.height - POPOVER_INSET);
+    // The top still follows the pointer.
+    expect(at.top).toBe(start.top - 20);
+  });
 });

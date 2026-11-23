@@ -834,11 +834,11 @@ export function fallbackRailUp(o: { pageRails: number }): boolean {
   return o.pageRails === 0;
 }
 
-/** WHAT THE + DOES (ClaudeRail; owner, 2026-11-05): beside the OPEN pane
- *  (favourites on), the pane's own home — its Recent chats and new-chat
- *  composer, the keyboard in it — where the page can show it (`paneHome`);
- *  else the New task card, as ever. */
-export function plusDoor(_o: { paneOpen: boolean; favsOn: boolean; paneHome: boolean }): "pane" | "modal" {
+/** WHAT THE + DOES (ClaudeRail; owner, 2026-11-05): beside the OPEN pane,
+ *  the pane's own home — its Recent chats and new-chat composer, the
+ *  keyboard in it — where the page can show it (`paneHome`); else the New
+ *  task card, as ever. */
+export function plusDoor(_o: { paneOpen: boolean; paneHome: boolean }): "pane" | "modal" {
   // Owner, 2026-11-08: "any time you click the + we show the task modal only,
   // and don't focus the expanded sidebar" — the pane-home door of 2026-11-05
   // (beside the open pane the + opened the pane's Recent chats) is retired.

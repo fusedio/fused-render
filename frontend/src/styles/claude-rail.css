@@ -205,7 +205,13 @@
     background var(--dur-fast) var(--ease-out),
     box-shadow var(--dur-fast) var(--ease-out);
 }
-.claude-rail-seam:hover::after {
+/* Focused from the keyboard (its Enter opens the pane): the hover's hairline,
+   no ring. */
+.claude-rail-seam:focus-visible {
+  outline: none;
+}
+.claude-rail-seam:hover::after,
+.claude-rail-seam:focus-visible::after {
   background: var(--seam-hot);
   box-shadow: 0 0 3px color-mix(in srgb, var(--seam-hot) 35%, transparent);
 }

@@ -57,7 +57,7 @@
 // 2026-11-05): the chat stands in the pane and in the card at once. Beside the
 // open pane (owner, 2026-11-05):
 //   - NO GAP AT THE TOP: no glyph, and nothing keeps its room — the + sits
-//     on the rail's own padding (claude-rail.css `.no-glyph`).
+//     on the rail's own padding.
 //   - THE + IS THE PANE'S HOME (`onNewChat`, claude-rail-lib `plusDoor`): the
 //     pane's Recent chats page, the keyboard in its new-chat composer
 //     (`paneHomeComposer`) — not the New task card, which is the shut pane's.
@@ -148,13 +148,10 @@
 // is OPEN is per window (2026-11-04, below). The consequences here:
 //   - THE RAIL'S LAST SECTION HOLDS THEM: under the Git seats, a ring for
 //     every starred chat from ANY place (claude-rail-lib `favSeats` — not
-//     `onRail`), newest first. ONLY there: a starred chat on this place
-//     leaves the list above (owner, 2026-11-04: "when I fav one task, let's
-//     not show it in the list above, let's not have duplicate entries";
-//     claude-rail-lib `listSeats`), and is back in it once unstarred. The
+//     `onRail`), newest first. A starred chat on this place keeps its ring
+//     in the list above too (`onStarred`, below: a star moves nothing). The
 //     node's narrowing is the list's alone — the section holds every
-//     favourite, node or no node. A held card whose chat is starred lets go
-//     (`onStarred`, below) and its ring is the section's from then on.
+//     favourite, node or no node.
 //   - A FAVOURITE'S RING HOVERS LIKE A LIST RING (owner, 2026-11-04: "when we
 //     hover over favourites we don't show preview if there is no favourite
 //     open — why?"): resting on it previews that chat in window B (hover
@@ -175,9 +172,9 @@
 //     (claude-rail-lib `activeRing`). A hover's wash is a hover, not a mark.
 //   - TWO LAST MARKS (owner, 2026-11-04: "last select of fav is diff from
 //     last selected of the list, both of them should show their last
-//     selected"): the list's `.is-last` and the section's are two stores
-//     (platform/lib/last-chat `useLastChat` / `useLastFav`); a press in one
-//     moves only its own, and both show at once.
+//     selected"): the list's last press (platform/lib/last-chat
+//     `setLastChat`, which its `activeRing` reads) and the section's
+//     (`setLastFav`) are two stores; a press in one moves only its own.
 //   - ONE FAVOURITE'S CARD MAY BE OPEN AT A TIME, PER WINDOW (owner,
 //     2026-11-04: "if I have multiple windows open, the open favourite
 //     shouldn't sync; the list items (stars) do sync"): this window's open
@@ -1420,16 +1417,6 @@ export function ClaudeRail({
   );
   // The open key moving: in the layout phase, so the draft flush (`letGo`)
   // lands before the favourite's composer paints.
-  // …AND A CHAT STARRED ANYWHERE while this card shows it (another window's
-  // star): the list no longer holds it (header, `listSeats`), so this card
-  // lets go and the ring is the favourites section's. Only on the TURN to
-  // starred while shown: a favourite's ring now opens this card on a hover
-  // (header), and that card must stay. In the layout phase, while it is
-  // still a seat, so `letGo` finds its draft to flush.
-  // A star pressed on in this rail's card: the ring moved to the favourites
-  // section, so this card lets go now, and the favourite's card opens in
-  // this window — a star you just pressed is a card you want to see
-  // (rail-peek-lib `railOnStarred`).
   // A STAR PRESSED IN WINDOW A MOVES NOTHING (owner, 2026-11-05: "the item
   // also stays in the normal tasks section and the modal also stays; only
   // one more item is added in the fav section"): the card stays, the list
@@ -2405,10 +2392,17 @@ export function ClaudeRail({
   // window is gone, the pin with it ("we just close the window if it is not
   // in the next view"); the + card, the Tasks / Bots / Git card on its door. Once per
   // mount, after the pulse's first answer (an empty list before it says
-  // nothing about which chats this view has).
+  // nothing about which chats this view has). Not the shell's fallback rail
+  // standing in for a beat on the path a page rail last stood on
+  // (`bootFallback`, below): it has no list, and the page rail that follows
+  // owns the restore.
+  useLayoutEffect(() => {
+    if (!favouritesOnly && typeof location !== "undefined") pageRailPath = location.pathname;
+  });
+  const bootFallback = favouritesOnly && typeof location !== "undefined" && location.pathname === pageRailPath;
   const aRestored = useRef(false);
   useEffect(() => {
-    if (aRestored.current) return;
+    if (aRestored.current || bootFallback) return;
     const pin = readAPin(aPinned());
     if (!pin || intent.current !== null || cardRef.current || tasksCard.up || botsCard.up || gitCard.up || modeUpAny) {
       aRestored.current = true;
@@ -2452,7 +2446,7 @@ export function ClaudeRail({
       door.intent().press(door.key);
       door.store.setHeld(true);
     }
-  }, [rows, baseSeats, intent, tasksCard, botsCard, gitCard, modeCardsNow, modeDoors]);
+  }, [rows, baseSeats, intent, tasksCard, botsCard, gitCard, modeCardsNow, modeDoors, bootFallback]);
   // FREE PINS — A PIN GOES WITH ITS RING (owner, 2026-11-19: "when we have a
   // task ring item or git that isn't in next view in rail we should close it
   // even if pinned" — the rule above, "we just close the window if it is not
@@ -2490,10 +2484,6 @@ export function ClaudeRail({
         : pinDoorA === "bots"
           ? !botsOffered
           : false;
-  useLayoutEffect(() => {
-    if (!favouritesOnly && typeof location !== "undefined") pageRailPath = location.pathname;
-  });
-  const bootFallback = favouritesOnly && typeof location !== "undefined" && location.pathname === pageRailPath;
   const pinOrphanA =
     freePins && !bootFallback && (tasksPulseLoaded() || rows.length > 0) && (pinRingGone || pinDoorGone);
   useEffect(() => {
@@ -4366,7 +4356,9 @@ export function ClaudeRail({
       {/* THE RAIL'S INNER EDGE IS A SEAM: pulled left it opens the pane at the
           width the pointer takes it to — the explorer sidebar's reopen edge
           (SideReopenEdge) and the global sidebar's rail, the same gesture on
-          the same kind of edge. The Show button stays the click. */}
+          the same kind of edge. Focused, it is the keyboard's way in too
+          (the Show button's, gone with the nav doors): Enter or Space opens
+          the pane on its home, as that button did. */}
       {/* EXPANDED (the expandable rail) the seam is the rail's own resize,
           wherever the rail stands — and it stays mounted for the whole of a
           drag that collapses the rail, which would otherwise lose its
@@ -4378,6 +4370,17 @@ export function ClaudeRail({
           aria-orientation="vertical"
           aria-label={expanded || edgeDrag ? "Drag to resize the rail" : "Drag to show the Claude panel"}
           onPointerDown={expanded ? onEdgeDown : onPullStart}
+          {...(!expanded && !edgeDrag
+            ? {
+                tabIndex: 0,
+                onKeyDown: (e: ReactKeyboardEvent<HTMLDivElement>) => {
+                  if (e.key !== "Enter" && e.key !== " ") return;
+                  e.preventDefault();
+                  onOpen();
+                  onNewChat?.();
+                },
+              }
+            : {})}
           {...(expandOn ? { onPointerMove: onEdgeMove, onPointerUp: onEdgeUp, onPointerCancel: onEdgeUp } : {})}
         />
       )}
@@ -4515,7 +4518,7 @@ export function ClaudeRail({
           {...doorHint(plusLabel, (!!card?.pop && card.door === PLUS_DOOR) || plusHovers())}
           aria-label={plusLabel}
           aria-haspopup="dialog"
-          aria-expanded={!!card?.pop}
+          aria-expanded={!!card?.pop && card.door === PLUS_DOOR}
           aria-busy={waiting !== null || undefined}
           // Never held while the card's read is out: a press during a
           // hover's read is the pin (plus-pop-lib.ts), and a disabled

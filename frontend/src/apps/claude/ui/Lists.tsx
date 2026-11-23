@@ -363,11 +363,11 @@ export function Lists({
   };
 
   // THE CHAT LAST PICKED (owner, 2026-11-02: "last selected stuff should be
-  // in expanded claude sidebar view as well"): the canvas rail's `.is-last`
-  // ring, as this list's row — one store for both (platform/lib/last-chat),
-  // and any row's press here moves it, as a ring's press does there. (The
-  // rail's favourites section keeps a mark of its own, `useLastFav`; no row
-  // here moves it.)
+  // in expanded claude sidebar view as well"): the ring the canvas rail's
+  // list lights as pressed last, as this list's row — one store for both
+  // (platform/lib/last-chat), and any row's press here moves it, as a ring's
+  // press does there. (The rail's favourites section keeps a mark of its
+  // own, `setLastFav`; no row here moves it.)
   const last = useLastChat();
   const pick = (task: Task) => {
     const at = pressFor(task);
