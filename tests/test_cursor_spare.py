@@ -401,6 +401,7 @@ def prewarm(agent, tmp_path, monkeypatch):
     binary = _fake_binary(tmp_path / "bin" / "cursor-agent")
     monkeypatch.setattr(agent, "_cursor_bin", lambda: binary)
     monkeypatch.setattr(agent, "_backend_enabled", lambda backend: True)
+    monkeypatch.setattr(agent, "_default_backend_pref", lambda: "cursor")
     seen = []
     real_popen = subprocess.Popen
 
@@ -488,6 +489,35 @@ def test_prewarm_is_off_with_the_env_opt_out(prewarm, tmp_path, monkeypatch):
         assert not agent._CURSOR_SPARES, value
     monkeypatch.delenv("FUSED_CURSOR_PREWARM")
     assert agent._cursor_prewarm_enabled()
+
+
+def test_prewarm_starts_nothing_when_cursor_is_not_the_default_agent(
+        prewarm, tmp_path, monkeypatch):
+    agent, _ = prewarm
+    monkeypatch.setattr(agent, "_default_backend_pref", lambda: "claude")
+    popens = []
+    monkeypatch.setattr(agent.subprocess, "Popen",
+                        lambda *a, **kw: popens.append(a) or pytest.fail("Popen"))
+    agent._prewarm_cursor(_folder(tmp_path, "proj"))
+    assert not agent._CURSOR_SPARES
+    assert not popens
+
+
+@pytest.mark.parametrize("prefs, expected", [
+    ({"cursor_enabled": True, "default_backend": "cursor"}, "cursor"),
+    ({"cursor_enabled": True}, "claude"),
+    ({"cursor_enabled": False, "default_backend": "cursor"}, "claude"),
+    ({"claude_enabled": False, "cursor_enabled": True}, "cursor"),
+    (None, "claude"),
+])
+def test_default_backend_pref_mirrors_the_registry(agent, tmp_path, monkeypatch,
+                                                   prefs, expected):
+    home = tmp_path / "prefs-home"
+    home.mkdir()
+    monkeypatch.setattr(agent, "_home_dir", lambda: str(home))
+    if prefs is not None:
+        (home / "prefs.json").write_text(json.dumps(prefs))
+    assert agent._default_backend_pref() == expected
 
 
 def test_prewarm_skips_a_missing_binary_and_a_signed_out_cli(prewarm, tmp_path, monkeypatch):

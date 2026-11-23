@@ -276,6 +276,10 @@ the PROCESS cwd, so a warmed process can only serve a chat with that cwd.
 - **Trigger.** The composer's `defaults` call resolves the backend; when it is
   `cursor` (and the session has no live host) `_prewarm_cursor(file)` runs.
   It never raises and never changes what `defaults` answers.
+  A spare is started only when Cursor is the default agent (the
+  `default_backend` pref), so a user whose default is another agent pays
+  nothing for it; a Cursor chat opened while another agent is the default
+  starts cold.
 - **Spare.** The server starts at most one spare per cwd (keyed by realpath):
   `cursor_host.py` in spare mode. It spawns the CLI, runs `initialize` and a
   throwaway `session/new`, writes `<runs parent>/spares/<id>/ready`, then waits

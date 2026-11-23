@@ -946,6 +946,25 @@ def _backend_enabled(backend: str) -> bool:
     return False
 
 
+def _default_backend_pref() -> str:
+    """The agent new chats start from — a stdlib mirror of
+    `agent_backends.registry.default_id`: prefs.json's `default_backend`
+    when it names an enabled backend, else the first enabled one in
+    `BACKENDS` order (the same order as `registry.ORDER`)."""
+    try:
+        with open(os.path.join(_home_dir(), "prefs.json"), encoding="utf-8") as fh:
+            prefs = json.load(fh)
+    except (OSError, ValueError):
+        prefs = {}
+    if not isinstance(prefs, dict):
+        prefs = {}
+    wanted = prefs.get("default_backend")
+    if wanted not in BACKENDS:
+        wanted = DEFAULT_BACKEND
+    enabled = [b for b in BACKENDS if _backend_enabled(b)] or [DEFAULT_BACKEND]
+    return wanted if wanted in enabled else enabled[0]
+
+
 def _breakout_pref() -> bool:
     """Whether Breakout is on: `breakout_enabled` stored True in
     `<home>/prefs.json` (off by default), or Specialists on (their breakout is
@@ -5112,10 +5131,12 @@ def _retire_cursor_spare(key: str, entry: dict) -> None:
 
 
 def _cursor_spare_usable() -> bool:
-    """Whether a spare is worth starting: the agent is on and the CLI is
-    there and not known to be broken or signed out. Reads only — the health
-    cache the server already keeps (never a probe)."""
+    """Whether a spare is worth starting: the agent is on, is the default
+    agent, and the CLI is there and not known to be broken or signed out.
+    Reads only — the health cache the server already keeps (never a probe)."""
     if not _backend_enabled("cursor"):
+        return False
+    if _default_backend_pref() != "cursor":
         return False
     try:
         path = _cursor_bin()
@@ -13857,8 +13878,9 @@ def _defaults(file: str, session_id: str = "", backend: str = "") -> dict:
         backend = DEFAULT_BACKEND
     if backend == "cursor":
         # The composer opening on Cursor is the cue to warm a spare host for
-        # this folder (`_prewarm_cursor`); a chat that already has a live host
-        # needs none. Never changes the answer below, never raises.
+        # this folder (`_prewarm_cursor`) — only when Cursor is the default
+        # agent (the check lives in `_cursor_spare_usable`); a chat that
+        # already has a live host needs none. Never changes the answer below, never raises.
         try:
             if not (named and _live_host(file, session_id).get("run_id")):
                 _prewarm_cursor(file)
