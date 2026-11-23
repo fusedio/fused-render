@@ -2194,6 +2194,26 @@
 .chat-root .runbtn {
   right: 60px;
 }
+/* A reply's code fence is `white-space: pre` and scrolls SIDEWAYS (the
+   `.assistant pre` rule below), and an absolute pill inside a scroller rides
+   along with its content: scrolled to a long command's end, "run" and "copy"
+   landed on top of the code mid-block. The anchor span sticks to the left of
+   the scrollport instead (Chrome keeps it inside the pre's padding), which also
+   makes it the pills' containing block — so the offsets are the usual 6px from
+   the pre's edge minus that padding (10px 12px). Chip and card `pre`s are
+   pre-wrap, never scroll sideways, and keep their own anchors above. */
+.chat-root .assistant pre:not(.toolchip pre, .perm pre) > .copywrap {
+  position: sticky;
+  left: 0;
+}
+.chat-root .assistant pre:not(.toolchip pre, .perm pre) > .copywrap > .copybtn {
+  top: -4px;
+  right: -6px;
+}
+.chat-root .assistant pre:not(.toolchip pre, .perm pre) > .copywrap > .runbtn {
+  top: -4px;
+  right: 48px;
+}
 .chat-root pre:hover .copybtn,
 .chat-root .copybtn:focus-visible,
 .chat-root pre:hover .runbtn,

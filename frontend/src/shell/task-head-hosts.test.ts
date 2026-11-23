@@ -274,24 +274,26 @@ test("a pinned rail window's first row wears the hover row's ground (2026-11-17)
   expect(head).not.toMatch(/:has\(\.rail-pin-btn\.is-pinned\)[^{]*\{[^}]*var\(--accent/);
 });
 
-test("a rail window's two lines are evenly spaced: 10px in every band (2026-11-17)", () => {
-  // Owner, of a pinned head: "add a bit of padding on top and remove a bit
-  // of padding from bottom … uniform across top, middle and bottom". Row 1
-  // is 40px around its 20px tags; row 2 is 34px — the 22px archive seat
-  // between 6px above and the row's own 6px foot — around its 14px ring.
+test("every two-line head has one air all round: 10px bands, pinned or not (2026-11-22)", () => {
+  // Owner: "make sure in 1st and 2nd row the padding we have between
+  // elements is consistent across top bottom and left and right". Row 1 is
+  // 35px (7px on top, 28px buttons round a 22px tag), row 2 33px (4px, the
+  // 22px archive seat round the 16px ring, 7px foot).
   const head = read("../styles/task-head.css");
-  expect(head).toMatch(/\n\.task-head\.is-window\.is-two-line \.task-head-row \{\s*min-height: 40px;\s*\}/);
-  expect(head).toMatch(/\n\.task-head\.is-window\.is-two-line \.task-head-titlerow \{\s*min-height: 34px;\s*padding-top: 6px;\s*\}/);
-  // The foot the top now mirrors, and the seat between them.
-  expect(head).toMatch(/\n\.task-head-titlerow \{[^}]*min-height: 28px;\s*padding: 0 2px 6px 6px;/);
-  const row1 = 40;
-  const tags = 20;
-  const row2 = 34;
-  const ring = 14;
-  expect((row1 - tags) / 2).toBe(10);
-  expect((row2 - ring) / 2).toBe(10);
-  // Not keyed off the pin: pinning must not move the chat under the head.
-  expect(head).not.toMatch(/:has\(\.rail-pin-btn\.is-pinned\)[^{]*\{[^}]*min-height/);
+  expect(head).toMatch(/\n\.task-head\.task-head\.is-two-line \.task-head-row \{[^}]*min-height: 35px;\s*padding-top: 7px;/);
+  expect(head).toMatch(/\n\.task-head\.task-head\.is-two-line \.task-head-titlerow \{[^}]*min-height: 33px;\s*padding: 4px 4px 7px;/);
+  const tagTop = 7 + (28 - 22) / 2;
+  const tagBottom = tagTop + 22;
+  const ringTop = 35 + 4 + (22 - 16) / 2;
+  const ringBottom = ringTop + 16;
+  expect(tagTop).toBe(10);
+  expect(ringTop - tagBottom).toBe(10);
+  expect(35 + 33 - ringBottom).toBe(10);
+  // A pin moves the ground's edge, never the chat: the two rows still sum to
+  // the same height.
+  const pinRow = head.match(/is-two-line:has\(\.rail-pin-btn\.is-pinned\) \.task-head-row \{[^}]*min-height: (\d+)px/);
+  const pinTitle = head.match(/is-two-line:has\(\.rail-pin-btn\.is-pinned\) \.task-head-titlerow \{[^}]*min-height: (\d+)px/);
+  expect(Number(pinRow?.[1]) + Number(pinTitle?.[1])).toBe(35 + 33);
 });
 
 test("a two-line panel host names its own window, so the pane-wide hover never rides on layout geometry (2026-11-21)", () => {

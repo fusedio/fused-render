@@ -855,20 +855,7 @@
   opacity: 1;
   pointer-events: auto;
 }
-.task-head.is-window.is-two-line .task-head-marks > .task-head-kebab {
-  opacity: 0;
-  pointer-events: none;
-  transition: opacity 0.08s ease;
-}
-.task-head.is-window.is-two-line:is(.is-hot, :hover, :has(.task-head-kebab :focus-visible), :has(.task-head-marks [aria-expanded="true"])) .task-head-marks > .task-head-kebab {
-  opacity: 1;
-  pointer-events: auto;
-}
 @media (hover: none) {
-  .task-head.is-window.is-two-line .task-head-marks > .task-head-kebab {
-    opacity: 1;
-    pointer-events: auto;
-  }
   .task-head-facts.has-acts > .task-head-facts-layer.is-a {
     opacity: 0;
     pointer-events: none;
@@ -1085,6 +1072,11 @@
     -webkit-mask-image: linear-gradient(to right, var(--fg) calc(100% - 30px), transparent calc(100% - 16px));
     mask-image: linear-gradient(to right, var(--fg) calc(100% - 30px), transparent calc(100% - 16px));
   }
+  /* A two-line head's 12px gap (below). */
+  .task-head.task-head.is-two-line .task-side-peek-who.is-title .task-side-peek-rename {
+    margin-left: -28px;
+    margin-right: 0;
+  }
 }
 
 /* -- A RAIL WINDOW'S HEAD IS TWO LINES, ALWAYS (TaskHead `twoLine`; Akshil,
@@ -1137,7 +1129,7 @@
 /* Row 2: the ring, the agent's mark, the number and the title, in the one
    line's own spacing. */
 .task-head.is-two-line .task-head-titlerow {
-  gap: 8px;
+  gap: 12px;
   padding-left: 4px;
 }
 
@@ -1209,14 +1201,6 @@
   display: contents;
 }
 
-/* A LONE COUNT STARTS ITS SLOT (a head with one act alone; the paired facts
-   and acts stand in a box as wide as the pair it shows — "THE BOX IS AS
-   WIDE AS THE PAIR IT SHOWS", above — so there is no leftover width to
-   place). */
-.task-head.is-two-line .task-head-countslot {
-  justify-items: start;
-}
-
 /* ONE TAG SIZE ON ROW 1 (Akshil, 2026-11-17: "why is the Fused label small
    but the other two seem big … the worktree icon is so small and its text
    colour is also different"). The folder chip was 11px in a 21px box beside
@@ -1249,8 +1233,9 @@
    door, so its count and time stand in one box — `.task-head-facts`, no
    time slot for the rule above to fold; CodeRabbit on #2313). The time leaves
    on the panel's time rung; the door still comes under the pointer, its hint
-   carrying the time. A rail window keeps both. */
-.task-head.is-two-line:not(.is-window):is([data-fit="3"], [data-fit="4"], [data-fit="5"], [data-fit="6"], [data-fit="7"]) .task-head-facts .task-head-time {
+   carrying the time. A rail window keeps both. A split head's time sits in
+   `.task-head-rowfacts` (row 2); same rung (CodeRabbit on #2413). */
+.task-head.is-two-line:not(.is-window):is([data-fit="3"], [data-fit="4"], [data-fit="5"], [data-fit="6"], [data-fit="7"]) :is(.task-head-facts, .task-head-rowfacts) .task-head-time {
   display: none;
 }
 
@@ -1320,23 +1305,114 @@
   padding-bottom: 5px;
 }
 
-/* -- A RAIL WINDOW'S TWO LINES, EVENLY SPACED (Akshil, 2026-11-17, of a pinned
-   head: "a bit ugly, can you just add a bit of padding on top and remove a
-   bit of padding from bottom … but make sure it is uniform across top,
-   middle and bottom") ----------------------------------------------------------
-   With row 1 on its own ground the two rows read as two boxes, and their air
-   did not match: 12px above and below row 1's tags (a 44px row), then 4px
-   above the title's ring and 10px under it (a 28px row with its 6px foot).
-   Now every band is 10px: row 1 is 40px (20px tags, 10 + 10), row 2 is 34px
-   (its 22px archive seat between 6px above and the 6px foot, so the 14px
-   ring has 10 + 10). The head is 75px where it was 73. Every rail window's
-   two-line head, pinned or not — a pin must not move the chat under it. */
-.task-head.is-window.is-two-line .task-head-row {
-  min-height: 40px;
+/* -- EVERY TWO-LINE HEAD: ONE AIR ALL ROUND (Akshil, 2026-11-22: "make sure
+   in 1st and 2nd row the padding we have between elements is consistent
+   across top bottom and left and right") ---------------------------------------
+   Measured on the drawn ink, not the boxes: 10px above row 1's tags, 10px
+   between them and row 2's ring and title, 10px under it; the first and
+   last mark of each row 14px from the head's sides. The lead and act buttons
+   are 28px boxes round a 14px glyph and the tags 20–22px, so row 1 is 35px
+   with 7px on top (the tag sits 3px inside the button box); row 2 is 33px,
+   its 22px archive seat between 4px and 7px (the 16px ring 3px inside the
+   seat). The head is 69px — the rail's windows, the side panel's chat and
+   the Tasks page's panel alike, pinned or not: a pin must not move the chat
+   under it (the pinned ground's own bands give way, below). */
+.task-head.task-head.is-two-line .task-head-row {
+  box-sizing: border-box;
+  min-height: 35px;
+  padding-top: 7px;
 }
-.task-head.is-window.is-two-line .task-head-titlerow {
-  min-height: 34px;
-  padding-top: 6px;
+.task-head.task-head.is-two-line .task-head-titlerow {
+  box-sizing: border-box;
+  min-height: 33px;
+  padding: 4px 4px 7px;
+}
+/* ONE GAP BETWEEN EVERY MARK, ONE WASH ROUND EACH (Akshil, 2026-11-22/23:
+   "uniform spacing … padding inside and outside the Open button and
+   between that and the star"; "add 4px horizontally"; then "check the more
+   button and Open … hover and take a screenshot, you will notice not equal
+   spacing"). Measured on the drawn ink, dark and light, at rest and under
+   the pointer, in the Tasks page panel, the side panel's chat, the rail's
+   task / favourite windows (pinned and not) and the Tasks door's chat:
+
+     14 | × 12 ↑ 12 ↓ 12 [tag] ……… ★ 12 Open 12 ⋮ | 14
+     14 | ◯ 12 T667 12 title ……………… 1 💬 12 3h ago | 14
+
+   Every control of row 1 is its glyph plus 6px a side, 24px tall, and the
+   boxes stand edge to edge — so the hover wash has the same 6px round each
+   glyph, no wash runs under its neighbour (the 28px buttons overlapped by
+   8px, and the ⋮'s by 7px over Open's word), and the ink falls 12px apart.
+   The glyphs draw at different widths inside their 14px icons, hence one
+   width per glyph: × and the chevrons 8px of ink (20px boxes), the ← 10
+   (22), the pin 12 (24), the star 14 (26), the ⋮ 2 (14). */
+.task-head.task-head.is-two-line .task-head-acts,
+.task-head.task-head.is-two-line .task-head-nav,
+.task-head.task-head.is-two-line .task-head-facts.is-split > .task-head-facts-layer.is-b {
+  gap: 0;
+}
+.task-head.task-head.is-two-line .task-head-row .task-head-acts .task-head-btn,
+.task-head.task-head.is-two-line .task-head-row .task-head-nav > * {
+  width: 20px;
+  height: 24px;
+  margin: 0;
+}
+.task-head.task-head.is-two-line .task-head-row .task-head-acts .rail-pin-btn:not(.is-close) {
+  width: 24px;
+}
+.task-head.task-head.is-two-line .task-head-row .task-head-acts .task-head-lead.is-back {
+  width: 22px;
+}
+.task-head.task-head.is-two-line .task-head-facts.is-split :is(.task-star, .claude-rail-peek-star) {
+  width: 26px;
+  height: 24px;
+  margin: 0;
+}
+.task-head.task-head.is-two-line .task-head-facts.is-split .task-head-open {
+  height: 24px;
+  padding: 0 6px;
+  margin: 0;
+}
+.task-head.task-head.is-two-line .task-head-facts.is-split .task-head-kebab {
+  margin: 0 -2px 0 0;
+}
+.task-head.task-head.is-two-line .task-head-facts.is-split .task-head-kebab :is(.c-kebabbtn, button) {
+  width: 14px;
+  height: 24px;
+}
+.task-head.task-head.is-two-line .task-head-row :is(.task-head-btn, .task-star, .claude-rail-peek-star, .task-head-open, .c-kebabbtn) {
+  border-radius: 5px;
+}
+/* The row's ends: a box's 6px inside the 14px, so the head's 10px padding
+   gives 2px back; the place's tag stands 6px past the last lead's box (its
+   own border is ink), the row's 10px gap less 4. */
+.task-head.task-head.is-two-line .task-head-row > .task-head-acts:first-child {
+  margin-left: -2px;
+}
+.task-head.task-head.is-two-line .task-head-acts + .task-head-crumb {
+  margin-left: -4px;
+}
+/* Row 2's id and title stand 12px apart too; the rename pencil hands back
+   its 16px and that gap (TaskPeekWho measures the gap it reads). */
+.task-head.task-head.is-two-line .task-side-peek-who.is-title {
+  gap: 12px;
+}
+.task-head.task-head.is-two-line .task-side-peek-who.is-title .task-side-peek-rename {
+  margin-right: -28px;
+}
+.task-head.task-head.is-two-line .task-side-peek-who.is-title.is-rename-over .task-side-peek-rename {
+  margin-left: -28px;
+  margin-right: 0;
+}
+/* A pinned window's row 1 ground ends halfway between the tags and the
+   title, so the ground moves nothing: 10px over the tags, 5px under. */
+.task-head.task-head.is-two-line:has(.rail-pin-btn.is-pinned) .task-head-row {
+  min-height: 37px;
+  padding-top: 7px;
+  padding-bottom: 2px;
+}
+.task-head.task-head.is-two-line:has(.rail-pin-btn.is-pinned) .task-head-titlerow {
+  min-height: 31px;
+  padding-top: 2px;
 }
 
 /* -- A RAIL WINDOW'S FIRST ROW: THE PLACE STANDS BY THE PIN, THE DOOR HAS
@@ -1353,4 +1429,26 @@
 :is(.claude-rail-peek, .modal-popover) .task-head .task-head-facts-layer.is-b .task-head-open {
   padding: 0 6px;
   margin-left: -4px;
+}
+
+/* -- A RAIL WINDOW'S ACTS ON ROW 1, ITS FACTS ON ROW 2 (TaskHead `splitRows`;
+   Akshil, 2026-11-22: "always show fav and open button on right on 1st row …
+   msg count and time will be shown in right side of 2nd row") --------------
+     [pin]  folder › file ………………… [chips] ☆  Open  ⋮
+     status · id · title ……………………………… count · time
+   The acts' layer stands at rest (the rules above hide it until the pointer
+   comes); nothing trades, so nothing slides. The facts close row 2 after the
+   title, which gives width first. */
+.task-head-facts.has-acts.is-split > .task-head-facts-layer.is-b {
+  position: static;
+  transform: none;
+  opacity: 1;
+  pointer-events: auto;
+}
+.task-head.is-two-line .task-head-titlerow > .task-head-rowfacts {
+  display: inline-flex;
+  align-items: center;
+  gap: 12px;
+  flex: 0 0 auto;
+  margin-left: auto;
 }

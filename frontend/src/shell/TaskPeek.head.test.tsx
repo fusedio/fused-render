@@ -146,14 +146,16 @@ test("flag ON: the shared head — ×, chevrons, identity, ↗ Open and the chat
   expect(idSlot.findAll((n) => typeof n.type === "string" && hasClass(n, "task-head-file"))).toHaveLength(1);
   // TWO LINES (2026-11-17), the rail window's layout, under the panel's own
   // reveal (no `is-window`). Favourites are off here, so the door is the one
-  // act: no star seat, the facts keep slots of their own, and Open trades
-  // with the time.
+  // act: it stands on row 1 (2026-11-22, the split), and the count and the
+  // time close row 2 — nothing trades.
   const headEl = hostAll(r, (n) => hasClass(n, "task-head"))[0]!;
   expect(hasClass(headEl, "is-two-line")).toBe(true);
   expect(hasClass(headEl, "is-window")).toBe(false);
-  expect(hostAll(r, (n) => hasClass(n, "task-head-facts"))).toHaveLength(0);
-  const timeSlot = hostAll(r, (n) => hasClass(n, "task-head-timeslot"))[0]!;
-  expect(timeSlot.findAll((n) => typeof n.type === "string" && hasClass(n, "task-head-open"))).toHaveLength(1);
+  expect(hostAll(r, (n) => hasClass(n, "task-head-timeslot"))).toHaveLength(0);
+  const acts = hostAll(r, (n) => hasClass(n, "task-head-facts") && hasClass(n, "is-split"))[0]!;
+  expect(acts.findAll((n) => typeof n.type === "string" && hasClass(n, "task-head-open"))).toHaveLength(1);
+  const rowFacts = hostAll(r, (n) => hasClass(n, "task-head-rowfacts"))[0]!;
+  expect(rowFacts.findAll((n) => typeof n.type === "string" && hasClass(n, "task-head-time"))).toHaveLength(1);
 });
 
 test("flag ON, a task with no session yet keeps the panel's own menu (Delete of a never-run message)", async () => {

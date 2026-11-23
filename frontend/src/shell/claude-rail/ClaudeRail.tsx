@@ -397,7 +397,7 @@ const pinNoRing = () => null;
 import { setRailResizing, useCardMove } from "./useCardMove";
 import { useCanvasRailPeek, useRailFeatureOn } from "./rail-peek-flag";
 import { taskHeadUnifiedNow, useTaskHeadUnified } from "@shell/task-head-flag";
-import { aPinWord, cardMode, doorSelector, inRailView, pinnedTaskLands, readAPin, ringClick, ringSelector, viewPress } from "./rail-pin-lib";
+import { aPinWord, cardMode, doorSelector, inFullModal, inRailView, pinnedTaskLands, readAPin, ringClick, ringSelector, viewPress } from "./rail-pin-lib";
 import { PinAngle, RailPinButton, useTempOutside, type PressFlag } from "./RailPin";
 import {
   dismissFavHover,
@@ -2268,6 +2268,11 @@ export function ClaudeRail({
       tick = window.setTimeout(() => {
         const a = document.activeElement;
         if (!(a instanceof HTMLIFrameElement)) return;
+        // A frame inside a full modal (a chat's file preview — a zip, a PDF —
+        // portals to the body over everything) is that modal's content, not
+        // the page's workbench frame: closing the card here unmounted the chat
+        // and the preview with it on the first click inside the preview.
+        if (inFullModal(a)) return;
         if (pinnedNow.current.task && !heldRef.current && !document.getElementById(PEEK_ID)?.contains(a)) intent.dismiss();
         if (pinnedNow.current.bot && !botHeldRef.current && !document.getElementById(BOT_PEEK_ID)?.contains(a)) botIntent.dismiss();
         // WITH THE PIN (rail-pin-lib `frameBlurCloses`): only a TEMP card
