@@ -35,6 +35,7 @@ import { DoorCard } from "./DoorCard";
 import { RailPinButton } from "./RailPin";
 import { useTaskHeadUnified } from "@shell/task-head-flag";
 import { useFavPeekState } from "./fav-peek-store";
+import { inFullModal } from "./rail-pin-lib";
 import { flushThenOpen, modeCardStore, useModeCardRail, useModeCards, useRailModes, useRailWithMode } from "./mode-peek-store";
 
 /** How long a PINNED card waits, its mode's door gone, for the next rail's
@@ -201,7 +202,7 @@ function ModeCard({ mode }: { mode: string }) {
         inOurs = true;
         return;
       }
-      if (inOurs && a instanceof HTMLIFrameElement && !document.getElementById(store.id)?.contains(a)) {
+      if (inOurs && a instanceof HTMLIFrameElement && !inFullModal(a) && !document.getElementById(store.id)?.contains(a)) {
         store.close();
         return;
       }

@@ -31,6 +31,7 @@ import {
   navHintIsDir,
   navigateUrl,
 } from "@platform/lib/router";
+import { installVerdict, useStatIsDir } from "./install-view-lib";
 import { useRecentsTracking } from "@apps/explorer/lib/recents";
 import { setSideTab } from "@apps/explorer/lib/side-tab-store";
 // The route parser, not the barrel: api.ts is already in the main bundle (the
@@ -482,9 +483,10 @@ function StatView({
 // a frozen snapshot, and not when the URL asks for another mode by name
 // (`?_mode=claude`): the mode switcher's other views stay reachable.
 // Never an app's own `.fused/` metadata FOLDER (app_fused_dir.py): a bare
-// `.fused` basename has no stem, so it is not an app file, and a navigation
-// that already knows it is opening a directory (navHintIsDir) is not one
-// either — both fall through to StatView's listing.
+// `.fused` basename has no stem, so it is not an app file. A directory named
+// `x.fused` is not one either: a navigation that knows it is opening a
+// directory (navHintIsDir) says so, and when that hint is absent App stats the
+// path (useStatIsDir) — both fall through to StatView's listing.
 function isFusedInstallView(fsPath: string): boolean {
   if (IS_PREVIEW || IS_SNAPSHOT || !/.\.fused$/i.test(basename(fsPath))) return false;
   if (navHintIsDir() === true) return false;
@@ -880,8 +882,15 @@ export default function App({ config }: { config: Config }) {
   // Not behind the Marketplace flag: the install page is the one `.fused`
   // view there is (see isFusedInstallView); the flag gates the store's entry
   // points only.
-  const fusedFile = localFsPath && isFusedInstallView(localFsPath) ? localFsPath : null;
-  const botFile = localFsPath && isBotFileInstallView(localFsPath) ? localFsPath : null;
+  const fusedNamed = localFsPath && isFusedInstallView(localFsPath) ? localFsPath : null;
+  const botNamed = localFsPath && isBotFileInstallView(localFsPath) ? localFsPath : null;
+  const installVerdictNow = installVerdict(
+    navHintIsDir(),
+    useStatIsDir(localFsPath, !!(fusedNamed || botNamed)),
+  );
+  const installPending = !!(fusedNamed || botNamed) && installVerdictNow === "pending";
+  const fusedFile = installVerdictNow === "install" ? fusedNamed : null;
+  const botFile = installVerdictNow === "install" ? botNamed : null;
   // A resolved fsPath mounts StatView below, which owns the title itself.
   useDocumentTitle(
     isPanel
@@ -1227,6 +1236,8 @@ export default function App({ config }: { config: Config }) {
         home={config.home}
       />
     );
+  } else if (installPending) {
+    main = <RouteFallback />;
   } else if (fusedFile) {
     main = <FusedFileView key={epoch + ":" + fusedFile} fsPath={fusedFile} />;
   } else if (botFile) {

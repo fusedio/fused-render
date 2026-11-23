@@ -211,9 +211,16 @@ export function TaskPeekWho({
     if (typeof seat?.querySelector !== "function" || typeof seat.getBoundingClientRect !== "function") return;
     const titleEl = seat.querySelector<HTMLElement>(".task-side-peek-title");
     if (!titleEl) return;
-    // The seat's 8px gap, the pencil's 16px, and a hair.
+    // The seat's gap (8px, 12px in a two-line head), the pencil's 16px, and
+    // a hair.
+    let gap = 8;
+    try {
+      gap = Number.parseFloat(getComputedStyle(seat).columnGap) || 8;
+    } catch {
+      /* a stand-in seat in a test has no style: the one-row gap */
+    }
     const free = seat.getBoundingClientRect().right - titleEl.getBoundingClientRect().right;
-    setRenameOver(free < 26);
+    setRenameOver(free < gap + 18);
   };
   useEffect(() => {
     if (!iconPicking) return;

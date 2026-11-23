@@ -172,6 +172,17 @@ export function inRailView(el: PressTarget | null): boolean {
   return false;
 }
 
+/** A FULL MODAL (not the + popover): a chat's file preview and the like,
+ *  portaled to the body over the whole view. A frame inside one is that
+ *  modal's content — focus moving into it is not a press into the page's
+ *  workbench frame, so it closes no temp card. */
+export const FULL_MODAL_SELECTOR = ".modal-overlay:not(.modal-popover)";
+
+/** Is this element inside a full modal (`FULL_MODAL_SELECTOR`)? */
+export function inFullModal(el: Partial<PressTarget> | null): boolean {
+  return typeof el?.closest === "function" && !!el.closest(FULL_MODAL_SELECTOR);
+}
+
 /** A PRESS THAT STARTED IN ANY RAIL WINDOW'S REACT TREE — its portaled menus
  *  and pickers included, which the DOM cannot place. Every card's capture
  *  handler raises it beside its own flag; every outside-press watcher lowers

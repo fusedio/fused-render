@@ -13,6 +13,8 @@ import {
   frameBlurCloses,
   hopDropsOpen,
   hopKeeps,
+  inFullModal,
+  FULL_MODAL_SELECTOR,
   inRailView,
   outsideCloses,
   pinToggle,
@@ -178,6 +180,12 @@ describe("pressVerdict: what an outside press is (design.md 'Outside')", () => {
     expect(inRailView(at(".claude-rail"))).toBe(true);
     expect(inRailView(at())).toBe(false);
     expect(inRailView(null)).toBe(false);
+  });
+  test("a frame in a full modal (a chat's file preview) is the modal's, not the page's frame", () => {
+    expect(inFullModal(at(FULL_MODAL_SELECTOR))).toBe(true);
+    expect(inFullModal(at(".modal-popover"))).toBe(false);
+    expect(inFullModal(at())).toBe(false);
+    expect(inFullModal(null)).toBe(false);
   });
   test("outsideCloses: only a temp card, only an outside press", () => {
     expect(outsideCloses("temp", "outside")).toBe(true);
