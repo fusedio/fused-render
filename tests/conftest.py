@@ -1232,3 +1232,11 @@ def _no_engine_warm(monkeypatch):
     from fused_render import engine
 
     monkeypatch.setattr(engine, "_warm_started", True)
+
+
+@pytest.fixture(autouse=True)
+def _no_cursor_warm_spares(monkeypatch):
+    """No test starts a Cursor warm spare (`agent._prewarm_cursor`, fired by
+    `_defaults`) by accident: it spawns a host process. The spare tests turn
+    it back on for themselves (`FUSED_CURSOR_PREWARM=1`)."""
+    monkeypatch.setenv("FUSED_CURSOR_PREWARM", "0")

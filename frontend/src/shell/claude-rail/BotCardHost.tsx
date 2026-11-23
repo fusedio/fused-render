@@ -214,7 +214,15 @@ export function BotCardHost({ slot = "x" }: { slot?: Slot } = {}) {
             botCardIntent().dismiss();
             return;
           }
-          setBotCardHeld(!card.held);
+          if (card.held) {
+            setBotCardHeld(false);
+            return;
+          }
+          // The pin from the keyboard pins too (a pointer's press inside the
+          // card already did, `onPressInside`), so the reload mark follows —
+          // the task card's pin, the same way.
+          if (id && !botCardIntent().isPinned) botCardIntent().press(id);
+          setBotCardHeld(true);
         },
       }}
     />

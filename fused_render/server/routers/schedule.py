@@ -206,23 +206,23 @@ def resolve_target(value, field: str = "target"):
     return resolved, None
 
 
-SPECIALIST_HOME = "This folder is a specialist's home; open it from the Bots page."
+EXPERT_HOME = "This folder is an expert's home; open it from the Bots page."
 
 
-def specialist_home_refusal(resolved: str):
-    """A 400 for a NEW TASK whose target is inside the specialists root, with the flag on (agent._start refuses
+def expert_home_refusal(resolved: str):
+    """A 400 for a NEW TASK whose target is inside the experts root, with the flag on (agent._start refuses
     such a start with the same sentence; refusing here, before anything is stored, leaves no broken row). A
     string test first, so any other target costs no prefs read; with the flag off nothing changes."""
     try:
-        from fused_render.specialists import paths as sp_paths  # noqa: PLC0415
+        from fused_render.experts import paths as sp_paths  # noqa: PLC0415
         if not sp_paths.is_inside_root(resolved):
             return None
-        from fused_render.specialists import flag as sp_flag  # noqa: PLC0415
+        from fused_render.experts import flag as sp_flag  # noqa: PLC0415
         if not sp_flag.on():
             return None
     except Exception:  # noqa: BLE001 — cannot tell: the start's own refusal still stands
         return None
-    return JSONResponse({"error": SPECIALIST_HOME, "reason": "specialist_home"}, status_code=400)
+    return JSONResponse({"error": EXPERT_HOME, "reason": "expert_home"}, status_code=400)
 
 
 def create_entry(target: str, body: dict, due, *, repeats: str = "",
@@ -479,7 +479,7 @@ def api_schedule_create(body: dict = Body(...),
     resolved, refusal = resolve_target(body.get("target"))
     if refusal is not None:
         return refusal
-    refusal = specialist_home_refusal(resolved)
+    refusal = expert_home_refusal(resolved)
     if refusal is not None:
         return refusal
 

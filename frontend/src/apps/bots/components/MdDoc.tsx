@@ -1,4 +1,4 @@
-// Markdown as React elements, for the specialist pane (SpecialistPane.tsx, PaneParts.tsx): memory.md read-only, and
+// Markdown as React elements, for the expert pane (ExpertPane.tsx, PaneParts.tsx): memory.md read-only, and
 // each line of a memory diff. It parses with the bots app's own marked instance (lib/md.ts mdTokens, the parser behind the chat bubbles) and
 // builds elements from the tokens, so nothing goes through innerHTML: every piece of text lands as a React text node
 // (escaped), raw HTML in the file shows as its source text, links show as their text (the href in a tooltip), images

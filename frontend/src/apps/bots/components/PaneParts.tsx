@@ -1,4 +1,4 @@
-// Pieces of a bot's preview column that shows files instead of a browser (SpecialistPane.tsx): the tab strip, and a
+// Pieces of a bot's preview column that shows files instead of a browser (ExpertPane.tsx): the tab strip, and a
 // memory diff read as a document.
 import type { KeyboardEvent } from "react";
 import { diffDoc } from "../lib/memdiff";

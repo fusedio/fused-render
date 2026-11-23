@@ -496,16 +496,16 @@ const ENTRIES = [
     // Only means something while Canvases is offered at all.
     available: ({ prefs }) => prefs.canvases?.enabled === true,
   },
-  // SPECIALISTS (docs/specialists.md): a kind of bot on the Bots page, and
+  // EXPERTS (docs/experts.md): a kind of bot on the Bots page, and
   // the task tools and the breakout's "With". Off by default; off, nothing of
   // it exists.
   {
-    id: "specialists",
+    id: "experts",
     group: "features",
     section: "Other",
-    label: "Specialists",
+    label: "Experts",
     description: "A kind of bot on the Bots page that knows one subject and keeps its own memory and skills. Tasks get its guidance, send it notes, and can open a breakout with it. Once a day it updates its memory from what they did.",
-    keywords: "specialist bot memory skills breakout notes update learn",
+    keywords: "expert bot memory skills breakout notes update learn",
   },
   {
     id: "monitor",

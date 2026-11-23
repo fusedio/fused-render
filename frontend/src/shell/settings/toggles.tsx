@@ -18,7 +18,7 @@ import {
   putTaskNotifyTerminalSessionsEnabled,
   putChatRecapEnabled,
   putBreakoutEnabled,
-  putSpecialistsEnabled,
+  putExpertsEnabled,
   putTaskSummaryTitlesEnabled,
   putClaudeDefaultPermission,
   putClaudeStrictMcpEnabled,
@@ -30,7 +30,7 @@ import { publishRailExtras } from "../claude-rail/rail-extras-flag";
 import { publishAppSharingEnabled } from "@platform/lib/share-app-flag";
 import { publishLivePreviewsEnabled } from "@platform/lib/live-previews-flag";
 import { publishMonitorEnabled } from "@platform/lib/monitor-flag";
-import { publishSpecialistsEnabled } from "@platform/lib/specialists-flag";
+import { publishExpertsEnabled } from "@platform/lib/experts-flag";
 import {
   publishDefaultPermission,
   publishProjectQueueEnabled,
@@ -78,15 +78,15 @@ export function BreakoutControl({ prefs, onChange }: PrefControlProps) {
   );
 }
 
-// Specialists (docs/specialists.md): their Bots rows, the task tools and the
+// Experts (docs/experts.md): their Bots rows, the task tools and the
 // breakout's "With". Published so an open page shows or drops them at once.
-export function SpecialistsControl({ prefs, onChange }: PrefControlProps) {
+export function ExpertsControl({ prefs, onChange }: PrefControlProps) {
   return (
     <PrefToggleRow
-      id="specialists"
-      checked={prefs.specialists?.enabled === true}
-      put={putSpecialistsEnabled}
-      after={(next) => publishSpecialistsEnabled(next.specialists?.enabled === true)}
+      id="experts"
+      checked={prefs.experts?.enabled === true}
+      put={putExpertsEnabled}
+      after={(next) => publishExpertsEnabled(next.experts?.enabled === true)}
       onChange={onChange}
     />
   );

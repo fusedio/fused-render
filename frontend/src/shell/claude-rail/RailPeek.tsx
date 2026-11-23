@@ -137,7 +137,7 @@ import { opensInSidePane, requestSideMaximized } from "@platform/lib/side-maximi
 import { AgentProvider } from "@apps/claude/ui/agent-context";
 import { timeAgo } from "@platform/lib/format";
 import { chatDraftKey, peekDraftSyncer } from "@platform/lib/drafts";
-import { getUiLayout, patchUiLayout, subscribeUiLayout } from "@platform/lib/ui-layout";
+import { getUiLayout, patchUiLayout, subscribeUiLayout, type UiLayoutDoc } from "@platform/lib/ui-layout";
 import {
   cardTitleLine,
   draftRing,
@@ -221,9 +221,13 @@ export type RailSizeKey = "canvasRailPeek" | "canvasRailFav";
 
 /** The size the reader last dragged a card to (ui-layout `key`, by default
  *  the rail's pinned card's `canvasRailPeek`), floored at the grips'
- *  minimums; null for "never". */
-export function storedPeekSize(key: RailSizeKey = "canvasRailPeek"): { width: number; height: number } | null {
-  const s = getUiLayout()[key];
+ *  minimums; null for "never". `doc`: a patch's own document (the server's
+ *  copy on a replay before hydrate), else this window's. */
+export function storedPeekSize(
+  key: RailSizeKey = "canvasRailPeek",
+  doc: UiLayoutDoc = getUiLayout(),
+): { width: number; height: number } | null {
+  const s = doc[key];
   if (!s) return null;
   return {
     width: Math.min(PEEK_MAX_WIDTH, Math.max(PEEK_MIN_WIDTH, s.width)),
@@ -860,24 +864,24 @@ export const RailPeek = forwardRef<RailPeekHandle, RailPeekProps>(function RailP
     // height-only drag in a narrow window must not persist the width the row
     // clamped the card to, and a drag in a row shorter than PEEK_MIN_HEIGHT
     // must not replace a remembered height with the row's. The other
-    // dimension keeps what was remembered, else the pinned card's default.
-    const prev = storedPeekSize(sizeKey);
+    // dimension keeps what was remembered, else the pinned card's default —
+    // read off the updater's own document, so a replay onto the server's
+    // copy (ui-layout, before hydrate) keeps that copy's value (ClaudeRail
+    // `savePopSize`; CodeRabbit on #2407).
     const pick = (changed: boolean, got: number, min: number, kept: number | undefined, fallback: number) =>
       changed && got >= min ? got : (kept ?? fallback);
-    // Nothing remembered yet: the card's default — the pinned card's, or the
-    // fixed wish's (the favourite's 380×520).
-    const width = pick(last.width !== start.box.width, last.width, PEEK_MIN_WIDTH, prev?.width, size?.width ?? PEEK_WIDTH);
-    const height = pick(
-      last.height !== start.box.height,
-      last.height,
-      PEEK_MIN_HEIGHT,
-      prev?.height,
-      size?.maxHeight ?? PEEK_MAX_HEIGHT,
-    );
+    const widthMoved = last.width !== start.box.width;
+    const heightMoved = last.height !== start.box.height;
+    const got = { width: last.width, height: last.height };
     // SET, never toggle (ui-layout header): the same answer on any base.
-    patchUiLayout((d) =>
-      d[sizeKey]?.width === width && d[sizeKey]?.height === height ? d : { ...d, [sizeKey]: { width, height } },
-    );
+    patchUiLayout((d) => {
+      const prev = storedPeekSize(sizeKey, d);
+      // Nothing remembered yet: the card's default — the pinned card's, or
+      // the fixed wish's (the favourite's 380×520).
+      const width = pick(widthMoved, got.width, PEEK_MIN_WIDTH, prev?.width, size?.width ?? PEEK_WIDTH);
+      const height = pick(heightMoved, got.height, PEEK_MIN_HEIGHT, prev?.height, size?.maxHeight ?? PEEK_MAX_HEIGHT);
+      return d[sizeKey]?.width === width && d[sizeKey]?.height === height ? d : { ...d, [sizeKey]: { width, height } };
+    });
   };
   const onGripUp = (e: ReactPointerEvent<HTMLDivElement>) => {
     const start = dragStart.current;

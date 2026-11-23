@@ -168,9 +168,9 @@ describe("Bots are hidden where the server runs none (Windows)", () => {
     expect(SIDEBAR).not.toContain('key: "bots"');
   });
 
-  it("the route redirects Home and the page never mounts — once Specialists are KNOWN off", () => {
-    // Not on the first render: the specialists flag is "not read yet" there, and a bookmarked /bots must survive it.
-    expect(APP).toContain("const botsPageOn = botsOn || specialistsKnown !== false;");
+  it("the route redirects Home and the page never mounts — once Experts are KNOWN off", () => {
+    // Not on the first render: the experts flag is "not read yet" there, and a bookmarked /bots must survive it.
+    expect(APP).toContain("const botsPageOn = botsOn || expertsKnown !== false;");
     expect(APP).toContain("isBotsPath(pathname) && botsPageOn");
     expect(APP).toMatch(/!botsPageOn && isBotsPath\(location\.pathname\)/);
   });

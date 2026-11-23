@@ -1228,6 +1228,9 @@ describe("ClaudeRail's ring hover: the task's row, not a title tooltip (owner, 2
     const foot = rings.filter(inFoot);
     const list = rings.filter((n) => !inFoot(n));
     expect(foot).toHaveLength(1);
+    // The starred chat keeps its list ring too: without it the loop below
+    // would assert nothing.
+    expect(list).toHaveLength(1);
     expect(foot[0]!.props["data-hint-row"]).toBe("");
     // It names window B as the one its row dims; the list's rings name A.
     expect(foot[0]!.props["data-hint-window"]).toBe("b");

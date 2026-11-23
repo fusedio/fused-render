@@ -110,8 +110,10 @@ export function popoverDrag(
   let top: number;
   let height: number;
   if (edge === "tl" || edge === "t") {
-    const bottom = start.top + start.height;
-    height = clamp(start.height - dy, limits.minHeight, bottom - minTop);
+    // The bottom as the drag began — or the bounds' inset, if they shrank
+    // under the drag (the right edge's rule, above).
+    const bottom = Math.min(start.top + start.height, b.top + b.height - POPOVER_INSET);
+    height = clamp(bottom - (start.top + dy), limits.minHeight, bottom - minTop);
     top = bottom - height;
   } else if (edge === "bl" || edge === "b") {
     height = clamp(start.height + dy, limits.minHeight, floor - start.top);
