@@ -3851,9 +3851,18 @@ export function ClaudeRail({
   // The rings' own rule for WHEN: a door whose hover brings its card up (or
   // whose card stands) says nothing — the card is the caption (an empty
   // hint is the opt-out).
-  const doorHint = (words: string, cardIsCaption: boolean) => ({
+  // …AND WITH A WINDOW OPEN, THE RINGS' OWN ROW (Akshil, 2026-11-23: "make
+  // tooltip type in rail consistent to the task ring, when a window is
+  // open"): where a ring says its row (`railQuiet`, hints.ts
+  // `renderRowHint`), a door says its name in that same panel — and dims the
+  // window its press would replace (`win`), or none for a door that replaces
+  // no window (Search, the expand button).
+  const doorHint = (words: string, cardIsCaption: boolean, win: "a" | "b" | "none" = "a") => ({
     "data-hint": cardIsCaption ? "" : words,
     "data-hint-side": "left",
+    ...(pinModel && railQuiet && !cardIsCaption
+      ? { "data-hint-row": "", "data-hint-title": words, "data-hint-window": win }
+      : {}),
   });
   // A SEAT'S INSIDE (the expandable rail, `asRows`): collapsed, what it always
   // held — the glyph, its dots, its pin mark. Expanded, the same in a 28px
@@ -4711,7 +4720,7 @@ export function ClaudeRail({
           <button
             type="button"
             className="sidebar-rail-btn claude-rail-expand"
-            {...doorHint(expanded ? "Collapse rail" : "Expand rail", false)}
+            {...doorHint(expanded ? "Collapse rail" : "Expand rail", false, "none")}
             aria-label={expanded ? "Collapse rail" : "Expand rail"}
             aria-expanded={expanded}
             onClick={() => {
@@ -4736,7 +4745,7 @@ export function ClaudeRail({
             <button
               type="button"
               className={"sidebar-rail-btn claude-rail-item" + doorOpen(launcher.open, true)}
-              {...doorHint("Search", false)}
+              {...doorHint("Search", false, "none")}
               aria-label="Search"
               onClick={() => {
                 hideHint();
@@ -4862,7 +4871,7 @@ export function ClaudeRail({
         <button
           type="button"
           className="sidebar-rail-btn"
-          {...doorHint("Show the Claude panel", false)}
+          {...doorHint("Show the Claude panel", false, "none")}
           aria-label="Show the Claude panel"
           aria-expanded={false}
           // The pane's HOME (its Recent chats), never a chat (owner,
@@ -5071,6 +5080,7 @@ export function ClaudeRail({
                       data-hint-title={`On ${branch}`}
                       data-hint-reply={counts}
                       data-hint-side="left"
+                      {...(pinModel && railQuiet ? { "data-hint-row": "", "data-hint-window": "none" } : {})}
                       onClick={() => {
                         hideHint();
                         git.onOpenGit?.();
@@ -5092,6 +5102,7 @@ export function ClaudeRail({
                       data-hint-title={checkWords}
                       data-hint-reply={counts}
                       data-hint-side="left"
+                      {...(pinModel && railQuiet ? { "data-hint-row": "", "data-hint-window": "none" } : {})}
                       onClick={() => {
                         hideHint();
                         if (r.has_remote && !railGit.checking) railGit.check();
@@ -5116,6 +5127,7 @@ export function ClaudeRail({
                           data-hint-title={c.subject}
                           data-hint-reply={`${who} · ${c.short}`}
                           data-hint-side="left"
+                          {...(pinModel && railQuiet ? { "data-hint-row": "", "data-hint-window": "none" } : {})}
                           onClick={() => {
                             hideHint();
                             git.onOpenGit?.();
@@ -5229,6 +5241,7 @@ export function ClaudeRail({
                       data-hint={hovers ? "" : name}
                       data-hint-title={name}
                       data-hint-side="left"
+                      {...(pinModel && railQuiet && !hovers ? { "data-hint-row": "", "data-hint-window": "b" } : {})}
                       {...(card
                         ? {
                             "aria-haspopup": "dialog" as const,
