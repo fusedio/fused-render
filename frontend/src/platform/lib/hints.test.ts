@@ -244,7 +244,9 @@ describe("the task's row in one line (a rail ring's hover, 2026-11-16)", () => {
   it("says which window the ring opens, so only that one is dimmed (2026-11-17)", () => {
     // "it darkens both instead of only … one of the window".
     const row = fn("renderRowHint");
-    expect(row).toContain('p.setAttribute("data-row-window", el.getAttribute("data-hint-window") === "b" ? "b" : "a");');
+    expect(row).toContain('else p.setAttribute("data-row-window", win === "b" ? "b" : "a");');
+    // A rail door that replaces no window (Search, the expand button, 2026-11-23) dims none.
+    expect(row).toContain('if (win === "none") p.removeAttribute("data-row-window");');
     // The mark goes with the row: a caption that follows must not carry it.
     expect(fn("show")).toContain('p.removeAttribute("data-row-window");');
     expect(fn("hideHint")).toContain('panel.removeAttribute("data-row-window");');

@@ -356,7 +356,11 @@ function renderRowHint(p: HTMLDivElement, el: Element): boolean {
   // WHICH WINDOW THIS RING OPENS: only that one steps back under the scrim
   // (Akshil, 2026-11-17: "it darkens both instead of only … one of the
   // window"). A host that does not say is window A's.
-  p.setAttribute("data-row-window", el.getAttribute("data-hint-window") === "b" ? "b" : "a");
+  // A rail door that replaces no window (Search, the expand button) says
+  // "none": its row dims nothing.
+  const win = el.getAttribute("data-hint-window");
+  if (win === "none") p.removeAttribute("data-row-window");
+  else p.setAttribute("data-row-window", win === "b" ? "b" : "a");
   // AS WIDE AS ITS WORDS, NOT AS THE WINDOW (Akshil, 2026-11-18: "the width,
   // make it not the same width as the window, we can have it less or more …
   // if it is the same width that's fine for one or two but not for all,
