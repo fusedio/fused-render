@@ -164,7 +164,7 @@ def _instructions(agent, tmp_path, monkeypatch, target_in_workbench, own=True, w
     run_dir = tmp_path / "runs" / "r1"
     run_dir.mkdir(parents=True)
     agent._cursor_argv(str(run_dir), False, "auto", "", "m", "high", [], str(page))
-    return (run_dir / "cursor_agent" / "instructions.md").read_text(), paths
+    return (run_dir / "cursor_agent" / "instructions.md").read_text(encoding="utf-8"), paths
 
 
 def test_instructions_list_fused_skills_but_not_workbench_off_canvas(agent, tmp_path, monkeypatch):
