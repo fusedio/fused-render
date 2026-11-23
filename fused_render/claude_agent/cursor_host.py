@@ -51,6 +51,16 @@ copilot_host.py's, verbatim, and its header is the place that argues each.
 Loaded and run BY PATH, exactly like the other hosts (`sys.executable
 cursor_host.py`, the JSON request on stdin). Stdlib only, never imports
 `fused_render`.
+
+SPARE MODE. The CLI's first `session/new` in a process takes ~4.5 s (a later
+one ~1.2 s), and only a completed `session/new` warms it. A first request
+with `"spare": true` therefore spawns the CLI in `cwd` (its project rules and
+skills load from the PROCESS cwd, so a spare serves only a chat on that same
+cwd), runs `initialize` plus a throwaway `session/new`, writes
+`<spare_dir>/ready`, and blocks on stdin for ONE more line: the real request,
+after which it is a normal host that skips `initialize`. stdin EOF with no
+request (the server went away, or retired the spare) kills the CLI and exits.
+`agent._prewarm_cursor` / `_claim_cursor_spare` are the other half.
 """
 import difflib
 import importlib.util
@@ -320,6 +330,84 @@ def _send_event(url: str, body: dict) -> None:
                        _EVENT_RETRY_SECONDS)
 
 
+def _initialize_params() -> dict:
+    """The `initialize` request's params — one copy, shared by `handshake`
+    and the spare's warm-up so they cannot drift. `clientCapabilities` offers
+    no `fs`/`terminal` (the CLI's own tools do the work) and asks for the
+    PARAMETERIZED model picker, so model ids are base names (D7); no
+    `subagents`, so a subagent's turns stay inside the CLI."""
+    return {"protocolVersion": PROTOCOL_VERSION,
+            "clientCapabilities": {"_meta": {"parameterizedModelPicker": True}},
+            "clientInfo": {"name": "fused-render", "version": "1"}}
+
+
+def _kill_cli(cli) -> None:
+    """`close()`'s reap for a CLI no `_Host` owns (a spare that never got a
+    request): SIGTERM, wait, SIGKILL for one that hangs."""
+    try:
+        cli.stdin.close()
+    except Exception:  # noqa: BLE001
+        pass
+    try:
+        cli.terminate()
+    except OSError:
+        pass
+    try:
+        cli.wait(timeout=_EXIT_WAIT_SECONDS)
+    except subprocess.TimeoutExpired:
+        try:
+            cli.kill()
+            cli.wait(timeout=_EXIT_WAIT_SECONDS)
+        except (OSError, subprocess.TimeoutExpired):
+            pass
+
+
+class _StderrPump:
+    """A spare's CLI stderr, copied to a file that can be switched: the
+    spare's own dir until a chat adopts it, then that run's `err.log` (which
+    `_poll` shows the tail of as the run's error text)."""
+
+    def __init__(self, stream, path: str):
+        self._stream = stream
+        self._path = path
+        self._fh = None
+        self._lock = threading.Lock()
+        self._thread = threading.Thread(target=self._run, daemon=True)
+
+    def start(self) -> None:
+        self._thread.start()
+
+    def retarget(self, path: str) -> None:
+        with self._lock:
+            self._path = path
+            if self._fh is not None:
+                try:
+                    self._fh.close()
+                except OSError:
+                    pass
+                self._fh = None
+
+    def join(self, timeout: float) -> None:
+        self._thread.join(timeout)
+
+    def _run(self) -> None:
+        while True:
+            try:
+                chunk = self._stream.read1(65536)
+            except (OSError, ValueError):
+                return
+            if not chunk:
+                return
+            with self._lock:
+                try:
+                    if self._fh is None:
+                        self._fh = _append_private(self._path)
+                    self._fh.write(chunk)
+                    self._fh.flush()
+                except OSError:
+                    self._fh = None
+
+
 # ------------------------------------------------------------- the ACP wire
 
 class _Rpc:
@@ -362,10 +450,16 @@ class _Peer:
         # Logged to stderr, never parsed.
         self.on_text = lambda line: None
         self._reader = threading.Thread(target=self._read_loop, daemon=True)
+        self._started = False
 
     def start(self) -> None:
         """Begin reading — AFTER the host has installed its callbacks, or the
-        first `available_commands_update` lands on the no-op defaults."""
+        first `available_commands_update` lands on the no-op defaults. A
+        second call is a no-op: a spare starts its peer for the warm-up, and
+        the `_Host` that adopts it installs callbacks on the running reader."""
+        if self._started:
+            return
+        self._started = True
         self._reader.start()
 
     def _send(self, msg: dict) -> bool:
@@ -715,8 +809,16 @@ def _allow_key(call: dict) -> str:
 # ------------------------------------------------------------------- the host
 
 class _Host:
-    def __init__(self, agent, req: dict, cli, peer: _Peer):
+    def __init__(self, agent, req: dict, cli, peer: _Peer,
+                 initialized: bool = False, throwaway_sid: str = "",
+                 pump=None):
         self.agent = agent
+        # A spare already ran `initialize`; `handshake` skips only that.
+        self.initialized = initialized
+        # The spare's warm-up session: updates addressed to it are never ours.
+        self.throwaway_sid = throwaway_sid
+        # A claimed spare's stderr copier: joined before `err.log` is read.
+        self.pump = pump
         self.req = req
         self.cli = cli
         self.peer = peer
@@ -1228,6 +1330,8 @@ class _Host:
                     self.cli.wait(timeout=1)   # EOF can beat the exit status
                 except subprocess.TimeoutExpired:
                     pass
+                if self.pump is not None:
+                    self.pump.join(1)   # the last stderr chunk, before the read
                 tail = _err_tail(self.run_dir)
                 text = "cursor exited (code %s)%s" % (
                     self.cli.poll(), (": " + tail) if tail else "")
@@ -1292,6 +1396,12 @@ class _Host:
         if not isinstance(update, dict):
             return
         kind = str(update.get("sessionUpdate") or "")
+        # An update addressed to a spare's throwaway warm-up session — whose
+        # trailing updates may land after adoption — is not this chat's. Any
+        # other id passes through, as it always did.
+        upd_sid = params.get("sessionId")
+        if self.throwaway_sid and upd_sid == self.throwaway_sid:
+            return
         with self.lock:
             self.last_update_at = time.monotonic()
             if self.replaying and kind != "user_message_chunk":
@@ -1819,17 +1929,12 @@ class _Host:
     def handshake(self) -> bool:
         """`initialize` → `session/new` | `session/load`. False (with the
         failure already written as a result row) when Cursor never came up.
-
-        `clientCapabilities` offers no `fs`/`terminal` (the CLI's own tools
-        do the work) and asks for the PARAMETERIZED model picker, so model
-        ids are base names (D7); no `subagents`, so a subagent's turns stay
-        inside the CLI."""
-        rpc = self.peer.request("initialize", {
-            "protocolVersion": PROTOCOL_VERSION,
-            "clientCapabilities": {"_meta": {"parameterizedModelPicker": True}},
-            "clientInfo": {"name": "fused-render", "version": "1"}})
-        if not self._wait_rpc(rpc) or rpc.error is not None:
-            return self._handshake_failed("initialize", rpc)
+        A spare's host skips `initialize` only (`self.initialized`): it ran
+        in the warm-up, with the same params (`_initialize_params`)."""
+        if not self.initialized:
+            rpc = self.peer.request("initialize", _initialize_params())
+            if not self._wait_rpc(rpc) or rpc.error is not None:
+                return self._handshake_failed("initialize", rpc)
         servers = self._mcp_servers()
         if self.resume:
             with self.lock:
@@ -1993,6 +2098,8 @@ class _Host:
                 self.cli.wait(timeout=2)
             except subprocess.TimeoutExpired:
                 pass
+            if self.pump is not None:
+                self.pump.join(1)
             text = "cursor exited during %s (code %s)" % (step, self.cli.poll())
         tail = _err_tail(self.run_dir)
         if tail:
@@ -2173,7 +2280,126 @@ class _Host:
                 pass
 
 
+def _write_pid_and_host_json(agent, req: dict, cli) -> None:
+    run_dir = req["run_dir"]
+    with agent._private_open(os.path.join(run_dir, "pid")) as f:
+        f.write(str(cli.pid))
+    with agent._private_open(os.path.join(run_dir, "host.json")) as f:
+        json.dump({
+            "pid": os.getpid(),
+            # A resume's id; "" for a fresh chat until `session/new` names
+            # it (`_Host._write_host_json`).
+            "session_id": req.get("session_id") or "",
+            "file": req.get("file", ""), "mode": req.get("cli_mode", ""),
+            "model": req.get("model", ""), "effort": req.get("effort", ""),
+            "read_dirs": req.get("extra_read_dirs", []),
+            "backend": BACKEND,
+        }, f)
+
+
+def _spare_warm_up(agent, req: dict):
+    """Spare mode, steps 1-3: spawn the CLI in `req["cwd"]`, run `initialize`
+    and a throwaway `session/new`, write `<spare_dir>/ready`. Returns
+    `(cli, peer, pump, throwaway_sid)`, or None with the CLI already killed
+    when anything failed (`ready` is then never written)."""
+    spare_dir = req["spare_dir"]
+    env = agent._spawn_env("", backend=BACKEND)
+    try:
+        cli = subprocess.Popen(
+            list(req["argv"]), stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE, cwd=req["cwd"], env=env, **agent._DETACH)
+    except Exception as exc:  # noqa: BLE001
+        with _append_private(os.path.join(spare_dir, "err.log")) as f:
+            f.write(str(exc).encode("utf-8", "replace"))
+        return None
+    pump = _StderrPump(cli.stderr, os.path.join(spare_dir, "err.log"))
+    pump.start()
+    peer = _Peer(cli)
+    # Nothing else is wired yet: the CLI's updates are dropped, and a request
+    # it makes of the client is refused (a spare offers no capability).
+    peer.on_request = lambda rid, method, params: peer.respond_error(
+        rid, -32601, "Method not found: " + method)
+    peer.start()
+    ok = False
+    sid = ""
+    try:
+        rpc = peer.request("initialize", _initialize_params())
+        if rpc.done.wait(_HANDSHAKE_SECONDS) and rpc.error is None:
+            rpc = peer.request("session/new", {"cwd": req["cwd"], "mcpServers": []})
+            if rpc.done.wait(_HANDSHAKE_SECONDS) and rpc.error is None:
+                got = rpc.result.get("sessionId") if isinstance(rpc.result, dict) else None
+                if isinstance(got, str) and got:
+                    sid, ok = got, True
+        if ok:
+            with agent._private_open(os.path.join(spare_dir, "pid")) as f:
+                f.write(str(cli.pid))
+            agent._private_open(os.path.join(spare_dir, "ready")).close()
+    finally:
+        if not ok:
+            _kill_cli(cli)
+    return (cli, peer, pump, sid) if ok else None
+
+
+def _run_spare(req: dict) -> None:
+    """Spare mode (see the module docstring): warm up, wait for the real
+    request on stdin, then continue as a normal host. EOF with no request,
+    or the CLI dying while it waits, ends the process."""
+    agent = _load_agent(req["agent"])
+    warm = _spare_warm_up(agent, req)
+    if warm is None:
+        return
+    cli, peer, pump, throwaway_sid = warm
+    stop_watch = threading.Event()
+
+    def _watch() -> None:
+        while not stop_watch.wait(0.5):
+            if cli.poll() is not None:
+                # Un-ready first: a claim must not find a host about to vanish.
+                try:
+                    os.unlink(os.path.join(req["spare_dir"], "ready"))
+                except OSError:
+                    pass
+                _kill_cli(cli)
+                os._exit(0)
+
+    threading.Thread(target=_watch, daemon=True).start()
+    adopted = False
+    try:
+        line = sys.stdin.buffer.readline()
+        if line.strip():
+            real = json.loads(line.decode("utf-8"))
+            adopted = True
+    finally:
+        stop_watch.set()
+        if not adopted:
+            _kill_cli(cli)
+    if not adopted:
+        return
+    run_dir = real["run_dir"]
+    if os.path.exists(os.path.join(run_dir, "cancelled")):
+        sys.stderr.write("cursor_host: run cancelled before the spare was adopted\n")
+        _kill_cli(cli)
+        return
+    # From here the CLI's stderr and this process's own belong to the run.
+    pump.retarget(os.path.join(run_dir, "err.log"))
+    try:
+        fd = os.open(os.path.join(run_dir, "host.err.log"),
+                     os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600)
+        try:
+            os.dup2(fd, 2)
+        finally:
+            os.close(fd)
+    except OSError:
+        pass
+    _write_pid_and_host_json(agent, real, cli)
+    _Host(agent, real, cli, peer, initialized=True,
+          throwaway_sid=throwaway_sid, pump=pump).run()
+
+
 def main() -> None:
+    """The first stdin LINE is the request (a normal one arrives with no
+    newline and stdin closed, which `readline` returns whole); with
+    `"spare": true` it starts spare mode instead (`_run_spare`)."""
     _enable_faulthandler()
     if hasattr(os, "setsid"):
         try:
@@ -2185,7 +2411,10 @@ def main() -> None:
     # result, every card its answer, the registry row its removal.
     signal.signal(signal.SIGTERM, lambda *_: sys.exit(0))
     _close_inherited_fds()
-    req = json.loads(sys.stdin.buffer.read().decode("utf-8"))
+    req = json.loads(sys.stdin.buffer.readline().decode("utf-8"))
+    if req.get("spare"):
+        _run_spare(req)
+        return
     run_dir = req["run_dir"]
     # A Stop that landed before setsid() — session_host's D1310 window.
     if os.path.exists(os.path.join(run_dir, "cancelled")):
@@ -2209,20 +2438,7 @@ def main() -> None:
     finally:
         err_fh.close()
 
-    with agent._private_open(os.path.join(run_dir, "pid")) as f:
-        f.write(str(cli.pid))
-    with agent._private_open(os.path.join(run_dir, "host.json")) as f:
-        json.dump({
-            "pid": os.getpid(),
-            # A resume's id; "" for a fresh chat until `session/new` names
-            # it (`_Host._write_host_json`).
-            "session_id": req.get("session_id") or "",
-            "file": req.get("file", ""), "mode": req.get("cli_mode", ""),
-            "model": req.get("model", ""), "effort": req.get("effort", ""),
-            "read_dirs": req.get("extra_read_dirs", []),
-            "backend": BACKEND,
-        }, f)
-
+    _write_pid_and_host_json(agent, req, cli)
     _Host(agent, req, cli, _Peer(cli)).run()
 
 

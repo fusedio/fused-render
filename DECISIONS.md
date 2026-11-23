@@ -8258,3 +8258,15 @@ managed `managed-settings.d` drop-ins, the legacy `~/.claude.json`
 - **Edits only.** A shell call's early `rawInput` is a truncated command, and a shell call is raised at `in_progress` anyway.
 - **`tail_closed` left alone.** It means the transcript's last row is a reply with no `tool_use`. The announce writes no transcript row, so setting it False would make a closed transcript read as open; `_close_message` (which can write a text row) already sets it True.
 - **Other readers checked.** `agent.py` `_poll` is the only Python reader of `content_block_start` (the other hits are the other hosts' emitters and comments). `tools_open` is keyed by id, so the repeat start for the same id is one entry; a `tool_result` removes it. `tool_names` is overwritten by the later start/assistant row. The registry fold (`_update_run_registry`, line ~12113) reads only `assistant` rows. A turn cancelled mid-write leaves the bare start with no `tool_result` and `activity.tool` still set, but `done` is true (probed); a cancelled raised tool already leaves the same, so nothing new.
+
+## D1506: Cursor chats start from a per-folder warm spare (2026-11-23, cursor-warm-spare-per-folder)
+
+- **What.** The composer's `defaults` call starts a spare `cursor_host.py` for the folder (one per cwd, at most two, retired after 5 minutes unclaimed). The spare runs `initialize` and a throwaway `session/new`, then waits; `_start` hands the real chat to a ready spare with the same cwd and argv, else spawns a cold host. `FUSED_CURSOR_PREWARM=0` disables it.
+- **Why.** The first `session/new` in a `cursor-agent acp` process takes 4.1-4.8 s (a later one 1.2 s), so the first message waited about 4.5 s. Cursor reads rules and skills from the process cwd, so the spare must match the chat's cwd.
+- **Cost.** One idle CLI process per recently opened folder for up to 5 minutes, and one throwaway `~/.cursor/acp-sessions/<id>` per spare that fused never reads.
+- **Rejected.** A single global spare: wrong cwd means wrong rules and skills. Warming at app start: spawns CLIs for users who never open Cursor chat.
+
+## D1508: The Cursor warm spare exists only when Cursor is the default agent (2026-11-23, cursor-warm-spare-per-folder)
+
+- **What.** `_cursor_spare_usable` also requires the `default_backend` pref to read as `cursor`, so a spare is started only for users whose default agent is Cursor. A Cursor chat opened while another agent is the default starts cold; an already-warm spare may still be claimed and otherwise retires on its 5-minute TTL.
+- **Why.** The spare costs a CLI process plus a throwaway session, and only users who chose Cursor should pay for it.
