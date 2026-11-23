@@ -167,19 +167,27 @@ def _instructions(agent, tmp_path, monkeypatch, target_in_workbench, own=True, w
     return (run_dir / "cursor_agent" / "instructions.md").read_text(encoding="utf-8"), paths
 
 
+def _readable_sentence(body):
+    """The 'Besides the working folder ...' sentence, which runs to the end of the line."""
+    start = body.index("Besides the working folder, you may also read these directories:")
+    return body[start:].split("\n", 1)[0]
+
+
 def test_instructions_list_fused_skills_but_not_workbench_off_canvas(agent, tmp_path, monkeypatch):
     body, paths = _instructions(agent, tmp_path, monkeypatch, False)
     assert " SKILLS: " in body
     assert "`foo-skill` \u2014 Does foo things (%s)" % paths["foo"] in body
     assert "workbench thing" not in body and paths["wbs"] not in body
     # The skills folder is named readable.
-    assert str(tmp_path / "own") in body
+    assert str(tmp_path / "own") in _readable_sentence(body)
 
 
 def test_instructions_list_workbench_skills_on_a_canvas_target(agent, tmp_path, monkeypatch):
     body, paths = _instructions(agent, tmp_path, monkeypatch, True)
     assert "`wbs` \u2014 workbench thing (%s)" % paths["wbs"] in body
     assert paths["foo"] in body
+    readable = _readable_sentence(body)
+    assert str(tmp_path / "own") in readable and str(tmp_path / "wb") in readable
 
 
 def test_a_block_scalar_description_is_joined(agent, tmp_path, monkeypatch):
