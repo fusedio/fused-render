@@ -1,6 +1,5 @@
 // THE PIN ICON AND THE TEMP CARD'S OUTSIDE PRESS (rail-pin-lib.ts header;
-// owner, 2026-11-16). Behind the unified-head switch: the rails draw neither
-// with it off.
+// owner, 2026-11-16).
 //
 //   - `RailPinButton`: ONE component for every rail card's head — the shared
 //     head's first seat (TaskHead `pinNode`; with the pin no card has a ×), and the legacy

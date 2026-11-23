@@ -39,14 +39,14 @@ describe("the shared config flags' test pins (CodeRabbit on #2201)", () => {
   });
 });
 
-// A SERVER WITHOUT BOTS (Windows) still opens the Bots page for the specialists alone: `useBotsMissing` /
+// A SERVER WITHOUT BOTS (Windows) still opens the Bots page for the experts alone: `useBotsMissing` /
 // `readBotsMissing` are what the page reads to leave its `/api/bots*` parts out.
 function MissingProbe({ out }: { out: { missing?: boolean } }) {
   out.missing = useBotsMissing(true);
   return null;
 }
 
-describe("bots missing (the specialists-only Bots page)", () => {
+describe("bots missing (the experts-only Bots page)", () => {
   test("only an explicit bots_available false is missing, in React and out of it", async () => {
     const out: { missing?: boolean } = {};
     setBotsAvailableForTests(false);

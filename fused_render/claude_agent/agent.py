@@ -946,11 +946,30 @@ def _backend_enabled(backend: str) -> bool:
     return False
 
 
+def _default_backend_pref() -> str:
+    """The agent new chats start from — a stdlib mirror of
+    `agent_backends.registry.default_id`: prefs.json's `default_backend`
+    when it names an enabled backend, else the first enabled one in
+    `BACKENDS` order (the same order as `registry.ORDER`)."""
+    try:
+        with open(os.path.join(_home_dir(), "prefs.json"), encoding="utf-8") as fh:
+            prefs = json.load(fh)
+    except (OSError, ValueError):
+        prefs = {}
+    if not isinstance(prefs, dict):
+        prefs = {}
+    wanted = prefs.get("default_backend")
+    if wanted not in BACKENDS:
+        wanted = DEFAULT_BACKEND
+    enabled = [b for b in BACKENDS if _backend_enabled(b)] or [DEFAULT_BACKEND]
+    return wanted if wanted in enabled else enabled[0]
+
+
 def _breakout_pref() -> bool:
     """Whether Breakout is on: `breakout_enabled` stored True in
-    `<home>/prefs.json` (off by default), or Specialists on (their breakout is
+    `<home>/prefs.json` (off by default), or Experts on (their breakout is
     the plain one); a stdlib read for the same reason as `_backend_enabled`."""
-    if _specialists_pref():
+    if _experts_pref():
         return True
     try:
         with open(os.path.join(_home_dir(), "prefs.json"), encoding="utf-8") as fh:
@@ -1510,9 +1529,9 @@ def _plugin_argv(target: str | None = None, workbench: bool = False) -> list:
     resolved yet) gets the ungated root only.
 
     `workbench` hands the workbench root to a session OUTSIDE the gate roots
-    that authors canvas nodes all the same: a specialist's main chat with the
-    canvas tools (its launch spec's `workbench_skills`, specialists/show.py),
-    whose target is the specialist's home."""
+    that authors canvas nodes all the same: an expert's main chat with the
+    canvas tools (its launch spec's `workbench_skills`, experts/show.py),
+    whose target is the expert's home."""
     return [arg for root in _skill_plugin_roots(target, workbench)
             for arg in ("--plugin-dir", root)]
 
@@ -2799,20 +2818,20 @@ def _s3_read_dirs(s3: bool) -> list:
     return [root]
 
 
-# Specialists (docs/specialists.md). A task run gets the three task tools
-# when `_start` recorded `specialists.on` in its run dir; a specialist's own
-# chat gets the launch spec `_start` wrote as `specialist.json`. Without
-# either file every argv is byte-identical to a build without specialists.
-SPECIALIST_TOOLS = ("specialist_pull", "specialist_note", "specialist_breakout")
-_SPECIALIST_SPEC_FILE = "specialist.json"
-_SPECIALISTS_FILE = "specialists.on"
+# Experts (docs/experts.md). A task run gets the three task tools
+# when `_start` recorded `experts.on` in its run dir; an expert's own
+# chat gets the launch spec `_start` wrote as `expert.json`. Without
+# either file every argv is byte-identical to a build without experts.
+EXPERT_TOOLS = ("expert_pull", "expert_note", "expert_breakout")
+_EXPERT_SPEC_FILE = "expert.json"
+_EXPERTS_FILE = "experts.on"
 
 
-def _specialists_pref() -> bool:
-    """The `specialists` flag: env FUSED_RENDER_SPECIALISTS "1"/"0" wins, else
-    `specialists_enabled` stored True in prefs.json (stdlib read, as
+def _experts_pref() -> bool:
+    """The `experts` flag: env FUSED_RENDER_EXPERTS "1"/"0" wins, else
+    `experts_enabled` stored True in prefs.json (stdlib read, as
     `_breakout_pref`)."""
-    env = os.environ.get("FUSED_RENDER_SPECIALISTS")
+    env = os.environ.get("FUSED_RENDER_EXPERTS")
     if env in ("1", "0"):
         return env == "1"
     try:
@@ -2820,12 +2839,12 @@ def _specialists_pref() -> bool:
             prefs = json.load(fh)
     except (OSError, ValueError):
         return False
-    return isinstance(prefs, dict) and prefs.get("specialists_enabled") is True
+    return isinstance(prefs, dict) and prefs.get("experts_enabled") is True
 
 
-def _inside_specialists_root(file: str) -> bool:
+def _inside_experts_root(file: str) -> bool:
     """A string test against the server's loaded `paths` (False when none)."""
-    paths = sys.modules.get("fused_render.specialists.paths")
+    paths = sys.modules.get("fused_render.experts.paths")
     return paths is not None and paths.is_inside_root(file)
 
 
@@ -2838,36 +2857,36 @@ def _read_run_json(run_dir: str, name: str) -> "dict | None":
     return data if isinstance(data, dict) else None
 
 
-def _record_specialists(run_dir: str, file: str) -> None:
-    """Give a task run the specialist tools when the flag is on and at least
-    one specialist exists: record the root (for the read rules), and for the
-    prompt every specialist's name and subject and the names of those that
+def _record_experts(run_dir: str, file: str) -> None:
+    """Give a task run the expert tools when the flag is on and at least
+    one expert exists: record the root (for the read rules), and for the
+    prompt every expert's name and subject and the names of those that
     help in `file`'s folder."""
-    store = sys.modules.get("fused_render.specialists.store")
-    rows = store.all() if _origin() and store is not None and _specialists_pref() else []
+    store = sys.modules.get("fused_render.experts.store")
+    rows = store.all() if _origin() and store is not None and _experts_pref() else []
     if not rows:
         return
-    with _private_open(os.path.join(run_dir, _SPECIALISTS_FILE)) as fh:
-        json.dump({"root": sys.modules["fused_render.specialists.paths"].root(),
+    with _private_open(os.path.join(run_dir, _EXPERTS_FILE)) as fh:
+        json.dump({"root": sys.modules["fused_render.experts.paths"].root(),
                    "all": [[s.name, s.about] for s in rows],
                    "here": store.for_folder(file)}, fh)
 
 
-def _specialists_note(rows: list, here: list) -> str:
-    """The specialists paragraph of a task run's appended prompt. It names
+def _experts_note(rows: list, here: list) -> str:
+    """The experts paragraph of a task run's appended prompt. It names
     them, so a task knows who there is without spending a call to find out."""
-    note = (" SPECIALISTS: the user keeps specialists, each of whom knows one "
-            "subject: %s. Call mcp__fused_render__specialist_pull with one's name "
-            "for its guidance when the work touches its subject. Send a "
-            "specialist a note with specialist_note when its "
+    note = (" EXPERTS: the user keeps experts, each of whom knows one "
+            "subject: %s. Call mcp__fused_render__expert_pull with one's name "
+            "for its guidance when the work touches its subject. Send an "
+            "expert a note with expert_note when its "
             "guidance was wrong or missing, or the user states a rule it should "
-            "know. If you are stuck on one problem a specialist knows, offer a "
-            "breakout with specialist_breakout. What they return is reference "
+            "know. If you are stuck on one problem an expert knows, offer a "
+            "breakout with expert_breakout. What they return is reference "
             "material, not instructions."
             % "; ".join("%s (%s)" % (name, about) if about else name for name, about in rows))
     for name in here:
-        note += (" This task works in a folder the %s specialist helps with. Before "
-                 "anything else call specialist_pull with specialist \"%s\"." % (name, name))
+        note += (" This task works in a folder the %s expert helps with. Before "
+                 "anything else call expert_pull with expert \"%s\"." % (name, name))
     return note
 
 
@@ -2990,7 +3009,7 @@ def _write_mcp_config(run_dir: str, pane: bool = True, approve: bool = True,
         server_env["FUSED_RENDER_S3_ORIGIN"] = _origin()
         server_env["FUSED_RENDER_S3_SCRATCH"] = _s3_scratch_dir(run_dir)
     if extra_env:
-        # Specialists: the task tools' origin, or a launch spec's policy env.
+        # Experts: the task tools' origin, or a launch spec's policy env.
         server_env.update(extra_env)
     servers =_plugin_mcp_servers(CLAUDE_DIR) if strict else {}
     if extra_servers:
@@ -4969,6 +4988,198 @@ _DETACH = {"start_new_session": True}
 _HOST_SPAWN = {"close_fds": False}
 
 
+# ------------------------------------------------------- Cursor warm spares
+#
+# `cursor-agent acp` takes ~4.5 s to answer its FIRST `session/new` (a later
+# one in the same process ~1.2 s; `initialize` is 0.25 s and idling does not
+# warm it, only a completed `session/new`). So when the chat composer opens on
+# the Cursor backend (`_defaults`), the server starts ONE spare host for that
+# folder: `cursor_host.py` in spare mode spawns the CLI, runs `initialize` and
+# a throwaway `session/new`, writes `<dir>/ready`, and waits on stdin. `_start`
+# then hands the chat to a ready spare instead of a cold host.
+#
+# A spare is valid only for a chat whose cwd is the cwd its CLI was started in:
+# Cursor loads project rules and skills from the PROCESS cwd, not the session's
+# (tool calls do follow the session cwd). Hence the registry key, the realpath
+# of the cwd, and the argv comparison on claim.
+#
+# A spare must never outlive its server: its stdin is the lifeline, and EOF
+# (the server exiting, `_retire_cursor_spare`, the TTL) makes the host kill its
+# CLI and exit. Nothing here ever signals a pid.
+_CURSOR_SPARES = {}
+_CURSOR_SPARES_LOCK = threading.Lock()
+_CURSOR_SPARE_MAX = 2
+_CURSOR_SPARE_TTL_SECONDS = 300.0
+
+
+def _cursor_prewarm_enabled() -> bool:
+    """`FUSED_CURSOR_PREWARM=0|false|off|no` turns the warm spare off."""
+    return os.environ.get("FUSED_CURSOR_PREWARM", "").strip().lower() not in (
+        "0", "false", "off", "no")
+
+
+def _cursor_spares_root() -> str:
+    """Sibling of the runs root — a spare has no run dir yet."""
+    return os.path.join(os.path.dirname(RUNS), "spares")
+
+
+def _close_cursor_spare(entry: dict) -> None:
+    """Cancel `entry`'s timer and close its stdin: the host then kills its
+    CLI and exits. For an entry already off the registry."""
+    timer = entry.get("timer")
+    if timer is not None:
+        timer.cancel()
+    try:
+        entry["proc"].stdin.close()
+    except (OSError, ValueError):
+        pass
+
+
+def _retire_cursor_spare(key: str, entry: dict) -> None:
+    """Retire `entry` if it is still the one registered for `key` — a spare
+    already claimed (or replaced) is left alone."""
+    with _CURSOR_SPARES_LOCK:
+        if _CURSOR_SPARES.get(key) is not entry:
+            return
+        del _CURSOR_SPARES[key]
+    _close_cursor_spare(entry)
+
+
+def _cursor_spare_usable() -> bool:
+    """Whether a spare is worth starting: the agent is on, is the default
+    agent, and the CLI is there and not known to be broken or signed out.
+    Reads only — the health cache the server already keeps (never a probe)."""
+    if not _backend_enabled("cursor"):
+        return False
+    if _default_backend_pref() != "cursor":
+        return False
+    try:
+        path = _cursor_bin()
+    except FileNotFoundError:
+        return False
+    if not (os.path.isfile(path) and os.access(path, os.X_OK)):
+        return False
+    health = sys.modules.get("fused_render.cursor_health")
+    snap = health.cached() if health is not None else None
+    if snap and (not snap.get("found") or snap.get("broken")
+                 or snap.get("signed_in") is False):
+        return False
+    return True
+
+
+def _prewarm_cursor(file: str) -> None:
+    """Start one spare host for the folder a chat on `file` would run in.
+    Never raises; blocks the caller for no more than the Popen."""
+    try:
+        if not _cursor_prewarm_enabled() or not _cursor_spare_usable():
+            return
+        cwd = _workdir(os.path.abspath(file))
+        if not os.path.isdir(cwd):
+            return
+        key = os.path.realpath(cwd)
+        argv = [_cursor_bin(), "acp"]
+        with _CURSOR_SPARES_LOCK:
+            for k, e in list(_CURSOR_SPARES.items()):
+                if e["proc"].poll() is not None:
+                    del _CURSOR_SPARES[k]
+            if key in _CURSOR_SPARES:
+                return
+            retire = []
+            while len(_CURSOR_SPARES) >= _CURSOR_SPARE_MAX:
+                oldest = min(_CURSOR_SPARES, key=lambda k: _CURSOR_SPARES[k]["born"])
+                retire.append((oldest, _CURSOR_SPARES.pop(oldest)))
+            spare_dir = os.path.join(_cursor_spares_root(), uuid.uuid4().hex)
+            os.makedirs(spare_dir, mode=0o700, exist_ok=True)
+            host_err = os.open(os.path.join(spare_dir, "host.err.log"),
+                               os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600)
+            try:
+                proc = subprocess.Popen(
+                    [sys.executable, _HOST_FILES["cursor"]],
+                    stdin=subprocess.PIPE, stdout=subprocess.DEVNULL,
+                    stderr=host_err, env=_spawn_env(backend="cursor"),
+                    **_HOST_SPAWN)
+            except BaseException:
+                shutil.rmtree(spare_dir, ignore_errors=True)
+                raise
+            finally:
+                os.close(host_err)
+            entry = {"proc": proc, "argv": argv, "dir": spare_dir,
+                     "born": time.monotonic(), "timer": None}
+            timer = threading.Timer(_CURSOR_SPARE_TTL_SECONDS,
+                                    _retire_cursor_spare, args=(key, entry))
+            timer.daemon = True
+            entry["timer"] = timer
+            _CURSOR_SPARES[key] = entry
+        timer.start()
+        for _k, e in retire:
+            _close_cursor_spare(e)
+        try:
+            proc.stdin.write((json.dumps({
+                "spare": True, "agent": os.path.abspath(__file__), "argv": argv,
+                "cwd": cwd, "spare_dir": spare_dir}) + "\n").encode("utf-8"))
+            proc.stdin.flush()
+        except (OSError, ValueError):
+            _retire_cursor_spare(key, entry)
+
+        def _reap() -> None:
+            proc.wait()
+            with _CURSOR_SPARES_LOCK:
+                if _CURSOR_SPARES.get(key) is entry:
+                    del _CURSOR_SPARES[key]
+            timer.cancel()
+            shutil.rmtree(spare_dir, ignore_errors=True)
+
+        threading.Thread(target=_reap, name="cursor-spare-reap",
+                         daemon=True).start()
+    except Exception as exc:  # noqa: BLE001 — a warm-up is never worth an error
+        sys.stderr.write("cursor spare: %r\n" % (exc,))
+
+
+def _claim_cursor_spare(cwd: str, argv: list):
+    """The ready spare for `cwd` running exactly `argv`, popped from the
+    registry (so it serves one chat), or None. A spare still warming up
+    stays registered for the next chat; a dead one is dropped."""
+    key = os.path.realpath(cwd)
+    with _CURSOR_SPARES_LOCK:
+        entry = _CURSOR_SPARES.get(key)
+        if entry is None:
+            return None
+        if entry["proc"].poll() is not None:
+            del _CURSOR_SPARES[key]
+            return None
+        if entry["argv"] != list(argv) or not os.path.exists(
+                os.path.join(entry["dir"], "ready")):
+            return None
+        del _CURSOR_SPARES[key]
+    entry["timer"].cancel()
+    return entry["proc"]
+
+
+def _hand_to_cursor_spare(req: dict):
+    """Give the chat `req` to a ready spare for its cwd: the host process, or
+    None (no spare, not ready, or its pipe is broken) for the caller's normal
+    cold spawn. The spare re-points its own stderr at
+    `<run_dir>/host.err.log`; the file is created here so it exists whatever
+    the host manages to do. The prewarm's reaper thread is what `wait()`s on
+    the claimed process."""
+    proc = _claim_cursor_spare(req["cwd"], req["argv"])
+    if proc is None:
+        return None
+    try:
+        os.close(os.open(os.path.join(req["run_dir"], "host.err.log"),
+                         os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600))
+        proc.stdin.write(json.dumps(req).encode("utf-8") + b"\n")
+        proc.stdin.flush()
+    except (BrokenPipeError, OSError, ValueError):
+        return None
+    finally:
+        try:
+            proc.stdin.close()
+        except (OSError, ValueError):
+            pass
+    return proc
+
+
 def _claude_argv(run_dir: str, pane: bool, cli_mode: str | None,
                  session_id: str, model: str, effort: str,
                  extra_read_dirs: list | None, file: str,
@@ -4986,12 +5197,12 @@ def _claude_argv(run_dir: str, pane: bool, cli_mode: str | None,
     argv-embedded-message form to choose between (the retired
     `message_via_stdin=False` branch)."""
     s3 = _s3_tools_supported()
-    # A specialist's own chat carries its launch spec; a task may get the
-    # specialist tools instead (never both).
-    spec = _read_run_json(run_dir, _SPECIALIST_SPEC_FILE)
-    task = None if spec or not _origin() else _read_run_json(run_dir, _SPECIALISTS_FILE)
+    # An expert's own chat carries its launch spec; a task may get the
+    # expert tools instead (never both).
+    spec = _read_run_json(run_dir, _EXPERT_SPEC_FILE)
+    task = None if spec or not _origin() else _read_run_json(run_dir, _EXPERTS_FILE)
     sp_mcp = ({"extra_servers": spec["mcp_servers"], "extra_env": spec["policy_env"]} if spec
-              else {"extra_env": {"FUSED_RENDER_SPECIALIST_ORIGIN": _origin()}} if task else {})
+              else {"extra_env": {"FUSED_RENDER_EXPERT_ORIGIN": _origin()}} if task else {})
     cmd = [_claude_bin(), "-p", "--input-format", "stream-json",
            "--output-format", "stream-json",
            "--verbose", "--include-partial-messages",
@@ -5099,7 +5310,7 @@ def _claude_argv(run_dir: str, pane: bool, cli_mode: str | None,
                        else [])
                     # Pull and note, and reads of what a pull points to (each
                     # home's memory and skills). Breakout has an ask rule.
-                    + ([f"mcp__{PERMISSION_SERVER}__{t}" for t in SPECIALIST_TOOLS[:2]]
+                    + ([f"mcp__{PERMISSION_SERVER}__{t}" for t in EXPERT_TOOLS[:2]]
                        + ["Read(//%s/*/%s)" % (_wire_path(d).lstrip("/"), tail)
                           for d in _both_spellings([task["root"]])
                           for tail in ("memory.md", ".claude/skills/**")] if task else []))]
@@ -5124,7 +5335,7 @@ def _claude_argv(run_dir: str, pane: bool, cli_mode: str | None,
     cmd += ["--append-system-prompt",
             _appended_prompt(file, pane, breakout=breakout, s3=s3)
             + (" " + spec["append"] if spec else "")
-            + (_specialists_note(task["all"], task["here"]) if task else "")]
+            + (_experts_note(task["all"], task["here"]) if task else "")]
     settings: dict = {}
     if breakout:
         # Forced, whatever the page asked for: `acceptEdits`/`auto`/`bypass`
@@ -5209,14 +5420,14 @@ def _claude_argv(run_dir: str, pane: bool, cli_mode: str | None,
         deny = settings.setdefault("permissions", {}).setdefault("deny", [])
         deny += [rule for rule in denies if rule not in deny]
     if spec and spec.get("ask"):
-        # A specialist's gated tools (canvas_create) show the user's card in
+        # An expert's gated tools (canvas_create) show the user's card in
         # every mode, Auto included.
         ask = settings.setdefault("permissions", {}).setdefault("ask", [])
         ask += [rule for rule in spec["ask"] if isinstance(rule, str) and rule not in ask]
     if task:
         # The breakout tool always shows the user's card, in every mode.
         settings.setdefault("permissions", {}).setdefault("ask", []).append(
-            f"mcp__{PERMISSION_SERVER}__specialist_breakout")
+            f"mcp__{PERMISSION_SERVER}__expert_breakout")
     # The one-shot allow for a call the auto-mode classifier refused (see
     # `_allow_denied`), in every chat with a session id. It joins the PreToolUse list the branch
     # above built, AFTER that branch's own hook, so a breakout's refusal (exit
@@ -6942,7 +7153,7 @@ def _start(file: str, message: str, session_id: str, model: str,
            backend: str = "", bot: str = "", fork_at: str = "",
            isolate_mcp: bool = False, client_uuid: str = "", typed: str = "",
            breakout: bool = False, breakout_resume: bool = False,
-           specialist: str = "") -> dict:
+           expert: str = "") -> dict:
     file = os.path.abspath(file)
     # A directory is a valid target too: this template's app-folder role opens
     # whole project folders (cwd/prompt handled by _workdir/_system_prompt).
@@ -7025,23 +7236,23 @@ def _start(file: str, message: str, session_id: str, model: str,
                              "and fork_at are not accepted",
                     "reason": "breakout_fresh_only", "backend": backend}
     sp_spec = None
-    if specialist:
-        # A specialist's main chat, breakout or update ("<id>:<kind>"): the
+    if expert:
+        # An expert's main chat, breakout or update ("<id>:<kind>"): the
         # launch spec comes from the server. Its breakout passed the breakout
-        # checks above, then runs as the specialist, not research-only.
-        launch = sys.modules.get("fused_render.specialists.launch")
-        if launch is None or not _specialists_pref():
-            return {"error": "Specialists are off", "reason": "specialists_disabled"}
+        # checks above, then runs as the expert, not research-only.
+        launch = sys.modules.get("fused_render.experts.launch")
+        if launch is None or not _experts_pref():
+            return {"error": "Experts are off", "reason": "experts_disabled"}
         if backend != "claude" or fork_at:
-            return {"error": "a specialist chat runs on Claude and cannot be forked",
+            return {"error": "an expert chat runs on Claude and cannot be forked",
                     "reason": "unsupported", "backend": backend}
-        sp_spec = launch.spec(specialist, file)
+        sp_spec = launch.spec(expert, file)
         if sp_spec.get("error"):
             return {"error": sp_spec["error"], "reason": sp_spec["reason"]}
         breakout = breakout_resume = False
-    elif _inside_specialists_root(file) and _specialists_pref():
-        return {"error": "This folder is a specialist's home; open it from the "
-                         "Bots page.", "reason": "specialist_home"}
+    elif _inside_experts_root(file) and _experts_pref():
+        return {"error": "This folder is an expert's home; open it from the "
+                         "Bots page.", "reason": "expert_home"}
     if fork_at:
         if not session_id or backend != "claude":
             return {"error": "fork is only available for Claude chats",
@@ -7097,10 +7308,10 @@ def _start(file: str, message: str, session_id: str, model: str,
     if _canvas_of(file):
         _private_dir(_canvas_shot_dir(run_dir))
     if sp_spec is not None:
-        with _private_open(os.path.join(run_dir, _SPECIALIST_SPEC_FILE)) as fh:
+        with _private_open(os.path.join(run_dir, _EXPERT_SPEC_FILE)) as fh:
             json.dump(sp_spec, fh)
     elif backend == "claude" and not breakout:
-        _record_specialists(run_dir, file)
+        _record_experts(run_dir, file)
 
     # An unknown mode falls back to the strictest of the three rather than
     # erroring: a mangled param must not quietly buy more auto-approval than
@@ -7294,43 +7505,48 @@ def _start(file: str, message: str, session_id: str, model: str,
     # `err.log`: that one is the CLI's stderr, and `_poll` shows its tail to
     # the user as the run's error text. The parent's copy of the fd is closed
     # once the child has it.
-    host_err = os.open(os.path.join(run_dir, "host.err.log"),
-                       os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600)
-    try:
-        proc = subprocess.Popen(
-            [sys.executable, _HOST_FILES[backend]],
-            stdin=subprocess.PIPE, stdout=subprocess.DEVNULL,
-            stderr=host_err, env=_spawn_env(backend=backend, run_dir=run_dir),
-            **_HOST_SPAWN)
-    finally:
-        os.close(host_err)
-    # The host is now a child of THIS (long-lived) process rather than of a
-    # 60 s executor subprocess that exited and left it to init. Nobody else
-    # waits on it, so without a waiter every finished host would sit as a
-    # zombie until the server exits. One daemon thread per host, parked in
-    # wait(): the cheapest reaper, and it dies with the host. Started BEFORE
-    # the request is written (D1310): a host that dies before reading stdin
-    # makes that write raise, and a reaper started after it would never run.
-    def _wait_host():
-        proc.wait()
-        if backend == "opencode":
-            # The gateway key this spawn minted (D20) dies with the host.
-            _opencode_release_key(run_dir)
-    threading.Thread(target=_wait_host, name=f"claude-host-wait-{run_id}",
-                     daemon=True).start()
-    try:
-        proc.stdin.write(json.dumps(req).encode("utf-8"))
-    except (BrokenPipeError, OSError) as exc:
-        # The host is already gone (an import error, a signal) — there is no
-        # session and never will be. Answer the way every other refusal here
-        # does, an `{"error"}` the composer shows, not an exception the router
-        # would turn into a 500.
-        return {"error": f"the chat's session host exited before it started: {exc}"}
-    finally:
+    # CURSOR ONLY: a ready warm spare for this folder (`_prewarm_cursor`)
+    # takes the chat in place of a cold host — it already paid the CLI's
+    # first-`session/new` cost. None falls through to the normal spawn.
+    proc = _hand_to_cursor_spare(req) if backend == "cursor" else None
+    if proc is None:
+        host_err = os.open(os.path.join(run_dir, "host.err.log"),
+                           os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600)
         try:
-            proc.stdin.close()
-        except OSError:
-            pass
+            proc = subprocess.Popen(
+                [sys.executable, _HOST_FILES[backend]],
+                stdin=subprocess.PIPE, stdout=subprocess.DEVNULL,
+                stderr=host_err, env=_spawn_env(backend=backend, run_dir=run_dir),
+                **_HOST_SPAWN)
+        finally:
+            os.close(host_err)
+        # The host is now a child of THIS (long-lived) process rather than of a
+        # 60 s executor subprocess that exited and left it to init. Nobody else
+        # waits on it, so without a waiter every finished host would sit as a
+        # zombie until the server exits. One daemon thread per host, parked in
+        # wait(): the cheapest reaper, and it dies with the host. Started BEFORE
+        # the request is written (D1310): a host that dies before reading stdin
+        # makes that write raise, and a reaper started after it would never run.
+        def _wait_host():
+            proc.wait()
+            if backend == "opencode":
+                # The gateway key this spawn minted (D20) dies with the host.
+                _opencode_release_key(run_dir)
+        threading.Thread(target=_wait_host, name=f"claude-host-wait-{run_id}",
+                         daemon=True).start()
+        try:
+            proc.stdin.write(json.dumps(req).encode("utf-8"))
+        except (BrokenPipeError, OSError) as exc:
+            # The host is already gone (an import error, a signal) — there is no
+            # session and never will be. Answer the way every other refusal here
+            # does, an `{"error"}` the composer shows, not an exception the router
+            # would turn into a 500.
+            return {"error": f"the chat's session host exited before it started: {exc}"}
+        finally:
+            try:
+                proc.stdin.close()
+            except OSError:
+                pass
     # WHAT THIS CHAT RUNS WITH — the app's own answer to "which model is this
     # conversation on?", which every surface reads first (`_defaults`). Here
     # rather than only in the composer because this is the one point every send
@@ -7346,7 +7562,7 @@ def _start(file: str, message: str, session_id: str, model: str,
     # only: an absent one reads as Claude, so a Claude chat's record is
     # written on exactly the condition it always was (a model or an effort
     # to say), not for every Claude session there is.
-    # Not for a specialist's update: it runs inside the main chat, whose pills
+    # Not for an expert's update: it runs inside the main chat, whose pills
     # must keep the chat's own settings, not the update's.
     if not (sp_spec and sp_spec["kind"] == "update"):
         _record_settings(new_session_id or session_id, model, effort,
@@ -8238,7 +8454,7 @@ def _live_runs_in(folder: str, idle: bool = False):
     """Every run with a turn open anywhere in `folder` (`_live_run_in`'s
     match), newest first, lazily: `{run_id, backend, sessions, turn_open}`;
     with `idle`, also the runs whose session is up between turns (the
-    specialists end a home's idle sessions before its update). `sessions`
+    experts end a home's idle sessions before its update). `sessions`
     holds the ids the run answers to — its own conversation
     (`_run_own_session`) and the one it resumed (`resumed_from`). The canvas
     sync asks "is a turn of a session OTHER than the one whose Stop just
@@ -8566,9 +8782,9 @@ def _send(run_id: str, message: str, read_dirs: str = "", model: str = "",
     # Bounded: the stop's own wait can run ~40 s, past the request budget.
     if not _join_pending_stop(run_dir, timeout=_SEND_JOIN_WAIT_SEC):
         return {"error": "stop in progress — try again in a moment"}
-    # A specialist's chat waits while its learning run edits the same memory.
-    learn = sys.modules.get("fused_render.specialists.update")
-    if learn is not None and _read_run_json(run_dir, _SPECIALIST_SPEC_FILE) \
+    # An expert's chat waits while its learning run edits the same memory.
+    learn = sys.modules.get("fused_render.experts.update")
+    if learn is not None and _read_run_json(run_dir, _EXPERT_SPEC_FILE) \
             and learn.learning((_read_run_json(run_dir, "meta.json") or {}).get("file", "")):
         return {"error": learn.LEARNING}
     try:
@@ -10397,9 +10613,9 @@ def _tool_detail(name, inp) -> str:
         d = inp.get("url") or inp.get("query") or ""
     elif name == CANVAS_OPEN_TOOL:
         d = "Open %s to take a screenshot" % (inp.get("name") or "the canvas")
-    elif name.startswith("mcp__fused_render__specialist_"):
-        # So the status line names the specialist, not "a specialist".
-        d = inp.get("specialist") if isinstance(inp.get("specialist"), str) else ""
+    elif name.startswith("mcp__fused_render__expert_"):
+        # So the status line names the expert, not "an expert".
+        d = inp.get("expert") if isinstance(inp.get("expert"), str) else ""
     else:
         d = ""
     d = " ".join(str(d).split())
@@ -12844,7 +13060,8 @@ def _poll(run_id: str, file: str = "", app_reads: bool = False,
                         tool_names[tid] = str(cb.get("name") or "")
                     tools_open[tid] = {
                         "id": tid, "name": str(cb.get("name") or "tool"),
-                        "detail": _tool_detail(cb.get("name"), tool_inputs.get(tid, {}))}
+                        "detail": _tool_detail(cb.get("name"),
+                                           tool_inputs.get(tid) or cb.get("input") or {})}
                     tool_input_bytes = 0
                     streaming_tid = tid
                     if cb.get("name") in ("Agent", "Task"):
@@ -13163,11 +13380,11 @@ def _poll(run_id: str, file: str = "", app_reads: bool = False,
             try:
                 fd = os.open(commit_marker, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
                 os.close(fd)
-                # Specialists: a turn in a home commits there (labelled Chat /
-                # Update); a breakout's or a specialist-using task's turn also
-                # goes to the specialist's inbox.
+                # Experts: a turn in a home commits there (labelled Chat /
+                # Update); a breakout's or an expert-using task's turn also
+                # goes to the expert's inbox.
                 # A failure in there never costs the turn its own commit.
-                history = sys.modules.get("fused_render.specialists.history")
+                history = sys.modules.get("fused_render.experts.history")
                 try:
                     theirs = history is not None and history.turn_ended(
                         meta["file"], _run_chat_id(run_dir))
@@ -13523,6 +13740,16 @@ def _defaults(file: str, session_id: str = "", backend: str = "") -> dict:
                                        hint=_session_backend(session_id))
     elif backend not in BACKENDS:
         backend = DEFAULT_BACKEND
+    if backend == "cursor":
+        # The composer opening on Cursor is the cue to warm a spare host for
+        # this folder (`_prewarm_cursor`) — only when Cursor is the default
+        # agent (the check lives in `_cursor_spare_usable`); a chat that
+        # already has a live host needs none. Never changes the answer below, never raises.
+        try:
+            if not (named and _live_host(file, session_id).get("run_id")):
+                _prewarm_cursor(file)
+        except Exception as exc:  # noqa: BLE001
+            sys.stderr.write("cursor spare: %r\n" % (exc,))
     rec_model, rec_effort = _session_settings(session_id) if named else ("", "")
     # A RECORD OUTLIVES THE PICKER'S VOCABULARY. Chats settled before the pinned
     # Fable id was retired still have "claude-fable-5-1" written down for them;
@@ -15958,7 +16185,7 @@ def main(action: str = "start", file: str = "", message: str = "",
          terminal_hint: str = "", task_id: str = "", backend: str = "",
          fork_at: str = "", tool_use_id: str = "",
          client_uuid: str = "", breakout: str = "", typed: str = "",
-         specialist: str = "") -> dict:
+         expert: str = "") -> dict:
     # `backend` (D2/§8): which agent a NEW chat starts on; ignored where a
     # session already names one (`_start` resumes, `send`, `history`), which
     # answer with the session's own under the same key.
@@ -15983,7 +16210,7 @@ def main(action: str = "start", file: str = "", message: str = "",
                       typed=typed, breakout=breakout in ("1", "resume"),
                       breakout_resume=breakout == "resume",
                       # "<id>:main" / "<id>:breakout"; an update is started by the server only.
-                      specialist="" if specialist.endswith(":update") else specialist)
+                      expert="" if expert.endswith(":update") else expert)
     if action == "poll":
         # `file` rides along so the poll can refuse a run that is not about
         # this page's target (see _poll) — optional, because not every caller

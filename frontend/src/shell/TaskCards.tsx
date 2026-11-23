@@ -59,7 +59,6 @@ import { EraseTaskModal } from "./EraseTaskModal";
 // behind its flag; off, the popup's head below is unchanged.
 import { TaskHead } from "./TaskHead";
 import type { BreakoutControl } from "@apps/claude/ClaudeChat";
-import { useTaskHeadUnified } from "./task-head-flag";
 import { Kebab } from "@apps/claude/ui/Kebab";
 import { AgentProvider } from "@apps/claude/ui/agent-context";
 import {
@@ -574,11 +573,10 @@ function TaskCard({
   const explorer = gone ? null : (taskHref(task) ?? folderHref(task));
   const filing = filingIntent(task);
   // THE A/B TILE (owner, 2026-11-16: "in card view we are missing the archive
-  // button thing on task id, and click to change icon in status ring"), on the
-  // List row's switch (`task_head_unified_enabled`): Archive leaves the doors
-  // strip for the id slot, and the ring is the icon picker's button — the List
-  // row's two, the List row's pieces (FileAct, RingSeat). Off, today's tile.
-  const ab = useTaskHeadUnified();
+  // button thing on task id, and click to change icon in status ring"):
+  // Archive leaves the doors strip for the id slot, and the ring is the icon
+  // picker's button — the List row's two, the List row's pieces (FileAct,
+  // RingSeat).
   /** "Usage limit · resumes 4:00 AM" on a session the plan's window stopped, ""
    *  on every other card. */
   const limit = usageLimitCaption(task);
@@ -590,7 +588,6 @@ function TaskCard({
    *  card, "" on every other — never beside `limit`, a row has one reason. */
   const asking = attentionCaption(task);
   const [acting, setActing] = useState(false);
-  const [note, setNote] = useState("");
   // THE DELETE DOOR, on EVERY card (design.md §2's open question, answered:
   // "all cards", matching the chat's kebab rather than the List's row — the
   // List's trash is on a folder-missing row because that row has nothing else
@@ -614,18 +611,14 @@ function TaskCard({
   const doRefile = async () => {
     if (!filing || acting) return;
     setActing(true);
-    setNote("");
     try {
       if (filing.kind === "archive") await archiveTask(task.key);
       else await unarchiveTask(task.key);
       onReload?.();
     } catch (e) {
       // No footer on a card: the server's sentence goes up as a toast — the
-      // pointer may have left the door by the time the refusal lands — and
-      // stays on the door's hint for the next attempt.
-      const said = (e as Error).message;
-      setNote(said);
-      notify({ title: said, tone: "error" });
+      // pointer may have left the door by the time the refusal lands.
+      notify({ title: (e as Error).message, tone: "error" });
     } finally {
       setActing(false);
     }
@@ -641,7 +634,7 @@ function TaskCard({
   return (
     <>
     <section
-      className={"task-card task-card--door" + (ab ? " task-card--ab" : "") + (peeked ? ` ${PEEK_OPEN_CLASS}` : "")
+      className={"task-card task-card--door task-card--ab" + (peeked ? ` ${PEEK_OPEN_CLASS}` : "")
         + (selected ? " is-selected" : "")}
       data-checked={bulk?.selection.has(task.key) ? "1" : undefined}
       // The side peek's two hooks on every openable item in every view: the
@@ -717,7 +710,7 @@ function TaskCard({
               List row's own): the press opens the icon picker on a numbered
               task with the icons experiment on, and stops there — it does not
               also open the popup. */}
-          <RingSeat pick={ab} task={task} {...(onReload ? { onDone: onReload } : {})}>
+          <RingSeat task={task} {...(onReload ? { onDone: onReload } : {})}>
             <StatusIcon
               status={taskColumn(task)}
               failed={ringFailed(task)}
@@ -725,7 +718,6 @@ function TaskCard({
               draftHeld={draftRing(task) && !heldInPeek}
               background={liveJobRow(task)}
               icon={task.icon_slot}
-              iconPicked={task.icon_picked}
             />
           </RingSeat>
           {/* The id keeps the List row's muted skin whatever the title row below
@@ -740,14 +732,10 @@ function TaskCard({
               The doors strip's Archive stands down below: one filing button
               per tile. No button where the filing cannot change (a run in
               flight): the number stays. */}
-          {ab ? (
-            <span className="tasks-idslot">
-              <span className="tasks-id tasks-id--task">{shortTaskId(task.task_id)}</span>
-              {filing ? <FileAct file={filing} disabled={acting} onPress={refile} /> : null}
-            </span>
-          ) : (
+          <span className="tasks-idslot">
             <span className="tasks-id tasks-id--task">{shortTaskId(task.task_id)}</span>
-          )}
+            {filing ? <FileAct file={filing} disabled={acting} onPress={refile} /> : null}
+          </span>
           {/* The same relative unit every task row on this page prints, from the
               same function — so a card and its row agree about when this last
               moved (tasks-lib.taskWhen). */}
@@ -839,7 +827,7 @@ function TaskCard({
             over the id instead (`.tasks-idslot` above) — so on that tile a
             draft's Discard is a reason of its own to draw the strip, the one
             `filing` used to give it (Bugbot, PR #2300). */}
-        {((filing && !ab) || explorer || gone || jobs || (ab && hasDraft(task) && !heldInPeek)) && (
+        {(explorer || gone || jobs || (hasDraft(task) && !heldInPeek)) && (
         <span className="task-card-doors" data-hint="" onClick={(e) => e.stopPropagation()}>
           {/* DISCARD THE UNSENT WORDS — the List row's and the Board card's own
               trash, on this wall too (design "one record", §5: the same actions
@@ -900,18 +888,6 @@ function TaskCard({
               disabled={acting}
               icon={ICON_STOP}
             />
-          )}
-          {filing && !ab && (
-            <button
-              type="button"
-              className="task-card-door"
-              disabled={acting}
-              data-hint={note || filing.label}
-              aria-label={filing.label}
-              onClick={refile}
-            >
-              {filing.kind === "archive" ? ICON_ARCHIVE : ICON_UNARCHIVE}
-            </button>
           )}
           {explorer && (
             <a
@@ -1059,9 +1035,6 @@ function TaskPeek({
   // the honest trigger: bumped once the transcript paints, it tells the Modal
   // to take the focus it could not take at mount.
   const [chatReady, setChatReady] = useState(0);
-  const unified = useTaskHeadUnified();
-  /** The shared head, for every task (see `head=`). */
-  const sharedHead = unified;
   /** The shared head's chip seat (ChatMount `headChipsHost`). */
   const [chipsHost, setChipsHost] = useState<HTMLElement | null>(null);
   /** …and its status seat, for the chat's pause word (ChatMount
@@ -1099,7 +1072,7 @@ function TaskPeek({
     <Modal
       title={
         <span className="task-peek-title">
-          <StatusIcon status={taskColumn(task)} failed={ringFailed(task)} background={liveJobRow(task)} icon={task.icon_slot} iconPicked={task.icon_picked} />
+          <StatusIcon status={taskColumn(task)} failed={ringFailed(task)} background={liveJobRow(task)} icon={task.icon_slot} />
           <TaskAgentMark backend={task.backend} />
           <TaskStar task={task} />
           <span className="tasks-id tasks-id--task">{shortTaskId(task.task_id)}</span>
@@ -1196,7 +1169,7 @@ function TaskPeek({
           )}
         </>
       }
-      // THE SHARED HEAD, with the flag on: × to close (the chassis' own guarded
+      // THE SHARED HEAD: × to close (the chassis' own guarded
       // close), the identity, the PR chip, ↗ Open and the chat's own ⋮ — which
       // is where Archive and Delete live now, offered the way every other task
       // menu offers them.
@@ -1206,8 +1179,7 @@ function TaskPeek({
       // (TaskFileSeat); the folder is ↗ Open; and with the folder gone, the
       // greyed door and Delete ride a plain ⋮ of their own — the Tasks page
       // panel's way for the same task (TaskPeek `unifiedKebab`).
-      {...(sharedHead ? {
-        head: ({ titleId, close }: ModalHeadContext) => (
+      head={({ titleId, close }: ModalHeadContext) => (
           <TaskHead
             className="task-peek-head"
             lead={{ kind: "close", label: "Close", onPress: close }}
@@ -1319,8 +1291,7 @@ function TaskPeek({
               </div>
             ) : null}
           />
-        ),
-      } : {})}
+        )}
       // The footer exists only while there is a sentence for it: a refused
       // archive, in the List row's quiet voice.
       footer={
@@ -1346,11 +1317,10 @@ function TaskPeek({
           backend={task.backend}
           chatOnly
           peek
-          // The shared head seats the worktree pieces (`headChipsHost`); the
-          // old head keeps the chat's slim line.
-          {...(sharedHead
-            ? { headChipsHost: chipsHost, headStatusHost: statusHost, onBreakoutControl: setBreakoutCtl }
-            : { headerInPeek: true, headerExtra: <TaskPrChip task={task} /> })}
+          // The shared head seats the worktree pieces (`headChipsHost`).
+          headChipsHost={chipsHost}
+          headStatusHost={statusHost}
+          onBreakoutControl={setBreakoutCtl}
           paramsSource="memory"
           onEscape={onClose}
           focusRef={boxRef}

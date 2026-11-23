@@ -3349,7 +3349,7 @@ def _collect() -> dict[str, dict]:
             if _is_task(task) and not _deleted(task, deleted)
             and not _breakout(task, breakouts)
             and not _bot_session(task) and not _merge_session(task)
-            and not _specialist_session(task)}
+            and not _expert_session(task)}
 
 
 def _bot_session(task: dict) -> bool:
@@ -3372,15 +3372,15 @@ def _bot_session(task: dict) -> bool:
     return bot_paths.is_bot_workdir(cwd)
 
 
-def _specialist_session(task: dict) -> bool:
-    """A transcript of a specialist's own session (its main chat, a breakout, an update; all run in its home):
+def _expert_session(task: dict) -> bool:
+    """A transcript of an expert's own session (its main chat, a breakout, an update; all run in its home):
     a conversation on the Bots page or a breakout card, not a task. Hidden whether the flag is on or off: a
-    string test on the transcript's cwd, then the specialists root must exist, so a user who never turned
-    specialists on has nothing hidden. `paths` imports nothing heavy."""
+    string test on the transcript's cwd, then the experts root must exist, so a user who never turned
+    experts on has nothing hidden. `paths` imports nothing heavy."""
     if not task["path"]:
         return False
     try:
-        from fused_render.specialists import paths as sp_paths  # noqa: PLC0415
+        from fused_render.experts import paths as sp_paths  # noqa: PLC0415
         return sp_paths.hidden_from_tasks(tasks_store.head(task["path"])[0])
     except Exception:  # noqa: BLE001 — "cannot tell" must not hide a task
         return False
@@ -9913,7 +9913,7 @@ def api_queue_admit(body: dict = Body(...),
         return refusal
     key = project_queue.queue_key(resolved)
     if not key:
-        # A folder with no queue (a specialist's home): nothing to claim and nothing to wait behind. Without this
+        # A folder with no queue (an expert's home): nothing to claim and nothing to wait behind. Without this
         # the claim below refuses the empty key and the message is stored as if the folder were busy.
         return {"run": True}
     # The store, read once, and ONLY where this send has something to be behind:
@@ -11042,7 +11042,7 @@ def _create_task(body: dict, x_fused_page: str | None, origin: str = "page"):
     resolved, refusal = schedule_api.resolve_target(target, "target")
     if refusal is not None:
         return refusal
-    refusal = schedule_api.specialist_home_refusal(resolved)
+    refusal = schedule_api.expert_home_refusal(resolved)
     if refusal is not None:
         return refusal
     # Fused Web (the sandbox/showcase app) keeps its own local canvas clones

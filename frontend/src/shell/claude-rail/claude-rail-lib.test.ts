@@ -17,22 +17,18 @@ import {
   chipPlace,
   dotCleared,
   favSeats,
-  listHidden,
-  plusShown,
   pinnedBots,
   holdOrder,
   holdBotOrder,
   botRingRoute,
   botStatusWords,
   keepMarks,
-  listSeats,
   onRail,
   placeName,
   placeRoot,
   queuedEditHref,
   railRows,
   railScope,
-  railShown,
   readMark,
   fallbackRailUp,
   paneHomeHref,
@@ -368,7 +364,7 @@ describe("favSeats: the blocked at the head", () => {
       pulse(task({ key: "blk", status: "blocked", happened_at: 200 })),
       pulse(task({ key: "b", happened_at: 100 })),
     ];
-    expect(listSeats(railRows(rows, new Map(), PLACE), true).map((s) => s.pulse.key)).toEqual(["blk", "a", "b"]);
+    expect(railRows(rows, new Map(), PLACE).map((s) => s.pulse.key)).toEqual(["blk", "a", "b"]);
   });
 });
 
@@ -399,18 +395,7 @@ describe("holdOrder (the foot's bot order holds, 2026-11-09)", () => {
   });
 });
 
-describe("listHidden / plusShown / pinnedBots (owner, 2026-11-05)", () => {
-  it("the list hides beside the open pane on its home, favourites on, and only then", () => {
-    // Since 2026-11-06 the list stands beside the pane's home too.
-    expect(listHidden({ paneOpen: true, favsOn: true, paneHome: true })).toBe(false);
-    expect(listHidden({ paneOpen: true, favsOn: true, paneHome: false })).toBe(false);
-    expect(listHidden({ paneOpen: false, favsOn: true, paneHome: true })).toBe(false);
-    expect(listHidden({ paneOpen: true, favsOn: false, paneHome: true })).toBe(false);
-  });
-  it("the + is a page rail's, never the fallback's", () => {
-    expect(plusShown({ favouritesOnly: false })).toBe(true);
-    expect(plusShown({ favouritesOnly: true })).toBe(false);
-  });
+describe("pinnedBots (owner, 2026-11-05)", () => {
   it("pinned bots: pinned and not hidden, in the pulse's order; an old pulse has none", () => {
     const bots = [
       { id: "a", pinned: true },
@@ -433,11 +418,10 @@ describe("listHidden / plusShown / pinnedBots (owner, 2026-11-05)", () => {
     // No flag: the pulse's order.
     expect(pinnedBots(bots).map((b) => b.id)).toEqual(["old", "spoke", "wait", "waitRead"]);
   });
-  it("a pinned bot's ring opens its card, on every page, the Bots page too, with the card off, or with no room (2026-11-05)", () => {
-    expect(botRingRoute({ peekOn: true, noRoom: false })).toBe("card");
+  it("a pinned bot's ring opens its card, on every page, the Bots page too, unless there is no room (2026-11-05)", () => {
     // The Bots page is no exception any more (2026-11-06): the card there too.
-    expect(botRingRoute({ peekOn: false, noRoom: false })).toBe("door");
-    expect(botRingRoute({ peekOn: true, noRoom: true })).toBe("door");
+    expect(botRingRoute({ noRoom: false })).toBe("card");
+    expect(botRingRoute({ noRoom: true })).toBe("door");
   });
   it("the bot card's status words are the page's", () => {
     expect(botStatusWords("waiting")).toBe("waiting for you");
@@ -447,16 +431,14 @@ describe("listHidden / plusShown / pinnedBots (owner, 2026-11-05)", () => {
   });
 });
 
-describe("listSeats (the two sections are independent, 2026-11-05)", () => {
+describe("the list (the two sections are independent, 2026-11-05)", () => {
   const rows = [
     pulse(task({ key: "a", happened_at: 300 })),
     pulse(task({ key: "fav", happened_at: 200 }), { starred: true }),
     pulse(task({ key: "b", happened_at: 100 })),
   ];
-  it("favourites on or off, the list keeps every chat of the place — a starred one stands in both sections", () => {
+  it("the list keeps every chat of the place — a starred one stands in both sections", () => {
     const seats = railRows(rows, new Map(), PLACE);
-    expect(listSeats(seats, true)).toBe(seats);
-    expect(listSeats(seats, false)).toBe(seats);
     expect(seats.map((s) => s.pulse.key)).toEqual(["a", "fav", "b"]);
     expect(favSeats(rows, new Map()).map((s) => s.pulse.key)).toEqual(["fav"]);
   });
@@ -466,7 +448,7 @@ describe("listSeats (the two sections are independent, 2026-11-05)", () => {
     const onNode = pulse(task({ key: "n", target: `${DIR}/n.py`, happened_at: 100 }));
     const starredElsewhere = pulse(task({ key: "fav2", target: `${DIR}/other.py`, happened_at: 200 }), { starred: true });
     const all = [newer, onNode, starredElsewhere];
-    const seats = listSeats(railRows(all, new Map(), NODE), true);
+    const seats = railRows(all, new Map(), NODE);
     expect(seats.map((s) => [s.pulse.key, !!s.off])).toEqual([
       ["n", false],
       ["o", true],
@@ -559,15 +541,10 @@ describe("activeRing with a pinned favourite", () => {
 });
 
 describe("ringMarks (what each ring wears, per section)", () => {
-  const base: Omit<RingMarkInput, "key" | "foot" | "isLast" | "sessionHere"> = {
-    favsOn: true,
-    peekOn: true,
+  const base: Omit<RingMarkInput, "key" | "foot"> = {
     peekKey: null,
     pinned: false,
-    held: false,
     openFavKey: null,
-    activeList: null,
-    activeFav: null,
   };
   /** Every ring of both sections, as ClaudeRail draws them. */
   function rail(o: {
@@ -582,8 +559,6 @@ describe("ringMarks (what each ring wears, per section)", () => {
     openFavKey?: string | null;
   }) {
     const openFavKey = o.openFavKey ?? null;
-    const activeList = activeRing(o.list, [o.pinned ? o.peekKey : null, o.lastList, o.session]);
-    const activeFav = activeRing(o.favs, [openFavKey, o.lastFav]);
     const ring = (key: string, foot: boolean) => ({
       key,
       foot,
@@ -593,12 +568,7 @@ describe("ringMarks (what each ring wears, per section)", () => {
         foot,
         peekKey: o.peekKey ?? null,
         pinned: !!o.pinned,
-        held: !!o.held,
         openFavKey,
-        sessionHere: key === o.session,
-        isLast: key === (foot ? o.lastFav : o.lastList),
-        activeList,
-        activeFav,
       }),
     });
     return [...o.list.map((k) => ring(k, false)), ...o.favs.map((k) => ring(k, true))];
@@ -608,7 +578,7 @@ describe("ringMarks (what each ring wears, per section)", () => {
   const marked = (rings: ReturnType<typeof rail>, foot: boolean) =>
     rings.filter((r) => r.foot === foot && r.classes.some((c) => c === "active" || c === "is-last" || c === "is-open"));
 
-  it("card on: only an open window marks a ring — no last press, no URL session (2026-11-09)", () => {
+  it("only an open window marks a ring — no last press, no URL session (2026-11-09)", () => {
     const rings = rail({
       list: ["A", "B", "C"],
       favs: ["F", "G"],
@@ -625,23 +595,17 @@ describe("ringMarks (what each ring wears, per section)", () => {
     expect(count(rings, true, "is-last")).toBe(0);
   });
 
-  it("card on, no window open: no ring is marked", () => {
+  it("no window open: no ring is marked", () => {
     const rings = rail({ list: ["A"], favs: ["F", "G"], lastFav: "G", lastList: "A", session: "A" });
     expect(marked(rings, true)).toEqual([]);
     expect(marked(rings, false)).toEqual([]);
   });
 
-  it("card on: the pinned list card's ring is marked while it stands", () => {
+  it("the pinned list card's ring is marked while it stands", () => {
     const rings = rail({ list: ["A", "B"], favs: [], lastList: "B", peekKey: "A", pinned: true });
     const a = rings.find((r) => r.key === "A")!;
     expect(a.classes).toEqual(expect.arrayContaining(["peeked", "is-pinned"]));
     expect(rings.find((r) => r.key === "B")!.classes).not.toContain("is-last");
-  });
-
-  it("card off: the last press is the section's one mark, as before", () => {
-    const off = (key: string, o: Partial<RingMarkInput>) =>
-      ringMarks({ ...base, peekOn: false, key, foot: false, sessionHere: false, activeList: "A", ...o } as RingMarkInput).classes;
-    expect(off("A", { isLast: true, sessionHere: true })).toEqual(["active", "is-last"]);
   });
 
   it("a favourite card open: no favourite ring opens a hover card; list rings do", () => {
@@ -690,12 +654,12 @@ describe("ringMarks (what each ring wears, per section)", () => {
   });
 
   it("window B's hover washes only the hovered favourite's ring (`favHoverKey`)", () => {
-    const r = ringMarks({ ...base, key: "F", foot: true, sessionHere: false, isLast: false, favHoverKey: "F" });
+    const r = ringMarks({ ...base, key: "F", foot: true, favHoverKey: "F" });
     expect(r.classes).toContain("peeked");
-    const other = ringMarks({ ...base, key: "G", foot: true, sessionHere: false, isLast: false, favHoverKey: "F" });
+    const other = ringMarks({ ...base, key: "G", foot: true, favHoverKey: "F" });
     expect(other.classes).not.toContain("peeked");
     // The list's peekKey never washes a favourite's ring.
-    const viaList = ringMarks({ ...base, key: "F", foot: true, sessionHere: false, isLast: false, peekKey: "F" });
+    const viaList = ringMarks({ ...base, key: "F", foot: true, peekKey: "F" });
     expect(viaList.classes).not.toContain("peeked");
   });
 
@@ -708,26 +672,6 @@ describe("ringMarks (what each ring wears, per section)", () => {
     }
   });
 
-  it("favourites off: no ring swaps a pinned card", () => {
-    const r = ringMarks({
-      ...base,
-      favsOn: false,
-      key: "F",
-      foot: true,
-      sessionHere: false,
-      isLast: false,
-      peekKey: "A",
-      pinned: true,
-    });
-    expect(r.titleOnly).toBe(false);
-  });
-
-  it("favourites off: every mark as before, the held accent included", () => {
-    const off = (key: string, o: Partial<RingMarkInput>) =>
-      ringMarks({ ...base, favsOn: false, key, foot: false, sessionHere: false, isLast: false, ...o }).classes;
-    expect(off("A", { peekOn: false, sessionHere: true, isLast: true })).toEqual(["active", "is-last"]);
-    expect(off("A", { peekKey: "A", pinned: true, held: true })).toEqual(["peeked", "is-pinned", "is-held"]);
-  });
 });
 
 describe("chipPlace / chipDoor (the where-chip's door)", () => {
@@ -805,50 +749,6 @@ describe("chipPlace / chipDoor (the where-chip's door)", () => {
     expect(chipPath({ kind: "node", name: "hex", file: "hex.py" }, PLACE)).toBe("hex on demo");
   });
 
-  it("favourites off: never null — every chip stays the door it was on main, on its own place too", () => {
-    const app: RailPlace = { kind: "folder", dir: "/apps/x/", word: "App" };
-    const whole = { kind: "whole", word: "App" } as const;
-    // A folder chip on its own page is a plain door (main opened it again).
-    expect(chipDoor(whole, app, null, placeRoot(app), false)).toEqual({
-      href: "/explorer/view/apps/x",
-      isDir: true,
-      title: "Open /apps/x",
-    });
-    expect(chipDoor(whole, { kind: "folder", dir: "/apps/y" }, null, placeRoot(app), false)?.current).toBeUndefined();
-    const sub = { kind: "file", name: "src/a.py", file: "/apps/x/src/a.py" } as const;
-    expect(chipDoor(sub, app, null, "file:/apps/x/src/a.py", false)).toEqual({
-      href: "/explorer/view/apps/x/src/a.py",
-      title: "Open /apps/x/src/a.py",
-    });
-    const onFile: RailPlace = { kind: "file", file: "/apps/x/b.py" };
-    expect(chipDoor({ kind: "whole", word: "File" }, onFile, null, placeRoot(onFile), false)).toEqual({
-      href: "/explorer/view/apps/x/b.py",
-      title: "Open /apps/x/b.py",
-    });
-    const canvas = { kind: "whole", word: "Canvas" } as const;
-    // No selection seat on the page: a plain door, as on main.
-    expect(chipDoor(canvas, PLACE, null, placeRoot(PLACE), false)).toEqual({
-      href: "/canvases/unstable/demo",
-      title: "Open the canvas demo",
-    });
-    // This canvas, that node already selected: the only `current` chip, main's title.
-    const here = { env: "unstable" as const, name: "demo", file: "hex.py" };
-    const hex = { kind: "node", name: "hex", file: "hex.py" } as const;
-    expect(chipDoor(hex, PLACE, here, placeRoot(PLACE), false)).toMatchObject({
-      select: { udfName: "hex" },
-      current: true,
-      title: "On hex, selected",
-    });
-    expect(chipDoor(canvas, PLACE, { ...here, file: null }, placeRoot(PLACE), false)).toMatchObject({
-      select: { udfName: null },
-      current: true,
-      title: "On the canvas demo",
-    });
-    // Another node / the whole canvas while a node is selected: select in place.
-    expect(chipDoor(canvas, PLACE, here, placeRoot(PLACE), false)?.current).toBeUndefined();
-    expect(chipDoor(hex, PLACE, { ...here, file: "grid.py" }, placeRoot(PLACE), false)?.current).toBeUndefined();
-  });
-
   it("chipLabel: a folder or a file by its own name, never the bare word; a page's own word stays", () => {
     const folder: RailPlace = { kind: "folder", dir: "/Users/me/Fused/app/insta-edit-pro/", word: "Folder" };
     expect(chipLabel({ kind: "whole", word: "Folder" }, folder)).toBe("insta-edit-pro");
@@ -880,98 +780,36 @@ describe("chipPlace / chipDoor (the where-chip's door)", () => {
 });
 
 
-// ---- WHETHER THE RAIL STANDS (owner, 2026-11-05) ---------------------------
-// "We show the rail no matter what now … even if the sidebar is expanded or
-// not. The only reason we don't show the rail is if there are no tasks in
-// favourites AND no items to be shown in the rail."
-describe("railShown", () => {
-  const at = (list: number, favs: number, paneOpen: boolean, always: boolean) =>
-    railShown({ list, favs, paneOpen, always });
-
-  it("the pane shut: always — the rail is the way back in, empty or not, flag on or off", () => {
-    for (const always of [true, false]) {
-      expect(at(0, 0, false, always)).toBe(true);
-      expect(at(3, 0, false, always)).toBe(true);
-      expect(at(0, 2, false, always)).toBe(true);
-    }
-  });
-
-  it("the pane open, favourites on: a list chat or a favourite is enough", () => {
-    expect(at(1, 0, true, true)).toBe(true);
-    expect(at(0, 1, true, true)).toBe(true);
-    expect(at(4, 2, true, true)).toBe(true);
-  });
-
-  it("the pane open, favourites on: nothing to draw, no rail", () => {
-    expect(at(0, 0, true, true)).toBe(false);
-  });
-
-  it("the pane open, favourites off: never — the rail of 2026-11-04", () => {
-    expect(at(5, 0, true, false)).toBe(false);
-    expect(at(0, 3, true, false)).toBe(false);
-    expect(at(0, 0, true, false)).toBe(false);
-  });
-});
-
-describe("railShown, the shell's fallback (favouritesOnly)", () => {
-  it("favourites on: shown for a favourite, a blocked chat or a pinned bot — never empty (no +, 2026-11-05)", () => {
-    expect(railShown({ list: 0, favs: 1, paneOpen: false, always: true, favouritesOnly: true })).toBe(true);
-    expect(railShown({ list: 0, favs: 0, bots: 1, paneOpen: false, always: true, favouritesOnly: true })).toBe(true);
-    expect(railShown({ list: 0, favs: 0, blocked: 2, paneOpen: false, always: true, favouritesOnly: true })).toBe(true);
-    expect(railShown({ list: 0, favs: 0, paneOpen: false, always: true, favouritesOnly: true })).toBe(false);
-  });
-  it("the pane open on a page rail: a pinned bot or a blocked chat is enough to stand", () => {
-    expect(railShown({ list: 0, favs: 0, bots: 1, paneOpen: true, always: true })).toBe(true);
-    expect(railShown({ list: 0, favs: 0, blocked: 1, paneOpen: true, always: true })).toBe(true);
-  });
-  it("favourites off: never", () => {
-    expect(railShown({ list: 0, favs: 2, paneOpen: false, always: false, favouritesOnly: true })).toBe(false);
-  });
-});
-
 // ---- THE SHELL'S FALLBACK RAIL (owner, 2026-11-05) -------------------------
 describe("fallbackRailUp", () => {
-  it("favourites on and no page rail mounted: the fallback is up", () => {
-    expect(fallbackRailUp({ favsOn: true, pageRails: 0 })).toBe(true);
+  it("no page rail mounted: the fallback is up", () => {
+    expect(fallbackRailUp({ pageRails: 0 })).toBe(true);
   });
   it("a page rail mounted: never both", () => {
-    expect(fallbackRailUp({ favsOn: true, pageRails: 1 })).toBe(false);
-    expect(fallbackRailUp({ favsOn: true, pageRails: 2 })).toBe(false);
-  });
-  it("favourites off: no fallback", () => {
-    expect(fallbackRailUp({ favsOn: false, pageRails: 0 })).toBe(false);
-  });
-  it("the rail's nav doors (rail flag) put it up with favourites off, never beside a page rail", () => {
-    expect(fallbackRailUp({ favsOn: false, pageRails: 0, navDoors: true })).toBe(true);
-    expect(fallbackRailUp({ favsOn: false, pageRails: 1, navDoors: true })).toBe(false);
+    expect(fallbackRailUp({ pageRails: 1 })).toBe(false);
+    expect(fallbackRailUp({ pageRails: 2 })).toBe(false);
   });
 });
 
 // ---- THE + AND A RING'S PRESS BY THE PANE (owner, 2026-11-05) --------------
 describe("plusDoor", () => {
-  it("pane open, favourites on, a page with a home: the New task card all the same (owner, 2026-11-08: the + never focuses the expanded sidebar)", () => {
-    expect(plusDoor({ paneOpen: true, favsOn: true, paneHome: true })).toBe("modal");
+  it("pane open, a page with a home: the New task card all the same (owner, 2026-11-08: the + never focuses the expanded sidebar)", () => {
+    expect(plusDoor({ paneOpen: true, paneHome: true })).toBe("modal");
   });
   it("pane shut: the New task card, as today", () => {
-    expect(plusDoor({ paneOpen: false, favsOn: true, paneHome: true })).toBe("modal");
+    expect(plusDoor({ paneOpen: false, paneHome: true })).toBe("modal");
   });
-  it("no home to show, or favourites off: the card", () => {
-    expect(plusDoor({ paneOpen: true, favsOn: true, paneHome: false })).toBe("modal");
-    expect(plusDoor({ paneOpen: true, favsOn: false, paneHome: true })).toBe("modal");
+  it("no home to show: the card", () => {
+    expect(plusDoor({ paneOpen: true, paneHome: false })).toBe("modal");
   });
 });
 
 describe("ringPress (a list ring's plain press)", () => {
-  it("pane open, favourites on (owner, 2026-11-08): the card pins all the same — the pane is the Open door's alone", () => {
-    expect(ringPress({ paneOpen: true, favsOn: true, peekOn: true, noRoom: false })).toBe("card");
-    expect(ringPress({ paneOpen: true, favsOn: true, peekOn: true, noRoom: true })).toBe("door");
+  it("the card pins, pane open or shut (owner, 2026-11-08) — the pane is the Open door's alone", () => {
+    expect(ringPress({ noRoom: false })).toBe("card");
   });
-  it("pane shut: the card pins, as today", () => {
-    expect(ringPress({ paneOpen: false, favsOn: true, peekOn: true, noRoom: false })).toBe("card");
-  });
-  it("no room for a card, or the card off: the chat's door", () => {
-    expect(ringPress({ paneOpen: false, favsOn: true, peekOn: true, noRoom: true })).toBe("door");
-    expect(ringPress({ paneOpen: false, favsOn: false, peekOn: false, noRoom: false })).toBe("door");
+  it("no room for a card: the chat's door", () => {
+    expect(ringPress({ noRoom: true })).toBe("door");
   });
 });
 
@@ -994,43 +832,22 @@ describe("paneHomeHref", () => {
 });
 
 describe("ringMarks beside the open pane (owner, 2026-11-08: the same ring as shut)", () => {
-  const o = { favsOn: true, peekOn: true, peekKey: null, pinned: false, held: false, openFavKey: null, activeList: null, activeFav: null, sessionHere: false, isLast: false };
+  const o = { peekKey: null, pinned: false, openFavKey: null };
   it("a list ring hovers (window A) and a favourite ring hovers (window B), whatever the pane shows", () => {
     const list = ringMarks({ ...o, key: "a", foot: false });
     expect(list.hovers).toBe(true);
     expect(list.titleOnly).toBe(false);
     expect(ringMarks({ ...o, key: "a", foot: true }).hovers).toBe(true);
-    // A favourite whose chat the pane shows still hovers (2026-11-05: the
-    // chat may stand in the pane and in window B at once).
-    const held = ringMarks({ ...o, key: "a", foot: true, chatElsewhere: true });
-    expect(held.hovers).toBe(true);
-    expect(held.titleOnly).toBe(false);
   });
 });
 
 describe("ringMarks with another window A card pinned (`windowAHeld`; Bugbot on #2201)", () => {
-  const o = { favsOn: true, peekOn: true, peekKey: null, pinned: false, held: false, openFavKey: null, activeList: null, activeFav: null, sessionHere: false, isLast: false };
+  const o = { peekKey: null, pinned: false, openFavKey: null };
   it("a list ring says its title (no card comes on a hover); a favourite's ring still hovers (window B)", () => {
     const list = ringMarks({ ...o, key: "a", foot: false, windowAHeld: true });
     expect(list.titleOnly).toBe(true);
     expect(ringMarks({ ...o, key: "f", foot: true, windowAHeld: true }).titleOnly).toBe(false);
     expect(ringMarks({ ...o, key: "a", foot: false, windowAHeld: false }).titleOnly).toBe(false);
-  });
-});
-
-describe("ringMarks: a section of one ring wears no last mark (2026-11-06)", () => {
-  // The card off: with it on no ring wears `.is-last` at all (2026-11-09).
-  const base = {
-    favsOn: true, peekOn: false, peekKey: null, pinned: false, held: false, openFavKey: null,
-    sessionHere: false, isLast: true, activeList: "a", activeFav: "a",
-  };
-  it("favourites on: one ring, no mark; two rings, the mark", () => {
-    expect(ringMarks({ ...base, key: "a", foot: false, sectionSize: 1 }).classes).not.toContain("is-last");
-    expect(ringMarks({ ...base, key: "a", foot: false, sectionSize: 2 }).classes).toContain("is-last");
-    expect(ringMarks({ ...base, key: "a", foot: true, sectionSize: 1 }).classes).not.toContain("is-last");
-  });
-  it("favourites off: as before, the mark whatever the count", () => {
-    expect(ringMarks({ ...base, favsOn: false, key: "a", foot: false, sectionSize: 1 }).classes).toContain("is-last");
   });
 });
 

@@ -1,4 +1,4 @@
-// TaskStar: no star while the favourites switch is off or the task never ran;
+// TaskStar: no star while the task never ran;
 // a press shows its answer AT ONCE (local mark), writes the star, never
 // reaches the row's own press, and a refused write puts the star back.
 import { installDomShim } from "@platform/lib/testDomShim";
@@ -9,16 +9,11 @@ import { Star } from "lucide-react";
 import type { Task } from "@platform/lib/api";
 
 const { TaskStar, STAR_ON_TITLE, STAR_OFF_TITLE } = await import("./TaskStar");
-const { publishTaskFavourites, publishFavouritesParent, resetTaskFavouritesFlagForTests } = await import(
-  "@platform/lib/favourites-flag"
-);
 const { resetPrefsChannelForTests } = await import("@platform/lib/api");
 const { TASKS_CHANGED_EVENT } = await import("@platform/lib/tasksChanged");
 
 type Call = { url: string; body: unknown };
 let calls: Call[] = [];
-// What GET /api/prefs answers: the flag's own read must agree with the
-// publish, or it lands "off" after it.
 let prefs: unknown = {};
 let reply: (body: { key: string; on: boolean }) => Promise<Response>;
 const realFetch = globalThis.fetch;
@@ -36,7 +31,6 @@ beforeEach(() => {
   calls = [];
   prefs = {};
   reply = okReply;
-  resetTaskFavouritesFlagForTests();
   (globalThis as { fetch: unknown }).fetch = async (url: string, init?: RequestInit) => {
     if (!String(url).includes("/api/tasks/favourite")) {
       return { ok: true, status: 200, json: async () => prefs } as unknown as Response;
@@ -49,17 +43,8 @@ beforeEach(() => {
 afterEach(() => {
   for (const r of mounted.splice(0)) act(() => r.unmount());
   resetPrefsChannelForTests();
-  resetTaskFavouritesFlagForTests();
   (globalThis as { fetch: unknown }).fetch = realFetch;
 });
-
-function flagOn() {
-  prefs = { task_favourites: { enabled: true }, canvas_rail_peek: { enabled: true } };
-  act(() => {
-    publishTaskFavourites({ enabled: true });
-    publishFavouritesParent({ enabled: true });
-  });
-}
 
 function task(over: Partial<Task> = {}): Pick<Task, "key" | "session_id" | "starred"> {
   return { key: "k1", session_id: "s1", starred: false, ...over };
@@ -90,19 +75,12 @@ const flush = () =>
     for (let i = 0; i < 5; i++) await new Promise((res) => setTimeout(res, 0));
   });
 
-test("FLAG OFF: no star at all", async () => {
-  const r = await mount(<TaskStar task={task()} />);
-  expect(starOf(r)).toBeNull();
-});
-
-test("NOT STARTED (no session_id): no star, even with the flag on", async () => {
-  flagOn();
+test("NOT STARTED (no session_id): no star", async () => {
   const r = await mount(<TaskStar task={task({ session_id: "" })} />);
   expect(starOf(r)).toBeNull();
 });
 
 test("the skin: a button, aria-pressed and the two titles, filled only when on", async () => {
-  flagOn();
   const off = await mount(<TaskStar task={task()} />);
   const s = starOf(off)!;
   expect(s.type).toBe("button");
@@ -119,7 +97,6 @@ test("the skin: a button, aria-pressed and the two titles, filled only when on",
 });
 
 test("PRESS: fills at once, writes the star, pokes the tasks store, never reaches the row", async () => {
-  flagOn();
   // The DOM shim's window drops events, so the poke is read off dispatchEvent.
   const fired: string[] = [];
   const realDispatch = window.dispatchEvent;
@@ -148,7 +125,6 @@ test("PRESS: fills at once, writes the star, pokes the tasks store, never reache
 });
 
 test("UNSTAR: an on star pressed goes hollow at once and writes off", async () => {
-  flagOn();
   const r = await mount(<TaskStar task={task({ starred: true })} />);
   act(() => starOf(r)!.props.onClick(fakeEvent().ev));
   expect(starOf(r)!.props["aria-pressed"]).toBe(false);
@@ -157,7 +133,6 @@ test("UNSTAR: an on star pressed goes hollow at once and writes off", async () =
 });
 
 test("REFUSED: the star goes back to the row's own answer", async () => {
-  flagOn();
   reply = () =>
     Promise.resolve({
       ok: false,
@@ -174,7 +149,6 @@ test("REFUSED: the star goes back to the row's own answer", async () => {
 });
 
 test("NESTED (a host that is a <button>): a span with role=button, Enter presses", async () => {
-  flagOn();
   const r = await mount(<TaskStar task={task()} nested />);
   const s = starOf(r)!;
   expect(s.type).toBe("span");
@@ -189,7 +163,6 @@ test("NESTED (a host that is a <button>): a span with role=button, Enter presses
 });
 
 test("one skin everywhere: 14 px glyph, filled only when on, never hover-hidden", async () => {
-  flagOn();
   const off = await mount(<TaskStar task={task()} />);
   const star = off.root.findByType(Star);
   expect(star.props.size).toBe(14);
@@ -200,7 +173,6 @@ test("one skin everywhere: 14 px glyph, filled only when on, never hover-hidden"
 });
 
 test("TWO QUICK PRESSES: write 1's repaint does not flip the star; the end state is press 2", async () => {
-  flagOn();
   const releases: Array<() => void> = [];
   reply = (body) =>
     new Promise<Response>((res) => {

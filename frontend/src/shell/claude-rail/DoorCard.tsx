@@ -8,8 +8,8 @@
 // edge cases"): one code path, so the two cannot drift.
 //
 // WHAT IT DOES, for the store it is given (door-card-store):
-//   - registers a card while the rail flag is on (and `enabled` — a Bots card
-//     only where the server offers Bots), and says whether it has ROOM beside
+//   - registers a card while `enabled` (a Bots card only where the server
+//     offers Bots), and says whether it has ROOM beside
 //     the rail; none, and the door is a plain link until the window, the rail
 //     or the row changes shape (FavouritePeek's rule);
 //   - a PREVIEW never outlives its rail; a pinned card follows the reader to
@@ -53,10 +53,8 @@ import { navigateUrl } from "@platform/lib/router";
 import { getUiLayout, patchUiLayout, subscribeUiLayout } from "@platform/lib/ui-layout";
 import type { DoorCardStore } from "./door-card-store";
 import { useFavPeekState } from "./fav-peek-store";
-import { publishWindowABox, setSnapGuide, setSnapGuides } from "./card-snap";
-import { useCanvasRailPeek } from "./rail-peek-flag";
+import { publishWindowABox, setSnapGuides } from "./card-snap";
 import { viewPress } from "./rail-pin-lib";
-import { useTaskHeadUnified } from "@shell/task-head-flag";
 import {
   FLOAT_GRIPS,
   RAIL_HEAD_SELECTOR,
@@ -78,13 +76,11 @@ import {
   PEEK_MIN_HEIGHT,
   PEEK_MIN_WIDTH,
   bottomClear,
-  dragMaxWidth,
   dragResize,
   inSafeCone,
   placeClear,
   railCardSize,
   rowOf,
-  snapWidth,
   type Box,
   type ResizeEdge,
 } from "./rail-peek-lib";
@@ -113,10 +109,9 @@ export interface DoorCardApi {
   backRef: RefObject<HTMLButtonElement>;
   /** A chat's own Escape, let through: closes a preview, never a pinned card. */
   onSubEscape(): void;
-  /** THE PIN ICON (rail-pin-lib; the unified-head switch on): the card's pin
-   *  (`held`) and its toggle, for the content's head (RailPinButton). Null
-   *  with the switch off. */
-  pin: { pinned: boolean; onToggle: () => void } | null;
+  /** THE PIN ICON (rail-pin-lib): the card's pin (`held`) and its toggle,
+   *  for the content's head (RailPinButton). */
+  pin: { pinned: boolean; onToggle: () => void };
 }
 
 export interface DoorCardProps {
@@ -149,7 +144,7 @@ export interface DoorCardProps {
 }
 
 export function DoorCard({ store, href, onNoRoomPress, rail: railProp, className, ariaLabel, enabled = true, subOpen, onClaim, onVisible, children }: DoorCardProps) {
-  const on = useCanvasRailPeek() && enabled;
+  const on = enabled;
   const card = store.useCard();
   // …and window B's box (`favBox`): this card is window A's and keeps CLEAR
   // of the favourite's or the bot's card — above it, else to its left
@@ -159,11 +154,10 @@ export function DoorCard({ store, href, onNoRoomPress, rail: railProp, className
   const rail = railProp === undefined ? fav.rail : railProp;
   const railGiven = railProp !== undefined;
   const intent = store.intent();
-  // HOVER / TEMP / PIN (rail-pin-lib): with the unified-head switch on, a
-  // press makes the card temp and only its pin holds it.
-  const pinModel = useTaskHeadUnified();
+  // HOVER / TEMP / PIN (rail-pin-lib): a press makes the card temp and only
+  // its pin holds it.
 
-  // A card stands behind every rail's door while the flag is on (the store's
+  // A card stands behind every rail's door while enabled (the store's
   // `ready`); off, nothing shows.
   useEffect(() => (on ? store.registerCard() : undefined), [on, store]);
   useEffect(() => {
@@ -198,13 +192,11 @@ export function DoorCard({ store, href, onNoRoomPress, rail: railProp, className
   // next page's rail (header). With the pin (rail-pin-lib `hopKeeps`), only a
   // HELD card follows: a temp one goes with the hop too.
   const railWas = useRef(rail);
-  const pinModelRef = useRef(pinModel);
-  pinModelRef.current = pinModel;
   useEffect(() => {
     if (railWas.current === rail) return;
     railWas.current = rail;
     const s = store.state();
-    if (!railGiven && !(pinModelRef.current ? s.held : s.pinned)) store.close();
+    if (!railGiven && !s.held) store.close();
   }, [rail, store, railGiven]);
 
   const up = on && card.up;
@@ -213,7 +205,6 @@ export function DoorCard({ store, href, onNoRoomPress, rail: railProp, className
   // position — kept through a swap to a ring, another door or the + card.
   const move = useCardMove({
     win: "a",
-    on: pinModel,
     movable: card.held,
     headSelector: RAIL_HEAD_SELECTOR,
     shown: up ? String(card.seq) : null,
@@ -223,7 +214,7 @@ export function DoorCard({ store, href, onNoRoomPress, rail: railProp, className
   // FREE PINS (rail-slots-lib): pinned, the card is frozen at the box the
   // window's mark holds; not pinned, it shares the rail's column with window
   // B's non-pin and pushes the pins it would cover.
-  const freePins = useRailFreePins() && pinModel;
+  const freePins = useRailFreePins();
   const freePinsRef = useRef(false);
   freePinsRef.current = freePins;
 
@@ -297,7 +288,7 @@ export function DoorCard({ store, href, onNoRoomPress, rail: railProp, className
       corner,
       el: e.currentTarget,
       floating: move.floating,
-      other: pinModelRef.current ? magnetBox("b", move.floating) : null,
+      other: magnetBox("b", move.floating),
     };
     dragLast.current = null;
     setResizing(corner);
@@ -327,19 +318,11 @@ export function DoorCard({ store, href, onNoRoomPress, rail: railProp, className
     const dock = start.corner;
     const floor = bottomClear(start.box, favBox);
     let next: Box;
-    if (pinModelRef.current) {
-      // WITH THE PIN (window B's card may float): the held edge's magnet on
-      // either axis (`snapResize`) — the width magnet is its left↔left case.
-      const pulled = snapResize(dock, dx, dy, (x, y) => dragResize(dock, start.box, x, y, bounds, floor), start.other, viewportOf(window));
-      setSnapGuides(pulled.x, pulled.y);
-      next = pulled.box;
-    } else {
-      const asked = dragResize(dock, start.box, dx, dy, bounds, floor);
-      // THE WIDTH MAGNET (card-snap.ts): to window B's card.
-      const snapped = snapWidth(asked, dock, favBox, PEEK_MIN_WIDTH, dragMaxWidth(start.box, bounds));
-      setSnapGuide(snapped.guide);
-      next = snapped.box;
-    }
+    // WITH THE PIN (window B's card may float): the held edge's magnet on
+    // either axis (`snapResize`) — the width magnet is its left↔left case.
+    const pulled = snapResize(dock, dx, dy, (x, y) => dragResize(dock, start.box, x, y, bounds, floor), start.other, viewportOf(window));
+    setSnapGuides(pulled.x, pulled.y);
+    next = pulled.box;
     dragLast.current = next;
     setBox((prev) => (prev && sameBox(prev, next) ? prev : next));
   };
@@ -389,7 +372,7 @@ export function DoorCard({ store, href, onNoRoomPress, rail: railProp, className
     [],
   );
   // Its live box for window B's head drag (rail-move-store `windowBox`).
-  useWindowBox("a", pinModel && visible ? box : null, freePins && move.floating);
+  useWindowBox("a", visible ? box : null, freePins && move.floating);
   // A clicked-open non-pin pushes the pins it covers (rail-slots-lib).
   usePusher("a", freePins && visible && !move.floating && card.pinned ? box : null);
   // Window A's box, for window B's grips to snap to (card-snap.ts).
@@ -562,7 +545,7 @@ export function DoorCard({ store, href, onNoRoomPress, rail: railProp, className
   // only); never from a popup inside the card, whose Escape is its own.
   // WITH THE PIN (owner, 2026-11-16: "a consistent behaviour"): a hover and a
   // TEMP card close on Escape, only a pinned (held) one ignores it.
-  const escapeKeeps = pinModel ? card.held : card.pinned;
+  const escapeKeeps = card.held;
   const onKeyDown = (e: ReactKeyboardEvent<HTMLDivElement>) => {
     if (e.key !== "Escape" || e.defaultPrevented || escapeKeeps) return;
     const t = e.target as HTMLElement;
@@ -587,7 +570,7 @@ export function DoorCard({ store, href, onNoRoomPress, rail: railProp, className
   }, [previewing, store]);
   const onSubEscape = useCallback(() => {
     const s = store.state();
-    if (!(pinModelRef.current ? s.held : s.pinned)) close();
+    if (!s.held) close();
   }, [close, store]);
   // OPEN: the page itself; the card goes once the hop went (a leave guard
   // may refuse it — FavouritePeek's rule).
@@ -628,9 +611,9 @@ export function DoorCard({ store, href, onNoRoomPress, rail: railProp, className
       closeRef,
       backRef,
       onSubEscape,
-      pin: pinModel ? { pinned: held, onToggle: togglePin } : null,
+      pin: { pinned: held, onToggle: togglePin },
     }),
-    [visible, card.pinned, close, openPage, onSubEscape, pinModel, held, togglePin],
+    [visible, card.pinned, close, openPage, onSubEscape, held, togglePin],
   );
 
   if (!on) return null;

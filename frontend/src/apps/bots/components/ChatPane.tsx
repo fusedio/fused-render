@@ -14,7 +14,7 @@ import { act, clearContextOn, cur, eventsOf, onSelectChange, openDialog, useBots
 import { Composer, type ReplyTo } from "./Composer";
 import { Face } from "./Face";
 import { ReactionPicker, type ReactionReq } from "./ReactionPicker";
-import { SpecialistChat } from "./SpecialistChat";
+import { ExpertChat } from "./ExpertChat";
 import { Thread } from "./Thread";
 import { Toast } from "./Toast";
 import { ThreadSearch } from "./ThreadSearch";
@@ -35,9 +35,9 @@ export function ChatPane() {
   // A reply and an open picker belong to one bot.
   useEffect(() => onSelectChange(() => { setReply(null); setPick(null); }), []);
   const closePick = useCallback(() => setPick(null), []);
-  const spec = b?.specialist, specClear = useRef<(() => void) | null>(null);
+  const spec = b?.expert, specClear = useRef<(() => void) | null>(null);
 
-  // Subtitle only while something is happening; an idle bot is just its name. A specialist's chat shows its own.
+  // Subtitle only while something is happening; an idle bot is just its name. An expert's chat shows its own.
   const sub = !b || b.status === "idle" || spec ? "" : (b.status === "running" && b.note ? b.note : statusLabel(b)) + (b.title ? " · " + b.title : "");
   // Something to clear (lib/commands canClear, shared with the composer's /clear): an idle bot whose newest shown
   // message is not already a Clear context marker.
@@ -69,7 +69,7 @@ export function ChatPane() {
             Only between tasks and with the browser handed back (the backend refuses otherwise); a no-op right after a clear.
             Behind the page-wide "Clear context button" switch (Settings, store clearContextOn; off by default): off, no button;
             the composer's /clear command (lib/commands) stays. */}
-        {/* A specialist's Clear is always there (its chat is the task chat): it folds the session away (SpecialistChat). */}
+        {/* An expert's Clear is always there (its chat is the task chat): it folds the session away (ExpertChat). */}
         {spec ? (
           <button id="cclear" className="ptog" title="Clear: a fresh chat; the earlier one stays above it, folded" onClick={() => specClear.current?.()}>
             {CLEAR_ICON}
@@ -84,12 +84,12 @@ export function ChatPane() {
           onOpen={() => setSearch((s) => ({ ...s, open: true }))}
           onClose={() => setSearch({ open: false, q: "" })}
           onQuery={(q) => setSearch((s) => ({ ...s, q }))} />}
-        <button id="rcol" className="ptog" title={spec ? "Show the specialist's memory and skills" : "Show the browser preview"} onClick={toggleRight}>
+        <button id="rcol" className="ptog" title={spec ? "Show the expert's memory and skills" : "Show the browser preview"} onClick={toggleRight}>
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><rect x="3" y="4" width="18" height="12" rx="2" /><path d="M8 20h8M12 16v4" /></svg>
         </button>
       </header>
       <Toast id="ctoast" />
-      {spec ? <div className="tw"><SpecialistChat key={spec.id} s={spec} clearRef={specClear} /></div> : <>
+      {spec ? <div className="tw"><ExpertChat key={spec.id} s={spec} clearRef={specClear} /></div> : <>
       <div className="tw">
         <Thread b={b} threadRef={threadRef} searchQ={search.open ? searchQuery(search.q) : ""} onSearchCount={setSearchN}
           onReact={(anchor, seq) => setPick({ anchor, seq })} onReply={setReply} />

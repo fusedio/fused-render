@@ -1,8 +1,7 @@
 // THE CARD THAT OPENS OFF THE CLAUDE RAIL (owner, 2026-10-30: "when it is
 // collapsed can we show a card preview of it when I hover over the chat
 // items; I should be able to interact with it as well — scroll and add
-// something, click something"). Behind `canvas_rail_peek_enabled`
-// (rail-peek-flag.ts); the rings' side of the wiring is ClaudeRail.tsx, the
+// something, click something"). The rings' side of the wiring is ClaudeRail.tsx, the
 // timings and the geometry are rail-peek-lib.ts. A hover on a ring opens it;
 // a press holds it open (ClaudeRail header) — the card itself draws the same
 // either way.
@@ -38,7 +37,7 @@
 // `display: none`, so its scroll position and layout survive — and the
 // hovered one's mount starts on the pointer's arrival, before the open wait
 // has run (ClaudeRail `warm`). The chat's chunk is fetched when the rail
-// mounts with the flag on (`preloadChat`).
+// mounts (`preloadChat`).
 //
 // A PRESS ON A RING LANDS IN THE COMPOSER (owner, 2026-10-31: "when we click
 // the chat item we focus on the card composer so user can type — instead of
@@ -123,10 +122,9 @@ import {
   type PointerEvent as ReactPointerEvent,
 } from "react";
 import { createPortal } from "react-dom";
-import { Archive, ArchiveRestore, MessageSquare, Pencil, Star, X } from "lucide-react";
+import { Archive, ArchiveRestore, Star } from "lucide-react";
 import { notify } from "@platform/lib/notifications";
-import { archiveTask, renameTask, setTaskFavourite, unarchiveTask, type Task } from "@platform/lib/api";
-import { useTaskFavourites } from "@platform/lib/favourites-flag";
+import { archiveTask, setTaskFavourite, unarchiveTask, type Task } from "@platform/lib/api";
 import { pokeTasks } from "@shell/tasksPulse";
 import { useHoldOpenTask } from "@shell/task-open-read";
 import { useArchiveConfirm } from "@shell/archive-confirm";
@@ -139,12 +137,11 @@ import { opensInSidePane, requestSideMaximized } from "@platform/lib/side-maximi
 import { AgentProvider } from "@apps/claude/ui/agent-context";
 import { timeAgo } from "@platform/lib/format";
 import { chatDraftKey, peekDraftSyncer } from "@platform/lib/drafts";
-import { getUiLayout, patchUiLayout, subscribeUiLayout } from "@platform/lib/ui-layout";
+import { getUiLayout, patchUiLayout, subscribeUiLayout, type UiLayoutDoc } from "@platform/lib/ui-layout";
 import {
   cardTitleLine,
   draftRing,
   isDraftTask,
-  liveJobRow,
   messageStamp,
   nextRunAt,
   relativeWhen,
@@ -155,19 +152,16 @@ import {
   taskChatTarget,
 } from "@shell/tasks-lib";
 import { NAV_EVENT, navigateUrl, rewriteLegacyUrl } from "@platform/lib/router";
-import { chipDoor, chipLabel, chipPath, chipPlace, hasWhereTag, queuedEditHref, railScope, type RailHere, type RailPlace, type RailRow } from "./claude-rail-lib";
+import { chipPlace, hasWhereTag, queuedEditHref, railScope, type RailHere, type RailPlace, type RailRow } from "./claude-rail-lib";
 import { queueCaption } from "@platform/lib/queue";
 import { ForceStartButton } from "@shell/ForceStartButton";
 import { PlaceTags } from "./PlaceTags";
-// THE ONE TASK HEAD (design.md "One task head, everywhere"), behind its flag.
+// THE ONE TASK HEAD (design.md "One task head, everywhere").
 import { TaskHead } from "@shell/TaskHead";
 import { TaskPrChip } from "@shell/TaskPrChip";
-import { useTaskHeadUnified } from "@shell/task-head-flag";
 import { useUrlVersion } from "@platform/lib/hooks";
 import { openInTasksItem } from "@platform/ui/openInTasks";
 import { CANVAS_FOCUS_PARAM } from "@apps/canvases/api";
-import { StatusIcon } from "@shell/ScheduleTaskViews";
-import { TaskIconPick } from "@shell/TaskIconPick";
 import {
   PEEK_MAX_HEIGHT,
   PEEK_MAX_WIDTH,
@@ -199,7 +193,7 @@ import {
   type StarMark,
 } from "./rail-peek-lib";
 import { publishWindowABox, setSnapGuide, setSnapGuides, windowABox } from "./card-snap";
-import { PinAngle, RailPinButton } from "./RailPin";
+import { RailPinButton } from "./RailPin";
 import {
   FLOAT_GRIPS,
   RAIL_HEAD_SELECTOR,
@@ -228,9 +222,13 @@ export type RailSizeKey = "canvasRailPeek" | "canvasRailFav";
 
 /** The size the reader last dragged a card to (ui-layout `key`, by default
  *  the rail's pinned card's `canvasRailPeek`), floored at the grips'
- *  minimums; null for "never". */
-export function storedPeekSize(key: RailSizeKey = "canvasRailPeek"): { width: number; height: number } | null {
-  const s = getUiLayout()[key];
+ *  minimums; null for "never". `doc`: a patch's own document (the server's
+ *  copy on a replay before hydrate), else this window's. */
+export function storedPeekSize(
+  key: RailSizeKey = "canvasRailPeek",
+  doc: UiLayoutDoc = getUiLayout(),
+): { width: number; height: number } | null {
+  const s = doc[key];
   if (!s) return null;
   return {
     width: Math.min(PEEK_MAX_WIDTH, Math.max(PEEK_MIN_WIDTH, s.width)),
@@ -242,8 +240,6 @@ export function storedPeekSize(key: RailSizeKey = "canvasRailPeek"): { width: nu
  *  the favourite's card's too (header). */
 const ALL_GRIPS: readonly ResizeEdge[] = ["l", "t", "b", "tl", "bl"];
 
-/** The server's cap on a task's name (TaskPeekWho's). */
-const TITLE_MAX_LENGTH = 200;
 /** No head seat (RailPeek's chip and status seats): one object, so setting
  *  "none" twice is not a state change. */
 const NO_SEAT: { key: string | null; el: HTMLElement | null } = { key: null, el: null };
@@ -415,7 +411,7 @@ export interface RailPeekProps {
    *  FavouritePeek): the card takes this wish for every seat instead of the
    *  default / stored sizes, and never grows on a pin. */
   size?: PeekWish;
-  /** ONE SIZE FOR HOVER AND PIN (header; favourites on): the list card
+  /** ONE SIZE FOR HOVER AND PIN (header): the list card
    *  takes the remembered size whatever its state, and wears its grips
    *  hovered too. */
   oneSize?: boolean;
@@ -446,11 +442,11 @@ export interface RailPeekProps {
    *  passing hover. Only a pinned card wears the corner grips
    *  and takes the remembered size (header). */
   pinned: boolean;
-  /** HOVER / TEMP / PIN (rail-pin-lib; the unified-head switch on): the
-   *  head's pin icon, its first button (no × with it) — `pinned` the card's pin (not a press's),
-   *  `onToggle` its press. Given, Escape closes a hover and a temp card and only
-   *  a pinned one ignores it. Absent: the card as it was. */
-  pinCtl?: { pinned: boolean; onToggle: () => void } | null;
+  /** HOVER / TEMP / PIN (rail-pin-lib): the head's pin icon, its first
+   *  button (no × with it) — `pinned` the card's pin (not a press's),
+   *  `onToggle` its press. Escape closes a hover and a temp card and only a
+   *  pinned one ignores it. */
+  pinCtl: { pinned: boolean; onToggle: () => void };
   /** WHICH WINDOW THE CARD IS (rail-move-lib `RailWindow`), said outright —
    *  a slot in its pin's role (free pins, rail-slots-store). Absent,
    *  the card says it the way it always did: the favourite's (`resizeKey`) is
@@ -546,17 +542,17 @@ export const RailPeek = forwardRef<RailPeekHandle, RailPeekProps>(function RailP
     openIcon,
     onBox,
     pinned,
-    pinCtl = null,
+    pinCtl,
     win,
   },
   ref,
 ) {
   const cardRef = useRef<HTMLDivElement | null>(null);
-  // FREE PINS (rail-slots-lib; behind the pin's own switch): a pinned card is
+  // FREE PINS (rail-slots-lib): a pinned card is
   // FROZEN — its size and position are the window's mark's, not the shared
   // remembered size — and a non-pin shares the rail's column and pushes the
   // pins it would cover.
-  const freePins = useRailFreePins() && !!pinCtl;
+  const freePins = useRailFreePins();
   const freePinsRef = useRef(false);
   freePinsRef.current = freePins;
   // A PINNED WINDOW MOVES (rail-move-lib; owner, 2026-11-17): the list's card
@@ -565,8 +561,7 @@ export const RailPeek = forwardRef<RailPeekHandle, RailPeekProps>(function RailP
   const moveWin: RailWindow = win ?? (resizeKey === "canvasRailFav" ? "b" : "a");
   const move = useCardMove({
     win: moveWin,
-    on: !!pinCtl,
-    movable: !!pinCtl?.pinned,
+    movable: pinCtl.pinned,
     headSelector: RAIL_HEAD_SELECTOR,
     shown: shown?.pulse.key ?? null,
   });
@@ -651,7 +646,7 @@ export const RailPeek = forwardRef<RailPeekHandle, RailPeekProps>(function RailP
       // "remove the restrictions of height only from pin window"): the half-
       // window ceiling is the hover's and the temp card's. No window height
       // handed over is no ceiling (`favMaxHeight`).
-      if (resizeKey === "canvasRailFav") return favCardWish(size, storedPeekSize(resizeKey), pinCtl?.pinned ? Infinity : window.innerHeight);
+      if (resizeKey === "canvasRailFav") return favCardWish(size, storedPeekSize(resizeKey), pinCtl.pinned ? Infinity : window.innerHeight);
       const stored = resizeKey ? storedPeekSize(resizeKey) : null;
       return stored ? { ...size, width: stored.width, maxHeight: stored.height } : size;
     }
@@ -740,15 +735,14 @@ export const RailPeek = forwardRef<RailPeekHandle, RailPeekProps>(function RailP
         : bottomClear(box, avoid);
     // The favourite's card: never past half the window (header) — unless it
     // is PINNED, which has no height limit but its room (owner, 2026-11-17).
-    const cap = resizeKey === "canvasRailFav" && !pinCtl?.pinned ? favMaxHeight(window.innerHeight) : undefined;
+    const cap = resizeKey === "canvasRailFav" && !pinCtl.pinned ? favMaxHeight(window.innerHeight) : undefined;
     const otherWin = moveWin === "a" ? "b" : "a";
     // THE EDGE MAGNET (rail-move-lib `snapResize`), with the pin: both axes
     // for window A's card (window B never moves for it); for window B's, the
     // axes window A holds still on (`dockedBAxes`).
-    const otherBox = pinCtl ? magnetBox(otherWin, floating) : null;
-    const magnet = !pinCtl
-      ? null
-      : moveWin === "a"
+    const otherBox = magnetBox(otherWin, floating);
+    const magnet =
+      moveWin === "a"
         ? BOTH_AXES
         : // FREE PINS: a docked window B card's neighbour is window A's NON-PIN,
           // which never floats — only window A's pin does.
@@ -870,24 +864,24 @@ export const RailPeek = forwardRef<RailPeekHandle, RailPeekProps>(function RailP
     // height-only drag in a narrow window must not persist the width the row
     // clamped the card to, and a drag in a row shorter than PEEK_MIN_HEIGHT
     // must not replace a remembered height with the row's. The other
-    // dimension keeps what was remembered, else the pinned card's default.
-    const prev = storedPeekSize(sizeKey);
+    // dimension keeps what was remembered, else the pinned card's default —
+    // read off the updater's own document, so a replay onto the server's
+    // copy (ui-layout, before hydrate) keeps that copy's value (ClaudeRail
+    // `savePopSize`; CodeRabbit on #2407).
     const pick = (changed: boolean, got: number, min: number, kept: number | undefined, fallback: number) =>
       changed && got >= min ? got : (kept ?? fallback);
-    // Nothing remembered yet: the card's default — the pinned card's, or the
-    // fixed wish's (the favourite's 380×520).
-    const width = pick(last.width !== start.box.width, last.width, PEEK_MIN_WIDTH, prev?.width, size?.width ?? PEEK_WIDTH);
-    const height = pick(
-      last.height !== start.box.height,
-      last.height,
-      PEEK_MIN_HEIGHT,
-      prev?.height,
-      size?.maxHeight ?? PEEK_MAX_HEIGHT,
-    );
+    const widthMoved = last.width !== start.box.width;
+    const heightMoved = last.height !== start.box.height;
+    const got = { width: last.width, height: last.height };
     // SET, never toggle (ui-layout header): the same answer on any base.
-    patchUiLayout((d) =>
-      d[sizeKey]?.width === width && d[sizeKey]?.height === height ? d : { ...d, [sizeKey]: { width, height } },
-    );
+    patchUiLayout((d) => {
+      const prev = storedPeekSize(sizeKey, d);
+      // Nothing remembered yet: the card's default — the pinned card's, or
+      // the fixed wish's (the favourite's 380×520).
+      const width = pick(widthMoved, got.width, PEEK_MIN_WIDTH, prev?.width, size?.width ?? PEEK_WIDTH);
+      const height = pick(heightMoved, got.height, PEEK_MIN_HEIGHT, prev?.height, size?.maxHeight ?? PEEK_MAX_HEIGHT);
+      return d[sizeKey]?.width === width && d[sizeKey]?.height === height ? d : { ...d, [sizeKey]: { width, height } };
+    });
   };
   const onGripUp = (e: ReactPointerEvent<HTMLDivElement>) => {
     const start = dragStart.current;
@@ -902,7 +896,7 @@ export const RailPeek = forwardRef<RailPeekHandle, RailPeekProps>(function RailP
   const visible = on && box !== null && shownKey !== null;
   // Its live box, docked or floating, for the other window's head drag to
   // snap to (rail-move-store `windowBox`).
-  useWindowBox(moveWin, !!pinCtl && visible ? box : null, freePins && move.floating);
+  useWindowBox(moveWin, visible ? box : null, freePins && move.floating);
   // A CLICKED-OPEN NON-PIN PUSHES THE PINS IT COVERS (rail-slots-lib): open
   // by a press (`pinned`, the list's; `held`, the favourite's), beside the
   // rail. A hover's preview pushes nothing.
@@ -1005,7 +999,7 @@ export const RailPeek = forwardRef<RailPeekHandle, RailPeekProps>(function RailP
       );
     };
     window.addEventListener("resize", re);
-    // The rail's list scrolls (favourites on) and so do its favourites: the
+    // The rail's list scrolls and so do its favourites: the
     // ring moves under a card that is up, and the card goes with it.
     railEl.addEventListener("scroll", re, true);
     const ro = row && typeof ResizeObserver !== "undefined" ? new ResizeObserver(re) : null;
@@ -1227,9 +1221,8 @@ export const RailPeek = forwardRef<RailPeekHandle, RailPeekProps>(function RailP
   // leave a Confirm that files the chat that left view.
   const askedKey = useRef<string | null>(null);
   const [filing, setFiling] = useState(false);
-  /** THE ARCHIVE SEAT: over the pulse's right end (favourites off), or over
-   *  the second row's status ring (favourites on; owner, 2026-11-06). The
-   *  shared head (flag on) seats it over its ring either way. */
+  /** THE ARCHIVE SEAT: the shared head seats it over its status ring
+   *  (owner, 2026-11-06). */
   const archiveButton = (facts: SeatFacts) => (
     <button
       type="button"
@@ -1315,8 +1308,6 @@ export const RailPeek = forwardRef<RailPeekHandle, RailPeekProps>(function RailP
   // rail-peek-lib `starMarkStep`). The rail is told too (`onStarred`), so its
   // own rules (letting go of a chat the favourite's card takes) run before
   // the pulse.
-  const favsOn = useTaskFavourites();
-  const unified = useTaskHeadUnified();
   // THE HEAD'S TAG SEATS (Akshil, 2026-11-19: "I would rather have a PR thing
   // on this tab and also know about the branch"): the shown chat portals its
   // branch tag into the head's chips (ChatMount `headChipsHost`) and its pause
@@ -1347,13 +1338,6 @@ export const RailPeek = forwardRef<RailPeekHandle, RailPeekProps>(function RailP
   const starSeq = useRef(0);
   const starOf = (t: RailRow["pulse"]): boolean =>
     starMark && starMark.key === t.key ? starMark.on : !!t.starred;
-  // THE HEAD'S FACE: one PICKED by hand whatever the star (2026-11-16: the
-  // icon is not the star's), one that came with the star only while starred
-  // by the star this card shows (the mark included, so the glyph leaves with
-  // the press) — the listing row lags the pulse, and its old slot would keep
-  // the glyph on an unstarred head.
-  const headPicked = !!head?.merged.icon_picked;
-  const headIcon = head && (headPicked || starOf(head.t)) ? (head.merged.icon_slot ?? null) : null;
   useEffect(() => {
     if (!starMark) return;
     // The shown seat too.
@@ -1396,92 +1380,15 @@ export const RailPeek = forwardRef<RailPeekHandle, RailPeekProps>(function RailP
   // consistent behaviour"): a hover and a temp card close on it, only a
   // PINNED one ignores it — a favourite's open card included, which is
   // `held` for every other purpose.
-  heldRef.current = pinCtl ? pinCtl.pinned : held;
+  heldRef.current = pinCtl.pinned;
   const onChatEscape = useCallback(() => {
     if (!heldRef.current) onDismiss();
   }, [onDismiss]);
 
-  // THE TITLE IS THE READER'S TO RENAME (owner, 2026-11-02: "on title hover
-  // we can bring edit icon, we can name our tasks") — the side peek's own
-  // flow (TaskPeekWho): the pencil that shows on hover, or a double-click,
-  // turns the title into an input; Enter or blur saves, Escape cancels,
-  // saving what is stored does nothing, and saving "" gives the automatic
-  // title back. The input's Escape is its own (`defaultPrevented`), so the
-  // head's Escape does not close the card under it.
-  const [draft, setDraft] = useState<string | null>(null);
-  // The head's icon picker is open (TaskIconPick): see the Archive seat.
-  const [iconPicking, setIconPicking] = useState(false);
-  const [renaming, setRenaming] = useState(false);
-  const [renameError, setRenameError] = useState("");
-  const renameSettled = useRef(false);
-  const startRename = (facts: SeatFacts) => {
-    if (!facts.renamable || renaming) return;
-    renameSettled.current = false;
-    setRenameError("");
-    setDraft(facts.label.slice(0, TITLE_MAX_LENGTH));
-  };
-  const cancelRename = () => {
-    renameSettled.current = true;
-    setDraft(null);
-    setRenameError("");
-  };
-  const saveRename = async (facts: SeatFacts) => {
-    if (draft === null || renameSettled.current || renaming) return;
-    const next = draft.slice(0, TITLE_MAX_LENGTH).trim();
-    // Against the STORED name, not the shown line (a recap or last-message
-    // title is not the task's name; saving it unchanged is how the reader
-    // pins it). Only a renamed task has a name to match.
-    const stored = facts.merged.title_source === "renamed" ? (facts.merged.title || "").split("\n")[0].trim() : "";
-    if (next === stored) return cancelRename();
-    // Settled NOW, before the await: Enter's save and the blur the disabled
-    // input then fires must not send the rename twice (reviewer).
-    renameSettled.current = true;
-    setRenaming(true);
-    try {
-      await renameTask(facts.t.key, next);
-      setDraft(null);
-      setRenameError("");
-      pokeTasks();
-      onReload();
-    } catch (e) {
-      renameSettled.current = false;
-      setRenameError((e as Error).message || "Could not rename");
-      // The disabled input lost the keyboard; give it back so Enter retries.
-      requestAnimationFrame(() => titleInputRef.current?.focus());
-    } finally {
-      setRenaming(false);
-    }
-  };
-  const titleInputRef = useRef<HTMLInputElement | null>(null);
-  // IS THE TITLE CLIPPED? Measured, not guessed: the span's scroll width past
-  // its box, re-read when the line or the card's width changes (the card
-  // narrows on a narrow window, rail-peek-lib `peekPlacement`). Decides
-  // whether the title wears the app's hint (below).
-  const titleRef = useRef<HTMLSpanElement | null>(null);
-  const [titleClipped, setTitleClipped] = useState(false);
-  const titleText = view ? seatFacts(view, where).label : "";
-  useLayoutEffect(() => {
-    const el = titleRef.current;
-    if (!el) {
-      setTitleClipped(false);
-      return;
-    }
-    const check = () => setTitleClipped(el.scrollWidth > el.clientWidth + 1);
-    check();
-    if (typeof ResizeObserver === "undefined") return;
-    const ro = new ResizeObserver(check);
-    ro.observe(el);
-    return () => ro.disconnect();
-  }, [titleText, draft, viewKey]);
-  // A swap to another chat, or the card closing, drops an open rename: the
-  // input would otherwise save into the chat that left view, or come back
-  // half-typed when the card reopens on the same chat.
+  // A swap to another chat, or the card closing, drops an Archive ask still
+  // waiting for its answer: it was about the chat that left view and must
+  // not come back with it.
   useEffect(() => {
-    renameSettled.current = true;
-    setDraft(null);
-    setRenameError("");
-    // The same goes for an Archive ask still waiting for its answer: it was
-    // about the chat that left view and must not come back with it.
     askedKey.current = null;
     cancelArchiveAsk();
   }, [shownKey, cancelArchiveAsk]);
@@ -1501,31 +1408,8 @@ export const RailPeek = forwardRef<RailPeekHandle, RailPeekProps>(function RailP
       ? { left: box.left + box.width, top: box.top, width: Math.max(0, railLeft.current - 3 - (box.left + box.width)), height: box.height }
       : null;
 
-  // THE HEAD'S SEATS, one definition each: the old two-row head below and the
-  // shared head (TaskHead, flag on) place the same nodes — the pin, the place,
-  // the pulse and the ⋮ — so the two cannot drift while both exist.
-  const pinButton = (
-    <button
-      type="button"
-      className={"claude-rail-peek-btn claude-rail-peek-pin" + (held ? " is-held" : "")}
-      aria-pressed={held}
-      data-hint={held ? "Unpin and close the preview" : "Pin the preview: it stays until you unpin it"}
-      aria-label="Pin the preview"
-      onClick={() => {
-        if (held) {
-          onHeld(false);
-          onDismiss();
-        } else {
-          onHeld(true);
-          onPin();
-        }
-      }}
-    >
-      {held ? <X size={14} aria-hidden="true" /> : <PinAngle size={14} filled />}
-    </button>
-  );
-  const placeEl = (head: SeatFacts, part?: "place" | "where") =>
-    favsOn ? (
+  // THE HEAD'S SEATS (the shared head, TaskHead): the place and the ⋮.
+  const placeEl = (head: SeatFacts, part?: "place" | "where") => (
       // THE PLACE TAGS (PlaceTags; owner, 2026-11-06: "in the first
       // line we have the × and then the tag"): the place, then
       // where in it — each a door to its view; on this canvas the
@@ -1574,144 +1458,6 @@ export const RailPeek = forwardRef<RailPeekHandle, RailPeekProps>(function RailP
           });
         }}
       />
-    ) : (() => {
-      // THE WHERE-CHIP IS A DOOR, on every page (owner, 2026-11-04:
-      // "click on the tag — we should go to the page/node, wherever
-      // we have"): a real link to the place's page (claude-rail-lib
-      // `chipDoor` — the canvas, with its node selected; the
-      // explorer's folder or file), so a modified press opens it
-      // in a tab. On the canvas page, a chip naming THIS canvas
-      // selects in place instead (the node, or the whole canvas):
-      // the workbench zooms to it and the card STAYS (owner,
-      // 2026-10-31: "when I click on the tag, shouldn't the chat
-      // preview still stay open") — pinned first, since the rail
-      // narrows to that node and only a pinned card is held through
-      // that (CodeRabbit on #2044).
-      // …AND ONLY A DOOR WEARS THE FILL (owner, 2026-11-05: "filled
-      // background only when a click navigates or does
-      // something"): a chip naming the place the page already
-      // stands on — this folder, this file, this canvas with that
-      // node already selected — goes nowhere (`chipDoor` null) and
-      // is plain text: no fill, no link, its full place in the
-      // title. FAVOURITES OFF (favourites-flag): the chip as it was
-      // — always a door, the fill on a node's chip only (the CSS
-      // reads the card's `favs-on`).
-      // Names, not files: the page's selected file is a guess from
-      // the echo (claude-rail-lib `onRail`).
-      const door = chipDoor(head.scope, head.at, here?.() ?? null, pageRoot ?? null, favsOn);
-      const label = chipLabel(head.scope, head.at);
-      const cls =
-        "claude-rail-peek-scope" +
-        (head.scope.kind === "node" ? " is-node" : head.scope.kind === "file" ? " is-file" : "");
-      if (!door) return <span className={cls} data-hint={chipPath(head.scope, head.at)}>{label}</span>;
-      return (
-        <a
-          href={door.href}
-          className={cls + " is-door"}
-          data-hint={door.title}
-          // Favourites off: this canvas's chip, already the
-          // selection — a disabled link (`chipDoor` `current`).
-          aria-disabled={door.current || undefined}
-          onClick={(e) => {
-            if (e.metaKey || e.ctrlKey || e.shiftKey || e.altKey || e.button !== 0) return;
-            e.preventDefault();
-            // Read again at the press: the page's selection may
-            // have moved since this render.
-            const pick = here?.() ?? null;
-            const now = chipDoor(head.scope, head.at, pick, pageRoot ?? null, favsOn);
-            // A `current` chip (favourites off, already the
-            // selection) is a disabled link: its press does nothing
-            // — no reselect, no navigation (Bugbot on #2122).
-            if (!now || now.current) return;
-            if (!now.select || !pick) {
-              const key = head.t.key;
-              const keyboard = e.detail === 0;
-              const go = () => navigateUrl(now.href, now.isDir === undefined ? undefined : { isDir: now.isDir });
-              if (!onChipLeave) {
-                go();
-                return;
-              }
-              // The hand-over runs at the push, never on a hop the
-              // leave guard refused (rail-peek-lib `onHop`).
-              const want = new URL(rewriteLegacyUrl(now.href), location.href);
-              onHop(
-                window,
-                NAV_EVENT,
-                () => location.pathname === want.pathname && location.search === want.search,
-                () => onChipLeave(key, keyboard),
-                go,
-              );
-              return;
-            }
-            onPin();
-            pick.select(now.select.udfName);
-            // Back to the composer: the reader is still in this
-            // chat, and WebKit leaves a pressed control unfocused —
-            // focus on the body, where a later press into the
-            // canvas frame is not heard as the window's blur and so
-            // never closes the pinned card (ClaudeRail's frame-press
-            // rule). The chip turns to plain text once the
-            // selection lands (it is the selection then), so a seat
-            // with no composer (a draft on the node), or a chat
-            // still mounting, takes the card's first button — its
-            // × — until `onPin`'s wait moves it on.
-            const box = shownKey ? focusRefs.current.get(shownKey)?.current : null;
-            (box ?? cardRef.current?.querySelector<HTMLElement>("button") ?? e.currentTarget).focus({
-              preventScroll: true,
-            });
-          }}
-        >
-          {label}
-        </a>
-      );
-    })();
-  const pulseEl = (head: SeatFacts, archive: boolean) => (
-    // THE PULSE AND THE ARCHIVE share one seat: the unread count
-    // (none → no count, the glyph goes too) and when the chat
-    // last moved, muted words; the archive button sits over
-    // their right end and shows on hover or focus (owner,
-    // 2026-11-02: "only on hover over that area, like the card
-    // view"). A chat that never moved has no words — then the
-    // archive stands alone, always shown (`is-bare`).
-    <span className={"claude-rail-peek-pulse" + (head.when || head.count > 0 ? "" : " is-bare")}>
-      {(head.count > 0 || head.when) && (
-        <span className="claude-rail-peek-meta">
-          {head.count > 0 && (
-            // HOW MANY MESSAGES (owner, 2026-11-02: "number of
-            // messages left of time"), the bubble after the
-            // number as the mockup draws it; unread ones turn the
-            // count to ink, and the hover says how many.
-            <span
-              className={"claude-rail-peek-count" + (head.unread > 0 ? " is-unread" : "")}
-              // The List row's own caption (ScheduleTaskViews
-              // `.tasks-row-msgs`), in the app's hint panel.
-              // `role="img"` so the label is read: a bare span's
-              // aria-label is not announced.
-              role="img"
-              aria-label={
-                `${head.count} message${head.count === 1 ? "" : "s"}` +
-                (head.unread > 0 ? `, ${head.unread} unread` : "")
-              }
-              data-hint={
-                `${head.count} message${head.count === 1 ? "" : "s"} in this task` +
-                (head.unread > 0 ? ` — ${head.unread} unread` : "")
-              }
-            >
-              {head.count}
-              <MessageSquare size={12} aria-hidden="true" />
-            </span>
-          )}
-          {head.when && (
-            // …and the List row's time cell: the exact moment, and
-            // which moment it is ("Last run …", "Drafted …").
-            <span className="claude-rail-peek-when" data-hint={head.whenFull || undefined}>
-              {head.when}
-            </span>
-          )}
-        </span>
-      )}
-      {archive && archiveButton(head)}
-    </span>
   );
   const starButton = (head: SeatFacts) => (
     <button
@@ -1727,10 +1473,10 @@ export const RailPeek = forwardRef<RailPeekHandle, RailPeekProps>(function RailP
     </button>
   );
   const kebabFor = (head: SeatFacts, hostItems?: KebabExtraItem[]) => {
-    // OPEN IN TASKS (flag on, off the Tasks page): the Open door's close,
-    // after a hop to the Tasks page with this task's panel up.
+    // OPEN IN TASKS (off the Tasks page): the Open door's close, after a hop
+    // to the Tasks page with this task's panel up.
     const inTasks = openInTasksItem({
-      on: unified,
+      on: true,
       taskKey: head.t.session_id ? head.t.key : null,
       onOpen: (href) => {
         void navigateUrl(href);
@@ -1805,8 +1551,7 @@ export const RailPeek = forwardRef<RailPeekHandle, RailPeekProps>(function RailP
       className={
         "claude-rail-peek" +
         (visible ? " is-on" : "") +
-        (held && !favsOn ? " is-held" : "") +
-        (favsOn ? " favs-on" : "") +
+        " favs-on" +
         (resizing ? " is-resizing" : "") +
         (view && !view.pulse.session_id ? " is-plain" : "") +
         move.className
@@ -1855,10 +1600,9 @@ export const RailPeek = forwardRef<RailPeekHandle, RailPeekProps>(function RailP
       {gripsOn &&
         (move.floating ? FLOAT_GRIPS : ALL_GRIPS).map((e) => <div key={"ring-" + e} className={"rail-grip-ring is-" + e} aria-hidden="true" />)}
       <div className="claude-rail-peek-card">
-        {head && unified ? (
-          // THE SHARED HEAD (flag on; shell/TaskHead), TWO LINES AT EVERY
-          // WIDTH (a rail window's rule, 2026-11-16): row 1 is the pin (or,
-          // favourites off, the pin that pressed IS the ×), `folder › file`,
+        {head && (
+          // THE SHARED HEAD (shell/TaskHead), TWO LINES AT EVERY WIDTH (a
+          // rail window's rule, 2026-11-16): row 1 is the pin, `folder › file`,
           // then the count ↔ the card's star, the time ↔ Open, and the ⋮
           // once the card has been pressed; row 2 is the ring, the number ↔
           // the card's archive, and the title. The wrapper keeps the old
@@ -1872,33 +1616,18 @@ export const RailPeek = forwardRef<RailPeekHandle, RailPeekProps>(function RailP
               // dropped its draft on every change of shown chat).
               key={head.t.key}
               className="claude-rail-peek-task-head"
-              {...(favsOn || pinCtl ? {} : { leadNode: pinButton })}
-              {...(pinCtl ? { pinNode: <RailPinButton pinned={pinCtl.pinned} onToggle={pinCtl.onToggle} /> } : {})}
+              pinNode={<RailPinButton pinned={pinCtl.pinned} onToggle={pinCtl.onToggle} />}
               // WITH THE PIN no card has a × (owner, 2026-11-16: "we don't need
               // a × button"): a click outside closes a temp card, and a
               // pinned one is unpinned first. The pin is the head's first seat.
-              lead={
-                pinCtl
-                  ? null
-                  : favsOn
-                  ? {
-                      kind: "close",
-                      label: "Close the preview",
-                      onPress: () => {
-                        onHeld(false);
-                        onDismiss();
-                      },
-                    }
-                  : null
-              }
+              lead={null}
               task={head.merged as Task}
               // THE CARD'S OWN STAR (toggleStar): it tells the rail, marks the
               // ring's pulse and dismisses the card on an unstar — the
               // identity's plain TaskStar does none of that.
               star={false}
-              {...(favsOn && head.t.session_id ? { starNode: starButton(head) } : {})}
-              // …and its archive in the id slot, on hover — favourites on or
-              // off. The card's own `fileTask`, which tells the rail to let go
+              {...(head.t.session_id ? { starNode: starButton(head) } : {})}
+              // …and its archive in the id slot, on hover. The card's own `fileTask`, which tells the rail to let go
               // of the chat, so the head's own seat stays off: one archive,
               // not two.
               {...(head.t.session_id && !head.draft ? { statusOverlay: archiveButton(head) } : {})}
@@ -1943,9 +1672,9 @@ export const RailPeek = forwardRef<RailPeekHandle, RailPeekProps>(function RailP
               // canvas's or the folder's), then where in it (Canvas, the
               // node, the file), which the head joins with a chevron. The
               // name was the favourite window's alone while the head was one
-              // row. Favourites off: the where-chip as it was.
-              place={favsOn ? placeEl(head, "place") : placeEl(head)}
-              {...(favsOn && hasWhereTag(head.scope, head.at) ? { where: placeEl(head, "where") } : {})}
+              // row.
+              place={placeEl(head, "place")}
+              {...(hasWhereTag(head.scope, head.at) ? { where: placeEl(head, "where") } : {})}
               // The pulse's facts in the head's own slots: how many messages
               // (the unread ones turn it to ink) and when it last moved — none
               // for a draft or a chat with no session, as the pulse had none.
@@ -1982,206 +1711,6 @@ export const RailPeek = forwardRef<RailPeekHandle, RailPeekProps>(function RailP
               // with its other acts (TaskHead, the acts' layer).
               kebab={head.t.session_id && shownKey ? kebabFor(head) : null}
             />
-            {askedKey.current === head.t.key && archiveAsk.node}
-          </div>
-        ) : head && (
-          // THE HEAD, TWO ROWS (owner, 2026-11-02, after the one-row head of
-          // 2026-10-30): the first row is the task's FACTS and SEATS — the ×
-          // and the star (2026-11-03), its number where the
-          // Tasks page prints it, WHERE it lives (the canvas, or one node —
-          // the pane's chats do not say), then at the right its unread
-          // count and when it last moved (the archive shows over that on
-          // hover, the List row's way), the door as a word, and the ⋮. The
-          // second row is the TITLE alone, full width, with the pencil on
-          // hover: a recap title is a sentence, and a sentence squeezed
-          // between chips on one row lost its end.
-          <div className="claude-rail-peek-head" onKeyDown={onHeadKeyDown}>
-            <div className="claude-rail-peek-row">
-              {!favsOn ? (
-                // FAVOURITES OFF (favourites-flag): the head of 2026-11-02,
-                // unchanged — the pin, which pressed IS the ×.
-                pinButton
-              ) : (
-              <button
-                type="button"
-                className="claude-rail-peek-btn claude-rail-peek-close"
-                aria-label="Close the preview"
-                data-hint="Close the preview"
-                onClick={() => {
-                  // A favourite's open card: the × is the reader closing it,
-                  // and ClaudeRail writes "closed" as the card leaves (its
-                  // shown-key rule) — the same way for every door out.
-                  onHeld(false);
-                  onDismiss();
-                }}
-              >
-                <X size={14} aria-hidden="true" />
-              </button>
-              )}
-              {!favsOn && head.id && (
-                <span className="claude-rail-peek-id" data-hint={head.words}>
-                  {head.id}
-                </span>
-              )}
-              {placeEl(head)}
-              <span className="claude-rail-peek-gap" aria-hidden="true" />
-              {head.t.session_id && !head.draft && (!favsOn || head.when || head.count > 0) && pulseEl(head, !favsOn)}
-              {head.href && (
-                <button
-                  type="button"
-                  // The word alone (Akshil, 2026-11-16: no arrow beside
-                  // "Open", anywhere).
-                  className="btn claude-rail-peek-open"
-                  onClick={() => {
-                    onOpenChat(head.href!);
-                    // The door closes the card too — a held one as well: a
-                    // hop that keeps the rail mounted (a node switch) must
-                    // not leave it up.
-                    onHeld(false);
-                    onDismiss("door");
-                  }}
-                >
-                  Open
-                </button>
-              )}
-              {head.t.session_id && shownKey && (
-                // Mounted only while a seat is SHOWN (not through the fade): the
-                // menu listens for task announcements and re-reads the listing
-                // on each, which a hidden card has no business doing. Inside the
-                // chat's AgentProvider, so its terminal hand-off names the
-                // chat's own agent, not the default one.
-                <span className="claude-rail-peek-kebab">
-                  {kebabFor(head)}
-                </span>
-              )}
-            </div>
-            <div className="claude-rail-peek-titlerow">
-              {favsOn && (
-                // THE SECOND ROW'S FACTS (owner, 2026-11-06: "status icon
-                // [hover shows the archive icon], fav icon, task id and
-                // title"): the List row's status ring — the Archive seat
-                // stands over it on hover —, the star, the task's number.
-                <>
-                  <span className="claude-rail-peek-status">
-                    <TaskIconPick
-                      task={{ key: head.t.key, task_id: head.t.task_id, icon_slot: headIcon, icon_picked: headPicked }}
-                      editing={draft !== null}
-                      onlyWhileEditing
-                      onDone={onReload}
-                      onOpenChange={setIconPicking}
-                    >
-                      <StatusIcon
-                        status={taskColumn(head.merged)}
-                        unread={head.unread > 0}
-                        background={liveJobRow(head.t)}
-                        draftHeld={!!head.row && draftRing(head.merged as Task)}
-                        {...(head.row?.failed ? { failed: true } : {})}
-                        icon={headIcon}
-                        iconPicked={headPicked}
-                      />
-                    </TaskIconPick>
-                    {/* Not while the title is being edited: the Archive seat
-                        stands OVER the ring on hover, and during a rename
-                        the ring is the Choose-icon button (TaskIconPick) —
-                        a press there must open the picker, not archive. Nor
-                        while that picker is open: its filter box takes the
-                        focus, the rename ends, and the seat would be back
-                        under the pointer that just pressed the glyph. */}
-                    {head.t.session_id && !head.draft && draft === null && !iconPicking && archiveButton(head)}
-                  </span>
-                  {head.t.session_id && (
-                    // Behind the favourites switch (favourites-flag). Only a
-                    // STARTED chat can be starred (a draft or a queued row has
-                    // no key that lasts; the server refuses them too).
-                    starButton(head)
-                  )}
-                  {head.id && (
-                    <span className="claude-rail-peek-id" data-hint={head.words}>
-                      {head.id}
-                    </span>
-                  )}
-                </>
-              )}
-              {draft === null ? (
-                <>
-                  <span
-                    ref={titleRef}
-                    className="claude-rail-peek-title"
-                    // The List row's own caption (ScheduleTaskViews `.tasks-title`,
-                    // hints.ts `renderTaskHint`): the title line and the reply
-                    // line WHOLE, in the row's styles. Only when something is
-                    // clipped — the title past its box, or a reply beside it
-                    // (owner, 2026-11-02: "if truncated and I hover it should
-                    // show me the full name in tooltip like we do at other
-                    // places"); a title fully in view says nothing twice.
-                    {...(titleClipped || head.reply
-                      ? {
-                          "data-hint": head.line.hint ?? head.label,
-                          "data-hint-title": head.line.hint ?? head.label,
-                          "data-hint-reply": head.reply,
-                        }
-                      : {})}
-                    onDoubleClick={head.renamable ? () => startRename(head) : undefined}
-                  >
-                    {head.label}
-                  </span>
-                  {head.reply && (
-                    // THE REPLY LINE: what the List prints after the title in
-                    // italics — the last turn's reply. Same hint as
-                    // the title: both lines whole.
-                    <span
-                      className="claude-rail-peek-reply"
-                      data-hint={head.reply}
-                      data-hint-title={head.line.hint ?? head.label}
-                      data-hint-reply={head.reply}
-                    >
-                      {head.reply}
-                    </span>
-                  )}
-                  {head.renamable && (
-                    <button
-                      type="button"
-                      className="claude-rail-peek-btn claude-rail-peek-rename"
-                      data-hint="Rename task"
-                      aria-label="Rename task"
-                      onClick={() => startRename(head)}
-                    >
-                      <Pencil size={12} aria-hidden="true" />
-                    </button>
-                  )}
-                </>
-              ) : (
-                <>
-                  <input
-                    ref={titleInputRef}
-                    className="claude-rail-peek-title-input"
-                    value={draft}
-                    maxLength={TITLE_MAX_LENGTH}
-                    disabled={renaming}
-                    autoFocus
-                    aria-label="Task title"
-                    aria-invalid={renameError ? true : undefined}
-                    title={renameError || undefined}
-                    onFocus={(e) => e.currentTarget?.select?.()}
-                    onChange={(e) => setDraft(e.target.value)}
-                    onBlur={() => void saveRename(head)}
-                    onKeyDown={(e) => {
-                      // The Enter/Escape that settles an IME candidate is not
-                      // ours (keyCode 229 is Safari's spelling of isComposing).
-                      if (e.nativeEvent?.isComposing || e.keyCode === 229) return;
-                      if (e.key === "Enter") {
-                        e.preventDefault();
-                        void saveRename(head);
-                      } else if (e.key === "Escape") {
-                        e.preventDefault();
-                        cancelRename();
-                      }
-                    }}
-                  />
-                  {renameError && <span className="claude-rail-peek-rename-error">{renameError}</span>}
-                </>
-              )}
-            </div>
             {askedKey.current === head.t.key && archiveAsk.node}
           </div>
         )}
@@ -2227,7 +1756,7 @@ export const RailPeek = forwardRef<RailPeekHandle, RailPeekProps>(function RailP
                     // its last chat mounted, and its seats would keep that
                     // chat's worktree menu and pause word (a listing each)
                     // alive behind a card nobody is looking at.
-                    {...(unified && shownKey && t.key === viewKey && chipsSeat.key === t.key && statusSeat.key === t.key
+                    {...(shownKey && t.key === viewKey && chipsSeat.key === t.key && statusSeat.key === t.key
                       ? { headChipsHost: chipsSeat.el, headStatusHost: statusSeat.el }
                       : {})}
                   />

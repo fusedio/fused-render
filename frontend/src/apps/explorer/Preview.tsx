@@ -100,7 +100,6 @@ import { ModeMenu, OverflowMenu } from "@apps/explorer/BarMenu";
 import { SideReopenEdge, SideToggleButton, startSideReopenPull } from "@apps/explorer/SideChrome";
 import { ClaudeRail, RAIL_W, paneHomeHref } from "@shell/claude-rail/ClaudeRail";
 import { placeRoot } from "@shell/claude-rail/claude-rail-lib";
-import { useTaskFavourites } from "@platform/lib/favourites-flag";
 import { useAppActionRows } from "@apps/explorer/EntryActionsMenu";
 import { useCanRunInTerminal, openTerminal } from "@platform/lib/terminalDockStore";
 import { runOrCopyInTerminal } from "@platform/lib/runOrCopyInTerminal";
@@ -1316,10 +1315,6 @@ function TemplatePreview({
   // would be the same thing twice. The bar's Show button and the bare edge
   // stand there, as they did.
   const railHere = !!sideSlot && activeMode !== CHAT_MODE && sideTargets.some((e) => e.mode === "claude");
-  // THE RAIL BESIDE THE OPEN COLUMN (ClaudeRail `paneOpen`; owner,
-  // 2026-11-05): with favourites on it stands whether the column is open (on
-  // any companion) or shut; off, only while it is shut, as before.
-  const railAlways = useTaskFavourites();
   const openClaudeSide = () => setSide("claude");
   // The rail's Git section opens the git companion where this file has one.
   const railGitDoor = sideTargets.some((e) => e.mode === "git") ? () => setSide("git", "git") : undefined;
@@ -2726,11 +2721,11 @@ function TemplatePreview({
           (`railHere`): a file whose column holds git alone keeps the button
           and the bare edge below, because there would be no chats on the
           other side of a rail.
-          WITH FAVOURITES ON it stands past the OPEN column too, at the
+          It stands past the OPEN column too, at the
           split's right edge (ClaudeRail `paneOpen`; owner, 2026-11-05) —
           open on CLAUDE only: a column showing git keeps the rail's glyph and
           seam, its way into the chat. */}
-      {sideTargetEntry && (!activeSide || railAlways) && railHere && (
+      {sideTargetEntry && railHere && (
           <ClaudeRail
             paneOpen={activeSide === "claude"}
             place={railPlace}

@@ -28,7 +28,7 @@ export interface BotCardState {
   key: string | null;
   /** Pinned by a press. */
   pinned: boolean;
-  /** Held (favourites on): nothing but its × and Open close it. */
+  /** Held by its pin: nothing but the pin and Open close it. */
   held: boolean;
   /** The row left no room for a card: the rings are doors until it grows. */
   noRoom: boolean;
@@ -48,29 +48,19 @@ function write(patch: Partial<BotCardState>): void {
   for (const fn of [...subs]) fn();
 }
 
-/** Favourites on: a pin holds the card (the list card's rule). The rail says. */
-let holdOnPin = true;
-export function setBotCardHoldsOnPin(on: boolean): void {
-  holdOnPin = on;
-}
-
-/** HOVER / TEMP / PIN (rail-pin-lib; the unified-head switch on — the rail
- *  says): a press makes the card TEMP (pinned, not held), only the pin icon
- *  or a double-click holds it, a swap to another bot is temp again, and the
- *  window's mark (`botOpen`, what a reload pins back) follows the HOLD — a
- *  temp card does not come back after a reload. */
-let pinModel = false;
-export function setBotCardPinModel(on: boolean): void {
-  pinModel = on;
-}
-
-/** The window's mark for a reload (header of `pinModel`). FREE PINS
+/** HOVER / TEMP / PIN (rail-pin-lib): a press makes the card TEMP (pinned,
+ *  not held), only the pin icon or a double-click holds it, a swap to
+ *  another bot is temp again, and the window's mark (`botOpen`, what a
+ *  reload pins back) follows the HOLD — a temp card does not come back after
+ *  a reload.
+ *
+ *  The window's mark for a reload. FREE PINS
  *  (rail-slots-lib): the mark is the PINNED bot's, written by the pin's press
  *  (BotCardHost) and read by the shell's pinned host — this card is the
  *  non-pin, never held, and must not clear it. */
 function markOpen(): void {
   if (railFreePinsNow()) return;
-  if (pinModel) setBotOpen(state.key && state.pinned && state.held ? state.key : null);
+  setBotOpen(state.key && state.pinned && state.held ? state.key : null);
 }
 
 let warm: () => void = () => {};
@@ -89,26 +79,13 @@ export function botCardIntent(): PeekIntent {
       {
         // The machine pins before it shows (`showNow`): the mark follows both.
         show: (key) => {
-          if (pinModel) {
-            // Another bot's card is a new card: temp (the pin is per card).
-            write(key === null ? { key, pinned: false, held: false } : key !== state.key ? { key, held: false } : { key });
-            markOpen();
-            return;
-          }
-          // A card that went has nothing to hold. Only a close says so: the
-          // machine pins BEFORE it shows a new card (`showNow`), so a pin's
-          // hold lands while the key is still the old one (or none).
-          write(key === null ? { key, pinned: false, held: false } : { key });
-          if (state.pinned) setBotOpen(key);
+          // Another bot's card is a new card: temp (the pin is per card).
+          write(key === null ? { key, pinned: false, held: false } : key !== state.key ? { key, held: false } : { key });
+          markOpen();
         },
         pin: (on) => {
-          if (pinModel) {
-            write(on ? { pinned: true } : { pinned: false, held: false });
-            markOpen();
-            return;
-          }
-          write({ pinned: on, ...(on && holdOnPin ? { held: true } : {}) });
-          setBotOpen(on ? state.key : null);
+          write(on ? { pinned: true } : { pinned: false, held: false });
+          markOpen();
         },
         warm: () => warm(),
       },
@@ -194,8 +171,6 @@ export function resetBotCardForTests(timers?: Timers): void {
   subs.clear();
   rings.clear();
   handle = null;
-  holdOnPin = true;
-  pinModel = false;
   botPress.inside = false;
   botPressed.href = null;
   setBotCard(null);

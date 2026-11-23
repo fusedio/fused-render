@@ -1,8 +1,7 @@
-// THE TASKS PAGE'S PANEL HEAD, behind the shared-head flag (task-head-flag;
-// design.md "One task head, everywhere", PR 1). Mounted, not grepped: with the
-// flag ON the panel's head is `TaskHead` — × with its Esc hint, the chevrons,
-// the identity, ↗ Open, and the chat's own ⋮ (`Kebab`, "More options"); with it
-// OFF it is the head this panel has always drawn, its own ⋮ ("More actions").
+// THE TASKS PAGE'S PANEL HEAD (design.md "One task head, everywhere").
+// Mounted, not grepped: the panel's head is `TaskHead` — × with its Esc hint,
+// the chevrons, the identity, ↗ Open, and the chat's own ⋮ (`Kebab`, "More
+// options").
 import { installDomShim } from "@platform/lib/testDomShim";
 installDomShim();
 import { afterEach, beforeEach, expect, test } from "bun:test";
@@ -12,7 +11,6 @@ import type { Task } from "@platform/lib/api";
 
 const { TaskPeek } = await import("./TaskPeek");
 const store = await import("./task-peek-store");
-const { publishTaskHeadUnified, resetTaskHeadUnifiedFlagForTests } = await import("./task-head-flag");
 
 const MISSING = Symbol("missing");
 const g = globalThis as Record<string, unknown>;
@@ -44,7 +42,6 @@ beforeEach(() => {
   // answers empty: this suite is about the head, not what is behind it.
   (globalThis as { fetch: unknown }).fetch = async () =>
     ({ ok: true, status: 200, json: async () => ({ tasks: [] }) }) as unknown as Response;
-  resetTaskHeadUnifiedFlagForTests();
   store.resetPeekStoreForTests();
 });
 const mounted: ReactTestRenderer[] = [];
@@ -56,7 +53,6 @@ afterEach(() => {
   }
   saved.clear();
   globalThis.fetch = realFetch;
-  resetTaskHeadUnifiedFlagForTests();
   store.resetPeekStoreForTests();
 });
 
@@ -120,8 +116,7 @@ const hostAll = (r: ReactTestRenderer, pick: (n: ReactTestInstance) => boolean) 
 const byLabel = (r: ReactTestRenderer, label: string) => hostAll(r, (n) => n.props["aria-label"] === label)[0];
 const hasClass = (n: ReactTestInstance, c: string) => String(n.props.className ?? "").split(" ").includes(c);
 
-test("flag ON: the shared head — ×, chevrons, identity, ↗ Open and the chat's own ⋮", async () => {
-  publishTaskHeadUnified({ enabled: true });
+test("the shared head — ×, chevrons, identity, ↗ Open and the chat's own ⋮", async () => {
   const r = await open([task()]);
   expect(hostAll(r, (n) => hasClass(n, "task-head"))).toHaveLength(1);
   expect(hostAll(r, (n) => hasClass(n, "task-side-peek-head"))).toHaveLength(0);
@@ -145,9 +140,9 @@ test("flag ON: the shared head — ×, chevrons, identity, ↗ Open and the chat
   const idSlot = hostAll(r, (n) => hasClass(n, "task-head-idslot"))[0]!;
   expect(idSlot.findAll((n) => typeof n.type === "string" && hasClass(n, "task-head-file"))).toHaveLength(1);
   // TWO LINES (2026-11-17), the rail window's layout, under the panel's own
-  // reveal (no `is-window`). Favourites are off here, so the door is the one
-  // act: it stands on row 1 (2026-11-22, the split), and the count and the
-  // time close row 2 — nothing trades.
+  // reveal (no `is-window`): the acts (the star, the door) stand on row 1
+  // (2026-11-22, the split), and the count and the time close row 2 —
+  // nothing trades.
   const headEl = hostAll(r, (n) => hasClass(n, "task-head"))[0]!;
   expect(hasClass(headEl, "is-two-line")).toBe(true);
   expect(hasClass(headEl, "is-window")).toBe(false);
@@ -158,8 +153,7 @@ test("flag ON: the shared head — ×, chevrons, identity, ↗ Open and the chat
   expect(rowFacts.findAll((n) => typeof n.type === "string" && hasClass(n, "task-head-time"))).toHaveLength(1);
 });
 
-test("flag ON, a task with no session yet keeps the panel's own menu (Delete of a never-run message)", async () => {
-  publishTaskHeadUnified({ enabled: true });
+test("a task with no session yet keeps the panel's own menu (Delete of a never-run message)", async () => {
   const r = await open([task({ key: "pending:e1", session_id: undefined, status: "upcoming" } as Partial<Task>)]);
   expect(hostAll(r, (n) => hasClass(n, "task-head"))).toHaveLength(1);
   // The panel's own menu behind it, under the chat ⋮'s words.
@@ -169,16 +163,7 @@ test("flag ON, a task with no session yet keeps the panel's own menu (Delete of 
   expect(byLabel(r, "More actions")).toBeUndefined();
 });
 
-test("flag OFF: the head this panel has always drawn", async () => {
-  const r = await open([task()]);
-  expect(hostAll(r, (n) => hasClass(n, "task-side-peek-head"))).toHaveLength(1);
-  expect(hostAll(r, (n) => hasClass(n, "task-head"))).toHaveLength(0);
-  expect(byLabel(r, "More actions")).toBeDefined();
-  expect(byLabel(r, "More options")).toBeUndefined();
-});
-
-test("flag ON: the ring's Archive files the task and the panel moves on, as the ⋮'s Archive does", async () => {
-  publishTaskHeadUnified({ enabled: true });
+test("the ring's Archive files the task and the panel moves on, as the ⋮'s Archive does", async () => {
   const posted: string[] = [];
   (globalThis as { fetch: unknown }).fetch = async (input: unknown) => {
     posted.push(String(input));

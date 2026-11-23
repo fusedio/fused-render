@@ -31,11 +31,10 @@ import type { TasksSeen } from "./tasks-lib";
 
 const SHELL = new URL(".", import.meta.url).pathname;
 const SIDEBAR = readFileSync(join(SHELL, "GlobalSidebar.tsx"), "utf8");
+// THE TASKS DOOR IS THE CLAUDE RAIL'S (owner, 2026-11-07): its dot is the one
+// the sidebar's Tasks row wore, read from the same pulse.
+const RAIL = readFileSync(join(SHELL, "claude-rail/ClaudeRail.tsx"), "utf8");
 const STORE = readFileSync(join(SHELL, "tasksPulse.ts"), "utf8");
-const FRAME = readFileSync(
-  join(SHELL, "../platform/ui/sidebar/SidebarFrame.tsx"),
-  "utf8",
-);
 const BOOKMARKS = readFileSync(
   join(SHELL, "../apps/explorer/sidebar/BookmarksSection.tsx"),
   "utf8",
@@ -133,12 +132,12 @@ describe("the sidebar's tasks pulse", () => {
     // HUE says it at both widths; the pulsing dot tried first stays out, because
     // the rail is the one place on screen a reader cannot look away from and
     // nothing there may blink.
-    expect(SIDEBAR).toContain("pulse.attention + pulse.blocked > 0 ? (");
-    expect(SIDEBAR).toContain('className="sidebar-rail-dot is-attention"');
+    expect(RAIL).toContain("tasksPulse.attention + tasksPulse.blocked > 0");
+    expect(RAIL).toContain('"is-attention"');
     // Red OUTRANKS yellow, which outranks green: still ONE dot, and the state
     // that will not resolve on its own is the one it shows.
-    expect(SIDEBAR.indexOf("pulse.attention + pulse.blocked > 0 ? (")).toBeLessThan(
-      SIDEBAR.indexOf("pulse.running > 0 ? ("),
+    expect(RAIL.indexOf("tasksPulse.attention + tasksPulse.blocked > 0")).toBeLessThan(
+      RAIL.indexOf("tasksPulse.running > 0"),
     );
     // The Blocked ring's own token — `needs_attention` is DRAWN in Blocked
     // (schedule-lib.laneOf), so it wears Blocked's colour here too rather than a
@@ -377,8 +376,8 @@ describe("one poll behind both readers", () => {
     // stamp needs a poll to land, and a dot flashing beside the open page and
     // then clearing itself is worse than no dot. The CHIP is untouched by the
     // visit on purpose (see the pulse tests above).
-    expect(SIDEBAR).toContain("const unseen = tasksActive ? 0 : pulse.unseen;");
-    expect(SIDEBAR).not.toContain("tasksActive ? 0 : pulse.doneUnread");
+    expect(RAIL).toContain("!tasksHere && tasksPulse.unseen > 0");
+    expect(RAIL).not.toContain("tasksHere && tasksPulse.doneUnread");
     // The seen map is the SERVER's (D1386): written through POST
     // /api/tasks/seen, carried back on the pulse, and adopted from it. The old
     // localStorage row is only ever READ, once, by the import — never written.
@@ -453,58 +452,17 @@ describe("one nav dot, worn by two rows", () => {
   it("draws ONE dot on the icon, yellow winning over green", () => {
     // One dot: two in a corner is not a state this can draw, and "something is
     // running" is the fact that outranks "something is ready".
-    expect(SIDEBAR).toContain("sidebar-rail-dot is-running");
-    expect(SIDEBAR).toContain("sidebar-rail-dot is-unread");
-    expect(SIDEBAR.indexOf("pulse.running > 0 ? (")).toBeLessThan(
-      SIDEBAR.indexOf("unseen > 0 ? ("),
-    );
-    // The dot reads the DISMISSAL-GATED number, which is the whole difference
-    // between it and the chip beside the label.
-    expect(SIDEBAR).toContain(") : unseen > 0 ? (");
+    expect(RAIL).toContain('"is-running"');
+    expect(RAIL).toContain('"is-unread"');
+    expect(RAIL.indexOf("tasksPulse.running > 0")).toBeLessThan(RAIL.indexOf("tasksPulse.unseen > 0"));
     // Nothing at all when there is nothing to say.
-    expect(SIDEBAR).toContain("badge: tasksDot");
-    expect(FRAME).toContain("{item.badge}");
+    expect(RAIL).toContain("{tasksDot && <span className={`sidebar-rail-dot ${tasksDot}`}");
     // Positioned against the rail button, which is what makes an absolutely
     // placed dot land on the glyph instead of resolving against the viewport (the
     // bug account.css records for the Settings dot).
     expect(SIDEBAR_CSS).toMatch(/\.sidebar-rail-btn \{[^}]*position: relative/);
     const dot = SIDEBAR_CSS.slice(SIDEBAR_CSS.indexOf(".sidebar-rail-dot {"));
     expect(dot.slice(0, dot.indexOf("}"))).toContain("position: absolute");
-  });
-
-  it("wears the SAME dot when expanded, and adds words to it", () => {
-    // The dot is the constant across both modes (Akshil, 2026-08-18): the icon is
-    // where the eye lands at either width, so a mark that shows collapsed and
-    // vanishes on expand reads as the state going away. Same node, both slots —
-    // the rail's `badge` and the row's `extra`.
-    expect(SIDEBAR).toContain("badge: tasksDot");
-    expect(SIDEBAR).toContain("extra={tasksDot}");
-    expect(FRAME).toContain("{extra}");
-    // And the glyph's own span anchors it there, or it resolves against the
-    // viewport and drags a scrollbar in with it (account.css).
-    expect(SIDEBAR_CSS).toMatch(/\.sidebar-item \.icon \{[^}]*position: relative/);
-    expect(SIDEBAR_CSS).toContain(".sidebar-item .icon > .sidebar-rail-dot {");
-    // Expanded ADDS words beside the dot rather than trading it for them.
-    const trailing = SIDEBAR.slice(
-      SIDEBAR.indexOf("const tasksTrailing ="),
-      SIDEBAR.indexOf("// Everything that is not primary nav"),
-    );
-    expect(trailing).toContain("runningLabel(pulse.running)");
-    // The chip reads the RAW state — no dismissal, no visit suppression: it says
-    // what is waiting to be read until it is read.
-    expect(trailing).toContain("{pulse.doneUnread}");
-    expect(trailing).not.toContain("unseen");
-    expect(SIDEBAR).toContain("trailing={tasksTrailing}");
-    expect(FRAME).toContain('<span className="sidebar-item-trail">{trailing}</span>');
-    // Both marks name the state in the status ring's own tokens, so the sidebar
-    // and the page cannot describe one status in two colours.
-    expect(SIDEBAR_CSS).toContain("background: var(--status-progress)");
-    expect(SIDEBAR_CSS).toContain("background: var(--status-done)");
-    expect(SIDEBAR_CSS).toMatch(/\.sidebar-running \{[^}]*color: var\(--status-progress\)/);
-    // ...and the WAITING count is red — the dot's own token, so the words and
-    // the mark beside them say one thing (Akshil, 2026-09-03).
-    expect(SIDEBAR_CSS).toMatch(/\.sidebar-running\.is-attention \{[^}]*color: var\(--status-failed\)/);
-    expect(SIDEBAR).toContain('className="sidebar-running is-attention"');
   });
 
   it("keeps the waiting label red under prefers-reduced-motion too", () => {

@@ -18,7 +18,7 @@ import { cn } from "@platform/lib/utils";
 import { groupCollapsibles, isRun, leadSplit, seatTriggers, type CollapsibleRun } from "../protocol/segments";
 import { segText } from "../protocol/summaries";
 import type { Segment } from "../protocol/types";
-import { viewCardOf } from "../specialists/view-card";
+import { viewCardOf } from "../experts/view-card";
 import { Caret } from "./Caret";
 import { cardKey, runKey, useCardOpens } from "./cardPolicy";
 import { MarkdownView } from "./MarkdownView";

@@ -7,8 +7,7 @@
 // `aria-pressed`.
 //
 // ONLY FOR A STARTED CHAT (`session_id`): the server keys a favourite on a
-// session, so a draft or a task that never ran has nothing to star — and
-// NOTHING AT ALL while the favourites switch is off (`useTaskFavourites`).
+// session, so a draft or a task that never ran has nothing to star.
 //
 // THE STAR SHOWS THE PRESS AT ONCE (RailPeek's `starMark`, in miniature):
 // the row's `starred` arrives on the next tasks pulse — seconds on a busy
@@ -32,7 +31,6 @@
 import { Star } from "lucide-react";
 import { useEffect, useRef, useState, type KeyboardEvent, type MouseEvent } from "react";
 import { setTaskFavourite, type Task } from "@platform/lib/api";
-import { useTaskFavourites } from "@platform/lib/favourites-flag";
 import { notify } from "@platform/lib/notifications";
 import { announceTasksChanged } from "@platform/lib/tasksChanged";
 import "./task-star.css";
@@ -66,8 +64,7 @@ function failWords(e: unknown): string {
 }
 
 export function TaskStar(props: TaskStarProps) {
-  const favsOn = useTaskFavourites();
-  if (!favsOn || !starrable(props.task)) return null;
+  if (!starrable(props.task)) return null;
   return <TaskStarButton {...props} />;
 }
 

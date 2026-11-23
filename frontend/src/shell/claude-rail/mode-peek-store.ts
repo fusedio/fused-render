@@ -29,7 +29,6 @@
 import { useSyncExternalStore, type ReactNode } from "react";
 import type { Timers } from "./rail-peek-lib";
 import { createDoorCardStore, type DoorCardState, type DoorCardStore } from "./door-card-store";
-import { taskHeadUnifiedNow } from "@shell/task-head-flag";
 
 /** `data-rail-door` on every mode door (rail-pin-lib `doorSelector`); the
  *  mode itself is `data-rail-mode`. */
@@ -153,7 +152,7 @@ export function forgetModeCardRail(rail: HTMLElement): void {
     if (opener !== rail) continue;
     const store = stores.get(mode);
     const s = store?.state();
-    if (store && s && !(taskHeadUnifiedNow() ? s.held : s.pinned)) store.close();
+    if (store && s && !s.held) store.close();
     openers.delete(mode);
     changed = true;
   }

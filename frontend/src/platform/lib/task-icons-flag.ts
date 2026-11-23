@@ -8,7 +8,7 @@
 // always was, nothing opens a picker, and the slot the listing sends is
 // ignored.
 //
-// The single-flag half of favourites-flag.ts: a localStorage memo so a reload
+// A localStorage memo so a reload
 // draws the right mark on its first frame, one generation so a publish beats
 // a slower in-flight read, and the prefs channel for a switch flipped in
 // another tab. In platform because the ring (shell/ScheduleTaskViews

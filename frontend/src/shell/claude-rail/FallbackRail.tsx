@@ -9,8 +9,7 @@
 // any (ClaudeRail `favouritesOnly`, claude-rail-lib `railShown`). The favourite's card
 // (FavouritePeek) stands beside it as beside any rail: it registers like one.
 //
-// ONE REGISTRY CHECK: mounted while favourites are on and no page rail is
-// mounted (fav-peek-store `registerPageRail`, claude-rail-lib
+// ONE REGISTRY CHECK: mounted while no page rail is mounted (fav-peek-store `registerPageRail`, claude-rail-lib
 // `fallbackRailUp`). The count is said synchronously from the page rails'
 // layout phase, so a hop swaps the two in one paint — never both, never a
 // frame with neither.
@@ -22,7 +21,6 @@ import type { PointerEvent as ReactPointerEvent } from "react";
 import { navigateUrl } from "@platform/lib/router";
 import { ClaudeRail, type NewTaskSeed } from "./ClaudeRail";
 import { usePageRailCount } from "./fav-peek-store";
-import { useCanvasRailPeek, useRailFeatureOn } from "./rail-peek-flag";
 import { fallbackRailUp, type RailPlace } from "./claude-rail-lib";
 
 /** No place (header): a folder no row lives in, so nothing rides the list
@@ -33,14 +31,10 @@ const noop = () => {};
 const noPull = (_e: ReactPointerEvent<HTMLDivElement>) => {};
 
 export function FallbackRail() {
-  // The favourites switch AND the card's (ClaudeRail `favsOn`): the star
-  // lives on the card.
-  const favsOn = useRailFeatureOn();
-  // The rail flag alone puts Tasks, the + and Bots on the rail (ClaudeRail
-  // `navDoors`): the fallback then stands on every page without a page rail.
-  const navDoors = useCanvasRailPeek();
+  // Tasks, the + and Bots are on the rail (ClaudeRail's nav doors): the
+  // fallback stands on every page without a page rail.
   const pageRails = usePageRailCount();
-  if (!fallbackRailUp({ favsOn, pageRails, navDoors })) return null;
+  if (!fallbackRailUp({ pageRails })) return null;
   return (
     <ClaudeRail
       favouritesOnly
