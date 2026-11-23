@@ -1372,11 +1372,14 @@
   padding: 0 6px;
   margin: 0;
 }
+/* The ⋮ wears the star's box (Akshil, 2026-11-23: "more icon button and fav
+   icon button width should be same"): 26px, its dots 12px from each side;
+   the head gives back 8px so the dots still end 14px from the edge. */
 .task-head.task-head.is-two-line .task-head-facts.is-split .task-head-kebab {
-  margin: 0 -2px 0 0;
+  margin: 0 -8px 0 0;
 }
 .task-head.task-head.is-two-line .task-head-facts.is-split .task-head-kebab :is(.c-kebabbtn, button) {
-  width: 14px;
+  width: 26px;
   height: 24px;
 }
 .task-head.task-head.is-two-line .task-head-row :is(.task-head-btn, .task-star, .claude-rail-peek-star, .task-head-open, .c-kebabbtn) {
