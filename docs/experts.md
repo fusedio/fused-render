@@ -565,8 +565,7 @@ Experts were called specialists until 2026-11-23. `experts/migrate.py` (`run_onc
 switch is read and before seeding) moves a machine across once:
 
 - `<workspace>/specialists` is renamed to `<workspace>/experts`. Whatever was already in `<workspace>/experts` is
-  zipped to `<home>/backup/legacy-experts-<time>.zip` and then deleted; if the zip cannot be written nothing is
-  deleted and the next start tries again.
+  deleted first.
 - In each home `specialist.json` becomes `expert.json` and `.specialist/` becomes `.expert/`; `.gitignore` and
   `CLAUDE.md` are rewritten; memory, skills, inbox and the git history are untouched, and the renames are one
   commit, "Specialists are now experts".

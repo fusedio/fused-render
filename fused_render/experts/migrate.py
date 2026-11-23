@@ -3,8 +3,8 @@
 `<workspace>/specialists` becomes `<workspace>/experts`, with every home in it: memory, skills, inbox, the home's
 git history and the root's `.state/` (tokens, the seeded list, trash). The owner's rules (2026-11-23):
 
-- Whatever already sits in `<workspace>/experts` is deleted first; the specialists are the record. It is kept as
-  a zip, `<home>/backup/legacy-experts-<time>.zip`, and deleted only once that zip is written.
+- Whatever already sits in `<workspace>/experts` is deleted first; the specialists are the record. (The expert
+  bots removed in #2426 never used that folder: they lived under the bots root.)
 - Memory and skills are what matters. The chats are carried too (`claude_session_move.relocate`, which also
   repoints the cwd inside each transcript), because a chat left under the old folder would be a dead row on the
   page: the main chat and the earlier chats are named by session id in `.expert/state.json`.
@@ -28,7 +28,6 @@ from __future__ import annotations
 import logging
 import os
 import shutil
-import time
 
 from fused_render.experts import home as hm
 from fused_render.experts import paths
@@ -42,7 +41,6 @@ OLD_APP_DIR = ".specialist"
 OLD_PREF = "specialists_enabled"
 #: Written into the root's `.state/` as it moves: an experts root that has it is never deleted by a later run.
 MARKER = "migrated-from-specialists"
-BACKUP_DIR = "backup"
 
 
 def _stamp_path() -> str:
@@ -121,21 +119,6 @@ def _settle_home(home: str, old_home: str) -> None:
     history.commit(home, "Specialists are now experts")
 
 
-def _back_up(folder: str) -> str | None:
-    """Zip what sat in the experts root before the move into `<home>/backup/legacy-experts-<time>.zip`; the path,
-    or None for an empty folder (nothing to keep)."""
-    from fused_render.shell import storage
-
-    if not os.path.isdir(folder) or os.path.islink(folder) or not os.listdir(folder):
-        return None
-    backup = os.path.join(storage.home_dir(), BACKUP_DIR)
-    os.makedirs(backup, exist_ok=True)
-    base = os.path.join(backup, "legacy-experts-" + time.strftime("%Y%m%d-%H%M%S"))
-    path = shutil.make_archive(base, "zip", root_dir=folder)
-    logger.info("experts migration: what was in %s is kept in %s", folder, path)
-    return path
-
-
 def migrate() -> bool:
     """Move the old root across. True when there was one."""
     from fused_render import app_state_move, claude_session_move
@@ -151,7 +134,6 @@ def migrate() -> bool:
     os.makedirs(os.path.join(old, paths.STATE), exist_ok=True)
     hm.write_text(os.path.join(old, paths.STATE, MARKER), "")
     if os.path.lexists(new):
-        _back_up(new)  # raises when the copy could not be written: nothing is deleted, and the next start retries
         shutil.rmtree(new) if os.path.isdir(new) and not os.path.islink(new) else os.remove(new)
     os.rename(old, new)
     paths._reset()
