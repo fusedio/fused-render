@@ -165,9 +165,9 @@ import zlib
 from collections.abc import Callable, Iterable
 
 from fastapi import APIRouter, Body, Header, WebSocket, WebSocketDisconnect
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, Response
 
-from fused_render import canvas_marker, canvas_snapshot, canvas_sync_state
+from fused_render import _canvas_saved, canvas_marker, canvas_snapshot, canvas_sync_state
 from fused_render._platform import is_within
 from fused_render.fusedcli import (
     CUSTOM_WORKBENCH_ENV,
@@ -1098,6 +1098,22 @@ def _status_auth_env(env: str) -> str:
     return _auth_env()
 
 
+def _sql_engine_offer() -> dict | None:
+    """What a node's framed page may be offered: `{name, version}` of the
+    local SQL engine when it is installed, else None. The version is read
+    from package metadata; the engine is neither imported nor started here."""
+    from importlib import metadata
+
+    from fused_render.sql import runner
+
+    if not runner.available():
+        return None
+    try:
+        return {"name": "duckdb", "version": metadata.version("duckdb")}
+    except metadata.PackageNotFoundError:
+        return None
+
+
 @router.get("/api/canvases/status")
 def api_canvases_status(env: str = ""):
     """Cheap local read: CLI presence, login-file presence, in-flight login,
@@ -1173,7 +1189,96 @@ def api_canvases_status(env: str = ""):
         # Where the custom environment's settings live — what the Canvases
         # page's editor shows the reader.
         "settings_path": fused_settings_path(),
+        # The local SQL engine a node's framed page is offered when it is
+        # installed: null when it is not. Nothing here starts the engine.
+        "sql_engine": _sql_engine_offer(),
     }
+
+
+# A stored saved canvas older than this is refreshed in the background when
+# served; the probe the route runs for a canvas with none is bounded by the
+# timeout (NW-8).
+SEED_REFRESH_AFTER_S = 30.0
+SEED_PROBE_TIMEOUT = 15.0
+_SEED_LOCK = threading.Lock()
+_SEED_INFLIGHT: dict[tuple[str, str], threading.Event] = {}
+
+
+def _seed_run(env: str, name: str) -> None:
+    """One probe of (env, name) for its saved canvas. Never raises."""
+    try:
+        if _QUITTING or not _logged_in(env):
+            return
+        _probe_manifest(env, canvases_root(env), name, SEED_PROBE_TIMEOUT)
+    except Exception:  # noqa: BLE001 — a seed is a nicety
+        logger.debug("saved canvas probe failed for %s", _sync_key(env, name))
+
+
+def _seed_probe(env: str, name: str, wait: bool) -> None:
+    """Probe (env, name) once, however many ask at the same time: a request
+    that finds one in flight waits for it (`wait`) or does nothing. With
+    `wait` False the probe runs on a thread of its own."""
+    key = (env, name)
+    with _SEED_LOCK:
+        event = _SEED_INFLIGHT.get(key)
+        mine = event is None
+        if mine:
+            event = _SEED_INFLIGHT[key] = threading.Event()
+
+    def run():
+        try:
+            _seed_run(env, name)
+        finally:
+            with _SEED_LOCK:
+                _SEED_INFLIGHT.pop(key, None)
+            event.set()
+
+    if not mine:
+        if wait:
+            event.wait(SEED_PROBE_TIMEOUT + 5)
+        return
+    if wait:
+        run()
+    else:
+        threading.Thread(target=run, name="canvas-saved-refresh", daemon=True).start()
+
+
+def _has_canvas_folder(env: str, name) -> bool:
+    """Whether `name` is a canvas folder of `env`: a live clone or a reference
+    copy. Both have node files a page can open, so both get a saved canvas."""
+    if not isinstance(name, str) or not _NAME_RE.match(name):
+        return False
+    return os.path.isfile(os.path.join(_canvas_dir(env, name), "canvas.toml"))
+
+
+@router.get("/api/canvases/saved")
+def api_canvases_saved(env: str = "", name: str = "",
+                       x_fused: str | None = Header(default=None)):
+    """The saved canvas the sync last read from Fused for (env, name), as the
+    stored JSON text, served as stored and never parsed. 404 `{detail}` when
+    `name` is not a canvas folder of `env`, or none is stored and one cannot be fetched now."""
+    guard = _require_fused(x_fused)
+    if guard is not None:
+        return guard
+    env, bad = _require_env(env)
+    if bad is not None:
+        return bad
+    missing = JSONResponse({"detail": "no saved canvas"}, status_code=404,
+                           headers={"Cache-Control": "no-store"})
+    if not _has_canvas_folder(env, name):
+        return missing
+    path = _canvas_saved.path_for(canvases_root(env), name)
+    data = _canvas_saved.read_bytes(path)
+    if data is None:
+        # No sync has probed this canvas (a reference copy never is): ask once.
+        _seed_probe(env, name, wait=True)
+        data = _canvas_saved.read_bytes(path)
+        if data is None:
+            return missing
+    elif _canvas_saved.age_s(path) > SEED_REFRESH_AFTER_S:
+        _seed_probe(env, name, wait=False)
+    return Response(content=data, media_type="application/json",
+                    headers={"Cache-Control": "no-store"})
 
 
 @router.post("/api/canvases/settings/open")
@@ -1873,6 +1978,46 @@ def _shim_manifest_command(cli) -> list[str] | None:
         os.path.dirname(os.path.abspath(__file__)), "_fused_canvas_manifest.py"
     )
     return [sys.executable, shim]
+
+
+def _probe_env(cli, env: str, root: str, name: str) -> dict[str, str]:
+    """The probe shim's environment: the CLI's, plus where it writes the
+    saved canvas it was given (`_canvas_saved`, NW-8)."""
+    out = _cli_env(cli, env)
+    out[_canvas_saved.OUT_ENV] = _canvas_saved.path_for(root, name)
+    return out
+
+
+def _probe_manifest(env: str, root: str, name: str, timeout: float) -> dict | None:
+    """Run the manifest shim for canvas `name` and return its manifest, or
+    None (external CLI, transient failure, junk output). The shim also stores
+    the service's saved canvas under `root`'s `.sync/` (NW-8)."""
+    cli = fused_cli()
+    if cli is None:
+        return None
+    cmd = _shim_manifest_command(cli)
+    if cmd is None:
+        return None
+    try:
+        proc = subprocess.run(
+            [*cmd, name],
+            capture_output=True, text=True, timeout=timeout,
+            encoding="utf-8", errors="replace",
+            env=_probe_env(cli, env, root, name),
+        )
+    except (subprocess.TimeoutExpired, OSError):
+        return None
+    if proc.returncode != 0:
+        return None
+    try:
+        data = json.loads(proc.stdout)
+    except ValueError:
+        return None
+    if not isinstance(data, dict) or not isinstance(data.get("udfs"), dict):
+        return None
+    if not isinstance(data.get("id"), str) or not data["id"]:
+        return None
+    return data
 
 
 def _cli_json_detail(stderr: str) -> dict:
@@ -3498,6 +3643,9 @@ class _SyncManager:
         self._lock_path = _lock_path(env, name)
         self._lock_since = lock_since
         self.push_seq = 0
+        # Counts the probes that stored a saved canvas (NW-8) whose bytes
+        # differ from the one before: what a page drawing from it re-reads on.
+        self.saved_seq = 0
         self.last_push_at: float | None = None
         self.last_error: str | None = None
         # The push's FULL stderr lines when it failed, newest failure only.
@@ -4230,36 +4378,19 @@ class _SyncManager:
         except Exception:  # noqa: BLE001 — rtoml's own error types
             return data
 
+    def _probe_env(self, cli) -> dict[str, str]:
+        return _probe_env(cli, self.env, self.root, self.name)
+
     def _probe_remote(self) -> dict | None:
         """The remote manifest via the shim, or None (external CLI, not
         signed in, transient failure, junk output — all mean 'can't tell',
         never 'changed')."""
-        cli = fused_cli()
-        if cli is None:
-            return None
-        cmd = _shim_manifest_command(cli)
-        if cmd is None:
-            return None
-        try:
-            proc = subprocess.run(
-                [*cmd, self.name],
-                capture_output=True, text=True, timeout=LIST_SHIM_TIMEOUT,
-                encoding="utf-8", errors="replace",
-                env=_cli_env(cli, self.env),
-            )
-        except (subprocess.TimeoutExpired, OSError):
-            return None
-        if proc.returncode != 0:
-            return None
-        try:
-            data = json.loads(proc.stdout)
-        except ValueError:
-            return None
-        if not isinstance(data, dict) or not isinstance(data.get("udfs"), dict):
-            return None
-        if not isinstance(data.get("id"), str) or not data["id"]:
-            return None
-        return data
+        path = _canvas_saved.path_for(self.root, self.name)
+        before = _canvas_saved.read_bytes(path)
+        probe = _probe_manifest(self.env, self.root, self.name, LIST_SHIM_TIMEOUT)
+        if _canvas_saved.read_bytes(path) != before:
+            self.saved_seq += 1
+        return probe
 
     @staticmethod
     def _remote_moved(prev: dict, cur: dict) -> bool:
@@ -7516,6 +7647,8 @@ class _SyncManager:
             },
             "disk_rev": rev,
             "watcher_epoch": self.watcher_epoch,
+            # Moves when a probe stored a different saved canvas (NW-8).
+            "saved_seq": self.saved_seq,
             # The frame keeps skipping names with no edit of its own posted
             # (`_check_skip_streak`), or None; `embed_heal_seq` moves once per
             # such streak and the page answers with a full state for it.
@@ -7653,6 +7786,7 @@ def _unwatched_state(env: str, name: str) -> dict:
         },
         "disk_rev": 0,
         "watcher_epoch": None,
+        "saved_seq": 0,
         "owner": others[0] if others else None,
         "other_watchers": others,
         "error_detail": [],
@@ -7844,6 +7978,7 @@ def _clone_leftovers(env: str, name: str) -> list[str]:
     sync = os.path.join(canvases_root(env), ".sync")
     return [
         os.path.join(sync, f"{name}.json"),
+        _canvas_saved.path_for(canvases_root(env), name),
         os.path.join(sync, f"{name}.tombstones.json"),
         os.path.join(sync, f"{name}.lock"),
         os.path.join(sync, "push", name),
