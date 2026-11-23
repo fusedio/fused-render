@@ -121,7 +121,7 @@ import {
   isAiModelsPath,
 } from "@apps/ai_models/routes";
 import { isBotsPath } from "@apps/bots/routes";
-import { useSpecialistsFlagKnown } from "@platform/lib/specialists-flag";
+import { useExpertsFlagKnown } from "@platform/lib/experts-flag";
 
 // The boot-time "send a fresh install to the wizard" decision is made once
 // per page load (App's render below), not on every re-render — a user who
@@ -726,13 +726,13 @@ export default function App({ config }: { config: Config }) {
     history.replaceState(null, "", "/home");
   }
   // The server runs no bots on Windows, but the Bots page still opens there for
-  // the specialists (task sessions, not bots: docs/specialists.md; the page
+  // the experts (task sessions, not bots: docs/experts.md; the page
   // leaves its `/api/bots*` parts out, apps/bots `useBotsMissing`). So a
-  // bookmarked /bots URL goes Home only once the specialists flag is KNOWN off
+  // bookmarked /bots URL goes Home only once the experts flag is KNOWN off
   // — not on the first render, before the prefs read has answered.
   const botsOn = botsAvailable(config);
-  const specialistsKnown = useSpecialistsFlagKnown();
-  const botsPageOn = botsOn || specialistsKnown !== false;
+  const expertsKnown = useExpertsFlagKnown();
+  const botsPageOn = botsOn || expertsKnown !== false;
   const terminalOn = terminalAvailable(config);
   if (!botsPageOn && isBotsPath(location.pathname)) {
     history.replaceState(null, "", "/home");

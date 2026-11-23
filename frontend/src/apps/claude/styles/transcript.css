@@ -2945,7 +2945,7 @@
   max-width: max(40%, min(82%, calc(100% - 108px)));
 }
 
-/* A specialist's `show` card (ui/ViewCard.tsx): one row in the shape of the
+/* An expert's `show` card (ui/ViewCard.tsx): one row in the shape of the
    Bots thread's app card. Collapsed it holds no frame; Open raises the overlay. */
 .chat-root .c-viewcard {
   display: flex;

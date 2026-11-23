@@ -4,9 +4,9 @@
 import { useEffect, useLayoutEffect, useRef } from "react";
 import { cloneBot, deleteBot, exportBot, exportBotFile } from "../dialogs/actions";
 import { askConfirm } from "../dialogs/ask";
-import { api, specialistApi, type Bot } from "../lib/api";
+import { api, expertApi, type Bot } from "../lib/api";
 import { openLive } from "../lib/cdp";
-import { act, actSpecialist, botById, closeMenu, cur, getState, markSeen, openDialog, select, useBotsSelector } from "../state/store";
+import { act, actExpert, botById, closeMenu, cur, getState, markSeen, openDialog, select, useBotsSelector } from "../state/store";
 import { menuItems, type MenuAction } from "./menuIcons";
 
 export { exportBot };
@@ -14,9 +14,9 @@ export { exportBot };
 
 export function runMenuAction(a: MenuAction, b: Bot): void {
   const id = b.id;
-  if (b.specialist) {
+  if (b.expert) {
     if (a === "export") void exportBot(b);
-    else if (a === "delete") void askConfirm(`Delete "${b.name}"?`, "It leaves the Bots list, and its folder moves to the specialists' trash folder.").then((ok) => { if (ok) void actSpecialist(() => specialistApi.remove(id)); });
+    else if (a === "delete") void askConfirm(`Delete "${b.name}"?`, "It leaves the Bots list, and its folder moves to the experts' trash folder.").then((ok) => { if (ok) void actExpert(() => expertApi.remove(id)); });
     else openDialog({ kind: "settings", id });
     return;
   }

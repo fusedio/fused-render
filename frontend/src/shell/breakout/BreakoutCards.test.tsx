@@ -96,23 +96,23 @@ test("the note reads research only", () => {
   expect(mount().r.root.findByProps({ className: "breakout-note" }).children.join("")).toBe("research only");
 });
 
-test("a specialist breakout names the specialist and runs in its home", () => {
+test("an expert breakout names the expert and runs in its home", () => {
   let seen: Record<string, unknown> = {};
   const Spy = (props: Record<string, unknown>) => {
     seen = props;
     return null;
   };
-  const specialist = { id: "canvas", name: "Canvas", home: "/w/specialists/canvas" };
+  const expert = { id: "canvas", name: "Canvas", home: "/w/experts/canvas" };
   let r!: ReturnType<typeof create>;
   act(() => {
-    r = create(<Card card={{ ...(card as object), specialist } as never} index={0} mount={Spy as never} />, {
+    r = create(<Card card={{ ...(card as object), expert } as never} index={0} mount={Spy as never} />, {
       createNodeMock: () => el,
     });
   });
-  expect(r.root.findByProps({ className: "breakout-note" }).children.join("")).toBe("with the Canvas specialist");
-  expect(seen["file"]).toBe("/w/specialists/canvas");
+  expect(r.root.findByProps({ className: "breakout-note" }).children.join("")).toBe("with the Canvas expert");
+  expect(seen["file"]).toBe("/w/experts/canvas");
   expect(seen["breakout"]).toBe(true);
-  expect(seen["extraParams"]).toEqual({ specialist: "canvas:breakout" });
+  expect(seen["extraParams"]).toEqual({ expert: "canvas:breakout" });
   expect(seen["permission"]).toBe("auto"); // the freest mode, as a default the pill can change
 });
 

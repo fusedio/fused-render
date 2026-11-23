@@ -1941,6 +1941,11 @@ class Bot:
         shot_ts = self.browser.shot_ts()
         with self.lock:  # hand-off watchers change rows in place (under this lock); copy them as they stand
             meta = dict(self.meta)
+            # "expert" on the page means a row made from /api/experts (docs/experts.md), never a bot: an old
+            # bot.json that still carries that kind or block shows as the browser bot it loads as.
+            meta.pop("expert", None)
+            if meta.get("kind") not in KINDS:
+                meta.pop("kind", None)
             inbox_n = len(self.inbox)
             if meta.get("handoffs"):
                 meta["handoffs"] = [dict(h) for h in meta["handoffs"]]

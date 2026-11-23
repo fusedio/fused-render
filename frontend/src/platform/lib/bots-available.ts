@@ -112,8 +112,8 @@ export function useBotsAvailable(enabled = true): boolean {
 }
 
 /** THE SERVER SAID IT RUNS NO BOTS (Windows): the Bots page still opens there,
- *  for the specialists alone (they are task sessions, not bots — docs/
- *  specialists.md), and leaves out everything that reads `/api/bots*`. The
+ *  for the experts alone (they are task sessions, not bots — docs/
+ *  experts.md), and leaves out everything that reads `/api/bots*`. The
  *  inverse of `useBotsAvailable` but NOT its negation: until the read answers
  *  this is false too, so a server with Bots never hides a door for a frame. */
 const botsMissing = (c: Config): boolean => !botsAvailable(c);

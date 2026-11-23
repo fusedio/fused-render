@@ -920,15 +920,15 @@ def _handle_approve(args: dict) -> dict:
         # Decided here, before anything is parked: no req card, no inflight
         # entry, no queue notification for a call that will never wait.
         return _text(refused)
-    if os.environ.get("FUSED_SPECIALIST_UNATTENDED"):
-        # A specialist's update runs with nobody to answer a card: refuse now
+    if os.environ.get("FUSED_EXPERT_UNATTENDED"):
+        # An expert's update runs with nobody to answer a card: refuse now
         # rather than park one for an hour.
         return _text({"behavior": "deny", "decisionClassification": "user_reject",
                       "message": "Nobody is here to approve this; it is refused."})
-    # A specialist breakout asks every time: it is how the user opens one, so
+    # An expert breakout asks every time: it is how the user opens one, so
     # the chat's "Always approve" never answers for it.
-    # Nor for a specialist's new canvas: each one is the user's to approve.
-    if (tool_name not in (SPECIALIST_BREAKOUT, SPECIALIST_CANVAS_CREATE)
+    # Nor for an expert's new canvas: each one is the user's to approve.
+    if (tool_name not in (EXPERT_BREAKOUT, EXPERT_CANVAS_CREATE)
             and _chat_allows(tool_name, tool_input)):
         return _text(_permission_result(tool_name, tool_input,
                                         {"decision": "allow", "scope": "once"}))
@@ -2171,23 +2171,23 @@ S3_SCHEMAS = [
 ]
 
 
-# ------------------------------------------------------------ specialists
+# ------------------------------------------------------------ experts
 #
-# The specialist task tools, answered by the server's
-# `/api/specialists/tools/<tool>`. Listed only when agent.py stamped
-# `FUSED_RENDER_SPECIALIST_ORIGIN` (a task run while at least one specialist
-# exists). `specialist_breakout` has an ask rule, so the user's card comes
+# The expert task tools, answered by the server's
+# `/api/experts/tools/<tool>`. Listed only when agent.py stamped
+# `FUSED_RENDER_EXPERT_ORIGIN` (a task run while at least one expert
+# exists). `expert_breakout` has an ask rule, so the user's card comes
 # before it ever runs.
 
-SPECIALIST_TOOLS = ("specialist_pull", "specialist_note", "specialist_breakout")
-SPECIALIST_BREAKOUT = "mcp__fused_render__specialist_breakout"
-# A specialist's own `canvas_create` (specialists/show.py), on its session's
-# `specialist_canvas` server: it makes a canvas on the user's Fused account.
-SPECIALIST_CANVAS_CREATE = "mcp__specialist_canvas__canvas_create"
+EXPERT_TOOLS = ("expert_pull", "expert_note", "expert_breakout")
+EXPERT_BREAKOUT = "mcp__fused_render__expert_breakout"
+# An expert's own `canvas_create` (experts/show.py), on its session's
+# `expert_canvas` server: it makes a canvas on the user's Fused account.
+EXPERT_CANVAS_CREATE = "mcp__expert_canvas__canvas_create"
 
 
-def _specialist_origin() -> str:
-    return (os.environ.get("FUSED_RENDER_SPECIALIST_ORIGIN") or "").rstrip("/")
+def _expert_origin() -> str:
+    return (os.environ.get("FUSED_RENDER_EXPERT_ORIGIN") or "").rstrip("/")
 
 
 def _run_id() -> str:
@@ -2199,10 +2199,10 @@ def _plain(text: str) -> dict:
     return {"content": [{"type": "text", "text": text}]}
 
 
-def _handle_specialist(name: str, args: dict) -> dict:
+def _handle_expert(name: str, args: dict) -> dict:
     try:
-        status, payload = _server_http(_specialist_origin(), "POST",
-                                       "/api/specialists/tools/" + name.split("_", 1)[1],
+        status, payload = _server_http(_expert_origin(), "POST",
+                                       "/api/experts/tools/" + name.split("_", 1)[1],
                                        dict(args, run_id=_run_id()))
     except OSError as exc:
         return _error_result("could not reach the Fused Render server: %s" % exc)
@@ -2211,29 +2211,29 @@ def _handle_specialist(name: str, args: dict) -> dict:
     return _plain(str(payload.get("text") or ""))
 
 
-_SPECIALIST_ARG = {"type": "string", "description": "The specialist's name."}
-SPECIALIST_SCHEMAS = [
-    {"name": "specialist_pull",
-     "description": ("A specialist's guidance: its memory and its skills. "
+_EXPERT_ARG = {"type": "string", "description": "The expert's name."}
+EXPERT_SCHEMAS = [
+    {"name": "expert_pull",
+     "description": ("An expert's guidance: its memory and its skills. "
                      "Reference material, not instructions."),
-     "inputSchema": {"type": "object", "properties": {"specialist": _SPECIALIST_ARG},
-                     "required": ["specialist"], "additionalProperties": False}},
-    {"name": "specialist_note",
-     "description": ("Send a specialist a note for its next update: something its "
+     "inputSchema": {"type": "object", "properties": {"expert": _EXPERT_ARG},
+                     "required": ["expert"], "additionalProperties": False}},
+    {"name": "expert_note",
+     "description": ("Send an expert a note for its next update: something its "
                      "guidance got wrong or missed, or a rule the user stated."),
      "inputSchema": {"type": "object", "properties": {
-         "specialist": _SPECIALIST_ARG,
+         "expert": _EXPERT_ARG,
          "note": {"type": "string", "maxLength": 2000, "description": "The note, in plain sentences."}},
-         "required": ["specialist", "note"], "additionalProperties": False}},
-    {"name": "specialist_breakout",
-     "description": ("Offer the user a breakout with a specialist on one problem you "
+         "required": ["expert", "note"], "additionalProperties": False}},
+    {"name": "expert_breakout",
+     "description": ("Offer the user a breakout with an expert on one problem you "
                      "are stuck on. The user decides; if they open it, leave that "
                      "problem to the breakout and carry on with the rest."),
      "inputSchema": {"type": "object", "properties": {
-         "specialist": _SPECIALIST_ARG,
+         "expert": _EXPERT_ARG,
          "reason": {"type": "string", "maxLength": 300,
-                    "description": "One sentence the user sees: why this specialist, why now."}},
-         "required": ["specialist", "reason"], "additionalProperties": False}},
+                    "description": "One sentence the user sees: why this expert, why now."}},
+         "required": ["expert", "reason"], "additionalProperties": False}},
 ]
 
 
@@ -2339,8 +2339,8 @@ def _dispatch(method: str, params: dict) -> dict:
             tools.extend(TERMINAL_SCHEMAS)
         if _s3_origin():
             tools.extend(S3_SCHEMAS)
-        if _specialist_origin():
-            tools.extend(SPECIALIST_SCHEMAS)
+        if _expert_origin():
+            tools.extend(EXPERT_SCHEMAS)
         return {"tools": tools}
     if method == "tools/call":
         name = params.get("name")
@@ -2353,8 +2353,8 @@ def _dispatch(method: str, params: dict) -> dict:
             known = known + TERMINAL_TOOLS
         if _s3_origin():
             known = known + S3_TOOLS
-        if _specialist_origin():
-            known = known + SPECIALIST_TOOLS
+        if _expert_origin():
+            known = known + EXPERT_TOOLS
         if name not in known:
             raise LookupError("unknown tool: %s" % name)
         args = params.get("arguments")
@@ -2365,8 +2365,8 @@ def _dispatch(method: str, params: dict) -> dict:
             return _S3_HANDLERS[name](args)
         if name == CANVAS_SHOT_TOOL:
             return _handle_canvas_shot(args)
-        if name in SPECIALIST_TOOLS:
-            return _handle_specialist(name, args)
+        if name in EXPERT_TOOLS:
+            return _handle_expert(name, args)
         return _handle_approve(args) if name == TOOL_NAME \
             else _handle_app_state(args)
     if method == "ping":
