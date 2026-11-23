@@ -558,3 +558,21 @@ server's two tools in a main chat, that the ask rule raises the card for `canvas
 `show` and the canvas writes through without one, that a fresh
 clone's watcher publishes the expert's first files, and that an open overlay follows an edit. The tools, the
 launch spec, the session door, the card and its fold are covered by tests with those two ends stubbed.
+
+## 15. Coming from specialists
+
+Experts were called specialists until 2026-11-23. `experts/migrate.py` (`run_once`, from the startup hook before the
+switch is read and before seeding) moves a machine across once:
+
+- `<workspace>/specialists` is renamed to `<workspace>/experts`. Whatever was already in `<workspace>/experts` is
+  deleted first.
+- In each home `specialist.json` becomes `expert.json` and `.specialist/` becomes `.expert/`; `.gitignore` and
+  `CLAUDE.md` are rewritten; memory, skills, inbox and the git history are untouched, and the renames are one
+  commit, "Specialists are now experts".
+- The chats are carried to the new folder (`claude_session_move.relocate`), and the transcript paths in
+  `state.json` and the inbox pointer files are repointed. A main or earlier chat that did not come across is dropped
+  from `state.json`, so the page shows no chat it cannot open.
+- `specialists_enabled` in prefs.json becomes `experts_enabled`.
+
+The stamp `<home>/experts_migration.json` is written even when there was nothing to move, so the delete can never
+run later against experts in use. A run that raised is not stamped and is tried again on the next start.

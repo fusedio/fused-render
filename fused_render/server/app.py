@@ -1422,6 +1422,11 @@ def create_app(start_dir: str, lean: bool = False) -> FastAPI:
 
     @on_startup
     async def _startup_experts():
+        # Specialists become experts (experts/migrate.py), once, before the switch is read: the stored switch
+        # moves too, and seeding must find the homes that came across.
+        from fused_render.experts import migrate
+
+        await asyncio.to_thread(migrate.run_once)
         if not sp_flag.on():
             return
         from fused_render.experts import scheduler, seed
