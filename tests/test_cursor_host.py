@@ -644,7 +644,9 @@ def test_a_held_edit_announces_its_file_before_its_row(start, tmp_path):
     assert len(starts) == 2 and starts[0] < starts[1] < first_assistant
     assert not any(r.get("type") == "assistant" for r in rows[starts[0]:starts[1]])
     early = rows[starts[0]]["event"]["content_block"]
-    assert early["name"] == "Write" and early["input"]["file_path"] == path
+    # the early name depends on whether the file exists yet when the host handles
+    # the update, which races with the CLI writing it; only the path is promised
+    assert early["name"] in ("Write", "Edit") and early["input"]["file_path"] == path
     holders = [r for r in rows if r.get("type") == "assistant"
                and any(b.get("id") == tid for b in r["message"]["content"])]
     assert len(holders) == 1
