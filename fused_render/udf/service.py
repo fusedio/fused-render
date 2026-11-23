@@ -22,6 +22,9 @@ after loading it): without `confirmed: true` such a run answers
 needs_confirmation and nothing runs. The runtime asks the user and sends
 `confirmed` only on their yes.
 
+A run may carry `tile: {x, y, z}` (a tile run: the SDK is called with those
+coordinates and the run key includes them).
+
 Two identical requests (same run key, same `confirmed` and cache flag) in
 flight at once share one run.
 """
@@ -52,6 +55,7 @@ SCHEMA_TIMEOUT_S = 120.0
 MAX_BYTES = 128 * 1024 * 1024
 # A UDF's source is code someone wrote; past this it is not one.
 SOURCE_MAX_BYTES = 2 * 1024 * 1024
+TILE_MAX_Z = 30
 
 Send = Callable[[dict], Awaitable[None]]
 
@@ -139,9 +143,27 @@ def resolve(ref) -> Target:
     return Target(env, name, canvas, ["name", canvas, name])
 
 
-def run_key(target: Target, account: str | None, params: dict, fmt: str) -> str:
-    material = json.dumps([KEY_VERSION, target.env, account or "", target.ident, params, fmt],
-                          sort_keys=True, separators=(",", ":"), default=str)
+def parse_tile(value) -> tuple[int, int, int] | None:
+    """A request's `tile` -> (x, y, z), None when absent. `{x, y, z}` are
+    non-negative integers, z at most TILE_MAX_Z."""
+    if value is None:
+        return None
+    if isinstance(value, dict):
+        coords = tuple(value.get(k) for k in ("x", "y", "z"))
+        if all(isinstance(c, int) and not isinstance(c, bool) and c >= 0 for c in coords) \
+                and coords[2] <= TILE_MAX_Z:
+            return coords  # type: ignore[return-value]
+    raise RunError("bad_ref", f"'tile' must be {{x, y, z}}: non-negative integers, z at most {TILE_MAX_Z}")
+
+
+def run_key(target: Target, account: str | None, params: dict, fmt: str,
+            tile: tuple[int, int, int] | None = None) -> str:
+    material_list = [KEY_VERSION, target.env, account or "", target.ident, params, fmt]
+    if tile is not None:
+        # Only a tile run adds to the material, so a run without one keeps
+        # the key it always had.
+        material_list.append(["tile", *tile])
+    material = json.dumps(material_list, sort_keys=True, separators=(",", ":"), default=str)
     return hashlib.sha256(material.encode("utf-8")).hexdigest()
 
 
@@ -181,7 +203,7 @@ _FLIGHTS: dict[tuple, _Flight] = {}
 
 
 async def _execute(flight: _Flight, target: Target, key: str, params: dict, fmt: str,
-                   cache: str, confirmed: bool) -> dict:
+                   cache: str, confirmed: bool, tile: tuple[int, int, int] | None = None) -> dict:
     """Run once in the worker; the outcome every waiter of `flight` gets:
     {"result": meta} or {"error": RunError}."""
     token, body_path = store.new_body_path()
@@ -198,6 +220,8 @@ async def _execute(flight: _Flight, target: Target, key: str, params: dict, fmt:
     request = {"op": "run", "id": token, "source": target.load_as,
                "collection": target.collection, "params": params, "format": fmt,
                "cache": cache != "fresh", "confirmed": confirmed, "out": body_path}
+    if tile is not None:
+        request["tile"] = {"x": tile[0], "y": tile[1], "z": tile[2]}
     task = asyncio.ensure_future(runner.run(target.env, request, on_event))
     loop = asyncio.get_running_loop()
     started = loop.time()
@@ -282,10 +306,11 @@ async def _run(msg: dict, send: Send, rid, cancelled: asyncio.Event | None) -> N
     if cache not in CACHE_MODES:
         raise RunError("bad_ref", f"'cache' must be one of: {', '.join(CACHE_MODES)}")
     confirmed = msg.get("confirmed") is True
+    tile = parse_tile(msg.get("tile"))
     if not canvases._logged_in(target.env):
         raise RunError("signed_out", "not signed in to Fused — sign in first")
     account = canvases._listing_account(target.env)
-    key = run_key(target, account, params, fmt)
+    key = run_key(target, account, params, fmt, tile)
 
     if cache != "fresh":
         saved = await asyncio.to_thread(store.get, key)
@@ -303,7 +328,7 @@ async def _run(msg: dict, send: Send, rid, cancelled: asyncio.Event | None) -> N
 
         async def go():
             try:
-                return await _execute(flight, target, key, params, fmt, cache, confirmed)
+                return await _execute(flight, target, key, params, fmt, cache, confirmed, tile)
             except RunError as err:
                 return {"error": err}
             finally:

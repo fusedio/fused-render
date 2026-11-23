@@ -305,7 +305,7 @@ def test_the_capability_is_always_offered(html):
     assert 'payload.caps = [...payload.caps, "canvas"];' in send
     assert "nodeSeed" not in html
     # Alongside "sql", never instead of it, and not tied to the SQL offer.
-    assert 'payload.caps = ["sql", "udf"]' in _body_of(send, "if (offer)")
+    assert 'payload.caps = ["sql", "udf", "udf-read"]' in _body_of(send, "if (offer)")
     assert '"canvas"' not in _body_of(send, "if (offer)")
 
 

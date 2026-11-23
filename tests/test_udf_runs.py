@@ -224,6 +224,56 @@ def test_the_run_key_follows_content_params_format_and_account(clone):
     assert k != service.run_key(service.resolve({"file": str(path)}), "acct", {}, "auto")
 
 
+def test_a_tile_is_part_of_the_run_key_and_no_tile_keeps_the_old_key(clone):
+    import hashlib
+
+    t = service.resolve({"file": str(clone / "udf_1.py")})
+    plain = service.run_key(t, "acct", {}, "png")
+    assert plain == service.run_key(t, "acct", {}, "png", None)
+    a = service.run_key(t, "acct", {}, "png", (1, 2, 3))
+    assert a == service.run_key(t, "acct", {}, "png", (1, 2, 3))
+    assert a != service.run_key(t, "acct", {}, "png", (2, 1, 3))
+    assert a != service.run_key(t, "acct", {}, "png", (1, 2, 4))
+    assert a != plain
+    # The material of a run without a tile is what it was before tiles.
+    material = json.dumps([service.KEY_VERSION, t.env, "acct", t.ident, {}, "png"],
+                          sort_keys=True, separators=(",", ":"), default=str)
+    assert plain == hashlib.sha256(material.encode()).hexdigest()
+
+
+@pytest.mark.parametrize("bad", [
+    {"x": 1, "y": 2}, {"x": -1, "y": 0, "z": 0}, {"x": 1.5, "y": 0, "z": 1},
+    {"x": True, "y": 0, "z": 1}, {"x": 0, "y": 0, "z": 31}, [1, 2, 3], "1/2/3"])
+def test_a_bad_tile_is_refused(clone, signed_in, fake_runner, bad):
+    frames = run_frames({"ref": {"file": str(clone / "udf_1.py")}, "tile": bad})
+    assert frames[-1]["code"] == "bad_ref" and fake_runner.requests == []
+
+
+def test_a_tile_reaches_the_worker_and_each_tile_is_saved_apart(clone, signed_in, fake_runner):
+    ref = {"file": str(clone / "udf_1.py")}
+    tile = {"x": 5, "y": 6, "z": 7}
+    first = run_frames({"ref": ref, "tile": tile, "format": "png"})
+    assert fake_runner.requests[0][1]["tile"] == tile
+    assert fake_runner.requests[0][1]["format"] == "png"
+    # A run without a tile sends none and is not answered from the tile's copy.
+    other = run_frames({"ref": ref, "format": "png"})
+    assert "tile" not in fake_runner.requests[1][1]
+    assert [f["type"] for f in other] == ["started", "done"]
+    assert first[-1]["result"]["token"] != other[-1]["result"]["token"]
+    # The same tile again starts from its saved copy; another tile does not.
+    again = run_frames({"ref": ref, "tile": tile, "format": "png"})
+    assert [f["type"] for f in again] == ["saved", "started", "done"]
+    moved = run_frames({"ref": ref, "tile": {"x": 5, "y": 6, "z": 8}, "format": "png"})
+    assert [f["type"] for f in moved] == ["started", "done"]
+
+
+def test_the_worker_passes_a_tile_to_the_sdk_as_x_y_z():
+    # The worker takes over stdout and imports the SDK, so it is read, not imported.
+    src = open(os.path.join(os.path.dirname(service.__file__), "_worker.py"), encoding="utf-8").read()
+    assert 'tile_kw = {k: tile[k] for k in ("x", "y", "z")}' in src
+    assert src.count("**tile_kw") == 3
+
+
 # ------------------------------------------------------------------ runs
 
 

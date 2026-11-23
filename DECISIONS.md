@@ -8171,3 +8171,10 @@ A user redid a canvas's folders through Claude; the five old folders stayed on s
 - **What the frame gains.** A run of a UDF of its own canvas, which it could already do with the token it holds. Canvas and environment are this node's own; the frame supplies only the UDF's name, its params and whether to skip the saved answer.
 - **Dialogs.** The runtime's own dialogs (batch runs, large results) are shown as for any page; the frame cannot answer them.
 - **Rejected.** A route the frame calls itself: the frame has no route access, and every call goes through the template's checks. Forwarding a confirmation flag from the frame: that would let the frame skip the dialogs.
+
+## D1502: The framed page can run every kind of UDF through the host and read the bytes it was issued (2026-11-23, node-udf-formats)
+
+- **What.** SPEC §53.3 NW-9. `caps` also holds `"udf-read"` with `"udf"`. `fused-embed-udf` gains `format` (`parquet` default, `png`, `json`, `html`) and `tile {x, y, z}`; a tile run carries the tile through the runtime options, the socket message, the run key and the worker to the SDK's `x`, `y`, `z`. New `fused-embed-udf-read {req, handle}` is answered `fused-embed-udf-read-result` with the result's bytes (transferred) and content type, or an error.
+- **Why.** A page that draws rasters, tiles or text results needs the bytes, not only a handle the SQL engine can use. Routing every run through the host keeps one login, one place for the runtime's dialogs and one saved-results store.
+- **What the frame gains.** The bytes of results it was itself issued a handle for in its current document, and tile and format choices for its own UDF runs. Nothing about canvas, environment or confirmation changes.
+- **Rejected.** CORS on the results route: it would open every result to any origin, not only those the frame was issued. Reading by an arbitrary token: a frame could then ask for results of other runs it never started.

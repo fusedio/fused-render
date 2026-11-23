@@ -118,11 +118,11 @@ def test_the_capability_is_offered_only_for_an_engine_and_an_unproxied_frame(htm
     send = _body_of(html, "async function sendToken")
     assert "const offer = !!wb.sqlEngine && wb.origin === wb.publicOrigin;" in send
     assert "caps: []" in send
-    assert 'payload.caps = ["sql", "udf"]' in send
+    assert 'payload.caps = ["sql", "udf", "udf-read"]' in send
     # caps and sqlEngine are only ever set inside the `if (offer)` branch.
     assert send.count('"sql"') == 1 and send.count("payload.sqlEngine") == 1
     branch = _body_of(send, "if (offer)")
-    assert 'payload.caps = ["sql", "udf"]' in branch and "payload.sqlEngine" in branch
+    assert 'payload.caps = ["sql", "udf", "udf-read"]' in branch and "payload.sqlEngine" in branch
 
 
 def test_sql_messages_are_ignored_unless_the_offer_was_made(html):
@@ -167,8 +167,9 @@ def test_every_sql_fetch_carries_the_guard_header(html):
         )
     ]
     assert 'const SQL_GUARD = { "X-Fused": "1" };' in relay
-    # The one place the relay calls the network for a route, plus pagehide.
-    assert len(re.findall(r"\bfetch\(", relay)) == 2
+    # The one place the relay calls the network for a route, plus pagehide,
+    # plus the UDF read (a plain GET of a result: no guard header there).
+    assert len(re.findall(r"\bfetch\(", relay)) == 3
     assert "headers: { ...SQL_GUARD, ...(init.headers || {}) }" in _body_of(
         relay, "async function sqlFetch"
     )
@@ -225,8 +226,8 @@ def test_the_template_still_does_not_import_fused_render(html):
 
 def test_the_udf_relay_is_offered_exactly_with_sql(html):
     send = _body_of(html, "async function sendToken")
-    assert send.count('"udf"') == 1
-    assert 'payload.caps = ["sql", "udf"]' in _body_of(send, "if (offer)")
+    assert send.count('"udf"') == 1 and send.count('"udf-read"') == 1
+    assert 'payload.caps = ["sql", "udf", "udf-read"]' in _body_of(send, "if (offer)")
     assert "udfOffered = offer;" in send
     assert "udfOffered = false" in _body_of(html, "function loadFrame")
 
@@ -258,11 +259,13 @@ def test_the_udf_ref_is_this_nodes_own_and_checks_the_request(html):
         "name",
         "params",
         "fresh",
+        "format",
+        "tile",
     }
     assert "SQL_NAME_RE.test(m.req)" in relay
     assert 'm.name.includes("/")' in relay and 'm.name.endsWith(".py")' in relay
     assert '"[object Object]"' in relay
-    assert 'cache: "fresh"' in relay and 'format: "parquet"' in relay
+    assert 'opts.cache = "fresh"' in relay and 'format: m.format || "parquet"' in relay
 
 
 def test_no_confirmation_flag_is_forwarded_to_the_runtime(html):
@@ -304,3 +307,43 @@ def test_a_new_document_abandons_the_old_documents_runs(html):
     assert 'window.addEventListener("pagehide", udfAbort);' in html
     assert "run.cancel()" in _body_of(html, "function udfAbort")
     assert "run.cancel()" in _body_of(html, "function udfCancel")
+
+
+def test_udf_format_and_tile_are_validated_and_forwarded(html):
+    relay = _body_of(html, "function udfMessage")
+    assert 'const UDF_FORMATS = ["parquet", "png", "json", "html"];' in html
+    assert "UDF_FORMATS.includes(m.format)" in relay
+    assert "Number.isInteger(n) && n >= 0" in relay and "t.z > 30" in relay
+    assert "tile = { x: t.x, y: t.y, z: t.z };" in relay
+    assert "opts.tile = tile;" in relay and "udf.run(params, opts)" in relay
+    assert "keep" not in relay
+
+
+def test_udf_read_is_ignored_unless_offered_and_only_reads_issued_handles(html):
+    handler = _body_of(html, 'window.addEventListener("message"')
+    assert re.search(
+        r'"fused-embed-udf-read"\)\s*\{\s*if \(udfOffered\) void udfRead\(data\);', handler
+    )
+    assert handler.index("event.source !== frame.contentWindow") < handler.index(
+        "fused-embed-udf-read"
+    )
+    read = _body_of(html, "async function udfRead")
+    assert "SQL_NAME_RE.test(m.req)" in read
+    assert re.search(r'fail\("invalid_args"', read)
+    assert "!udfIssued.has(token)" in read and 'fail("not_found"' in read
+    assert read.index("udfIssued.has(token)") < read.index("fetch(")
+    assert 'fetch("/api/udf/results/" + token' in read
+    # The token is issued when a handle is sent, and forgotten with the document.
+    assert "udfIssued.add(token);" in _body_of(html, "function udfMessage")
+    load = _body_of(html, "function loadFrame")
+    assert "udfIssued.clear();" in load and load.index("frameGen++") < load.index("udfIssued.clear()")
+
+
+def test_udf_read_replies_go_through_post_with_a_transfer_list(html):
+    read = _body_of(html, "async function udfRead")
+    assert "const gen = frameGen;" in read
+    assert re.search(
+        r'if \(gen === frameGen\) post\(\{ type: "fused-embed-udf-read-result", req, \.\.\.extra \}, transfer\)',
+        read,
+    )
+    assert "[bytes]" in read and "postMessage" not in read

@@ -121,7 +121,10 @@ sync last read (it can hold parameters and tokens; the stored copy is readable
 by the user only), which it could fetch itself with the token it already holds.
 The framed page can also ask the host to run UDFs of its own canvas (never of
 another canvas or environment) and gets a result handle back; the runtime's
-own confirmation dialogs still appear, and the frame cannot answer them.
+own confirmation dialogs still appear, and the frame cannot answer them. It
+can pick the result's format and a tile for those runs, and can read back the
+bytes of results it was handed a handle for in its current document (by that
+handle only, through the host; the results route allows no other origin).
 
 ## Hosted deploy via the `fused` CLI
 

@@ -208,7 +208,7 @@
       const offer = !!wb.sqlEngine && wb.origin === wb.publicOrigin;
       const payload = { type: "fused-embed-auth-token", accessToken, caps: [], publicOrigin: wb.publicOrigin };
       if (offer) {
-        payload.caps = ["sql", "udf"];
+        payload.caps = ["sql", "udf", "udf-read"];
         payload.sqlEngine = { name: wb.sqlEngine.name, version: wb.sqlEngine.version };
       }
       // The saved canvas is data the page could fetch with its token, so it is
@@ -537,6 +537,10 @@
   // dialogs (batch runs, large results) are shown as for any page.
   const UDF_TOKEN_RE = /^(?:[0-9a-f]{64}|t[0-9a-f]{32})$/;
   const udfJobs = new Map(); // req -> the run, for the current document
+  // Tokens of the results this page handed the CURRENT frame document: the
+  // only ones it can read back (fused-embed-udf-read). Reset in loadFrame.
+  const udfIssued = new Set();
+  const UDF_FORMATS = ["parquet", "png", "json", "html"];
 
   function udfToken(url) {
     const m = /^\/api\/udf\/results\/([^/?#]+)(?:[?#]|$)/.exec(typeof url === "string" ? url : "");
@@ -575,15 +579,31 @@
     if (
       typeof m.name !== "string" || !m.name || m.name.includes("/") || m.name.endsWith(".py") ||
       Object.prototype.toString.call(params) !== "[object Object]" ||
-      (m.fresh !== undefined && typeof m.fresh !== "boolean")
+      (m.fresh !== undefined && typeof m.fresh !== "boolean") ||
+      (m.format !== undefined && !UDF_FORMATS.includes(m.format))
     ) {
       fail("invalid_args", "invalid arguments");
       return;
     }
+    let tile;
+    if (m.tile !== undefined) {
+      const t = m.tile;
+      if (
+        Object.prototype.toString.call(t) !== "[object Object]" ||
+        ![t.x, t.y, t.z].every((n) => Number.isInteger(n) && n >= 0) || t.z > 30
+      ) {
+        fail("invalid_args", "invalid arguments");
+        return;
+      }
+      tile = { x: t.x, y: t.y, z: t.z };
+    }
     let run;
     try {
       const udf = fused.workbench.udf({ canvas: node.name, name: m.name, env: node.env });
-      run = udf.run(params, m.fresh === true ? { format: "parquet", cache: "fresh" } : { format: "parquet" });
+      const opts = { format: m.format || "parquet" };
+      if (m.fresh === true) opts.cache = "fresh";
+      if (tile) opts.tile = tile;
+      run = udf.run(params, opts);
     } catch (error) {
       fail((error && error.code) || "failed", (error && error.message) || "the UDF could not be run");
       return;
@@ -593,6 +613,7 @@
     const answer = (r, final) => {
       const token = udfToken(r && r.url);
       if (!token) return false;
+      udfIssued.add(token);
       reply({
         ok: true, handle: "udf:" + token, size: r.size, contentType: r.contentType,
         version: udfVersion(r), cached: r.source !== "fresh", final,
@@ -617,6 +638,38 @@
         fail((error && error.code) || "failed", (error && error.message) || "the UDF failed");
       },
     );
+  }
+  // fused-embed-udf-read: the bytes of a result this page issued to the
+  // current frame document, from this app's own results route.
+  async function udfRead(m) {
+    if (typeof m.req !== "string" || !SQL_NAME_RE.test(m.req)) return;
+    const req = m.req;
+    const gen = frameGen;
+    const reply = (extra, transfer) => {
+      if (gen === frameGen) post({ type: "fused-embed-udf-read-result", req, ...extra }, transfer);
+    };
+    const fail = (code, message) => reply({ ok: false, error: { code, message } });
+    const match = typeof m.handle === "string" ? /^udf:([0-9a-f]{64}|t[0-9a-f]{32})$/.exec(m.handle) : null;
+    if (!match) {
+      fail("invalid_args", "invalid arguments");
+      return;
+    }
+    const token = match[1];
+    if (!udfIssued.has(token)) {
+      fail("not_found", "no such result");
+      return;
+    }
+    try {
+      const res = await fetch("/api/udf/results/" + token, { cache: "no-store" });
+      if (!res.ok) {
+        fail("not_found", "this result is no longer available");
+        return;
+      }
+      const bytes = await res.arrayBuffer();
+      reply({ ok: true, bytes, contentType: res.headers.get("content-type") || "" }, [bytes]);
+    } catch (error) {
+      fail("failed", (error && error.message) || "the result could not be read");
+    }
   }
   function udfCancel(m) {
     if (typeof m.req !== "string" || !SQL_NAME_RE.test(m.req)) return;
@@ -669,6 +722,8 @@
       if (sqlOffered) void sqlMessage(data);
     } else if (data.type === "fused-embed-udf") {
       if (udfOffered) udfMessage(data);
+    } else if (data.type === "fused-embed-udf-read") {
+      if (udfOffered) void udfRead(data);
     } else if (data.type === "fused-embed-udf-cancel") {
       if (udfOffered) udfCancel(data);
     } else if (data.type === "fused-embed-node-state" && data.node === node.node) {
@@ -686,6 +741,7 @@
     frameGen++;
     sqlOffered = false;   // a new document is offered again with its own token
     udfOffered = false;
+    udfIssued.clear();
     udfAbort();           // the old document's runs are abandoned (its replies are dropped by frameGen)
     canvasSent = null;
     canvasReady = false;

@@ -12653,7 +12653,7 @@ is never sent it, and every alternation of their generations resets the view
   frame's exact origin, the token from `GET /api/canvases/token` (guarded).
   `caps: []`: the node page writes nothing, so it is offered no channel,
   except the SQL engine of NW-7 (`"sql"`, when it is installed), the UDF
-  relay of NW-9 (`"udf"`, exactly when `"sql"` is offered) and the
+  relay of NW-9 (`"udf"` and `"udf-read"`, exactly when `"sql"` is offered) and the
   saved canvas of NW-8 (`"canvas"`, always). Every message is accepted only from the
   frame's window on that origin.
 - **NW-3 The file's text.** After the frame's `fused-embed-node-ready` and on
@@ -12761,24 +12761,30 @@ is never sent it, and every alternation of their generations resets the view
   running sync (a reference copy) gets the one message at load and no
   updates. The text is never logged.
 - **NW-9 The UDF relay.** With the SQL engine offered (NW-7), the token
-  message's `caps` also holds `"udf"`, and the page runs UDFs of this
+  message's `caps` also holds `"udf"` and `"udf-read"` (the latter advertises
+  the formats, tiles and reads below), and the page runs UDFs of this
   node's own canvas for the frame and answers with a handle for the result,
   which the frame can register with the engine (NW-7 `register`, `handle`)
   instead of carrying the bytes. *Messages from the frame* (ignored unless
   offered; accepted only from the frame's window on its origin, like every
-  message): `fused-embed-udf {req, name, params?, fresh?}`: `req` matches
+  message): `fused-embed-udf {req, name, params?, fresh?, format?, tile?}`: `req` matches
   `^[A-Za-z0-9._-]{1,128}$` (dropped otherwise), `name` is a non-empty
   string with no `/` and not ending `.py`, `params` a plain object (default
-  `{}`), `fresh` an optional boolean; an invalid one is answered
+  `{}`), `fresh` an optional boolean, `format` one of `"parquet"` (default),
+  `"png"`, `"json"`, `"html"`, `tile` `{x, y, z}` non-negative integers with
+  `z` at most 30 (a tile run of the UDF, §54); an invalid one is answered
   `invalid_args`. `fused-embed-udf-cancel {req}` cancels that run. *The run:*
-  `fused.workbench.udf({canvas, name, env}).run(params, {format: "parquet"})`
-  (§54) with `canvas` and `env` always this node's own and, for `fresh:
-  true`, cache mode `fresh` (skip the saved answer). Nothing else is taken
+  `fused.workbench.udf({canvas, name, env}).run(params, {format, tile?})`
+  (§54), `format` the frame's (default `"parquet"`), with `canvas` and `env`
+  always this node's own and, for `fresh: true`, cache mode `fresh` (skip the
+  saved answer). A tile run is saved like any other run, under a key that
+  includes the tile. Nothing else is taken
   from the frame: no canvas, no environment, no file reference, and no
   confirmation flag; the runtime's own dialogs (batch runs, large results)
   appear as they do for any page, and a refusal there comes back as an error.
   *Replies* through the page's `post`: `fused-embed-udf-result {req, ok:
-  true, handle, size, contentType, version, cached, final}`: `handle` is
+  true, handle, size, contentType, version, cached, final}`: `contentType` is
+  the result's own for every format; `handle` is
   `udf:` plus the result's token, parsed from the result's `/api/udf/results/
   <token>` address and checked against `^(?:[0-9a-f]{64}|t[0-9a-f]{32})$`;
   `version` the result's saved-at in milliseconds (the address's `v`), which
@@ -12790,6 +12796,16 @@ is never sent it, and every alternation of their generations resets the view
   runtime's own (`declined`, `signed_out`, `cancelled`, `failed`, ...); a
   throw still answers. A reply to an older frame document is dropped, and a
   new frame document (or this page closing) cancels the old one's runs.
+  *Reading a result:* `fused-embed-udf-read {req, handle}` (same `req` rule)
+  is answered `fused-embed-udf-read-result {req, ok: true, bytes:
+  ArrayBuffer, contentType}`, the buffer in the transfer list, with the bytes
+  fetched from this app's own `/api/udf/results/<token>`; or `{req, ok:
+  false, error: {code, message}}`: `invalid_args` for a `handle` that is not
+  `udf:` plus a token, `not_found` for a token this page did not hand to the
+  current frame document in a `fused-embed-udf-result` (the set is emptied
+  when the frame loads a new document) or whose result is gone. Only handles
+  issued to the current document are readable; the results route itself
+  stays same-origin.
 
 ### 53.4 `canvas_note`: a note
 
@@ -12972,7 +12988,7 @@ milliseconds.
   `opts.env` fills a missing `env`. A malformed `ref` throws `TypeError`.
   `handle.schema()` resolves to the UDF's parameters (an OpenAPI operation,
   the CLI's `udf-schema`).
-- **SS-2 Run.** `handle.run(params?, {format, cache, confirm, signal})`
+- **SS-2 Run.** `handle.run(params?, {format, cache, confirm, signal, tile})`
   returns a run: `run.saved` (a Promise of a Result or null, resolving at
   once: `await run.saved`), `run.result` (a Promise of the fresh Result;
   awaiting the run is the same), `run.onLog(fn)` (`{stdout,
@@ -12985,7 +13001,9 @@ milliseconds.
   WKT), `parquet` (a table's Parquet bytes). `cache`:
   `auto` (saved copy, then a fresh run), `prefer-saved` (a saved copy ends
   the run), `fresh` (no saved copy; Fused is asked not to answer from its
-  cache).
+  cache). `tile`: `{x, y, z}` (non-negative integers, `z` at most 30) makes
+  it a tile run: the SDK is called with those coordinates, the run key
+  includes them, and the result is saved like any other run's.
 - **SS-3 Result.** `{url, contentType, size, hash (the bytes' sha256), source: "saved" |
   "fused-cache" | "fresh", savedAt, seconds, fusedCached, stdout, stderr,
   arrayBuffer(), blob(), text(), json()}`. `url` is
@@ -13014,8 +13032,9 @@ milliseconds.
 
 - **SR-1 Key.** sha256 of the environment, the account (the access token's
   `sub`, hashed), the source (a file's path and content hash, or canvas and
-  name), the params and the format. An edit, another account or other
-  params is another key.
+  name), the params, the format and, for a tile run, the tile `x, y, z`.
+  An edit, another account, other params or another tile is another key; a
+  run without a tile has the key it had before tiles existed.
 - **SR-2 What is kept.** Only successful runs; never errors or
   confirmation answers. A run whose loaded code does not hash to the file
   the key was built from is not filed under the key (it is served once from
@@ -13037,7 +13056,7 @@ milliseconds.
 
 - **SV-1 Socket.** Runs ride `/api/udf/ws` (Origin must be this server,
   `ws_origin_ok`; the LAN listener refuses sockets): `{op: "run" |
-  "schema" | "cancel", id, …}` in, `saved` / `started` / `done` / `error`
+  "schema" | "cancel", id, …}` (a run may carry `tile: {x, y, z}`) in, `saved` / `started` / `done` / `error`
   / `schema` frames out. A long run never holds one of WebKit's six HTTP
   connections. A page that leaves does not cancel its runs: they finish
   and are saved for the next open; only `{op: "cancel"}` stops one.
