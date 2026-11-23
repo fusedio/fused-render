@@ -5054,6 +5054,196 @@ _DETACH = {"start_new_session": True}
 _HOST_SPAWN = {"close_fds": False}
 
 
+# ------------------------------------------------------- Cursor warm spares
+#
+# `cursor-agent acp` takes ~4.5 s to answer its FIRST `session/new` (a later
+# one in the same process ~1.2 s; `initialize` is 0.25 s and idling does not
+# warm it, only a completed `session/new`). So when the chat composer opens on
+# the Cursor backend (`_defaults`), the server starts ONE spare host for that
+# folder: `cursor_host.py` in spare mode spawns the CLI, runs `initialize` and
+# a throwaway `session/new`, writes `<dir>/ready`, and waits on stdin. `_start`
+# then hands the chat to a ready spare instead of a cold host.
+#
+# A spare is valid only for a chat whose cwd is the cwd its CLI was started in:
+# Cursor loads project rules and skills from the PROCESS cwd, not the session's
+# (tool calls do follow the session cwd). Hence the registry key, the realpath
+# of the cwd, and the argv comparison on claim.
+#
+# A spare must never outlive its server: its stdin is the lifeline, and EOF
+# (the server exiting, `_retire_cursor_spare`, the TTL) makes the host kill its
+# CLI and exit. Nothing here ever signals a pid.
+_CURSOR_SPARES = {}
+_CURSOR_SPARES_LOCK = threading.Lock()
+_CURSOR_SPARE_MAX = 2
+_CURSOR_SPARE_TTL_SECONDS = 300.0
+
+
+def _cursor_prewarm_enabled() -> bool:
+    """`FUSED_CURSOR_PREWARM=0|false|off|no` turns the warm spare off."""
+    return os.environ.get("FUSED_CURSOR_PREWARM", "").strip().lower() not in (
+        "0", "false", "off", "no")
+
+
+def _cursor_spares_root() -> str:
+    """Sibling of the runs root — a spare has no run dir yet."""
+    return os.path.join(os.path.dirname(RUNS), "spares")
+
+
+def _close_cursor_spare(entry: dict) -> None:
+    """Cancel `entry`'s timer and close its stdin: the host then kills its
+    CLI and exits. For an entry already off the registry."""
+    timer = entry.get("timer")
+    if timer is not None:
+        timer.cancel()
+    try:
+        entry["proc"].stdin.close()
+    except (OSError, ValueError):
+        pass
+
+
+def _retire_cursor_spare(key: str, entry: dict) -> None:
+    """Retire `entry` if it is still the one registered for `key` — a spare
+    already claimed (or replaced) is left alone."""
+    with _CURSOR_SPARES_LOCK:
+        if _CURSOR_SPARES.get(key) is not entry:
+            return
+        del _CURSOR_SPARES[key]
+    _close_cursor_spare(entry)
+
+
+def _cursor_spare_usable() -> bool:
+    """Whether a spare is worth starting: the agent is on and the CLI is
+    there and not known to be broken or signed out. Reads only — the health
+    cache the server already keeps (never a probe)."""
+    if not _backend_enabled("cursor"):
+        return False
+    try:
+        path = _cursor_bin()
+    except FileNotFoundError:
+        return False
+    if not (os.path.isfile(path) and os.access(path, os.X_OK)):
+        return False
+    health = sys.modules.get("fused_render.cursor_health")
+    snap = health.cached() if health is not None else None
+    if snap and (not snap.get("found") or snap.get("broken")
+                 or snap.get("signed_in") is False):
+        return False
+    return True
+
+
+def _prewarm_cursor(file: str) -> None:
+    """Start one spare host for the folder a chat on `file` would run in.
+    Never raises; blocks the caller for no more than the Popen."""
+    try:
+        if not _cursor_prewarm_enabled() or not _cursor_spare_usable():
+            return
+        cwd = _workdir(os.path.abspath(file))
+        if not os.path.isdir(cwd):
+            return
+        key = os.path.realpath(cwd)
+        argv = [_cursor_bin(), "acp"]
+        with _CURSOR_SPARES_LOCK:
+            for k, e in list(_CURSOR_SPARES.items()):
+                if e["proc"].poll() is not None:
+                    del _CURSOR_SPARES[k]
+            if key in _CURSOR_SPARES:
+                return
+            retire = []
+            while len(_CURSOR_SPARES) >= _CURSOR_SPARE_MAX:
+                oldest = min(_CURSOR_SPARES, key=lambda k: _CURSOR_SPARES[k]["born"])
+                retire.append((oldest, _CURSOR_SPARES.pop(oldest)))
+            spare_dir = os.path.join(_cursor_spares_root(), uuid.uuid4().hex)
+            os.makedirs(spare_dir, mode=0o700, exist_ok=True)
+            host_err = os.open(os.path.join(spare_dir, "host.err.log"),
+                               os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600)
+            try:
+                proc = subprocess.Popen(
+                    [sys.executable, _HOST_FILES["cursor"]],
+                    stdin=subprocess.PIPE, stdout=subprocess.DEVNULL,
+                    stderr=host_err, env=_spawn_env(backend="cursor"),
+                    **_HOST_SPAWN)
+            except BaseException:
+                shutil.rmtree(spare_dir, ignore_errors=True)
+                raise
+            finally:
+                os.close(host_err)
+            entry = {"proc": proc, "argv": argv, "dir": spare_dir,
+                     "born": time.monotonic(), "timer": None}
+            timer = threading.Timer(_CURSOR_SPARE_TTL_SECONDS,
+                                    _retire_cursor_spare, args=(key, entry))
+            timer.daemon = True
+            entry["timer"] = timer
+            _CURSOR_SPARES[key] = entry
+        timer.start()
+        for _k, e in retire:
+            _close_cursor_spare(e)
+        try:
+            proc.stdin.write((json.dumps({
+                "spare": True, "agent": os.path.abspath(__file__), "argv": argv,
+                "cwd": cwd, "spare_dir": spare_dir}) + "\n").encode("utf-8"))
+            proc.stdin.flush()
+        except (OSError, ValueError):
+            _retire_cursor_spare(key, entry)
+
+        def _reap() -> None:
+            proc.wait()
+            with _CURSOR_SPARES_LOCK:
+                if _CURSOR_SPARES.get(key) is entry:
+                    del _CURSOR_SPARES[key]
+            timer.cancel()
+            shutil.rmtree(spare_dir, ignore_errors=True)
+
+        threading.Thread(target=_reap, name="cursor-spare-reap",
+                         daemon=True).start()
+    except Exception as exc:  # noqa: BLE001 — a warm-up is never worth an error
+        sys.stderr.write("cursor spare: %r\n" % (exc,))
+
+
+def _claim_cursor_spare(cwd: str, argv: list):
+    """The ready spare for `cwd` running exactly `argv`, popped from the
+    registry (so it serves one chat), or None. A spare still warming up
+    stays registered for the next chat; a dead one is dropped."""
+    key = os.path.realpath(cwd)
+    with _CURSOR_SPARES_LOCK:
+        entry = _CURSOR_SPARES.get(key)
+        if entry is None:
+            return None
+        if entry["proc"].poll() is not None:
+            del _CURSOR_SPARES[key]
+            return None
+        if entry["argv"] != list(argv) or not os.path.exists(
+                os.path.join(entry["dir"], "ready")):
+            return None
+        del _CURSOR_SPARES[key]
+    entry["timer"].cancel()
+    return entry["proc"]
+
+
+def _hand_to_cursor_spare(req: dict):
+    """Give the chat `req` to a ready spare for its cwd: the host process, or
+    None (no spare, not ready, or its pipe is broken) for the caller's normal
+    cold spawn. The spare re-points its own stderr at
+    `<run_dir>/host.err.log`; the file is created here so it exists whatever
+    the host manages to do. The prewarm's reaper thread is what `wait()`s on
+    the claimed process."""
+    proc = _claim_cursor_spare(req["cwd"], req["argv"])
+    if proc is None:
+        return None
+    try:
+        os.close(os.open(os.path.join(req["run_dir"], "host.err.log"),
+                         os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600))
+        proc.stdin.write(json.dumps(req).encode("utf-8") + b"\n")
+        proc.stdin.flush()
+    except (BrokenPipeError, OSError, ValueError):
+        return None
+    finally:
+        try:
+            proc.stdin.close()
+        except (OSError, ValueError):
+            pass
+    return proc
+
+
 def _claude_argv(run_dir: str, pane: bool, cli_mode: str | None,
                  session_id: str, model: str, effort: str,
                  extra_read_dirs: list | None, file: str,
@@ -7431,43 +7621,48 @@ def _start(file: str, message: str, session_id: str, model: str,
     # `err.log`: that one is the CLI's stderr, and `_poll` shows its tail to
     # the user as the run's error text. The parent's copy of the fd is closed
     # once the child has it.
-    host_err = os.open(os.path.join(run_dir, "host.err.log"),
-                       os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600)
-    try:
-        proc = subprocess.Popen(
-            [sys.executable, _HOST_FILES[backend]],
-            stdin=subprocess.PIPE, stdout=subprocess.DEVNULL,
-            stderr=host_err, env=_spawn_env(backend=backend, run_dir=run_dir),
-            **_HOST_SPAWN)
-    finally:
-        os.close(host_err)
-    # The host is now a child of THIS (long-lived) process rather than of a
-    # 60 s executor subprocess that exited and left it to init. Nobody else
-    # waits on it, so without a waiter every finished host would sit as a
-    # zombie until the server exits. One daemon thread per host, parked in
-    # wait(): the cheapest reaper, and it dies with the host. Started BEFORE
-    # the request is written (D1310): a host that dies before reading stdin
-    # makes that write raise, and a reaper started after it would never run.
-    def _wait_host():
-        proc.wait()
-        if backend == "opencode":
-            # The gateway key this spawn minted (D20) dies with the host.
-            _opencode_release_key(run_dir)
-    threading.Thread(target=_wait_host, name=f"claude-host-wait-{run_id}",
-                     daemon=True).start()
-    try:
-        proc.stdin.write(json.dumps(req).encode("utf-8"))
-    except (BrokenPipeError, OSError) as exc:
-        # The host is already gone (an import error, a signal) — there is no
-        # session and never will be. Answer the way every other refusal here
-        # does, an `{"error"}` the composer shows, not an exception the router
-        # would turn into a 500.
-        return {"error": f"the chat's session host exited before it started: {exc}"}
-    finally:
+    # CURSOR ONLY: a ready warm spare for this folder (`_prewarm_cursor`)
+    # takes the chat in place of a cold host — it already paid the CLI's
+    # first-`session/new` cost. None falls through to the normal spawn.
+    proc = _hand_to_cursor_spare(req) if backend == "cursor" else None
+    if proc is None:
+        host_err = os.open(os.path.join(run_dir, "host.err.log"),
+                           os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600)
         try:
-            proc.stdin.close()
-        except OSError:
-            pass
+            proc = subprocess.Popen(
+                [sys.executable, _HOST_FILES[backend]],
+                stdin=subprocess.PIPE, stdout=subprocess.DEVNULL,
+                stderr=host_err, env=_spawn_env(backend=backend, run_dir=run_dir),
+                **_HOST_SPAWN)
+        finally:
+            os.close(host_err)
+        # The host is now a child of THIS (long-lived) process rather than of a
+        # 60 s executor subprocess that exited and left it to init. Nobody else
+        # waits on it, so without a waiter every finished host would sit as a
+        # zombie until the server exits. One daemon thread per host, parked in
+        # wait(): the cheapest reaper, and it dies with the host. Started BEFORE
+        # the request is written (D1310): a host that dies before reading stdin
+        # makes that write raise, and a reaper started after it would never run.
+        def _wait_host():
+            proc.wait()
+            if backend == "opencode":
+                # The gateway key this spawn minted (D20) dies with the host.
+                _opencode_release_key(run_dir)
+        threading.Thread(target=_wait_host, name=f"claude-host-wait-{run_id}",
+                         daemon=True).start()
+        try:
+            proc.stdin.write(json.dumps(req).encode("utf-8"))
+        except (BrokenPipeError, OSError) as exc:
+            # The host is already gone (an import error, a signal) — there is no
+            # session and never will be. Answer the way every other refusal here
+            # does, an `{"error"}` the composer shows, not an exception the router
+            # would turn into a 500.
+            return {"error": f"the chat's session host exited before it started: {exc}"}
+        finally:
+            try:
+                proc.stdin.close()
+            except OSError:
+                pass
     # WHAT THIS CHAT RUNS WITH — the app's own answer to "which model is this
     # conversation on?", which every surface reads first (`_defaults`). Here
     # rather than only in the composer because this is the one point every send
@@ -13660,6 +13855,15 @@ def _defaults(file: str, session_id: str = "", backend: str = "") -> dict:
                                        hint=_session_backend(session_id))
     elif backend not in BACKENDS:
         backend = DEFAULT_BACKEND
+    if backend == "cursor":
+        # The composer opening on Cursor is the cue to warm a spare host for
+        # this folder (`_prewarm_cursor`); a chat that already has a live host
+        # needs none. Never changes the answer below, never raises.
+        try:
+            if not (named and _live_host(file, session_id).get("run_id")):
+                _prewarm_cursor(file)
+        except Exception as exc:  # noqa: BLE001
+            sys.stderr.write("cursor spare: %r\n" % (exc,))
     rec_model, rec_effort = _session_settings(session_id) if named else ("", "")
     # A RECORD OUTLIVES THE PICKER'S VOCABULARY. Chats settled before the pinned
     # Fable id was retired still have "claude-fable-5-1" written down for them;
