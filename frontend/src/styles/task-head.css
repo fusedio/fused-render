@@ -1228,8 +1228,9 @@
    door, so its count and time stand in one box — `.task-head-facts`, no
    time slot for the rule above to fold; CodeRabbit on #2313). The time leaves
    on the panel's time rung; the door still comes under the pointer, its hint
-   carrying the time. A rail window keeps both. */
-.task-head.is-two-line:not(.is-window):is([data-fit="3"], [data-fit="4"], [data-fit="5"], [data-fit="6"], [data-fit="7"]) .task-head-facts .task-head-time {
+   carrying the time. A rail window keeps both. A split head's time sits in
+   `.task-head-rowfacts` (row 2); same rung (CodeRabbit on #2413). */
+.task-head.is-two-line:not(.is-window):is([data-fit="3"], [data-fit="4"], [data-fit="5"], [data-fit="6"], [data-fit="7"]) :is(.task-head-facts, .task-head-rowfacts) .task-head-time {
   display: none;
 }
 
