@@ -429,3 +429,33 @@ def test_an_unknown_uuid_reports_zero(agent, run_dir):
     agent.RUNS = str(run_dir.parent)
     _write(run_dir, [_echo("not-ours"), _text_row("a")])
     assert _started(agent, run_dir) == 0
+
+
+def _tool_start_row(id, name, inp):
+    return {"type": "stream_event", "event": {
+        "type": "content_block_start", "index": 0,
+        "content_block": {"type": "tool_use", "id": id, "name": name,
+                          "input": inp}}}
+
+
+def test_a_bare_tool_start_names_its_file_in_the_live_activity(agent, run_dir):
+    """Cursor's held edit announces its file with a `content_block_start`
+    alone (no `assistant` row yet) while the model writes the file: the live
+    activity names it, the transcript has no row for it."""
+    _write(run_dir, [_text_row("writing"), _tool_start_row(
+        "call-1", "Write", {"file_path": "/p/big.py", "content": ""})])
+    data = _poll(agent, run_dir)
+    assert data["activity"]["tools_open"] == 1
+    assert data["activity"]["tool"]["detail"] == "big.py"
+    assert not any(s.get("type") == "tool" for s in data["segments"])
+
+
+def test_an_announced_edit_counts_once_and_a_result_closes_it(agent, run_dir):
+    start = _tool_start_row("call-1", "Write", {"file_path": "/p/big.py", "content": ""})
+    final = {"type": "assistant", "message": {"role": "assistant", "content": [
+        {"type": "tool_use", "id": "call-1", "name": "Write",
+         "input": {"file_path": "/p/big.py", "content": "x"}}]}}
+    _write(run_dir, [start, start, final])
+    assert _poll(agent, run_dir)["activity"]["tools_open"] == 1
+    _append(run_dir, [_tool_result_row("call-1")])
+    assert _poll(agent, run_dir)["activity"]["tools_open"] == 0
