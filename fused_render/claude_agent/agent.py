@@ -2858,7 +2858,7 @@ def _experts_note(rows: list, here: list) -> str:
     them, so a task knows who there is without spending a call to find out."""
     note = (" EXPERTS: the user keeps experts, each of whom knows one "
             "subject: %s. Call mcp__fused_render__expert_pull with one's name "
-            "for its guidance when the work touches its subject. Send a "
+            "for its guidance when the work touches its subject. Send an "
             "expert a note with expert_note when its "
             "guidance was wrong or missing, or the user states a rule it should "
             "know. If you are stuck on one problem an expert knows, offer a "

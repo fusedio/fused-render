@@ -2,7 +2,7 @@
 
 Each is installed once, while Experts and Canvases are both on: their subjects are canvases and the bucket the
 S3 tools read, which the Canvases switch gates. `<root>/.state/seeded.json` lists the keys installed, so one the
-user deletes stays deleted and one shipped later is still installed; one whose name the user already gave a
+user deletes stays deleted and one shipped later is still installed; one whose name the user already gave an
 expert of their own is marked done and not installed. Its skills are the files in `skills/` (`# Title`, then a
 `trigger:` line) turned into Claude Code skills whose description is the title and the trigger words. `"folder":
 "canvases"` gives it the canvas copies folder, so a task in a canvas copy gets its guidance by itself.

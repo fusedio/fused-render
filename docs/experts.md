@@ -147,7 +147,7 @@ Three tools on the task sessions' permission server (`permission_server.EXPERT_S
     expert_note       expert, note       a note in its inbox; note at most 2000 characters
     expert_breakout   expert, reason     offer the user a breakout; reason at most 300 characters
 
-**When they are offered** (`agent._record_experts`, at `_start`): a Claude task (not a breakout, not a
+**When they are offered** (`agent._record_experts`, at `_start`): a Claude task (not a breakout, not an
 expert's own session) while the server has an origin, the flag is on and at least one expert exists. The
 answer is written into the run dir as `experts.on` (`{root, all, here}`; `all` is every expert's name and
 `about`); `_claude_argv` then stamps
