@@ -11,9 +11,20 @@ import time
 
 import pytest
 
+from fused_render._system_trust import pinned_client_ssl_context
 from fused_render.tunnel import agent as A
 from fused_render.tunnel import protocol as P
 from fused_render.tunnel import relay as R
+
+
+def _unverified_ctx() -> ssl.SSLContext:
+    """A client that checks nothing itself (the callers pin the fingerprint,
+    or only want the bytes). Not a bare ``ssl.SSLContext``: on macOS and
+    Windows truststore is injected, and its wrapper runs the system verifier
+    whatever ``verify_mode`` says, refusing every self-signed test
+    certificate ("not standards compliant")."""
+    return pinned_client_ssl_context()
+
 
 DOMAIN = "relay.test"
 
@@ -23,9 +34,7 @@ DOMAIN = "relay.test"
 
 def _client_hello(server_name: str | None) -> bytes:
     """A real ClientHello from the stdlib, captured through a memory BIO."""
-    ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
-    ctx.check_hostname = False
-    ctx.verify_mode = ssl.CERT_NONE
+    ctx = _unverified_ctx()
     incoming, outgoing = ssl.MemoryBIO(), ssl.MemoryBIO()
     obj = ctx.wrap_bio(incoming, outgoing, server_hostname=server_name)
     with contextlib.suppress(ssl.SSLWantReadError):
@@ -200,9 +209,7 @@ def world(tmp_path):
 def _phone(port: int, sni: str, payload: bytes = b"hi\n") -> tuple[str, bytes]:
     """A phone: TLS to the relay's public port naming ``sni``, trusting only
     the pinned fingerprint (as TLSTrust.swift does). Returns (fingerprint, reply)."""
-    ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
-    ctx.check_hostname = False
-    ctx.verify_mode = ssl.CERT_NONE
+    ctx = _unverified_ctx()
     with socket.create_connection(("127.0.0.1", port), timeout=10) as raw:
         with ctx.wrap_socket(raw, server_hostname=sni) as tls:
             fp = hashlib.sha256(tls.getpeercert(binary_form=True)).hexdigest()
@@ -300,9 +307,7 @@ def test_a_host_id_cannot_be_claimed_without_its_key(world):
 
 def test_a_forged_signature_is_refused(world):
     async def forge():
-        ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
-        ctx.check_hostname = False
-        ctx.verify_mode = ssl.CERT_NONE
+        ctx = _unverified_ctx()
         reader, writer = await asyncio.open_connection("127.0.0.1", world.relay.agent_port, ssl=ctx)
         hello = P.decode(await reader.readline())
         assert hello["t"] == "hello"
@@ -322,9 +327,7 @@ def test_a_replayed_signature_is_refused(world):
     key = A.load_or_create_key(str(world.tmp / "replay.key"))
 
     async def attempt(sig_for_nonce=None):
-        ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
-        ctx.check_hostname = False
-        ctx.verify_mode = ssl.CERT_NONE
+        ctx = _unverified_ctx()
         reader, writer = await asyncio.open_connection("127.0.0.1", world.relay.agent_port, ssl=ctx)
         hello = P.decode(await reader.readline())
         nonce = P.unb64(hello["nonce"])
@@ -351,9 +354,7 @@ def test_the_agent_refuses_a_relay_whose_certificate_is_not_the_pinned_one(world
 
 def test_an_unclaimed_data_connection_is_closed(world):
     async def stray():
-        ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
-        ctx.check_hostname = False
-        ctx.verify_mode = ssl.CERT_NONE
+        ctx = _unverified_ctx()
         reader, writer = await asyncio.open_connection("127.0.0.1", world.relay.agent_port, ssl=ctx)
         await reader.readline()
         writer.write(P.encode({"t": "data", "sid": "f" * 32}))
@@ -435,9 +436,7 @@ def test_one_address_cannot_take_every_stream(world):
     host = world.agent.status()["host"]
     idle = []
     for _ in range(3):
-        ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
-        ctx.check_hostname = False
-        ctx.verify_mode = ssl.CERT_NONE
+        ctx = _unverified_ctx()
         raw = socket.create_connection(("127.0.0.1", world.relay.public_port), timeout=10)
         idle.append(ctx.wrap_socket(raw, server_hostname=host))  # handshake done, then silence
     try:
@@ -471,9 +470,7 @@ def test_a_stalled_agent_does_not_leak_relay_slots(tmp_path):
     accepted = []  # data connections the stalled agent took (and never reads)
 
     async def stalled_agent():
-        ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
-        ctx.check_hostname = False
-        ctx.verify_mode = ssl.CERT_NONE
+        ctx = _unverified_ctx()
         reader, writer = await asyncio.open_connection("127.0.0.1", relay.agent_port, ssl=ctx)
         hello = P.decode(await reader.readline())
         sig = key.sign(P.challenge(DOMAIN, P.unb64(hello["nonce"])))
@@ -504,7 +501,10 @@ def test_a_stalled_agent_does_not_leak_relay_slots(tmp_path):
                 raw.sendall(b"x" * (8 << 20))  # more than every buffer on the way holds
             except OSError:
                 pass  # full: the relay stopped reading, its drain is parked
-            raw.setsockopt(socket.SOL_SOCKET, socket.SO_LINGER, b"\x01\x00\x00\x00\x00\x00\x00\x00")
+            # macOS answers EINVAL here once the relay has already dropped the
+            # connection; a plain close then does the same job.
+            with contextlib.suppress(OSError):
+                raw.setsockopt(socket.SOL_SOCKET, socket.SO_LINGER, b"\x01\x00\x00\x00\x00\x00\x00\x00")
             raw.close()  # RST
         _wait_for(lambda: relay.stats()["connections"] == 0, timeout=20, what="slots released")
         assert not relay._per_ip and not relay._host_ip
