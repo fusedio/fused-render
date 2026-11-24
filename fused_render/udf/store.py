@@ -94,6 +94,19 @@ def clone_folder(clone_dir: str | None) -> str | None:
     return _clone_path(clone_dir) if IGNORE_LINE in lines else None
 
 
+def _make_clone_folder(clone_dir: str) -> None:
+    """Create `<clone_dir>/.fused/cache/udf`, one level at a time and never
+    `clone_dir` itself: a canvas folder deleted a moment ago raises here
+    instead of coming back empty."""
+    path = clone_dir
+    for part in os.path.relpath(_clone_path(clone_dir), clone_dir).split(os.sep):
+        path = os.path.join(path, part)
+        try:
+            os.mkdir(path)
+        except FileExistsError:
+            pass
+
+
 def _clone_folders() -> list[str]:
     """Every canvas folder's results folder that exists on disk."""
     from fused_render import canvases
@@ -218,15 +231,22 @@ def keep(body_path: str, meta: dict, key: str | None, clone_dir: str | None = No
         folder = clone_folder(clone_dir)
         with _LOCK:
             if folder is not None:
+                clone_body = os.path.join(folder, key + ".body")
+                moved = False
                 try:
-                    # From `.fused` down only: `clone_folder` just read a
-                    # file in the canvas folder, so that one exists.
-                    os.makedirs(folder, exist_ok=True)
-                    _move(body_path, os.path.join(folder, key + ".body"))
+                    _make_clone_folder(clone_dir)
+                    _move(body_path, clone_body)
+                    moved = True
                     _write_json(os.path.join(folder, key + ".json"), meta)
                     _remember(key, folder)
                 except OSError:
-                    # The canvas folder went away or cannot be written.
+                    # The canvas folder went away or cannot be written. The
+                    # body goes back first: the home folder files it below.
+                    if moved:
+                        try:
+                            _move(clone_body, body_path)
+                        except OSError:
+                            pass
                     _remove_entry(folder, key)
                     folder = None
             if folder is None:
