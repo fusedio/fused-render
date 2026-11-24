@@ -18,8 +18,8 @@ type `/login` — really is the only route through that door.
 
 Same authorization behind both: identical `state`, identical `code_challenge`,
 two redirect targets, whichever completes first. On a desktop app with the user's
-browser on the same machine the loopback path is the normal one — so THE APP
-NEVER HANDLES AN OAUTH CODE. That is the whole reason this module is small.
+browser on the same machine the loopback path is the normal one, and on it the
+app never handles an OAuth code. That is the whole reason this module is small.
 
 **Do not read the printed URL and open it.** It is the paste URL; opening it
 forces the user into the manual flow for no reason. The loopback URL is never
@@ -133,10 +133,9 @@ class _Login:
     #: written to disk, which is the one place this module diverges from
     #: claude_install deliberately. That module publishes every line into the
     #: shared job registry because a verbatim installer error is the point. The
-    #: same lines here carry the authorize URL's `state` and `code_challenge`,
-    #: and phase 2 (the paste fallback) will put a live OAuth code on this
-    #: stream. So the tail stays in memory, dies with the process, and leaves it
-    #: only as the one derived sentence in `error`.
+    #: same lines here carry the authorize URL's `state` and `code_challenge`.
+    #: So the tail stays in memory, dies with the process, and leaves it only
+    #: as the one derived sentence in `error` (and `url`, while in flight).
     tail: collections.deque
     #: The sign-in address the child printed for a browser that did not open,
     #: once it has. Served only while the sign-in is in flight (`_record`).

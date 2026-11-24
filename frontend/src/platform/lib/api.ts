@@ -661,7 +661,8 @@ export function linkClaudePath(): Promise<{
 
     There is no `output` here, unlike the install record. The child's lines carry
     the authorize URL's `state` and `code_challenge`, so the server keeps its
-    tail in memory and surfaces only the one derived sentence in `error`. */
+    tail in memory and surfaces only the one derived sentence in `error` — and,
+    while the sign-in is open, the fallback address in `url`. */
 export interface ClaudeLoginStatus {
   in_flight: boolean;
   started_at: number | null;
@@ -680,8 +681,9 @@ export interface ClaudeLoginStatus {
 }
 
 /** Start a browser sign-in. The CLI opens the page and completes on its own
-    loopback callback — no code is pasted, and none reaches the app. Rejects with
-    the server's sentence when one is already waiting. */
+    loopback callback — normally no code is pasted (the fallback for a browser
+    that did not open is `submitAgentLoginCode`). Rejects with the server's
+    sentence when one is already waiting. */
 export function startClaudeLogin(): Promise<ClaudeLoginStatus> {
   return postJson<ClaudeLoginStatus>("/api/claude/login", {});
 }

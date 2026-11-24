@@ -10,11 +10,12 @@ Provider note: canvas commands authenticate with `fused login`
 (~/.fused/credentials, Auth0 PKCE) — a DIFFERENT provider from the fused
 CLI's own `fused cloud login` store (~/.openfused). Same CLI binary (the
 `fused` package resolved by fusedcli.fused_cli()), different credential
-stores; this module owns the `fused login` side. Unlike `cloud login
---no-browser`, plain `fused login` never prints its authorize URL — it opens
-the browser itself and blocks on a localhost callback — so the login endpoint
-here spawns the child and the client simply polls status until the
-credentials file appears.
+stores; this module owns the `fused login` side. `fused login` opens the
+browser itself and blocks on a localhost callback, so the login endpoint here
+spawns the child and the client polls status until the credentials file
+appears. Our own driver (_fused_login.py) also prints its authorize URL, which
+status serves as `login_url` for a machine where that browser open does
+nothing (WSL, ssh); the CLI's own login prints none.
 
 Sync model — the host is one more workbench tab. One watcher thread per
 synced canvas fingerprints the clone folder (path/mtime/size walk) once a
