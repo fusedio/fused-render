@@ -22,6 +22,7 @@ const { dropSharedPrefsRead } = await import("@platform/lib/api");
 const { BotPeek, CHAT_LINGER_MS } = await import("./BotPeek");
 const { BotCardHost } = await import("./BotCardHost");
 const { botCardIntent, resetBotCardForTests } = await import("./bot-card-store");
+const { resetRailZoneForTests } = await import("./rail-zone");
 const { railGitCount, railGitOf, resetRailGitStoreForTests } = await import("./rail-git-store");
 const { gitCardRail, gitCardState, gitCardStore, registerGitCard, resetGitCardForTests } = await import("./git-peek-store");
 const { resetRailGitCacheForTests } = await import("./rail-git");
@@ -31,7 +32,7 @@ const { publishRailExtras, resetRailExtrasFlagForTests } = await import("./rail-
 const { RAIL_DEFAULT_WIDTH, getRailState, setRailState } = await import("@platform/lib/railstate");
 const { _setUiLayoutForTest } = await import("@platform/lib/ui-layout");
 const { DoorCard } = await import("./DoorCard");
-const { PEEK_OPEN_MS } = await import("./rail-peek-lib");
+const { RAIL_COLD_OPEN_MS } = await import("./rail-zone-lib");
 const { botsCardState, registerBotsCard, resetBotsCardForTests } = await import("./bots-peek-store");
 const { registerTasksCard, resetTasksCardForTests, tasksCardState } = await import("./tasks-peek-store");
 const { resetFlagsForTests: resetClaudeFlagsForTests } = await import("@apps/claude/feature-flag");
@@ -149,6 +150,7 @@ beforeEach(() => {
   (globalThis as { fetch: unknown }).fetch = () => new Promise<Response>(() => {});
   setBotsAvailableForTests(true);
   resetBotCardForTests();
+  resetRailZoneForTests();
 });
 
 const mounted: ReactTestRenderer[] = [];
@@ -1091,10 +1093,10 @@ describe("ClaudeRail's Git door (owner, 2026-11-10)", () => {
       expect(gitDoor(r)).toHaveLength(1);
       expect(gitCardState().ready).toBe(true);
       expect(gitDoor(r)[0]!.props["aria-haspopup"]).toBe("dialog");
-      // A hover previews…
+      // A hover previews (a cold rail's wait: the pointer came from outside)…
       await act(async () => {
         gitDoor(r)[0]!.props.onPointerEnter({ pointerType: "mouse", buttons: 0 });
-        await new Promise((res) => setTimeout(res, PEEK_OPEN_MS + 20));
+        await new Promise((res) => setTimeout(res, RAIL_COLD_OPEN_MS + 20));
       });
       expect(gitCardState()).toMatchObject({ up: true, pinned: false });
       // …and a press pins it, beside the left rail, on its repository.

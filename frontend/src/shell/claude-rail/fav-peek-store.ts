@@ -57,6 +57,7 @@ import type { TaskPulseTask } from "@platform/lib/api";
 import { clearFavOpen, favOpenedAtMs, useFavOpen } from "@platform/lib/last-chat";
 import type { RailHere } from "./claude-rail-lib";
 import { FAV_SETTLE_MS, PeekIntent, favLike, favOpenVerdict, type Box } from "./rail-peek-lib";
+import { railPace } from "./rail-zone";
 
 /** Where the page a rail stands on is (header): its `placeRoot`, and the
  *  canvas's selected node file (null: none, or not a canvas). */
@@ -450,7 +451,7 @@ let hoverIntent: PeekIntent | null = null;
 /** The hover-intent machine of window B (header): the favourites' rings
  *  report their pointer and focus to it, the card reports its own. */
 export function favHoverIntent(): PeekIntent {
-  if (!hoverIntent) hoverIntent = new PeekIntent({ show: setHoverKey, warm: () => {} });
+  if (!hoverIntent) hoverIntent = new PeekIntent({ show: setHoverKey, warm: () => {} }, undefined, railPace);
   return hoverIntent;
 }
 

@@ -8,7 +8,8 @@
 //
 //   - A HOVER: the pointer resting on a door starts reading what its card
 //     needs (`seed`: the schedule; a draft's fresh record too) at once and
-//     shows the card UNPINNED after PEEK_OPEN_MS — both must be done.
+//     shows the card UNPINNED after PEEK_OPEN_MS (on the rail, the zone's
+//     wait: rail-zone-lib) — both must be done.
 //     Leaving the door first opens nothing and drops the read
 //     (`cancelSeed`). A read that finds nothing (`failed`) shows nothing.
 //   - THE GRACE: an unpinned card closes once the pointer has been off every
@@ -24,6 +25,7 @@
 //   - The card closing by ANY path (×, Create, Escape or a press outside a
 //     preview, the grace) is reported back (`closed`).
 import { PEEK_CLOSE_MS, PEEK_OPEN_MS, type Timers } from "./rail-peek-lib";
+import { usualPace, type HoverPace } from "./rail-zone-lib";
 
 /** The +'s own door name; a draft's door is its ring's key. */
 export const PLUS_DOOR = "+";
@@ -66,9 +68,12 @@ export class PlusPopIntent {
   private openTimer = 0;
   private closeTimer = 0;
 
+  /** `pace`: how long a hover waits — the rail's cold and hot zones
+   *  (rail-zone-lib); PEEK_OPEN_MS without one. */
   constructor(
     private readonly sink: PlusPopSink,
     private readonly timers: Timers = windowTimers,
+    private readonly pace: HoverPace = usualPace,
   ) {}
 
   /** What is up (or coming): the card's phase. */
@@ -94,12 +99,19 @@ export class PlusPopIntent {
     }
     if (this.pending === door) return;
     this.cancelPending();
+    const wait = this.pace.openMs(PEEK_OPEN_MS);
     this.begin(door, false);
+    // A HOT RAIL (rail-zone-lib): due now — the card shows once its read is in.
+    if (wait <= 0) {
+      this.due = true;
+      this.maybeOpen();
+      return;
+    }
     this.openTimer = this.timers.set(() => {
       this.openTimer = 0;
       this.due = true;
       this.maybeOpen();
-    }, PEEK_OPEN_MS);
+    }, wait);
   }
 
   /** The pointer left the door it was on. */
@@ -207,6 +219,7 @@ export class PlusPopIntent {
     this.cancelClose();
     this.shown = door;
     this.pinnedNow = pinned;
+    this.pace.shown();
     this.sink.open(door, pinned);
     if (!pinned) this.scheduleClose();
   }
