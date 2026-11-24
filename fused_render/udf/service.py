@@ -72,10 +72,13 @@ class RunError(Exception):
 
 class Target:
     """What to run, resolved: where (`env`), what `fused.load` gets
-    (`load_as`, `collection`) and what identifies it for the run key."""
+    (`load_as`, `collection`) and what identifies it for the run key.
+    `clone_dir` is the canvas folder of a canvas node file: its saved results
+    are kept there (`store.clone_folder`)."""
 
     def __init__(self, env: str, source: str, collection: str | None, ident: list,
-                 file_sha: str | None = None):
+                 file_sha: str | None = None, clone_dir: str | None = None):
+        self.clone_dir = clone_dir
         self.env = env
         self.load_as = source
         self.collection = collection
@@ -125,15 +128,17 @@ def resolve(ref) -> Target:
         except OSError as exc:
             raise RunError("bad_ref", f"could not read the file: {exc}") from exc
         info = canvases.canvas_node_file(path)
+        clone_dir = None
         if info is not None and info["kind"] == "udf":
-            env, collection = info["env"], info["name"]
+            env, collection, clone_dir = info["env"], info["name"], info["clone_dir"]
         else:
             env, collection = ref.get("env"), None
             if env is None:
                 raise RunError("bad_ref", "this file is not a node of a canvas you work on: "
                                           "say which Fused environment to run it in ('env')")
         env = _env_ok(env)
-        return Target(env, path, collection, ["file", path, sha], file_sha=sha)
+        return Target(env, path, collection, ["file", path, sha], file_sha=sha,
+                      clone_dir=clone_dir)
     canvas, name = ref.get("canvas"), ref.get("name")
     if not (isinstance(canvas, str) and canvas and isinstance(name, str) and name):
         raise RunError("bad_ref", "give a UDF as {file} or as {canvas, name}")
@@ -276,7 +281,8 @@ async def _execute(flight: _Flight, target: Target, key: str, params: dict, fmt:
             "stderr": final.get("stderr") or "", "fused_cached": bool(final.get("fused_cached")),
             "sha256": final.get("sha256"),
             "env": target.env}
-    return {"result": await asyncio.to_thread(store.keep, body_path, meta, keep_key)}
+    return {"result": await asyncio.to_thread(store.keep, body_path, meta, keep_key,
+                                              target.clone_dir)}
 
 
 async def run(msg: dict, send: Send, cancelled: asyncio.Event | None = None) -> None:
@@ -313,7 +319,7 @@ async def _run(msg: dict, send: Send, rid, cancelled: asyncio.Event | None) -> N
     key = run_key(target, account, params, fmt, tile)
 
     if cache != "fresh":
-        saved = await asyncio.to_thread(store.get, key)
+        saved = await asyncio.to_thread(store.get, key, target.clone_dir)
         if saved is not None:
             await send({"id": rid, "type": "saved", "result": _page_result(saved, "saved")})
             if cache == "prefer-saved":
