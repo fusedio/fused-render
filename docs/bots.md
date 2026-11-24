@@ -396,7 +396,8 @@ POST   /api/claude/health/refresh | install {action} | link-path | doctor | logi
 `GET /api/config` carries the same snapshot as `onboarding`. The stored stage
 statuses are overruled on every read by what the server can see: Claude Code
 from `claude_health`'s disk cache (never a spawn), Chrome from
-`browser.CHROME_CANDIDATES`, local models from the Hub cache, "first bot" from
+`browser.CHROME_CANDIDATES` (`FUSED_RENDER_BOTS_CHROME` first when set, then
+the macOS apps, the Linux PATH names, the Windows roots), local models from the Hub cache, "first bot" from
 the bots data dir. `FUSED_RENDER_ONBOARDING=0|1` forces the wizard off/on
 (tests force it off); the state file is `<home>/onboarding.json`.
 

@@ -72,16 +72,40 @@ def _windows_chrome_candidates(env, which, join=os.path.join):
     return out
 
 
+# The names a Chromium-family browser goes by on a Linux PATH, Chrome first: the Google .deb/.rpm installs
+# `google-chrome` and `google-chrome-stable`, Debian `chromium`, Ubuntu's snap `chromium-browser` as well.
+PATH_CHROME_NAMES = ("google-chrome", "google-chrome-stable", "chromium", "chromium-browser",
+                     "microsoft-edge", "microsoft-edge-stable", "brave-browser")
+# Names a browser binary to use ahead of the walk below.
+CHROME_ENV = "FUSED_RENDER_BOTS_CHROME"
+
+
+def _path_chrome_candidates(which):
+    """Whatever `which` finds for PATH_CHROME_NAMES, in that order. Pure, like the Windows list."""
+    return [which(n) or "" for n in PATH_CHROME_NAMES]
+
+
+def is_wsl(env=None, release=None, platform=None) -> bool:
+    """Linux under WSL: the browser the person has open is on the Windows side, which the bots cannot
+    drive (they launch their own, here), so a missing browser needs its own sentence."""
+    if not (sys.platform if platform is None else platform).startswith("linux"):
+        return False
+    env = os.environ if env is None else env
+    release = os.uname().release if release is None else release
+    return bool(env.get("WSL_DISTRO_NAME")) or "microsoft" in release.lower()
+
+
 CHROME_CANDIDATES = [
     "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
     "/Applications/Chromium.app/Contents/MacOS/Chromium",
     "/Applications/Microsoft Edge.app/Contents/MacOS/Microsoft Edge",
     "/Applications/Brave Browser.app/Contents/MacOS/Brave Browser",
-    shutil.which("google-chrome") or "",
-    shutil.which("chromium") or "",
+    *_path_chrome_candidates(shutil.which),
 ]
 if IS_WINDOWS:
     CHROME_CANDIDATES += _windows_chrome_candidates(os.environ, shutil.which)
+# An explicit pick goes first: a browser under a name or a path the walk does not know.
+CHROME_CANDIDATES.insert(0, os.environ.get(CHROME_ENV) or "")
 VIEWPORT = (1280, 800)
 # Headless pages render at this device scale so the live view is crisp on a
 # Retina display. The window is VIEWPORT; screenshots for the agent are scaled
@@ -148,7 +172,13 @@ def find_chrome():
     for p in CHROME_CANDIDATES:
         if p and os.path.exists(p):
             return p
-    raise RuntimeError("No Chrome, Chromium, Edge or Brave browser found")
+    msg = "No Chrome, Chromium, Edge or Brave browser found"
+    if is_wsl():
+        msg += (" inside WSL. Bots launch their own browser on the Linux side, so the one on Windows does"
+                " not count: install Google Chrome in WSL and restart Fused Render")
+    elif sys.platform.startswith("linux"):
+        msg += f". Install one, or set {CHROME_ENV} to its path, and restart Fused Render"
+    raise RuntimeError(msg)
 
 
 def write_json_atomic(path, obj):

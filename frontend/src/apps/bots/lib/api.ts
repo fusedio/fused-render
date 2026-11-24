@@ -365,7 +365,7 @@ export interface PackageWriteBody { memory: boolean; apps: string[]; file_name?:
 /** GET /api/bots/setup. `chrome.found` null = could not tell; `claude` is fused-render's cached Claude Code health
  *  snapshot (never a spawn), read loosely: only `found` and `signed_in` are looked at. */
 export interface SetupReply {
-  chrome: { found: boolean | null; path: string | null };
+  chrome: { found: boolean | null; path: string | null; wsl?: boolean };
   claude: { found?: boolean | null; signed_in?: boolean | null; version?: string | null; [k: string]: unknown };
   /** Who runs the bots on this machine (one owner process, bots/registry.py): `this` = the server this page
    *  talks to; else that app forwards here from the named one. `known` false = an older app holds the lock

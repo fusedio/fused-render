@@ -481,14 +481,15 @@ def _chrome_snapshot() -> dict:
     `find_chrome` walks when a bot starts, so this and the bot cannot disagree.
     FusedBot's `onboarding.chrome_snapshot()`; `found: null` = the probe failed."""
     try:
-        from fused_render.bots.browser import CHROME_CANDIDATES
+        from fused_render.bots.browser import CHROME_CANDIDATES, is_wsl
 
         for p in CHROME_CANDIDATES:
             if p and os.path.exists(p):
                 return {"found": True, "path": p}
+        # `wsl`: the page then says to install the browser on the Linux side (the one on Windows does not count).
+        return {"found": False, "path": None, "wsl": is_wsl()}
     except Exception:  # noqa: BLE001
         return {"found": None, "path": None}
-    return {"found": False, "path": None}
 
 
 def _claude_snapshot() -> dict:
