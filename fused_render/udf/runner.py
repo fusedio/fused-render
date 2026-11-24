@@ -27,7 +27,7 @@ logger = logging.getLogger(__name__)
 
 IDLE_S = 20 * 60.0
 _STOP_WAIT_S = 2.0
-FINAL_EVENTS = ("done", "needs_confirmation", "schema")
+FINAL_EVENTS = ("done", "needs_confirmation", "schema", "code")
 
 _LOCK = threading.Lock()
 _WORKERS: dict[str, _Worker] = {}

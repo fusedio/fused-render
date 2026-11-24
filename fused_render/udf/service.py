@@ -12,6 +12,14 @@
 stderr, fused_cached, source}`; `source` is "saved", "fused-cache" or
 "fresh". The bytes are at `url` (GET /api/udf/results/<token>).
 
+The run key always holds the hash of the UDF's code. A file's is its
+contents. A UDF named by canvas and name whose canvas folder is on this
+machine IS its node file there: the run is that file's (its code as it
+stands on disk, its hash, its saved results). Only a canvas with no folder
+here has its code on Fused alone: the worker loads it first (`{op: "code"}`)
+and the run that follows reuses that load. Either way a changed UDF has
+another key and its old saved copy is never shown.
+
 Error codes: bad_ref, bad_env, env_locked, signed_out, unavailable,
 udf_error (with line/stdout/stderr), needs_confirmation (with
 execution_type/title/reason; nothing ran), too_large (with size/limit; past
@@ -73,6 +81,10 @@ class RunError(Exception):
 class Target:
     """What to run, resolved: where (`env`), what `fused.load` gets
     (`load_as`, `collection`) and what identifies it for the run key.
+    `file_sha` is the hash of the code the key is made from: a file's
+    contents, or for a UDF by name with no file here what `_load_named` got
+    from the worker (None until then). `loaded` names that load in the worker, for the run
+    to reuse.
     `clone_dir` is the canvas folder of a canvas node file: its saved results
     are kept there (`store.clone_folder`)."""
 
@@ -84,6 +96,7 @@ class Target:
         self.collection = collection
         self.ident = ident
         self.file_sha = file_sha
+        self.loaded: str | None = None
 
 
 def _sha_of_file(path: str) -> str:
@@ -108,8 +121,10 @@ def _env_ok(env) -> str:
 def resolve(ref) -> Target:
     """A page's reference -> a Target. `{file, env?}`: a UDF's .py on disk; a
     canvas node file runs in its canvas's environment and canvas, any other
-    .py needs `env`. `{canvas, name, env?}`: a UDF as saved on Fused (`env`
-    defaults to the workbench environment)."""
+    .py needs `env`. `{canvas, name, env?}` (`env` defaults to the workbench
+    environment): the node file `<name>.py` of that canvas's folder on this
+    machine when there is one, resolved as `{file}`; else the UDF as saved
+    on Fused."""
     from fused_render import canvases
 
     if not isinstance(ref, dict):
@@ -145,7 +160,65 @@ def resolve(ref) -> Target:
     if "/" in name or os.sep in name or name.endswith(".py"):
         raise RunError("bad_ref", "'name' is a UDF's name, not a path")
     env = _env_ok(ref.get("env") or canvases.workbench_env())
+    if canvases._NAME_RE.fullmatch(canvas):
+        path = os.path.join(canvases._canvas_dir(env, canvas), name + ".py")
+        info = canvases.canvas_node_file(path)
+        if (info is not None and info["kind"] == "udf"
+                and info["env"] == env and info["name"] == canvas):
+            return resolve({"file": path})
     return Target(env, name, canvas, ["name", canvas, name])
+
+
+# Loads of a UDF by name in flight, by (env, canvas, name): requests that
+# arrive together (a map's tiles) wait on one load for the hash.
+_LOADS: dict[tuple, asyncio.Future] = {}
+
+
+async def _load_named(target: Target) -> None:
+    """A UDF by name: have the worker load it from Fused and put the hash of
+    its code into the target, so the run key follows the code. The worker
+    keeps the loaded UDF under `target.loaded` for the run of the request
+    that asked; a request that waited on another's load gets the hash only
+    and its run loads the UDF itself."""
+    load_key = (target.env, target.collection, target.load_as)
+    pending = _LOADS.get(load_key)
+    if pending is not None:
+        sha = await asyncio.shield(pending)
+    else:
+        pending = asyncio.get_running_loop().create_future()
+        _LOADS[load_key] = pending
+        try:
+            sha, target.loaded = await _ask_code(target)
+        except BaseException as exc:
+            pending.set_exception(exc)
+            pending.exception()  # read: no "never retrieved" when no one waited
+            raise
+        else:
+            pending.set_result(sha)
+        finally:
+            _LOADS.pop(load_key, None)
+    target.file_sha = sha
+    target.ident = [*target.ident, sha]
+
+
+async def _ask_code(target: Target) -> tuple[str, str]:
+    """(hash of the code, the worker's id for the loaded UDF)."""
+    rid = "c" + secrets.token_hex(8)
+    request = {"op": "code", "id": rid, "source": target.load_as,
+               "collection": target.collection}
+    try:
+        final = await asyncio.wait_for(runner.run(target.env, request), SCHEMA_TIMEOUT_S)
+    except asyncio.TimeoutError as exc:
+        raise RunError("timeout", "loading the UDF timed out") from exc
+    except runner.RunnerUnavailable as exc:
+        raise RunError("unavailable", str(exc)) from exc
+    except runner.WorkerGone as exc:
+        raise RunError("failed", str(exc)) from exc
+    sha = final.get("code_sha256")
+    if not final.get("ok") or not isinstance(sha, str) or not sha:
+        raise RunError("udf_error", final.get("error") or "could not load the UDF",
+                       line=None, stdout="", stderr="")
+    return sha, rid
 
 
 def parse_tile(value) -> tuple[int, int, int] | None:
@@ -227,6 +300,8 @@ async def _execute(flight: _Flight, target: Target, key: str, params: dict, fmt:
                "cache": cache != "fresh", "confirmed": confirmed, "out": body_path}
     if tile is not None:
         request["tile"] = {"x": tile[0], "y": tile[1], "z": tile[2]}
+    if target.loaded is not None:
+        request["loaded"] = target.loaded
     task = asyncio.ensure_future(runner.run(target.env, request, on_event))
     loop = asyncio.get_running_loop()
     started = loop.time()
@@ -271,10 +346,10 @@ async def _execute(flight: _Flight, target: Target, key: str, params: dict, fmt:
                        size=size, limit=MAX_BYTES)
     keep_key = key
     if target.file_sha is not None and final.get("code_sha256") != target.file_sha:
-        # The worker loaded other code than the file the key was made from
-        # (it changed in between): the answer is not filed under the key.
-        # `code_sha256` is the hash of the code that ran (`udf.code`, the
-        # file's text as fused.load read it).
+        # The worker ran other code than the key was made from (it changed
+        # in between): the answer is not filed under the key.
+        # `code_sha256` is the hash of the code that ran (`udf.code`: a
+        # file's text as fused.load read it, or the code Fused holds).
         keep_key = None
     meta = {"content_type": final.get("content_type") or "", "size": size,
             "seconds": final.get("seconds"), "stdout": final.get("stdout") or "",
@@ -316,6 +391,21 @@ async def _run(msg: dict, send: Send, rid, cancelled: asyncio.Event | None) -> N
     if not canvases._logged_in(target.env):
         raise RunError("signed_out", "not signed in to Fused — sign in first")
     account = canvases._listing_account(target.env)
+    if target.file_sha is None:
+        load = asyncio.ensure_future(_load_named(target))
+        if cancelled is not None:
+            # A cancel during the load ends this request now; nothing is
+            # shown or run after it.
+            stop = asyncio.ensure_future(cancelled.wait())
+            try:
+                await asyncio.wait({load, stop}, return_when=asyncio.FIRST_COMPLETED)
+            finally:
+                stop.cancel()
+            if cancelled.is_set():
+                # The load goes on for whoever else waits on it.
+                load.add_done_callback(lambda f: f.cancelled() or f.exception())
+                raise RunError("cancelled", "the run was cancelled")
+        await load
     key = run_key(target, account, params, fmt, tile)
 
     if cache != "fresh":
