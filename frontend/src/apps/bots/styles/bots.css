@@ -859,6 +859,8 @@ div.bots-page:is(.lcol, .lfit, .stage) .bots .botfoot { justify-content: center;
 .bots-page .winacts .btnlink:hover { color: var(--text); text-decoration: none; }
 .bots-page #bpanel iframe { flex: 1; width: 100%; border: 0; background: var(--bg); }
 .bots-page .bots .botfoot { gap: 4px; }
+.bots-page .bots .botfoot .botsoff { margin: 0; color: var(--muted); font-size: 12px; line-height: 1.4; }
+div.bots-page:is(.lcol, .lfit, .stage) .bots .botfoot .botsoff { display: none; }  /* cannot fit the 72px rail */
 /* The rail stacks the footer in one column (Akshil, 2026-10-08): three icons across 72px wrapped into two-plus-one. */
 div.bots-page:is(.lcol, .lfit, .stage) .bots .botfoot { flex-direction: column; gap: 6px; }
 .bots-page #apanel { position: absolute; inset: 0; background: var(--bg); display: none; flex-direction: column; z-index: 20; }

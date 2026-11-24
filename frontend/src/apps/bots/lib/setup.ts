@@ -5,7 +5,11 @@ import type { SetupReply } from "./api";
 export function setupIssues(s: SetupReply | null): string[] {
   if (!s) return [];
   const out: string[] = [];
-  if (s.chrome?.found === false) out.push("Chrome not found: bots drive Google Chrome, so install it first.");
+  if (s.chrome?.found === false) {
+    out.push(s.chrome.wsl
+      ? "Chrome not found inside WSL: bots launch their own browser on the Linux side, so install Google Chrome there (the one on Windows does not count)."
+      : "Chrome not found: bots drive Google Chrome, so install it first.");
+  }
   if (s.claude?.found === false) out.push("Claude Code not set up: bots think with it.");
   else if (s.claude?.found && s.claude.signed_in === false) out.push("Claude Code not set up: sign in to it first.");
   const o = ownerLine(s);

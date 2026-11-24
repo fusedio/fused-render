@@ -177,6 +177,8 @@ export function BotList({ onAddBot, onOpenUsage, onOpenBrowsers, onOpenBuilds, o
       <div className="railbar" ref={barRef} aria-hidden="true" />
       </div>
       <footer className="botfoot">
+        {/* Why + only makes an expert here: said once, where the bots' own doors would stand. */}
+        {botsOff ? <p className="botsoff">Bots do not run on Windows yet, only experts. To use bots, run Fused Render inside WSL.</p> : null}
         {/* Builds and Apps are the Mac's pages (a tasks iframe, /api/bot-apps); the LAN door 404s them (lan.py). */}
         {isLanHost() || botsOff ? null : <>
         <button id="builds" className={`ptog${chip.live ? " live" : ""}${chip.warn ? " warn" : ""}${chip.fresh ? " fresh" : ""}`} title={chip.title}
