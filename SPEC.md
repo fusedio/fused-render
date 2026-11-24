@@ -13052,8 +13052,8 @@ milliseconds.
 ### 54.3 Saved results (`udf/store.py`)
 
 - **SR-1 Key.** sha256 of the environment, the account (the access token's
-  `sub`, hashed), the source (a file's path and content hash, or canvas and
-  name), the params, the format and, for a tile run, the tile `x, y, z`.
+  `sub`, hashed), the source (a file's path and content hash, or canvas,
+  name and the hash of the code Fused holds, SR-4a), the params, the format and, for a tile run, the tile `x, y, z`.
   An edit, another account, other params or another tile is another key; a
   run without a tile has the key it had before tiles existed.
 - **SR-2 What is kept.** Only successful runs; never errors or
@@ -13079,14 +13079,10 @@ milliseconds.
 - **SR-4 Shown as saved.** The key cannot see sibling UDFs read through
   `fused.load`, outside data or the clock, so a saved copy is always
   labelled saved and, under `cache: "auto"`, always followed by a run.
-- **SR-4a A UDF by name.** Its key holds no code (the code is on Fused,
-  not on this machine), so its saved copy records the hash of the code it
-  was made from and is held back until the worker has loaded the UDF:
-  `saved` is sent with `started`, only when the loaded code has that hash.
-  After the UDF changes on Fused its old copy is never shown; the run's
-  answer replaces it. `prefer-saved` goes to the worker for the same check
-  and ends at the saved copy when it passes. A copy saved before this rule
-  has no hash and is not shown.
+- **SR-4a A UDF by name.** Its code is on Fused, so before the key is made
+  the worker loads the UDF (`{op: "code"}`) and answers the hash of its
+  code; the run that follows takes that same load. After the UDF changes on
+  Fused its key is another one: the old copy is never shown.
 - **SR-5 Clearing.** Preferences → Advanced → Debugging → "Saved UDF
   cache" shows the results' count and size, `<home>`'s and every canvas
   folder's (`GET /api/udf/saved`), and Clear deletes them all (`DELETE /api/udf/saved`, guarded); the next open of

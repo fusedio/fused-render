@@ -104,6 +104,9 @@ class FakeRunner:
         if self.kind != "none" and not request.get("confirmed"):
             return {"id": request["id"], "event": "needs_confirmation", "kind": self.kind}
         source = request.get("source") or ""
+        if request.get("op") == "code":
+            return {"id": request["id"], "event": "code", "ok": True,
+                    "code_sha256": hashlib.sha256(self.named_code.encode("utf-8")).hexdigest()}
         named_sha = None
         if not source.endswith(".py"):
             named_sha = hashlib.sha256(self.named_code.encode("utf-8")).hexdigest()
@@ -311,31 +314,23 @@ def test_prefer_saved_ends_at_the_saved_copy(clone, signed_in, fake_runner):
     assert len(fake_runner.requests) == 1
 
 
-def test_a_udf_by_name_shows_its_saved_copy_only_for_the_same_code(base, signed_in, fake_runner):
+def test_a_udf_by_name_has_its_code_in_the_key(base, signed_in, fake_runner):
     ref = {"canvas": "demo", "name": "udf_1", "env": ENV}
     assert [f["type"] for f in run_frames({"ref": ref})] == ["started", "done"]
-    # Same code on Fused: the saved copy, once the worker has loaded the UDF.
+    ops = [r["op"] for _, r in fake_runner.requests]
+    assert ops == ["code", "run"]
+    # The run takes the load the key was made from.
+    assert fake_runner.requests[1][1]["loaded"] == fake_runner.requests[0][1]["id"]
+    # Same code on Fused: the saved copy at once.
     frames = run_frames({"ref": ref})
     assert [f["type"] for f in frames] == ["saved", "started", "done"]
-    assert frames[0]["result"]["source"] == "saved"
-    # The UDF changed on Fused: the old copy is never shown.
+    # The UDF changed on Fused: another key, the old copy is never shown.
     fake_runner.named_code = "saved on fused v2"
     frames = run_frames({"ref": ref})
     assert [f["type"] for f in frames] == ["started", "done"]
     assert frames[-1]["result"]["source"] == "fresh"
-    assert [f["type"] for f in run_frames({"ref": ref})] == ["saved", "started", "done"]
-
-
-def test_prefer_saved_for_a_udf_by_name_checks_the_code_first(base, signed_in, fake_runner):
-    ref = {"canvas": "demo", "name": "udf_1", "env": ENV}
-    run_frames({"ref": ref})
     frames = run_frames({"ref": ref, "cache": "prefer-saved"})
-    assert [f["type"] for f in frames] == ["saved", "started", "done"]
-    assert frames[-1]["result"]["source"] == "saved"
-    fake_runner.named_code = "saved on fused v2"
-    frames = run_frames({"ref": ref, "cache": "prefer-saved"})
-    assert [f["type"] for f in frames] == ["started", "done"]
-    assert frames[-1]["result"]["source"] == "fresh"
+    assert [f["type"] for f in frames] == ["saved", "done"]
 
 
 def test_fresh_skips_the_saved_copy_and_fuseds_cache(clone, signed_in, fake_runner):
