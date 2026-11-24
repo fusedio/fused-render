@@ -460,6 +460,9 @@ export type Via = "pointer" | "focus";
 export class PeekIntent {
   private shown: string | null = null;
   private pendingKey: string | null = null;
+  /** How the pending open came: the keyboard reaching a ring the pointer is
+   *  still waiting on takes the keyboard's own timing. */
+  private pendingVia: Via = "pointer";
   private openTimer = 0;
   private warmTimer = 0;
   private closeTimer = 0;
@@ -529,7 +532,10 @@ export class PeekIntent {
       this.cancelOpen();
       return;
     }
-    if (this.pendingKey === key) return;
+    // The same arrival again waits on the first's clock — except the
+    // keyboard reaching a ring the POINTER is waiting on (a cold rail's
+    // longer wait): it takes its own timing.
+    if (this.pendingKey === key && !(via === "focus" && this.pendingVia === "pointer")) return;
     this.cancelOpen();
     const usual = this.shown === null ? PEEK_OPEN_MS : PEEK_SWAP_MS;
     const wait = via === "pointer" ? this.pace.openMs(usual) : usual;
@@ -540,6 +546,7 @@ export class PeekIntent {
       return;
     }
     this.pendingKey = key;
+    this.pendingVia = via;
     // The mount: at once for the keyboard (a focus is deliberate), after a
     // short dwell for the pointer (a sweep is not).
     if (via === "focus") this.sink.warm(key);

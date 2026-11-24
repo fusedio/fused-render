@@ -68,12 +68,12 @@ describe("installRailZone", () => {
     const doc = fakeDoc();
     const a = installRailZone(doc);
     const b = installRailZone(doc);
-    expect(doc.count()).toBe(2);
+    expect(doc.count()).toBe(3);
     doc.fire("pointerover", { target: el(true) });
     railPace.shown();
     a();
     a();
-    expect(doc.count()).toBe(2);
+    expect(doc.count()).toBe(3);
     expect(railPace.openMs(150)).toBe(RAIL_HOT_OPEN_MS);
     b();
     expect(doc.count()).toBe(0);
@@ -81,10 +81,22 @@ describe("installRailZone", () => {
     expect(railPace.openMs(150)).toBe(150);
     // …and the next rail's watch finds the rail as hot as it was.
     offs.push(installRailZone(doc));
-    expect(doc.count()).toBe(2);
+    expect(doc.count()).toBe(3);
     expect(railPace.openMs(150)).toBe(RAIL_HOT_OPEN_MS);
     doc.fire("pointerover", { target: el(false) });
     expect(railZoneForTests().isInside).toBe(false);
+  });
+
+  it("a press in the zone heats it; a press outside, or a touch, does not", () => {
+    const doc = fakeDoc();
+    offs.push(installRailZone(doc));
+    doc.fire("pointerdown", { target: el(false) });
+    doc.fire("pointerdown", { target: el(true), pointerType: "touch" });
+    expect(railZoneForTests().isHot).toBe(false);
+    doc.fire("pointerover", { target: el(true) });
+    expect(railPace.openMs(150)).toBe(RAIL_COLD_OPEN_MS);
+    doc.fire("pointerdown", { target: el(true) });
+    expect(railPace.openMs(150)).toBe(RAIL_HOT_OPEN_MS);
   });
 
   it("inRailZone asks the element's closest, and a target without one is outside", () => {

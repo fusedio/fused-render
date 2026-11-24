@@ -24,8 +24,8 @@ export function inRailZone(target: EventTarget | null): boolean {
 }
 
 interface PointerDoc {
-  addEventListener(type: "pointerover" | "pointerout", fn: (e: PointerEvent) => void, capture: boolean): void;
-  removeEventListener(type: "pointerover" | "pointerout", fn: (e: PointerEvent) => void, capture: boolean): void;
+  addEventListener(type: "pointerover" | "pointerout" | "pointerdown", fn: (e: PointerEvent) => void, capture: boolean): void;
+  removeEventListener(type: "pointerover" | "pointerout" | "pointerdown", fn: (e: PointerEvent) => void, capture: boolean): void;
 }
 
 /** Watch the document's pointer for the zone while the caller is mounted;
@@ -49,11 +49,20 @@ export function installRailZone(doc: PointerDoc = document): () => void {
       if (e.pointerType === "touch" || e.relatedTarget !== null) return;
       zone.leave();
     };
+    // A press in the zone heats it, whatever it lands on (rail-zone-lib
+    // header) — the empty rail, a card, a door with no card to show.
+    const down = (e: PointerEvent) => {
+      if (e.pointerType === "touch" || !inRailZone(e.target)) return;
+      zone.enter();
+      zone.heat();
+    };
     doc.addEventListener("pointerover", over, true);
     doc.addEventListener("pointerout", out, true);
+    doc.addEventListener("pointerdown", down, true);
     unwatch = () => {
       doc.removeEventListener("pointerover", over, true);
       doc.removeEventListener("pointerout", out, true);
+      doc.removeEventListener("pointerdown", down, true);
     };
   }
   let done = false;

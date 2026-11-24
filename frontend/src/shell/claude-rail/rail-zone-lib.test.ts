@@ -224,6 +224,26 @@ describe("PeekIntent on the zone", () => {
     expect(a.shown).toEqual(["x", "y", null]);
   });
 
+  it("the keyboard reaching a ring the cold pointer waits on takes its own timing; a second pointer arrival keeps the first's clock", () => {
+    const { clock, zone, win } = rail();
+    const a = win();
+    zone.enter();
+    a.intent.enterRing("x", "pointer");
+    clock.tick(100);
+    a.intent.enterRing("x", "pointer");
+    clock.tick(RAIL_COLD_OPEN_MS - 100);
+    expect(a.shown).toEqual(["x"]);
+    a.intent.dismiss();
+    a.intent.leaveRing("pointer");
+    zone.leave();
+    clock.tick(RAIL_COOL_MS);
+    zone.enter();
+    a.intent.enterRing("y", "pointer");
+    a.intent.enterRing("y", "focus");
+    clock.tick(PEEK_OPEN_MS);
+    expect(a.shown).toEqual(["x", null, "y"]);
+  });
+
   it("a press heats the rail; a pinned window still moves for no hover", () => {
     const { clock, zone, win } = rail();
     const a = win();
