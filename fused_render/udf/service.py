@@ -159,10 +159,40 @@ def resolve(ref) -> Target:
     return Target(env, name, canvas, ["name", canvas, name])
 
 
+# Loads of a UDF by name in flight, by (env, canvas, name): requests that
+# arrive together (a map's tiles) wait on one load for the hash.
+_LOADS: dict[tuple, asyncio.Future] = {}
+
+
 async def _load_named(target: Target) -> None:
     """A UDF by name: have the worker load it from Fused and put the hash of
     its code into the target, so the run key follows the code. The worker
-    keeps the loaded UDF under `target.loaded` for the run."""
+    keeps the loaded UDF under `target.loaded` for the run of the request
+    that asked; a request that waited on another's load gets the hash only
+    and its run loads the UDF itself."""
+    load_key = (target.env, target.collection, target.load_as)
+    pending = _LOADS.get(load_key)
+    if pending is not None:
+        sha = await asyncio.shield(pending)
+    else:
+        pending = asyncio.get_running_loop().create_future()
+        _LOADS[load_key] = pending
+        try:
+            sha, target.loaded = await _ask_code(target)
+        except BaseException as exc:
+            pending.set_exception(exc)
+            pending.exception()  # read: no "never retrieved" when no one waited
+            raise
+        else:
+            pending.set_result(sha)
+        finally:
+            _LOADS.pop(load_key, None)
+    target.file_sha = sha
+    target.ident = [*target.ident, sha]
+
+
+async def _ask_code(target: Target) -> tuple[str, str]:
+    """(hash of the code, the worker's id for the loaded UDF)."""
     rid = "c" + secrets.token_hex(8)
     request = {"op": "code", "id": rid, "source": target.load_as,
                "collection": target.collection}
@@ -178,9 +208,7 @@ async def _load_named(target: Target) -> None:
     if not final.get("ok") or not isinstance(sha, str) or not sha:
         raise RunError("udf_error", final.get("error") or "could not load the UDF",
                        line=None, stdout="", stderr="")
-    target.file_sha = sha
-    target.ident = [*target.ident, sha]
-    target.loaded = rid
+    return sha, rid
 
 
 def parse_tile(value) -> tuple[int, int, int] | None:
