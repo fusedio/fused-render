@@ -476,16 +476,17 @@ def bots_presets():
 
 
 def _chrome_snapshot() -> dict:
-    """`{found, path}`: the first browser from the bots' own candidate list
-    (browser.CHROME_CANDIDATES) that exists on this machine — the list
-    `find_chrome` walks when a bot starts, so this and the bot cannot disagree.
+    """`{found, path}`: the first browser from the bots' own candidate walk
+    (browser.found_chrome) that exists on this machine — the walk
+    `find_chrome` runs when a bot starts, so this and the bot cannot disagree.
+    Walked on every read, so a browser installed since the last one shows up.
     FusedBot's `onboarding.chrome_snapshot()`; `found: null` = the probe failed."""
     try:
-        from fused_render.bots.browser import CHROME_CANDIDATES, is_wsl
+        from fused_render.bots.browser import found_chrome, is_wsl
 
-        for p in CHROME_CANDIDATES:
-            if p and os.path.exists(p):
-                return {"found": True, "path": p}
+        p = found_chrome()
+        if p:
+            return {"found": True, "path": p}
         # `wsl`: the page then says to install the browser on the Linux side (the one on Windows does not count).
         return {"found": False, "path": None, "wsl": is_wsl()}
     except Exception:  # noqa: BLE001

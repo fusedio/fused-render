@@ -80,9 +80,20 @@ PATH_CHROME_NAMES = ("google-chrome", "google-chrome-stable", "chromium", "chrom
 CHROME_ENV = "FUSED_RENDER_BOTS_CHROME"
 
 
-def _path_chrome_candidates(which):
-    """Whatever `which` finds for PATH_CHROME_NAMES, in that order. Pure, like the Windows list."""
-    return [which(n) or "" for n in PATH_CHROME_NAMES]
+# Where a Linux browser sits when the server's PATH does not say: the .deb/.rpm dirs, and snap's, which only a
+# login shell's profile adds (a server started from a desktop entry or `wsl.exe -e` has no /snap/bin).
+LINUX_BIN_DIRS = ("/usr/bin", "/usr/local/bin", "/snap/bin")
+
+
+def _path_chrome_candidates(which, dirs=()):
+    """Whatever `which` finds for PATH_CHROME_NAMES, in that order, then the same names under `dirs`.
+    Pure, like the Windows list; a generator, so a walk that stops at the first hit asks `which` no further
+    (each ask stats every PATH dir, and under WSL those include the slow /mnt/c ones)."""
+    for n in PATH_CHROME_NAMES:
+        yield which(n) or ""
+    for d in dirs:
+        for n in PATH_CHROME_NAMES:
+            yield f"{d}/{n}"
 
 
 def is_wsl(env=None, release=None, platform=None) -> bool:
@@ -95,17 +106,32 @@ def is_wsl(env=None, release=None, platform=None) -> bool:
     return bool(env.get("WSL_DISTRO_NAME")) or "microsoft" in release.lower()
 
 
-CHROME_CANDIDATES = [
+MAC_CHROME_APPS = (
     "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
     "/Applications/Chromium.app/Contents/MacOS/Chromium",
     "/Applications/Microsoft Edge.app/Contents/MacOS/Microsoft Edge",
     "/Applications/Brave Browser.app/Contents/MacOS/Brave Browser",
-    *_path_chrome_candidates(shutil.which),
-]
-if IS_WINDOWS:
-    CHROME_CANDIDATES += _windows_chrome_candidates(os.environ, shutil.which)
-# An explicit pick goes first: a browser under a name or a path the walk does not know.
-CHROME_CANDIDATES.insert(0, os.environ.get(CHROME_ENV) or "")
+)
+
+
+def chrome_candidates():
+    """Every place a browser may be, best first. Walked afresh on each call, never kept: PATH is read now, so a
+    browser installed while the server runs is found on the next try. (A list built once at import stayed empty
+    until the server process restarted, which closing the Linux app's window does not do.)"""
+    # An explicit pick goes first: a browser under a name or a path the walk does not know.
+    yield os.environ.get(CHROME_ENV) or ""
+    yield from MAC_CHROME_APPS
+    yield from _path_chrome_candidates(shutil.which, LINUX_BIN_DIRS if sys.platform.startswith("linux") else ())
+    if IS_WINDOWS:
+        yield from _windows_chrome_candidates(os.environ, shutil.which)
+
+
+def found_chrome():
+    """The first candidate that exists, or None. The one walk `find_chrome`, the Bots page's setup line and the
+    onboarding meter all read, so they cannot disagree."""
+    return next((p for p in chrome_candidates() if p and os.path.exists(p)), None)
+
+
 VIEWPORT = (1280, 800)
 # Headless pages render at this device scale so the live view is crisp on a
 # Retina display. The window is VIEWPORT; screenshots for the agent are scaled
@@ -169,15 +195,17 @@ _PASS_SCHEMES = ("about:", "data:", "file:", "blob:", "chrome:", "javascript:")
 
 
 def find_chrome():
-    for p in CHROME_CANDIDATES:
-        if p and os.path.exists(p):
-            return p
+    p = found_chrome()
+    if p:
+        return p
     msg = "No Chrome, Chromium, Edge or Brave browser found"
+    # Installing one needs no restart (the walk is live); only the env var does, read from the server's own env.
     if is_wsl():
         msg += (" inside WSL. Bots launch their own browser on the Linux side, so the one on Windows does"
-                " not count: install Google Chrome in WSL and restart Fused Render")
+                " not count: install Google Chrome in WSL, then send the message again")
     elif sys.platform.startswith("linux"):
-        msg += f". Install one, or set {CHROME_ENV} to its path, and restart Fused Render"
+        msg += (f". Install one and send the message again, or set {CHROME_ENV} to a browser's path and"
+                " restart Fused Render")
     raise RuntimeError(msg)
 
 
