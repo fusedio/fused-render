@@ -192,17 +192,17 @@ def _get_in(folder: str, key: str) -> dict | None:
 def get(key: str, clone_dir: str | None = None) -> dict | None:
     """The saved entry's meta for `key` (with `token` = key), or None. An
     entry older than MAX_AGE_S is removed and is a miss. `clone_dir` is the
-    canvas folder of the file that runs: its results folder is read first,
-    then the home folder."""
+    canvas folder of the file that runs: its results folder is the one read
+    when it may hold results (`clone_folder`), else the home folder."""
     if not _TOKEN_RE.match(key or "") or key.startswith("t"):
         return None
     folder = clone_folder(clone_dir)
-    if folder is not None:
-        found = _get_in(folder, key)
-        if found is not None:
-            _remember(key, folder)
-            return found
-    return _get_in(_results_dir(), key)
+    if folder is None:
+        return _get_in(_results_dir(), key)
+    found = _get_in(folder, key)
+    if found is not None:
+        _remember(key, folder)
+    return found
 
 
 def keep(body_path: str, meta: dict, key: str | None, clone_dir: str | None = None) -> dict:
@@ -210,8 +210,8 @@ def keep(body_path: str, meta: dict, key: str | None, clone_dir: str | None = No
     that key (replacing any earlier one) and its token is the key; without
     one it stays a temporary result under its own token. The entry goes into
     `clone_dir`'s results folder when that canvas folder may hold one
-    (`clone_folder`), else into the home folder; a copy of the key in the
-    other place is removed. Returns the meta with `token` and `saved_at`."""
+    (`clone_folder`), else into the home folder. Returns the meta with
+    `token` and `saved_at`."""
     meta = dict(meta, saved_at=time.time())
     token = os.path.basename(body_path)[:-len(".body")]
     if key and _TOKEN_RE.match(key):
@@ -225,7 +225,6 @@ def keep(body_path: str, meta: dict, key: str | None, clone_dir: str | None = No
                     _move(body_path, os.path.join(folder, key + ".body"))
                     _write_json(os.path.join(folder, key + ".json"), meta)
                     _remember(key, folder)
-                    _remove_entry(_results_dir(), key)
                 except OSError:
                     # The canvas folder went away or cannot be written.
                     _remove_entry(folder, key)
@@ -235,8 +234,6 @@ def keep(body_path: str, meta: dict, key: str | None, clone_dir: str | None = No
                 os.replace(body_path, os.path.join(_results_dir(), key + ".body"))
                 _write_json(os.path.join(_results_dir(), key + ".json"), meta)
                 _WHERE.pop(key, None)
-                if clone_dir:
-                    _remove_entry(_clone_path(clone_dir), key)
         token = key
     else:
         _write_json(os.path.join(_tmp_dir(), token + ".json"), meta)
