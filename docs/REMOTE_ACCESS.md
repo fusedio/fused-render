@@ -53,6 +53,15 @@ is on but the computer does not answer on it. The verdict rides in
 resolution on the computer. It cannot see what the phone's own system would
 refuse (§4).
 
+Two rules keep one failed probe from stranding a phone. A request that came
+in over the tailnet proves that route, so `/api/lan/routes` always names the
+host it arrived on (`routes(proven=…)`). And the answer carries `away`
+(whether this phone may use away routes): the phone forgets its tailnet name
+only when that is false, never because a route is missing from one answer.
+The probe is a blocking connection to this very listener, so the phone
+listener runs `routes` off its event loop (`asyncio.to_thread`); on the loop
+it could only time out, stalling every phone request while it did.
+
 ## 2. The one idea: do not terminate TLS anywhere new
 
 The Wi-Fi design already has the right trust model: **one self-signed

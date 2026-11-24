@@ -38,7 +38,7 @@ enum ManifestSync {
     private static func refreshRoutes(server: Server, base: URL, cookieHeader: String,
                                       session: PinnedSession) async {
         struct Route: Decodable { let kind: String; let host: String; let port: Int? }
-        struct Routes: Decodable { let routes: [Route]; let fingerprint: String? }
+        struct Routes: Decodable { let routes: [Route]; let fingerprint: String?; let away: Bool? }
         var req = URLRequest(url: base.appendingPathComponent("api/lan/routes"))
         req.setValue(cookieHeader, forHTTPHeaderField: "Cookie")
         req.setValue(ShellIdentity.userAgentMarker, forHTTPHeaderField: "User-Agent")
@@ -52,6 +52,12 @@ enum ManifestSync {
         var info: [String: Any] = ["fingerprint": server.fingerprint]
         if let ts = payload.routes.first(where: { $0.kind == "tailscale" }) {
             info["tailnet"] = ts.host
+        } else if payload.away == true {
+            // Away access is on for this phone, yet no tailnet route was named:
+            // the computer's own try at it failed just now (or it left its
+            // tailnet). Not a reason to forget a name that may work again in a
+            // minute — only "away is off" is. Nothing learned.
+            return
         }
         await MainActor.run {
             NotificationCenter.default.post(name: .fusedRoutesLearned, object: nil, userInfo: info)

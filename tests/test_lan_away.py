@@ -202,7 +202,7 @@ def test_routes_list_wifi_then_tailnet(away, monkeypatch):
     status, body, _ = call(lan.LanApp(_echo), "/api/lan/routes", headers=[cookie], **TAILNET)
     assert status == 200
     got = json.loads(body)
-    assert got["fingerprint"] == "f" * 64
+    assert got["fingerprint"] == "f" * 64 and got["away"] is True
     assert got["routes"] == [
         {"kind": "lan", "host": "studio.local", "port": 1889},
         {"kind": "lan", "host": "192.168.1.20", "port": 1889},

@@ -954,7 +954,15 @@ class LanApp:
             return JSONResponse({"error": "away access is off for this phone"}, status_code=403)
         if path == "/api/lan/routes" and method == "GET":
             # A phone limited to the Wi-Fi is not told the away routes.
-            return JSONResponse(routes(away=device.get("remote", True) is not False))
+            # OFF THIS LOOP: `routes` probes this very listener (a blocking
+            # TLS connection to itself), which the loop it runs on could only
+            # answer after the probe gave up — every phone request stalled for
+            # seconds and the answer was "no tailnet route".
+            import asyncio
+
+            proven = _header(scope, b"host").rsplit(":", 1)[0].lower() if via == "tailscale" else None
+            return JSONResponse(await asyncio.to_thread(
+                routes, device.get("remote", True) is not False, proven))
 
         if path == "/" or path == "/index.html" or (method == "GET" and _lan_page(path)):
             # The grid is a second Vite page (frontend/lan.html → shell-dist/
@@ -1419,11 +1427,20 @@ def apply_remote() -> None:
     remote.apply(prefs.lan_enabled() and prefs.lan_remote_enabled())
 
 
-def routes(away: bool = True) -> dict:
+def routes(away: bool = True, proven: str | None = None) -> dict:
     """Every way this computer can be reached right now, in the order a
     phone should try them: the Wi-Fi name and address, then the tailnet.
     Paired phones read it (``/api/lan/routes``) after connecting so a tailnet
-    joined since pairing is learned without a new scan. One certificate, one fingerprint, every route."""
+    joined since pairing is learned without a new scan. One certificate, one
+    fingerprint, every route.
+
+    ``proven`` is the tailnet host the asking request itself came in on: that
+    route works, whatever this computer's own probe of it just said, so it is
+    never left out. ``away`` in the answer says whether this phone may use
+    away routes at all — the phone forgets its tailnet name only on a False,
+    never because one probe here failed.
+
+    Blocking (the probe): never call it on the listener's own event loop."""
     out = []
     if _controller.running:
         port = _controller.port
@@ -1432,9 +1449,13 @@ def routes(away: bool = True) -> dict:
         ip = lan_doctor.best_ip()
         if ip:
             out.append({"kind": "lan", "host": ip, "port": port})
-        for r in (remote.routes(_tailnet_probe) if away else []):
+        tailnet = remote.routes(_tailnet_probe) if away else []
+        if away and not tailnet and proven and proven in remote.hosts():
+            tailnet = [{"kind": "tailscale", "host": proven}]
+        for r in tailnet:
             out.append({**r, "port": r.get("port") or port})
-    return {"routes": out, "fingerprint": _controller.fingerprint() if _controller.running else None}
+    return {"routes": out, "fingerprint": _controller.fingerprint() if _controller.running else None,
+            "away": bool(away and remote.enabled)}
 
 
 # ---- the desktop's own API (loopback; the LAN wrapper never forwards these) --
