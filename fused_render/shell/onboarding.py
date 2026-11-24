@@ -211,7 +211,7 @@ def _observe(stages: dict) -> None:
     except Exception:  # noqa: BLE001
         log.debug("onboarding: fda observe failed", exc_info=True)
 
-    # Chrome: the bots' own candidate walk (bots/browser.CHROME_CANDIDATES —
+    # Chrome: the bots' own candidate walk (bots/browser.found_chrome —
     # the list `find_chrome` runs when a bot starts, so this and the bot never
     # disagree), a handful of os.path.exists, conclusive. Found = complete,
     # with the path for the step's "Found at …" row. Not found = pending.
@@ -221,9 +221,9 @@ def _observe(stages: dict) -> None:
         put("chrome", "n/a")
     else:
         try:
-            from fused_render.bots.browser import CHROME_CANDIDATES
+            from fused_render.bots.browser import found_chrome
 
-            found = next((p for p in CHROME_CANDIDATES if p and os.path.exists(p)), None)
+            found = found_chrome()
             if found:
                 put("chrome", "complete", found=True, path=found)
             else:

@@ -23,6 +23,8 @@ import { GateCard } from "@platform/ui/GateCard";
 import { ApprovalCard } from "./ApprovalCard";
 import { HandBackRow, HandoverNote } from "./HandoverCard";
 import { SetupLines } from "./SetupLines";
+import { ChromeInstall } from "./ChromeInstall";
+import { endsOnNoBrowser } from "../lib/setup";
 
 const EMPTY: BotEvent[] = [];
 const NO_SEQS: ReadonlySet<number> = new Set();
@@ -807,6 +809,8 @@ export function Thread({ b, threadRef, searchQ, onSearchCount, onReact, onReply,
       );
     });
     if (b.control && hoSeq == null) content.push(<HandoverNote key="handover" b={b} />);
+    // The task could not start for want of a browser: inside WSL the fix is a button, right under the error.
+    if (endsOnNoBrowser(evs)) content.push(<ChromeInstall key="chromeinstall" after="Send your message again." />);
   }
 
   return (

@@ -476,18 +476,23 @@ def bots_presets():
 
 
 def _chrome_snapshot() -> dict:
-    """`{found, path}`: the first browser from the bots' own candidate list
-    (browser.CHROME_CANDIDATES) that exists on this machine — the list
-    `find_chrome` walks when a bot starts, so this and the bot cannot disagree.
+    """`{found, path}`: the first browser from the bots' own candidate walk
+    (browser.found_chrome) that exists on this machine — the walk
+    `find_chrome` runs when a bot starts, so this and the bot cannot disagree.
+    Walked on every read, so a browser installed since the last one shows up.
     FusedBot's `onboarding.chrome_snapshot()`; `found: null` = the probe failed."""
     try:
-        from fused_render.bots.browser import CHROME_CANDIDATES, is_wsl
+        from fused_render.bots.browser import found_chrome, is_wsl
 
-        for p in CHROME_CANDIDATES:
-            if p and os.path.exists(p):
-                return {"found": True, "path": p}
+        p = found_chrome()
+        if p:
+            return {"found": True, "path": p}
         # `wsl`: the page then says to install the browser on the Linux side (the one on Windows does not count).
-        return {"found": False, "path": None, "wsl": is_wsl()}
+        # `install`: whether the page's Install button can do that here (chrome_install.plan), and the command
+        # to paste when it cannot.
+        from fused_render.bots import chrome_install
+
+        return {"found": False, "path": None, "wsl": is_wsl(), "install": chrome_install.plan()}
     except Exception:  # noqa: BLE001
         return {"found": None, "path": None}
 
@@ -517,6 +522,32 @@ def bots_setup():
     true here; a forwarder overwrites it with its own view (forward_middleware);
     null when no process does."""
     return {"chrome": _chrome_snapshot(), "claude": _claude_snapshot(), "owner": registry.owner_info()}
+
+
+@router.get("/api/bots/setup/chrome")
+@_handled
+def bots_chrome_install_status():
+    """The Chrome install's record (chrome_install.status): `{state, detail, output, error}`. A read."""
+    from fused_render.bots import chrome_install
+
+    return chrome_install.status()
+
+
+@router.post("/api/bots/setup/chrome")
+@_handled
+def bots_chrome_install(x_fused: str | None = Header(default=None)):
+    """Install Google Chrome inside WSL (chrome_install.py: Google's .deb through apt, as root via wsl.exe).
+    Returns the opening record; the page polls the GET. 409 with the reason when it cannot run here or one
+    is already running. Guarded: this downloads a package and installs it as root."""
+    guard = _require_fused(x_fused)
+    if guard is not None:
+        return guard
+    from fused_render.bots import chrome_install
+
+    try:
+        return chrome_install.start()
+    except chrome_install.InstallError as e:
+        return _error(str(e), 409)
 
 
 @router.post("/api/bots/workspace/take")
