@@ -2415,7 +2415,13 @@ export function ClaudeRail({
   useEffect(() => {
     const was = listWordSeen.current;
     listWordSeen.current = listWord;
-    if (listWord) setAPinned(listWord);
+    // FREE PINS: the mark is a LIST of pins, and `setAPinned` replaces all of
+    // it — a card still held the old way as the switch comes on adds its word
+    // and wipes no other pin (Bugbot on #2450).
+    if (listWord) {
+      if (freePinsRef.current) addAPin(listWord);
+      else setAPinned(listWord);
+    }
     // FREE PINS: this card never holds the mark — a mark it wrote before the
     // switch came on is the shell's pinned window's now (below), and stays.
     else if (was && !freePinsRef.current && aPinned() === was) setAPinned(null);
@@ -2924,6 +2930,12 @@ export function ClaudeRail({
         else if (modeOfKey(door) !== null) closeModeCard(modeOfKey(door) as string);
         else if (door === PLUS_PIN) setCardCloseSignal((n) => n + 1);
       }
+      // A CHAT'S PIN DOES NOT CARRY OVER, one or many (Bugbot on #2450 asked
+      // for the newest to stay, as a door's does): a pinned bot or favourite
+      // has no card of this rail held behind it, and with the switch off a
+      // pin is a held card — one pinned favourite already went here
+      // (FavouritePeek: its key is no longer the open one), one pinned bot
+      // on the line below. Several go the same way.
       if (botOpen() !== null && !botHeldRef.current) setBotOpen(null);
       if (favPins().length > 1) setFavPinned(null);
       return;
