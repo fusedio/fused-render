@@ -189,6 +189,7 @@ const P = {
 };
 const esc = v => String(v).replace(/[&<>"']/g, c => `&#${c.charCodeAt(0)};`);
 const human = n => n > 1e9 ? (n/1e9).toFixed(2)+' GB' : n > 1e6 ? (n/1e6).toFixed(1)+' MB' : Math.round(n/1e3)+' KB';
+const fmt = n => Number(n).toLocaleString();
 // loading=true keeps the topbar's slim progress bar sliding and gives the
 // status pill a soft pulse; both switch off the instant a non-loading call
 // (success, error, or empty message) lands.
@@ -198,6 +199,18 @@ function status(msg, err, loading){
   els.status.className = err ? 'err' : (loading ? 'loading' : '');
   els.loadbar.classList.toggle('active', !!loading);
 }
+function isPreview(){
+  try {
+    for (let w = window; ; w = w.parent){
+      if (new URLSearchParams(w.location.search).get('_preview') === '1') return true;
+      if (w.parent === w) return false;
+    }
+  } catch (e) { return false; }
+}
+const failed = e => ({error: String(e.message || e)});
+const call = params => fused.daemon.run(params)
+  .catch(e => { if (e && e.type) throw e; return fused.runPython('./vector_reader.py', params, {key: null}); })
+  .then(r => r || {error: 'read failed'}, failed);
 function skeletonRows(n){
   return Array.from({length: n}, (_, i) => {
     const w = 45 + (i * 17) % 40;
@@ -207,24 +220,6 @@ function skeletonRows(n){
       <span class="sz"><span class="sk-bar" style="height:9px;width:26px"></span></span>
     </div>`;
   }).join('');
-}
-function skeletonMeta(){
-  const labels = ['file', 'size (all sidecars)', 'features', 'geometry', 'CRS', 'fields'];
-  return '<table>' + labels.map((l, i) =>
-    `<tr><td>${l}</td><td><span class="sk-bar" style="height:10px;width:${60 + (i * 13) % 90}px"></span></td></tr>`).join('') +
-    '</table><h2 style="margin-top:10px">Schema</h2><table>' +
-    Array.from({length: 4}, () =>
-      `<tr><td><span class="sk-bar" style="height:10px;width:70px"></span></td>` +
-      `<td><span class="sk-bar" style="height:10px;width:46px"></span></td></tr>`).join('') +
-    '</table>';
-}
-function skeletonTable(){
-  const cols = 4, rows = 6;
-  const head = '<tr>' + Array.from({length: cols}, () =>
-    '<th><span class="sk-bar" style="height:9px;width:60px"></span></th>').join('') + '</tr>';
-  const body = Array.from({length: rows}, () => '<tr>' + Array.from({length: cols}, (_, c) =>
-    `<td><span class="sk-bar" style="height:9px;width:${35 + (c * 19) % 60}px"></span></td>`).join('') + '</tr>').join('');
-  return '<table>' + head + body + '</table>';
 }
 
 const CAT_COLORS = ['#5c9dff','#ff6b6b','#51cf66','#ffd43b','#cc5de8','#20c997','#ff922b','#94d82d',
@@ -258,89 +253,136 @@ async function styleReady(){
   map.resize();
 }
 
-let data = null;         // shp_reader payload
-let hoverId = null;
+let data = null, source = '', chunks = [], colors = null, hover = null, loaded = 0, streaming = false, stopped = '', moved = false;
+const attrs = new Map();
+const isKind = list => ['match', ['geometry-type'], list, true, false];
+const POLY = isKind(['Polygon', 'MultiPolygon']), DOTS = isKind(['Point', 'MultiPoint']);
+const LAYERS = {fill: [POLY, /Polygon/], line: [['!', DOTS], /Line|Polygon/], circle: [DOTS, /Point/]};
+const layerIds = () => chunks.flatMap(c => c.layers);
+
+function decode(b64, T){
+  if (Uint8Array.fromBase64) return new T(Uint8Array.fromBase64(b64).buffer);
+  const s = atob(b64), u = new Uint8Array(s.length);
+  for (let i = 0; i < s.length; i++) u[i] = s.charCodeAt(i);
+  return new T(u.buffer);
+}
+function features(p){
+  const ids = decode(p.ids, Uint32Array);
+  const feat = (i, geometry) => ({type: 'Feature', id: ids[i], properties: {}, geometry});
+  if (p.kind === 'geojson') return p.geoms.map((g, i) => feat(i, JSON.parse(g)));
+  const c = decode(p.coords, Float64Array), o = p.offsets.map(s => decode(s, Int32Array)), out = new Array(ids.length);
+  const at = (d, i) => {
+    if (d < 0) return [c[2 * i], c[2 * i + 1]];
+    const a = o[d][i], r = new Array(o[d][i + 1] - a);
+    for (let k = 0; k < r.length; k++) r[k] = at(d - 1, a + k);
+    return r;
+  };
+  for (let i = 0; i < ids.length; i++) out[i] = feat(i, {type: p.kind, coordinates: at(o.length - 1, i)});
+  return out;
+}
 
 // ---------------- styling ----------------
-function fillColorExpr(){
-  const col = P.colorBy();
-  if (!col || !data) return '#5c9dff';
-  const vals = [...new Set((data.geojson.features || [])
-    .map(f => f.properties[col]).filter(v => v !== null && v !== undefined))];
-  const numeric = vals.length && vals.every(v => typeof v === 'number');
-  if (numeric){
-    const lo = Math.min(...vals), hi = Math.max(...vals);
-    if (hi > lo) return ['interpolate', ['linear'], ['to-number', ['get', col], lo],
+function colorExpr(col, values){
+  const present = values.filter(v => v !== null && v !== undefined), get = ['get', col];
+  const known = expr => ['case', ['==', get, null], '#6b7178', expr];
+  if (!present.length) return '#6b7178';
+  if (present.every(v => typeof v === 'number')){
+    const lo = present.reduce((a, b) => Math.min(a, b)), hi = present.reduce((a, b) => Math.max(a, b));
+    if (hi > lo) return known(['interpolate', ['linear'], ['to-number', get, lo],
       lo, '#440154', lo + (hi-lo)*0.25, '#3b528b', lo + (hi-lo)*0.5, '#21918c',
-      lo + (hi-lo)*0.75, '#5ec962', hi, '#fde725'];
+      lo + (hi-lo)*0.75, '#5ec962', hi, '#fde725']);
   }
-  const cats = vals.slice(0, 12);
-  const expr = ['match', ['to-string', ['get', col]]];
-  cats.forEach((c, i) => { expr.push(String(c), CAT_COLORS[i % CAT_COLORS.length]); });
-  expr.push('#6b7178');
-  return expr;
+  const counts = new Map();
+  for (const v of present) counts.set(String(v), (counts.get(String(v)) || 0) + 1);
+  const top = [...counts].sort((a, b) => b[1] - a[1]).slice(0, 12);
+  return known(['match', ['to-string', get], ...top.flatMap(([v], i) => [v, CAT_COLORS[i]]), '#6b7178']);
+}
+function paints(){
+  const op = +els.opacity.value / 100, color = colors ? colors.expr : '#5c9dff';
+  const hot = ['boolean', ['feature-state', 'hover'], false];
+  return {
+    fill: {'fill-color': color, 'fill-opacity': ['case', hot, Math.min(1, op + .25), op]},
+    line: {'line-color': ['case', POLY, '#dfe3e8', color], 'line-opacity': ['case', POLY, 0.35, Math.min(1, op + .2)],
+           'line-width': ['case', POLY, 0.6, ['case', hot, 4, 2]]},
+    circle: {'circle-color': color, 'circle-opacity': op, 'circle-radius': ['case', hot, 7, 4.5],
+             'circle-stroke-color': '#fff', 'circle-stroke-width': ['case', hot, 1.5, 0]},
+  };
+}
+function restyle(){
+  const p = paints();
+  for (const id of layerIds())
+    for (const [prop, value] of Object.entries(p[id.split('-').pop()])) map.setPaintProperty(id, prop, value);
+}
+function clearChunks(){
+  for (const {src, layers} of chunks){ layers.forEach(id => map.removeLayer(id)); map.removeSource(src); }
+  chunks = []; hover = null; loaded = 0;
+  attrs.clear();
+  if (popup){ popup.remove(); popup = null; }
+}
+function addChunk(r){
+  const b = r.bounds, e = data.extent;
+  if (b) data.extent = e ? b.map((v, i) => (i < 2 ? Math.min : Math.max)(v, e[i])) : b;
+  loaded = r.next ?? data.count;
+  if (!r.parts.length) return;
+  const fc = {type: 'FeatureCollection', features: r.parts.flatMap(features)};
+  if (colors) for (const f of fc.features) f.properties[colors.col] = colors.values[f.id];
+  const src = `vec-${chunks.length}`, p = paints(), firstLine = layerIds().find(id => id.endsWith('-line'));
+  const types = Object.keys(LAYERS).filter(t => r.parts.some(q => q.kind === 'geojson' || LAYERS[t][1].test(q.kind)));
+  map.addSource(src, {type: 'geojson', data: fc, tolerance: 0});
+  for (const type of types) map.addLayer({id: `${src}-${type}`, type, source: src, filter: LAYERS[type][0],
+    paint: p[type]}, type === 'fill' ? firstLine : undefined);
+  chunks.push({src, fc, layers: types.map(t => `${src}-${t}`)});
 }
 
-function addLayers(){
-  for (const id of ['shp-fill', 'shp-line', 'shp-circle'])
-    if (map.getLayer(id)) map.removeLayer(id);
-  if (map.getSource('shp')) map.removeSource('shp');
-  map.addSource('shp', {type: 'geojson', data: data.geojson});
-  const op = +els.opacity.value / 100;
-  const color = fillColorExpr();
-  const kinds = data.geometry_types.join(',');
-  if (/Polygon/.test(kinds)){
-    map.addLayer({id: 'shp-fill', type: 'fill', source: 'shp',
-      filter: ['any', ['==', ['geometry-type'], 'Polygon'], ['==', ['geometry-type'], 'MultiPolygon']],
-      paint: {'fill-color': color, 'fill-opacity':
-        ['case', ['boolean', ['feature-state', 'hover'], false], Math.min(1, op + .25), op]}});
-  }
-  map.addLayer({id: 'shp-line', type: 'line', source: 'shp',
-    paint: {'line-color': /Polygon/.test(kinds) ? '#dfe3e8' : color,
-            'line-opacity': /Polygon/.test(kinds) ? 0.35 : Math.min(1, op + .2),
-            'line-width': /Polygon/.test(kinds) ? 0.6 :
-              ['case', ['boolean', ['feature-state', 'hover'], false], 4, 2]}});
-  if (/Point/.test(kinds)){
-    map.addLayer({id: 'shp-circle', type: 'circle', source: 'shp',
-      filter: ['any', ['==', ['geometry-type'], 'Point'], ['==', ['geometry-type'], 'MultiPoint']],
-      paint: {'circle-color': color, 'circle-opacity': op,
-        'circle-radius': ['case', ['boolean', ['feature-state', 'hover'], false], 7, 4.5],
-        'circle-stroke-color': '#fff',
-        'circle-stroke-width': ['case', ['boolean', ['feature-state', 'hover'], false], 1.5, 0]}});
-  }
-}
-
+map.on('movestart', e => { if (e.originalEvent) moved = true; });
 function fitToData(instant){
-  const b = data && data.bounds4326;
+  const b = data && data.extent;
   if (!b) return;
   map.fitBounds([[b[0], b[1]], [b[2], b[3]]],
     {padding: 60, duration: instant === false ? 400 : 0, maxZoom: 15});
 }
 
 // ---------------- hover / click ----------------
+function readRow(id){
+  if (!attrs.has(id)) attrs.set(id, call({file: source, op: 'row', start: String(id)}).then(r => {
+    if (r.error){ attrs.delete(id); throw new Error(r.error); }
+    return r.props;
+  }));
+  return attrs.get(id);
+}
 function featHTML(props){
   return '<table>' + Object.entries(props).map(([k, v]) =>
     `<tr><td>${esc(k)}</td><td>${esc(v ?? '—')}</td></tr>`).join('') + '</table>';
 }
 const TIP_MAX_ROWS = 6;
-map.on('mousemove', e => {
-  if (!map.getSource('shp')) return;
-  const feats = map.queryRenderedFeatures(e.point,
-    {layers: ['shp-fill', 'shp-line', 'shp-circle'].filter(l => map.getLayer(l))});
-  if (hoverId !== null){ map.setFeatureState({source: 'shp', id: hoverId}, {hover: false}); hoverId = null; }
-  map.getCanvas().style.cursor = feats.length ? 'pointer' : '';
-  if (!feats.length){ els.mapTip.style.display = 'none'; return; }
-  hoverId = feats[0].id;
-  map.setFeatureState({source: 'shp', id: hoverId}, {hover: true});
-  // compact tooltip at the cursor: color-by column first, then the first few
-  const props = feats[0].properties;
+function tipHTML(id, props){
   const keys = Object.keys(props);
   const lead = P.colorBy() && keys.includes(P.colorBy()) ? [P.colorBy()] : [];
   const rest = keys.filter(k => !lead.includes(k)).slice(0, TIP_MAX_ROWS - lead.length);
   const more = keys.length - lead.length - rest.length;
-  els.mapTip.innerHTML = `<div class="t">Feature #${hoverId}</div><table>` +
+  return `<div class="t">Feature #${fmt(id)}</div><table>` +
     [...lead, ...rest].map(k => `<tr><td>${esc(k)}</td><td>${esc(props[k] ?? '—')}</td></tr>`).join('') +
     '</table>' + (more > 0 ? `<div style="color:var(--sz-fg)">… ${more} more — click for all</div>` : '');
+}
+const featureAt = point => chunks.length ? map.queryRenderedFeatures(point, {layers: layerIds()})[0] : null;
+let tipTimer = null;
+map.on('mousemove', e => {
+  const f = featureAt(e.point);
+  if (hover && (!f || f.id !== hover.id || f.source !== hover.source)){
+    map.setFeatureState(hover, {hover: false});
+    hover = null;
+  }
+  map.getCanvas().style.cursor = f ? 'pointer' : '';
+  if (!f){ clearTimeout(tipTimer); els.mapTip.style.display = 'none'; return; }
+  if (!hover){
+    hover = {source: f.source, id: f.id};
+    map.setFeatureState(hover, {hover: true});
+    els.mapTip.innerHTML = tipHTML(f.id, f.properties);
+    clearTimeout(tipTimer);
+    tipTimer = setTimeout(() => readRow(f.id).then(props => {
+      if (hover && hover.id === f.id) els.mapTip.innerHTML = tipHTML(f.id, props);
+    }, () => {}), 100);
+  }
   els.mapTip.style.display = 'block';
   const pad = 14;
   const x = Math.min(e.originalEvent.clientX + pad, window.innerWidth - 310);
@@ -353,31 +395,34 @@ map.getContainer().addEventListener('mouseleave', () => els.mapTip.style.display
 // click -> full attribute popup pinned to the feature
 let popup = null;
 map.on('click', e => {
-  if (!map.getSource('shp')) return;
-  const feats = map.queryRenderedFeatures(e.point,
-    {layers: ['shp-fill', 'shp-line', 'shp-circle'].filter(l => map.getLayer(l))});
+  const f = featureAt(e.point);
   if (popup){ popup.remove(); popup = null; }
-  if (!feats.length) return;
-  popup = new maplibregl.Popup({maxWidth: '340px'})
-    .setLngLat(e.lngLat)
-    .setHTML(`<div style="color:var(--link);font-weight:600;margin-bottom:4px">Feature #${feats[0].id}</div>` +
-             featHTML(feats[0].properties))
-    .addTo(map);
+  if (!f) return;
+  const head = `<div style="color:var(--link);font-weight:600;margin-bottom:4px">Feature #${fmt(f.id)}</div>`;
+  const p = popup = new maplibregl.Popup({maxWidth: '340px'})
+    .setLngLat(e.lngLat).setHTML(head + featHTML(f.properties)).addTo(map);
+  readRow(f.id).then(props => popup === p && p.setHTML(head + featHTML(props)),
+    err => popup === p && p.setHTML(head + `<span style="color:var(--err-fg)">${esc(err.message)}</span>`));
 });
 
 // ---------------- panels ----------------
+function featureCount(){
+  const n = fmt(data.count), drawn = chunks.reduce((sum, c) => sum + c.fc.features.length, 0);
+  if (streaming) return `${fmt(loaded)} of ${n} loaded…`;
+  if (loaded < data.count) return `${n} (showing first ${fmt(loaded)})`;
+  return drawn < loaded ? `${n} (${fmt(loaded - drawn)} without geometry)` : n;
+}
 function renderMeta(){
   if (!data) return;
   const rows = [
-    ['file', P.file().split('/').pop()],
+    ['file', loadedFile.split('/').pop()],
     ['size (all sidecars)', human(data.file_size)],
-    ['features', (data.count ?? `${data.shown.toLocaleString()}+`).toLocaleString() + (data.truncated ? ` (showing first ${data.shown.toLocaleString()})` : '')],
+    ['features', featureCount()],
     ['geometry', data.geometry_types.join(', ')],
     ['CRS', data.crs.epsg ? `EPSG:${data.crs.epsg} — ${data.crs.name}` : (data.crs.name || 'unknown')],
     ['fields', data.schema.map(s => s.name).join(', ')],
   ];
-  if (data.simplified_tolerance)
-    rows.push(['simplified', `tolerance ${data.simplified_tolerance.toPrecision(2)}° (preview only)`]);
+  if (data.layers.length > 1) rows.push(['layers', data.layers.join(', ')]);
   if (data.native_bounds)
     rows.push(['native bounds', data.native_bounds.map(v => +v.toFixed(2)).join(', ')]);
   els.metaBody.innerHTML = '<table>' + rows.map(([k, v]) =>
@@ -439,16 +484,11 @@ els.load.onclick = () => els.path.value.trim() === P.file() ? loadFile()
   : fused.params.set('file', els.path.value.trim(), { default: '' });
 els.path.addEventListener('keydown', e => { if (e.key === 'Enter') els.load.click(); });
 els.colorBy.onchange = () => fused.params.set('colorby', els.colorBy.value, { default: '' });
-els.opacity.oninput = () => {
-  const op = +els.opacity.value / 100;
-  if (map.getLayer('shp-fill')) map.setPaintProperty('shp-fill', 'fill-opacity',
-    ['case', ['boolean', ['feature-state', 'hover'], false], Math.min(1, op + .25), op]);
-  if (map.getLayer('shp-circle')) map.setPaintProperty('shp-circle', 'circle-opacity', op);
-};
+els.opacity.oninput = restyle;
 els.basemap.onchange = () => {
   const show = els.basemap.checked ? 'visible' : 'none';
   for (const l of map.getStyle().layers)
-    if (!l.id.startsWith('shp-')) map.setLayoutProperty(l.id, 'visibility', show);
+    if (!l.id.startsWith('vec-')) map.setLayoutProperty(l.id, 'visibility', show);
 };
 
 // ---------------- explorer ----------------
@@ -481,6 +521,29 @@ async function refreshExplorer(dir){
 // ---------------- load ----------------
 let loadedFile = null, loadSeq = 0, doneSeq = 0, noteTimer;
 
+function progress(){
+  if (P.file() !== loadedFile) return;
+  if (streaming) status(`Loading features… ${featureCount()}`, false, true);
+  else status(stopped && `stopped after ${fmt(loaded)} features: ${stopped}`, !!stopped);
+}
+
+async function applyColorBy(){
+  const col = P.colorBy(), file = loadedFile;
+  if (!data || (colors ? colors.col === col : !col)) return;
+  if (!col){ colors = null; restyle(); return; }
+  status(`Reading "${col}" for every feature…`, false, true);
+  const r = await call({file: source, op: 'column', column: col});
+  if (P.colorBy() !== col || loadedFile !== file) return;
+  if (r.error){ status('color by failed: ' + r.error, true); return; }
+  colors = {col, values: r.values, expr: colorExpr(col, r.values)};
+  for (const {src, fc} of chunks){
+    for (const f of fc.features) f.properties = {[col]: r.values[f.id]};
+    map.getSource(src).setData(fc);
+  }
+  restyle();
+  progress();
+}
+
 async function loadFile(){
   const file = P.file(), seq = ++loadSeq;
   clearTimeout(noteTimer);
@@ -489,49 +552,51 @@ async function loadFile(){
   els.browse.hidden = streamed;
   els.convertBtn.hidden = streamed || /\.parquet$/i.test(file);
   status('Reading vector file…', false, true);
+  let src;
   const [r] = await Promise.all([(streamed ? fused.s3.sign(file).then(s => s.url) : Promise.resolve(file))
-    .then(source => seq === loadSeq ? fused.runPython('./vector_reader.py', {file: source}, {key: file}) : null)
-    .catch(e => ({error: String(e.message || e)})), styleReady()]);
+    .then(s => seq === loadSeq ? call({file: src = s, op: 'meta'}) : null, failed), styleReady()]);
   if (seq !== loadSeq) return;
   doneSeq = seq;
-  if (!r || r.error){ status((r && r.error) || 'read failed', true); return; }
-  data = r;
+  if (r.error){ status(r.error, true); return; }
+  clearChunks();
+  const {first, ...meta} = r;
+  data = meta; source = src; loadedFile = file; colors = null; streaming = !isPreview(); stopped = ''; moved = false;
+  const fetchNext = c => streaming && c.next != null ? call({file: source, op: 'chunk', start: String(c.next)}) : null;
+  let pending = fetchNext(first), err = '';
   syncControls();
-  addLayers();
+  renderTable();
+  addChunk(first);
   fitToData();
   renderMeta();
-  renderTable();
-  let note = '';
-  if (r.truncated) note = `showing first ${r.shown.toLocaleString()}${r.count == null ? '' : ` of ${r.count.toLocaleString()}`} features (preview cap${els.convertBtn.hidden ? '' : ' — GeoParquet conversion uses ALL features'})`;
-  else if (r.simplified_tolerance) note = 'geometries simplified for preview';
-  status(note);
-  if (note) noteTimer = setTimeout(() => status(''), 8000);
-  loadedFile = file;
+  applyColorBy();
+  while (pending){
+    progress();
+    const c = await pending;
+    if (data !== meta) return;
+    if (c.error){ err = c.error; break; }
+    pending = fetchNext(c);
+    addChunk(c);
+    if (els.metaPanel.style.display === 'block') renderMeta();
+  }
+  streaming = false; stopped = err;
+  renderMeta();
+  if (!moved) fitToData();
+  if (err || P.file() !== file) return progress();
+  status(`features: ${featureCount()}`);
+  noteTimer = setTimeout(() => status(''), 4000);
 }
 
 function onParamsChanged(){
   if (P.file() !== loadedFile){ loadFile(); return; }
-  if (doneSeq !== loadSeq){ doneSeq = ++loadSeq; status(''); }
+  if (doneSeq !== loadSeq){ doneSeq = ++loadSeq; progress(); }
   syncControls();
-  if (data && map.getSource('shp')){
-    const color = fillColorExpr();
-    if (map.getLayer('shp-fill')) map.setPaintProperty('shp-fill', 'fill-color', color);
-    if (map.getLayer('shp-circle')) map.setPaintProperty('shp-circle', 'circle-color', color);
-    if (map.getLayer('shp-line') && !/Polygon/.test(data.geometry_types.join(',')))
-      map.setPaintProperty('shp-line', 'line-color', color);
-  }
+  applyColorBy();
 }
 fused.params.onChange(onParamsChanged);
 
-// info/attribute panels start hidden but may be opened before the first
-// vector_reader.py response lands — seed them with a content-shaped skeleton
-// instead of a blank body; renderMeta()/renderTable() overwrite this once
-// real data arrives.
-els.metaBody.innerHTML = skeletonMeta();
-els.tableBody.innerHTML = skeletonTable();
+els.metaBody.innerHTML = els.tableBody.innerHTML = '<span class="sk-bar" style="height:10px;width:60%"></span>';
 
 loadFile();
-
 </script>
 </body>
 </html>
