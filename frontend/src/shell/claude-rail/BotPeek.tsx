@@ -231,6 +231,8 @@ export const BotPeek = forwardRef<BotPeekHandle, BotPeekProps>(function BotPeek(
     movable: pinCtl.pinned,
     headSelector: RAIL_HEAD_SELECTOR,
     shown: shown?.id ?? null,
+    // A non-pin's head drag pins it (useCardMove `dragPins`).
+    dragPins: !pinCtl.pinned && shown ? pinCtl.onToggle : null,
   });
   const floatingRef = useRef(false);
   floatingRef.current = move.floating;
