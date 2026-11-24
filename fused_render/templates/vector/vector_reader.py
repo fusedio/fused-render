@@ -39,6 +39,7 @@ GDAL_HTTP = {"GDAL_DISABLE_READDIR_ON_OPEN": "EMPTY_DIR",
              "CPL_VSIL_CURL_CACHE_SIZE": str(256 << 20),
              "GDAL_HTTP_MAX_RETRY": "3", "GDAL_HTTP_RETRY_DELAY": "0.5"}
 KINDS = {k.upper(): k for k in ("Point", "LineString", "Polygon", "MultiPoint", "MultiLineString", "MultiPolygon")}
+NAMES = {*KINDS.values(), "GeometryCollection"}
 _lock = threading.Lock()
 
 
@@ -99,13 +100,6 @@ def _records(table, tag=None, layer=None):
 
 def _is_lonlat(crs):
     return not crs or crs.to_epsg() == 4326 or crs.equals("OGC:CRS84")
-
-
-def _bounds4326(bounds, crs):
-    if bounds is None or not np.isfinite(bounds).all():
-        return None
-    box = gpd.GeoSeries([shapely.box(*bounds)], crs=crs or 4326)
-    return box.segmentize(max(bounds[2] - bounds[0], bounds[3] - bounds[1]) / 64 or 1).to_crs(4326).total_bounds.tolist()
 
 
 def _union(boxes):
@@ -170,10 +164,8 @@ class _Parquet(_Source):
         self.group = functools.lru_cache(4)(lambda i, cols: self.pf.read_row_group(i, columns=list(cols)))
         self.count, self.crs = md.num_rows, _arrow_to_geopandas(schema.empty_table().select([self.col]), self.geo).crs
         self.lonlat = _is_lonlat(self.crs)
-        bbox = meta.get("bbox") or []
-        native = [bbox[i] for i in (0, 1, 3, 4)] if len(bbox) == 6 else bbox[:4] or None
-        self.info = {"layers": [], "geometry_types": [t for t in meta.get("geometry_types") or [] if t],
-                     "native_bounds": native, "bounds4326": _bounds4326(native, self.crs),
+        self.info = {"layers": [], "geometry_types": [t for t in meta.get("geometry_types") or [] if t.split(" ")[0] in NAMES],
+                     "native_bounds": None,
                      "schema": [{"name": f.name, "dtype": str(f.type)} for f in schema if f.name in self.attrs]}
 
     def _rows(self, start, stop, columns):
@@ -225,9 +217,8 @@ class _Ogr(_Source):
         while self.tag in fields:
             self.tag = "_" + self.tag
         self.info = {"layers": names,
-                     "geometry_types": sorted({str(i["geometry_type"]) for i in infos} - {"Unknown", "None"}),
+                     "geometry_types": sorted({t for i in infos if (t := str(i["geometry_type"])).split(" ")[0] in NAMES}),
                      "native_bounds": _union(i["total_bounds"] for i in infos),
-                     "bounds4326": _union(_bounds4326(i["total_bounds"], c) for i, c in zip(infos, crs)),
                      "schema": [{"name": n, "dtype": t} for n, t in {self.tag: "object", **fields}.items() if n]}
 
     def _parts(self, start, stop):

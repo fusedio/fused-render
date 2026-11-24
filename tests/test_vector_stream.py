@@ -24,7 +24,7 @@ pytestmark = pytest.mark.skipif(not _venv_ready(),
                                 reason="the vector template venv is not built here")
 
 _WRITE = r"""
-import sys, geopandas as gpd, pyarrow.parquet as pq, pyogrio, shapely
+import json, sys, geopandas as gpd, pyarrow.parquet as pq, pyogrio, shapely
 d = sys.argv[1]
 geoms = [shapely.Point(10 + i % 60 * 0.01, 50 + i // 60 * 0.01).buffer(0.004) for i in range(3000)]
 gdf = gpd.GeoDataFrame({"id": range(3000), "name": [f"n{i % 13}" for i in range(3000)]},
@@ -47,6 +47,9 @@ gpd.GeoDataFrame({"k": range(6)}, crs=4326, geometry=[
     shapely.GeometryCollection([shapely.Point(4, 4), shapely.LineString([(4, 4), (5, 5)])]), None,
     shapely.MultiLineString([[(0, 0), (1, 0)], [(0, 1), (1, 1)]])]).to_file(f"{d}/mixed.geojson")
 gdf.to_parquet(f"{d}/arrow.parquet", row_group_size=250, geometry_encoding="geoarrow")
+geo = json.loads(t.schema.metadata[b"geo"])
+geo["columns"]["geometry"].update(geometry_types=["WKB"], bbox=[-77.1, 38.8, -76.9, 39.0])
+pq.write_table(t.replace_schema_metadata({**t.schema.metadata, b"geo": json.dumps(geo)}), f"{d}/lying.parquet")
 tag = gpd.GeoDataFrame({"_layer": ["x", "y"]}, geometry=gpd.points_from_xy([0, 1], [0, 1]), crs=4326)
 tag.to_file(f"{d}/tag.geojson")
 tag.to_file(f"{d}/tag.gpkg", layer="a")
@@ -254,3 +257,9 @@ def test_a_real_layer_field_keeps_its_values_next_to_the_layer_name(files):
     assert [s["name"] for s in meta2["schema"]] == ["__layer", "_layer"]
     assert (row2, names, col2) == ({"props": {"__layer": "b", "_layer": "y"}}, {"values": ["a", "a", "b", "b"]},
                                    {"values": ["x", "y", "x", "y"]})
+
+
+def test_a_wrong_footer_bbox_or_geometry_type_does_not_steer_the_view(files):
+    (meta,) = _read(files / "lying.parquet")
+    assert meta["geometry_types"] == ["Polygon"] and "bounds4326" not in meta
+    assert meta["first"]["bounds"] == pytest.approx([9.996, 49.996, 10.594, 50.094], abs=1e-6)

@@ -321,14 +321,14 @@ function clearChunks(){
 }
 function addChunk(r){
   const b = r.bounds, e = data.extent;
-  if (b && !data.bounds4326) data.extent = e ? b.map((v, i) => (i < 2 ? Math.min : Math.max)(v, e[i])) : b;
+  if (b) data.extent = e ? b.map((v, i) => (i < 2 ? Math.min : Math.max)(v, e[i])) : b;
   loaded = r.next ?? data.count;
   if (!r.parts.length) return;
   const fc = {type: 'FeatureCollection', features: r.parts.flatMap(features)};
   if (colors) for (const f of fc.features) f.properties[colors.col] = colors.values[f.id];
   const src = `vec-${chunks.length}`, p = paints(), firstLine = layerIds().find(id => id.endsWith('-line'));
   const types = Object.keys(LAYERS).filter(t => r.parts.some(q => q.kind === 'geojson' || LAYERS[t][1].test(q.kind)));
-  map.addSource(src, {type: 'geojson', data: fc});
+  map.addSource(src, {type: 'geojson', data: fc, tolerance: 0});
   for (const type of types) map.addLayer({id: `${src}-${type}`, type, source: src, filter: LAYERS[type][0],
     paint: p[type]}, type === 'fill' ? firstLine : undefined);
   chunks.push({src, fc, layers: types.map(t => `${src}-${t}`)});
@@ -336,7 +336,7 @@ function addChunk(r){
 
 map.on('movestart', e => { if (e.originalEvent) moved = true; });
 function fitToData(instant){
-  const b = data && (data.bounds4326 || data.extent);
+  const b = data && data.extent;
   if (!b) return;
   map.fitBounds([[b[0], b[1]], [b[2], b[3]]],
     {padding: 60, duration: instant === false ? 400 : 0, maxZoom: 15});
@@ -580,7 +580,7 @@ async function loadFile(){
   }
   streaming = false; stopped = err;
   renderMeta();
-  if (!data.bounds4326 && !moved) fitToData();
+  if (!moved) fitToData();
   if (err || P.file() !== file) return progress();
   status(`features: ${featureCount()}`);
   noteTimer = setTimeout(() => status(''), 4000);
