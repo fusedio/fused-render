@@ -13062,14 +13062,26 @@ milliseconds.
   `tmp/`).
 - **SR-3 Bounds.** No size limits: any size is kept and nothing is
   evicted for space. An entry older than 7 days is a miss and is removed; a
-  run of the same key replaces its entry. `<home>/cache/udf/`, never in a
-  canvas folder. Clearing everything is the user's (SR-5).
+  run of the same key replaces its entry. Clearing everything is the
+  user's (SR-5).
+- **SR-3a Where.** A canvas node file's result is kept in its canvas
+  folder, `<clone>/.fused/cache/udf/<key>.body|.json` (the `.fused/cache`
+  of §47): deleting that folder drops that one canvas's saved results.
+  Only while the folder's `.fusedignore` lists `.fused/` (seeded with the
+  other clone lines), so no push ships a result; a folder without the line
+  (external `fused` binary, reference copy, not seeded yet) and every
+  other run (a UDF by canvas and name, a .py outside a canvas) keep theirs
+  in `<home>/cache/udf/results/`. Temporary results are always in
+  `<home>/cache/udf/tmp/`. A hard pull deletes the canvas folder's saved
+  results with every other file the canvas does not have. A result is
+  fetched by token alone: the store looks where it last saw the key, then
+  in `<home>`, then in every canvas folder.
 - **SR-4 Shown as saved.** The key cannot see sibling UDFs read through
   `fused.load`, outside data or the clock, so a saved copy is always
   labelled saved and, under `cache: "auto"`, always followed by a run.
 - **SR-5 Clearing.** Preferences → Advanced → Debugging → "Saved UDF
-  cache" shows the results' count and size (`GET /api/udf/saved`) and Clear
-  deletes them all (`DELETE /api/udf/saved`, guarded); the next open of
+  cache" shows the results' count and size, `<home>`'s and every canvas
+  folder's (`GET /api/udf/saved`), and Clear deletes them all (`DELETE /api/udf/saved`, guarded); the next open of
   each UDF runs it fresh. A temporary result younger than a minute is left
   for the hourly sweep (it may be a run's body about to be filed).
 
@@ -13172,7 +13184,7 @@ engine logs nothing of a statement above debug level.
 
 `<home>/cache/sql/<pid>-<hex>/` per engine (one per scope): `files/` (the worker's cwd, the
 only local directory SQL reaches), `tmp/` (temp_directory), `io/` (bodies
-in, results out; not readable from SQL); same volume as `cache/udf/`. A put
+in, results out; not readable from SQL); same volume as `<home>/cache/udf/`. A put
 file is `os.replace`d into place, never written in place. A link is a hard link to
 the saved result's body (a copy when linking fails), read-only on POSIX: the
 name keeps its bytes for the engine's life after the store replaces or

@@ -2123,7 +2123,12 @@ def _rmtree_quiet(path: str) -> None:
 # takes one out of a bundle, and a `.fusedignore` line, so no push ships it.
 _SYNC_IGNORED_BASENAMES = canvas_snapshot.IGNORED_BASENAMES
 
-_CLONE_FUSEDIGNORE = f"CLAUDE.md\n.fusedignore\n{canvas_marker.MARKER_NAME}\n__pycache__/\n"
+# `.fused/` is the folder's own state (app_fused_dir.py's convention): saved
+# UDF results live in `.fused/cache/udf/` (udf/store.py), and only once this
+# line is in the clone's .fusedignore (`store.clone_folder`). A dot-dir, so no
+# walk here descends into it.
+_CLONE_FUSEDIGNORE = (f"CLAUDE.md\n.fusedignore\n{canvas_marker.MARKER_NAME}\n__pycache__/\n"
+                      ".fused/\n")
 
 
 def _under_ignored_dir(rel: str) -> bool:
