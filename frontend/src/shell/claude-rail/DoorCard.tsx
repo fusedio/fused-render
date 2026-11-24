@@ -202,11 +202,15 @@ export function DoorCard({ store, href, onNoRoomPress, rail: railProp, className
   // A PINNED WINDOW MOVES (rail-move-lib; owner, 2026-11-17): every door card
   // is window A's. Pinned and dragged by its head, it FLOATS at the window's
   // position — kept through a swap to a ring, another door or the + card.
+  const togglePinRef = useRef<() => void>(() => {});
   const move = useCardMove({
     win: "a",
     movable: card.held,
     headSelector: RAIL_HEAD_SELECTOR,
     shown: up ? String(card.seq) : null,
+    // A non-pin's head drag pins it (useCardMove `dragPins`): the pin icon's
+    // own press (`togglePin`, below).
+    dragPins: !card.held && up ? () => togglePinRef.current() : null,
   });
   const floatingRef = useRef(false);
   floatingRef.current = move.floating;
@@ -602,6 +606,7 @@ export function DoorCard({ store, href, onNoRoomPress, rail: railProp, className
     if (!held && railExtrasNow()) freezeFromDock("a");
     store.setHeld(!held);
   }, [store, close]);
+  togglePinRef.current = togglePin;
   const api = useMemo<DoorCardApi>(
     () => ({
       visible,

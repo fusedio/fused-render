@@ -563,6 +563,9 @@ export const RailPeek = forwardRef<RailPeekHandle, RailPeekProps>(function RailP
     movable: pinCtl.pinned,
     headSelector: RAIL_HEAD_SELECTOR,
     shown: shown?.pulse.key ?? null,
+    // A non-pin's head drag pins it (useCardMove `dragPins`): the pin icon's
+    // own press.
+    dragPins: !pinCtl.pinned && shown ? pinCtl.onToggle : null,
   });
   const floatingRef = useRef(false);
   floatingRef.current = move.floating;

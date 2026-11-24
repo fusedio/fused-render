@@ -39,6 +39,7 @@ import {
   type MouseEvent as ReactMouseEvent,
   type PointerEvent as ReactPointerEvent,
 } from "react";
+import { flushSync } from "react-dom";
 import type { Size } from "./rail-move-lib";
 import {
   clampPos,
@@ -193,6 +194,15 @@ export function useCardMove(o: {
    *  window floating there (owner, 2026-11-17: "if there are two windows …
    *  they overlap"). */
   shown?: string | null;
+  /** A NON-PIN'S HEAD DRAG PINS IT (owner, 2026-11-24: "if i move the window
+   *  we pin it, like from the topbar … when i click and drag the whole
+   *  topbar, that should pin it"; free pins only): the card's own pin press —
+   *  what its pin icon does on a card that is not pinned — or null on one
+   *  that has none to give (pinned already, or not up). Called once, when a
+   *  head drag on the non-pin passes the threshold: the card is frozen where
+   *  it stands and the drag carries on with it as the pin. A plain click on
+   *  the head never gets that far, so a click stays a preview. */
+  dragPins?: (() => void) | null;
 }): CardMove {
   const { win, headSelector } = o;
   // FREE PINS (rail-slots-lib): a pinned window is frozen where it stood, so
@@ -238,8 +248,9 @@ export function useCardMove(o: {
   const [dragging, setDragging] = useState(false);
   const drag = useRef<Drag | null>(null);
   const stop = useRef<(() => void) | null>(null);
-  const now = useRef({ movable, floating, headSelector, freePins });
-  now.current = { movable, floating, headSelector, freePins };
+  const dragPins = freePins && !movable ? (o.dragPins ?? null) : null;
+  const now = useRef({ movable, floating, headSelector, freePins, dragPins });
+  now.current = { movable, floating, headSelector, freePins, dragPins };
 
   const finish = (commit: boolean) => {
     const d = drag.current;
@@ -267,7 +278,7 @@ export function useCardMove(o: {
   finishRef.current = finish;
 
   const onPointerDown = (e: ReactPointerEvent<HTMLElement>) => {
-    if (!now.current.movable || e.button !== 0 || drag.current) return;
+    if ((!now.current.movable && !now.current.dragPins) || e.button !== 0 || drag.current) return;
     const box = e.currentTarget;
     const el = elementOf(e.target);
     if (!el || !box.contains(el) || headPress(el, now.current.headSelector) !== "head") return;
@@ -292,6 +303,27 @@ export function useCardMove(o: {
       const dy = ev.clientY - d.sy;
       if (!d.moved) {
         if (!pastThreshold(dx, dy)) return;
+        // A NON-PIN LEAVING ITS DOCK IS PINNED FIRST (`dragPins`): its own
+        // pin press freezes it where it stands — the mark, the role and the
+        // box — and from this frame on the drag moves a pin. One that can no
+        // longer be pinned (it went under the press) is not dragged.
+        if (!now.current.movable) {
+          const pin = now.current.dragPins;
+          if (!pin) {
+            finishRef.current(false);
+            return;
+          }
+          // In one synchronous pass, as the pin icon's click is: this is a
+          // native listener, and a pin spread over two renders showed the
+          // chat in both of its window's slots for a frame.
+          flushSync(pin);
+          // The press pinned nothing (its card had no task to pin): no drag —
+          // the window's position is not this card's to move.
+          if (!now.current.movable) {
+            finishRef.current(false);
+            return;
+          }
+        }
         d.moved = true;
         setDragging(true);
         rootClass(true);
@@ -365,7 +397,8 @@ export function useCardMove(o: {
     pos: floating ? pos : null,
     dragging,
     className:
-      (movable ? " is-movable" : "") +
+      // …and a non-pin whose head drag pins it (`dragPins`) grabs the same way.
+      (movable || dragPins ? " is-movable" : "") +
       (floating ? " is-floating" : "") +
       (dragging ? " is-dragging" : "") +
       (isFront ? " is-front" : "") +

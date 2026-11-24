@@ -2355,11 +2355,15 @@ export function ClaudeRail({
   // window A's, and floats at window A's position — the one the list's card
   // and the door cards read too, so a swap between them keeps it. The drag
   // is the chassis' (Modal `popover.move`); where it then stands, `popPlace`.
+  const plusPinRef = useRef<() => void>(() => {});
   const popMove = useCardMove({
     win: "a",
     movable: popHeld,
     headSelector: POPOVER_HEAD_SELECTOR,
     shown: card?.pop ? String(card.seq) : null,
+    // A non-pin's head drag pins it (useCardMove `dragPins`): the pin icon's
+    // own press (`plusPinRef`, where the + card's pin is built).
+    dragPins: card?.pop && !popHeld ? () => plusPinRef.current() : null,
   });
   // A PRESS ON A RING OR DOOR BRINGS ITS WINDOW TO THE FRONT (rail-move-lib
   // `railPressWindow`; owner, 2026-11-17): the pinned window's own ring does
@@ -3952,6 +3956,25 @@ export function ClaudeRail({
   // …and the rail changing width (`railBoxW`; the expandable rail): the card
   // stands against its new edge.
   const popPlaceKey = useMemo(() => ({ favBox, at: popMove.pos, railBoxW }), [favBox, popMove.pos, railBoxW]);
+  // THE + CARD'S PIN PRESS — its pin icon's, and its head drag's (useCardMove
+  // `dragPins`).
+  plusPinRef.current = () => {
+    // FREE PINS: a pinned card's seat is its × — it closes
+    // (the chassis' way: its draft autosave, its fade).
+    if (freePinsRef.current && cardRef.current?.pop && cardRef.current.held) {
+      setCardCloseSignal((n) => n + 1);
+      return;
+    }
+    plusIntent.pinInside();
+    // FREE PINS: the pin's press freezes the window where it
+    // stands, and takes the section's pin (the mark) at once
+    // — the pin it replaces goes with this press.
+    if (freePinsRef.current && cardRef.current?.pop && !cardRef.current.held) {
+      freezeFromDock("a");
+      setAPinned(aPinWord({ kind: "plus" }));
+    }
+    setCard((c) => (c?.pop ? { ...c, held: !c.held } : c));
+  };
   const renderCard = (card: Card) => (
         <NewJobModal
         // Keyed on the press: the card reads its props in `useState`
@@ -4015,26 +4038,7 @@ export function ClaudeRail({
         {...(card.pop
           ? {
               pinNode: (
-                <RailPinButton
-                  pinned={!!card.held}
-                  onToggle={() => {
-                    // FREE PINS: a pinned card's seat is its × — it closes
-                    // (the chassis' way: its draft autosave, its fade).
-                    if (freePinsRef.current && cardRef.current?.pop && cardRef.current.held) {
-                      setCardCloseSignal((n) => n + 1);
-                      return;
-                    }
-                    plusIntent.pinInside();
-                    // FREE PINS: the pin's press freezes the window where it
-                    // stands, and takes the section's pin (the mark) at once
-                    // — the pin it replaces goes with this press.
-                    if (freePinsRef.current && cardRef.current?.pop && !cardRef.current.held) {
-                      freezeFromDock("a");
-                      setAPinned(aPinWord({ kind: "plus" }));
-                    }
-                    setCard((c) => (c?.pop ? { ...c, held: !c.held } : c));
-                  }}
-                />
+                <RailPinButton pinned={!!card.held} onToggle={() => plusPinRef.current()} />
               ),
             }
           : {})}
