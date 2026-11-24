@@ -673,6 +673,10 @@ export interface ClaudeLoginStatus {
    *  must never show it otherwise. Absent for Claude, whose browser sign-in
    *  needs no code. */
   detail?: { code: string; url: string } | null;
+  /** Claude only, and only while `in_flight`: the sign-in address the CLI
+   *  printed for a browser it could not open (WSL, ssh). That page hands out a
+   *  code, which goes back through `submitAgentLoginCode`. */
+  url?: string | null;
 }
 
 /** Start a browser sign-in. The CLI opens the page and completes on its own
@@ -752,6 +756,11 @@ export function getAgentLogin(backend: string): Promise<ClaudeLoginStatus> {
 export function cancelAgentLogin(backend: string): Promise<ClaudeLoginStatus & { canceled: boolean }> {
   return postJson<ClaudeLoginStatus & { canceled: boolean }>(
     agentRoute(backend, "login/cancel"), {});
+}
+
+/** The paste fallback of a Claude sign-in: the code its sign-in page showed. */
+export function submitAgentLoginCode(backend: string, code: string): Promise<ClaudeLoginStatus> {
+  return postJson<ClaudeLoginStatus>(agentRoute(backend, "login/code"), { code });
 }
 
 // -- The agent catalog (GET /api/agent-backends, D11) -------------------------

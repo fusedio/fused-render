@@ -74,6 +74,53 @@ function DoctorReport({ doctor }: { doctor: ClaudeDoctor }) {
   );
 }
 
+/** For a machine where the CLI could not open a browser (WSL, ssh): the
+ *  sign-in address it printed, and a box for the code that page hands out. */
+function LoginFallback({ url, onSubmitCode }: { url: string; onSubmitCode?: (code: string) => void }) {
+  const [code, setCode] = useState("");
+  const [sent, setSent] = useState(false);
+  const ready = code.trim().length > 0 && !sent;
+  return (
+    <>
+      <p className="claude-health-progress">
+        No browser window?{" "}
+        <a href={url} target="_blank" rel="noreferrer">
+          Open the sign-in page
+        </a>
+        {onSubmitCode ? ", then paste the code it shows here." : "."}
+      </p>
+      {onSubmitCode && (
+        <form
+          className="update-badge-command"
+          onSubmit={(e) => {
+            e.preventDefault();
+            if (!ready) return;
+            setSent(true);
+            onSubmitCode(code.trim());
+          }}
+        >
+          <input
+            type="text"
+            value={code}
+            onChange={(e) => {
+              setCode(e.target.value);
+              setSent(false);
+            }}
+            placeholder="Code from the sign-in page"
+            aria-label="Code from the sign-in page"
+            autoComplete="off"
+            spellCheck={false}
+            style={{ flex: 1, minWidth: 0, background: "transparent", border: 0, outline: "none", color: "inherit", font: "inherit" }}
+          />
+          <button type="submit" className="update-badge-copy" disabled={!ready}>
+            {sent ? "Sent" : "Submit"}
+          </button>
+        </form>
+      )}
+    </>
+  );
+}
+
 /** The device code, in the command plate's skin with its Copy button — and no
  *  Run, because a code is something to type, not to execute. */
 function DeviceCode({ code }: { code: string }) {
@@ -103,6 +150,7 @@ export function IssueRow({
   doctor,
   onAct,
   onCancelLogin,
+  onSubmitLoginCode,
   busy,
   actionError,
   doneNote,
@@ -113,6 +161,8 @@ export function IssueRow({
   doctor: ClaudeDoctor | null;
   onAct: (issue: ClaudeIssue) => void;
   onCancelLogin: () => void;
+  /** The paste fallback of a browser sign-in; without it only the link shows. */
+  onSubmitLoginCode?: (code: string) => void;
   busy: boolean;
   actionError: string | null;
   /** A sentence about a fix that already worked — the PATH line landed, and
@@ -209,9 +259,12 @@ export function IssueRow({
           <DeviceCode code={login.detail.code} />
         </>
       ) : signingIn ? (
-        <p className="claude-health-progress" role="status">
-          Finish signing in with the browser window that just opened.
-        </p>
+        <>
+          <p className="claude-health-progress" role="status">
+            Finish signing in with the browser window that just opened.
+          </p>
+          {login?.url && <LoginFallback url={login.url} onSubmitCode={onSubmitLoginCode} />}
+        </>
       ) : null}
       {/* The child's own diagnosis. `Login failed: Request failed with status
           code 400` is the loopback exchange rejecting the code, and it is the

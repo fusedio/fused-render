@@ -82,7 +82,7 @@ function agentsOf(prefs: Prefs) {
 function AgentHealth({ backend }: { backend: AgentId }) {
   const {
     health, loaded, busy, install, login, doctor, actionError, acting,
-    linkedNote, load, act, cancelLogin,
+    linkedNote, load, act, cancelLogin, submitLoginCode,
   } = useAgentSetup(backend, true);
   const name = HEALTH_NAME[backend];
   const again = (
@@ -115,6 +115,7 @@ function AgentHealth({ backend }: { backend: AgentId }) {
               doctor={issue.id === "broken" ? doctor : null}
               onAct={act}
               onCancelLogin={cancelLogin}
+              onSubmitLoginCode={submitLoginCode}
               busy={acting}
               actionError={issue.action ? actionError : null}
               doneNote={issue.id === "not-on-path" ? linkedNote : null}

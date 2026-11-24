@@ -11,6 +11,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { refreshAgentBackends } from "./agent-backends";
 import {
   cancelAgentLogin,
+  submitAgentLoginCode,
   getAgentHealth,
   getAgentInstall,
   getAgentLogin,
@@ -79,6 +80,8 @@ export interface ClaudeSetup {
   load: (force: boolean) => void;
   act: (issue: ClaudeIssue) => void;
   cancelLogin: () => void;
+  /** The paste fallback: send the code the sign-in page showed. */
+  submitLoginCode: (code: string) => void;
 }
 
 /**
@@ -315,6 +318,17 @@ export function useAgentSetup(backend: string, watching: boolean): ClaudeSetup {
     );
   }, [backend]);
 
+  // The code from the sign-in page, for a browser the CLI could not open. The
+  // child settles the record either way (signed in, or its own refusal), and
+  // the poll above picks that up — nothing is concluded from this answer.
+  const submitLoginCode = useCallback((code: string) => {
+    setActionError(null);
+    submitAgentLoginCode(backend, code).then(
+      (rec) => setLogin(rec),
+      (e) => setActionError(String(e?.message || e)),
+    );
+  }, [backend]);
+
   useEffect(() => {
     if (!watching) return;
     const onFocus = () => {
@@ -362,5 +376,6 @@ export function useAgentSetup(backend: string, watching: boolean): ClaudeSetup {
     load,
     act,
     cancelLogin,
+    submitLoginCode,
   };
 }

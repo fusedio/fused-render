@@ -257,6 +257,8 @@ function WorkbenchEnvSignIn({ env, locked }: { env: WorkbenchEnv | null; locked:
   const [handle, setHandle] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [loggingIn, setLoggingIn] = useState(false);
+  // The raw poll tick's sign-in address (the "browser did not open?" link).
+  const [loginUrl, setLoginUrl] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const loginStampRef = useRef<number | null>(null);
   const loginStartedRef = useRef<number | null>(null);
@@ -331,6 +333,7 @@ function WorkbenchEnvSignIn({ env, locked }: { env: WorkbenchEnv | null; locked:
       void getCanvasesStatus(env)
         .then((s) => {
           if (cancelled || completing) return;
+          setLoginUrl(s.login_url ?? null);
           if (s.logged_in && s.creds_stamp !== loginStampRef.current) {
             // `loggingIn` drops only AFTER `refresh` wrote the vouched status:
             // dropping it first showed an enabled Sign in for the round trip.
@@ -372,6 +375,7 @@ function WorkbenchEnvSignIn({ env, locked }: { env: WorkbenchEnv | null; locked:
   const onLogin = () =>
     act(async () => {
       loginStampRef.current = status?.creds_stamp ?? null;
+      setLoginUrl(null);
       await startLogin(env);
       loginStartedRef.current = Date.now();
       setLoggingIn(true);
@@ -401,7 +405,18 @@ function WorkbenchEnvSignIn({ env, locked }: { env: WorkbenchEnv | null; locked:
           {!status ? (
             error ? null : "Checking…"
           ) : loggingIn ? (
-            "Complete the sign-in in the browser window that just opened."
+            <>
+              Complete the sign-in in the browser window that just opened.
+              {loginUrl && (
+                <>
+                  {" "}No window?{" "}
+                  <a href={loginUrl} target="_blank" rel="noreferrer">
+                    Open the sign-in page
+                  </a>
+                  .
+                </>
+              )}
+            </>
           ) : signedIn ? (
             <span className="settings-dot settings-dot-ok">Signed in{handle ? <> as <b>{handle}</b></> : null}</span>
           ) : (

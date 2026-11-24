@@ -1045,6 +1045,11 @@ class _ActiveLogin:
     # and unstable share one, custom's may be its own (D1412). Reuse, status
     # and logout match on it, never on "a login is running".
     store: str
+    # The authorize URL the driver printed (`_fused_login.URL_LINE_PREFIX`),
+    # once it has: the page offers it as a link, for a machine where the
+    # child's own `webbrowser.open` opens nothing (WSL, ssh, a container).
+    # None for an external CLI, whose login never prints one.
+    url: str | None = None
 
 
 _LOGIN_LOCK = threading.Lock()
@@ -1065,6 +1070,30 @@ def _reap_login() -> _ActiveLogin | None:
         if login is not None and login.proc.poll() is not None:
             _active_login = login = None
         return login
+
+
+_LOGIN_URL_PREFIX = b"FUSED_LOGIN_URL "  # _fused_login.URL_LINE_PREFIX
+
+
+def _drain_login(login: _ActiveLogin) -> None:
+    """Read the driver's stdout to EOF, keeping the authorize URL line. To EOF
+    on purpose: a pipe nobody reads would block the child on a later print."""
+    stream = login.proc.stdout
+    if stream is None:
+        return
+    try:
+        for raw in stream:
+            if raw.startswith(_LOGIN_URL_PREFIX):
+                url = raw[len(_LOGIN_URL_PREFIX):].decode("utf-8", "replace").strip()
+                if url.startswith(("https://", "http://")):
+                    login.url = url
+    except (OSError, ValueError):
+        pass  # a killed child closes the pipe under us
+    finally:
+        try:
+            stream.close()
+        except OSError:
+            pass
 
 
 def _watch_login(login: _ActiveLogin) -> None:
@@ -1140,6 +1169,7 @@ def api_canvases_status(env: str = ""):
     # frames a canvas reads status first, so the proxy is up (or retargeted
     # after a settings.toml edit) by the time `embed_url` below is used.
     _apply_embed_proxy()
+    login = _login_for(credentials_file(auth_env))
     return {
         "cli_found": cli is not None,
         "logged_in": _logged_in(auth_env),
@@ -1151,7 +1181,10 @@ def api_canvases_status(env: str = ""):
         "creds_stamp": stamp,
         # Only a login writing THIS store: another env's sign-in in the
         # browser is not one this answer's `logged_in` will flip on.
-        "login_in_flight": _login_for(credentials_file(auth_env)) is not None,
+        "login_in_flight": login is not None,
+        # The sign-in page's address while that login waits, for the page's
+        # "browser did not open?" link; null until the child has printed it.
+        "login_url": login.url if login is not None else None,
         # The DEFAULT environment (the catalog's initial pick), and whether
         # FUSED_RENDER_WORKBENCH_ENV pins it — the catalog then disables its
         # environment picker, since `_require_env` refuses the other env.
@@ -1783,14 +1816,16 @@ def api_canvases_login(env: str = "", x_fused: str | None = Header(default=None)
                 driver = os.path.join(os.path.dirname(__file__), "_fused_login.py")
                 command = [cli.command[0], driver]
             try:
-                # Unlike `cloud login --no-browser`, plain `fused login` opens
-                # the browser itself (webbrowser.open) and never prints the
-                # authorize URL — so there is nothing to capture; the client
-                # polls /api/canvases/status until logged_in flips.
+                # The child opens the browser itself (webbrowser.open); the
+                # client polls /api/canvases/status until logged_in flips. Our
+                # driver also PRINTS the authorize URL, read by `_drain_login`
+                # and offered on the page as `login_url` for a machine where
+                # that open does nothing (WSL). The CLI's own login prints
+                # none, so an external CLI keeps DEVNULL.
                 proc = subprocess.Popen(
                     command,
                     stdin=subprocess.DEVNULL,
-                    stdout=subprocess.DEVNULL,
+                    stdout=subprocess.DEVNULL if cli.external else subprocess.PIPE,
                     stderr=subprocess.DEVNULL,
                     env=child,
                 )
@@ -1800,6 +1835,8 @@ def api_canvases_login(env: str = "", x_fused: str | None = Header(default=None)
             login = _ActiveLogin(proc=proc, started_at=time.time(), store=store)
             _active_login = login
             threading.Thread(target=_watch_login, args=(login,), daemon=True).start()
+            if proc.stdout is not None:
+                threading.Thread(target=_drain_login, args=(login,), daemon=True).start()
     return {"ok": True, "login_in_flight": True}
 
 

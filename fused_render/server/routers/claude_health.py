@@ -196,6 +196,25 @@ async def api_claude_login_status():
     return claude_login.status()
 
 
+@router.post("/api/claude/login/code")
+async def api_claude_login_code(body: dict = Body(default={}),
+                                x_fused: str | None = Header(default=None)):
+    """The paste fallback: the code the sign-in page showed, for a machine
+    whose browser the CLI could not open (WSL, ssh). Guarded: it writes to a
+    process that is one step from a credential store."""
+    guard = _require_fused(x_fused)
+    if guard is not None:
+        return guard
+    from fused_render import claude_login
+
+    code = body.get("code") if isinstance(body, dict) else None
+    try:
+        return await run_in_threadpool(
+            claude_login.submit_code, code if isinstance(code, str) else "")
+    except claude_login.LoginError as e:
+        return _error(str(e), status=409)
+
+
 @router.post("/api/claude/login/cancel")
 async def api_claude_login_cancel(x_fused: str | None = Header(default=None)):
     """Stop a sign-in the user gave up on. Idempotent, and guarded because it

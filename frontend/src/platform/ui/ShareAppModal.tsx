@@ -177,6 +177,7 @@ interface CanvasesStatusLite {
   logged_in: boolean;
   creds_stamp: number | null;
   login_in_flight: boolean;
+  login_url?: string | null;
 }
 
 // The four actions that write something (a .fused, a published share) — at
@@ -1660,6 +1661,8 @@ export function ShareAppModal({
     setBusyState(next);
   };
   const [loggingIn, setLoggingIn] = useState(false);
+  // The raw poll tick's sign-in address (the "browser did not open?" link).
+  const [loginUrl, setLoginUrl] = useState<string | null>(null);
   const [linkErr, setLinkErr] = useState("");
   const [fileErr, setFileErr] = useState("");
   const [copied, setCopied] = useState(false);
@@ -1868,6 +1871,7 @@ export function ShareAppModal({
     // first.
     if (loggingIn || busy !== null) return;
     setLinkErr("");
+    setLoginUrl(null);
     setLoggingIn(true);
     loginStampRef.current = status?.creds_stamp ?? null;
     try {
@@ -1879,6 +1883,7 @@ export function ShareAppModal({
     }
     pollRef.current = window.setInterval(() => {
       void getJson<CanvasesStatusLite>("/api/canvases/status").then((s) => {
+        setLoginUrl(s.login_url ?? null);
         const completed = s.logged_in && s.creds_stamp !== loginStampRef.current;
         if (completed) {
           if (pollRef.current !== null) window.clearInterval(pollRef.current);
@@ -2014,6 +2019,15 @@ export function ShareAppModal({
     linkBody = loggingIn ? (
       <p className="m-0 text-[13px] leading-5 text-muted-foreground">
         Finish signing in in the browser window that just opened.
+        {loginUrl && (
+          <>
+            {" "}No window?{" "}
+            <a href={loginUrl} target="_blank" rel="noreferrer" className="underline">
+              Open the sign-in page
+            </a>
+            .
+          </>
+        )}
       </p>
     ) : null;
   } else if (!shared) {
