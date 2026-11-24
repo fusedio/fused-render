@@ -286,6 +286,15 @@ div.bots-page.lanim .bots header #add svg { width: 20px; height: 20px; }
 /* The empty hero's link back into the setup wizard (components/Thread.tsx, apps/bots/onboarding). */
 .bots-page .empty.hero .setuplink { display: block; margin-top: 14px; font-size: 12px; color: var(--muted); text-decoration: underline; }
 .bots-page .empty.hero button { margin-top: 8px; padding: 8px 18px; }
+/* "Install Chrome in WSL" (components/ChromeInstall): under the hero's setup lines and under a "no browser" error. */
+.bots-page .chromeinstall { display: flex; flex-direction: column; align-items: flex-start; gap: 6px; margin: 8px 0; font-size: 12px; max-width: 560px; }
+.bots-page .empty.hero .chromeinstall { align-items: center; text-align: center; }
+.bots-page .chromeinstall button { padding: 6px 14px; }
+.bots-page .chromeinstall .muted { color: var(--muted); }
+.bots-page .chromeinstall .warn { color: var(--warn); }
+.bots-page .chromeinstall .ok { color: var(--text); }
+.bots-page .chromeinstall code { user-select: all; overflow-wrap: anywhere; }
+.bots-page .chromeinstall .out { margin: 0; padding: 6px 8px; max-width: 100%; max-height: 140px; overflow: auto; text-align: left; white-space: pre-wrap; overflow-wrap: anywhere; font-size: 11px; color: var(--muted); background: var(--raised); border-radius: 6px; }
 
 /* ---- middle: chat. Bot bubbles hang left (capped by .msg max-width); the composer and your bubbles run full width. ---- */
 .bots-page .chat { display: flex; flex-direction: column; min-height: 0; background: var(--bg); --chatgut: 24px; }

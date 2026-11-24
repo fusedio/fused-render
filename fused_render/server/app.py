@@ -194,6 +194,10 @@ def export_app_env() -> None:
     from fused_render import fusedcli
     fusedcli.export_fused_cli_env()
     _export_bundled_uv_path()
+    # Under WSL, `webbrowser.open` must reach the Windows browser itself: the stock route shows the Documents
+    # folder for any address with a query (_wsl.py), which is every sign-in address.
+    from fused_render import _wsl
+    _wsl.use_windows_browser()
     # MUST stay last: every PATH writer above is a synchronous read-modify-write
     # of os.environ["PATH"], and the probe's background thread does the same.
     # Started earlier, it could overwrite a prepend made after it began.

@@ -48,6 +48,9 @@ import time
 import urllib.request
 
 from fused_render import _platform
+# Under WSL the browser the person has open is on the Windows side, which the bots cannot drive (they launch
+# their own, here), so a missing browser needs its own sentence (find_chrome).
+from fused_render._wsl import is_wsl
 from fused_render.bots import paths as bpaths
 
 log = logging.getLogger(__name__)
@@ -94,16 +97,6 @@ def _path_chrome_candidates(which, dirs=()):
     for d in dirs:
         for n in PATH_CHROME_NAMES:
             yield f"{d}/{n}"
-
-
-def is_wsl(env=None, release=None, platform=None) -> bool:
-    """Linux under WSL: the browser the person has open is on the Windows side, which the bots cannot
-    drive (they launch their own, here), so a missing browser needs its own sentence."""
-    if not (sys.platform if platform is None else platform).startswith("linux"):
-        return False
-    env = os.environ if env is None else env
-    release = os.uname().release if release is None else release
-    return bool(env.get("WSL_DISTRO_NAME")) or "microsoft" in release.lower()
 
 
 MAC_CHROME_APPS = (

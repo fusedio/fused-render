@@ -60,7 +60,9 @@ def test_error_text_is_platform_neutral(monkeypatch):
     with pytest.raises(RuntimeError) as e:
         browser.find_chrome()
     assert "/Applications" not in str(e.value)
-    assert "Chrome" in str(e.value)
+    # The Bots page looks for these words to offer its Install button under the error
+    # (frontend/src/apps/bots/lib/setup.ts NO_BROWSER): change both together.
+    assert "No Chrome, Chromium, Edge or Brave browser found" in str(e.value)
 
 
 def test_a_browser_installed_after_import_is_found_without_a_restart(monkeypatch, tmp_path):

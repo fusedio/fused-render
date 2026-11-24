@@ -18,6 +18,17 @@
 >   the Chrome probe of FusedBot's `onboarding.chrome_snapshot()` plus
 >   `claude_health.cached()` (never a spawn; `{found: null, cached: false}`
 >   when the cache is cold, `/api/claude/health` is the live probe).
+>   A missing Chrome also carries `wsl` and `install: {available, reason,
+>   command}` (`bots/chrome_install.plan()`).
+> - New `POST /api/bots/setup/chrome` (and its `GET`, the record
+>   `{state, detail, output, error}`): install Google Chrome inside WSL from
+>   the page's **Install Chrome in WSL** button (`bots/chrome_install.py`).
+>   It downloads Google's `.deb`, then runs `apt-get update` and
+>   `apt-get install -y <deb>` as root through `wsl.exe -d <distro> -u root -e`
+>   (no password: the Windows account owns the distro), and ends by looking
+>   for the browser again. Offered only inside WSL with apt on x86-64; the
+>   button sits under the empty hero's setup lines and under a thread that
+>   ends on the "No … browser found" error.
 > - Embedding an app page: **`/render?path=<abs index.html or app dir>`**
 >   (`&_preview=1` for gallery thumbnails). There is no `/embed?path=` route;
 >   fused-render's `/embed/{path}` serves the shell.

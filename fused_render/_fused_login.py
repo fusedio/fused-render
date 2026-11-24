@@ -114,6 +114,11 @@ def main() -> int:
     deadline = time.time() + CALLBACK_TIMEOUT_S
 
     print(f"Waiting for browser sign-in on {redirect_uri} ...", flush=True)
+    # Under WSL the stock open ends in `explorer.exe <url>`, which shows the Documents folder for an address
+    # with a query like this one (_wsl.py); this routes it to the Windows default browser instead.
+    from fused_render import _wsl
+
+    _wsl.use_windows_browser()
     webbrowser.open(authorize_url)
     while code is None and denied is None and time.time() < deadline:
         server.handle_request()

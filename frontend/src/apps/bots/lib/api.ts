@@ -365,12 +365,20 @@ export interface PackageWriteBody { memory: boolean; apps: string[]; file_name?:
 /** GET /api/bots/setup. `chrome.found` null = could not tell; `claude` is fused-render's cached Claude Code health
  *  snapshot (never a spawn), read loosely: only `found` and `signed_in` are looked at. */
 export interface SetupReply {
-  chrome: { found: boolean | null; path: string | null; wsl?: boolean };
+  /** `install` (only when not found): whether the Install button can work here, see ChromeInstallPlan. */
+  chrome: { found: boolean | null; path: string | null; wsl?: boolean; install?: ChromeInstallPlan };
   claude: { found?: boolean | null; signed_in?: boolean | null; version?: string | null; [k: string]: unknown };
   /** Who runs the bots on this machine (one owner process, bots/registry.py): `this` = the server this page
    *  talks to; else that app forwards here from the named one. `known` false = an older app holds the lock
    *  and wrote no record. null = no process runs them. Absent from an older server. */
   owner?: BotsOwner | null;
+}
+/** bots/chrome_install.plan(): `available` only inside WSL with apt on x86-64; else `reason` says why not.
+ *  `command` is the line to paste into a WSL terminal instead. */
+export interface ChromeInstallPlan { available: boolean; reason: string; command: string }
+/** GET/POST /api/bots/setup/chrome: the one install's record. `output` is apt's own last lines. */
+export interface ChromeInstallStatus {
+  state: "idle" | "running" | "done" | "error"; detail: string; output: string; error: string | null;
 }
 export interface BotsOwner {
   this: boolean; known: boolean; stalled: boolean;
@@ -540,6 +548,10 @@ export const api = {
   starterUpdate: (key: string) => post<StarterInstallReply>(`/api/bot-apps/starters/${encodeURIComponent(key)}/update`, {}, "starter_update"),
   /** GET /api/bots/setup: is there a Chrome to drive and a Claude Code to think with (the empty hero's setup lines). */
   setup: () => get<SetupReply>(`${B}/setup`, "setup"),
+  /** POST /api/bots/setup/chrome: install Google Chrome inside WSL (apt, as root through wsl.exe). 409 with the
+   *  reason when it cannot run here or one is already running. Poll chromeInstallStatus for its progress. */
+  chromeInstall: () => post<ChromeInstallStatus>(`${B}/setup/chrome`, {}, "setup/chrome"),
+  chromeInstallStatus: () => get<ChromeInstallStatus>(`${B}/setup/chrome`, "setup/chrome"),
   /** POST /api/bots/workspace/take: ask the server holding the workspace claim to yield and claim it here (the
    *  banner's Override after a "workspace_busy" 409). 409 again, with the reason, when it could not. */
   workspaceTake: () => post<{ taken: boolean; error: string }>(`${B}/workspace/take`, {}, "workspace/take"),
