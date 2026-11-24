@@ -24,6 +24,7 @@
 // page offers.
 import { useEffect, useState } from "react";
 import { getPrefsShared } from "@platform/lib/api";
+import { publishCanvasesFlag } from "@platform/lib/canvases-flag";
 
 /** The last answer, or `null` while nobody has asked yet. Null renders as OFF:
  *  the flag defaults off, so hiding until the answer lands never flashes an
@@ -83,6 +84,9 @@ export function publishCanvasesEnabled(next: boolean) {
   generation += 1;
   reading = Promise.resolve();
   set(next);
+  // The platform-side copy (platform/lib/canvases-flag.ts) for readers that
+  // may not import this app — the explorer's "Fused assets" search group.
+  publishCanvasesFlag(next);
 }
 
 /** Subscribe. The first reader triggers the one read; later ones reuse it. */

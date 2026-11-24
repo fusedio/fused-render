@@ -91,6 +91,16 @@ def _rows(path):
     return out
 
 
+def _json_file(path):
+    """The JSON object at `path` once it is all there; None while it is
+    missing or still being written (empty, or cut short)."""
+    try:
+        with open(path, encoding="utf-8") as fh:
+            return json.load(fh)
+    except (OSError, ValueError):
+        return None
+
+
 class Session:
     """One host subprocess against the fake, with the files it writes."""
 
@@ -339,6 +349,10 @@ def test_a_spawn_without_a_model_adopts_the_sessions_current_one(start, agent):
     assert s.sid
     assert s.out()[0]["model"] == "auto"
     assert agent._session_settings(s.sid) == ("auto", "")
+    # `s.sid` waited for the init row in out.jsonl; the host writes the D18
+    # notice into the transcript just AFTER it (`write_init`, then
+    # `write_first_turn_notice`), so the transcript may still be empty here.
+    assert _wait_for(lambda: s.tx())
     assert s.tx()[0]["summary"] == "Handled by Google Gemini · model auto"
 
 
@@ -536,17 +550,17 @@ def test_tool_mapping_table(host_mod, tmp_path):
     # fused's own MCP tools, in the three title shapes Gemini uses: no
     # arguments → `<tool> (<server> MCP Server)`; arguments →
     # `<tool>(key: value, …)`, parsed into the input the card shows.
-    assert m("other", "app_state (fused_approvals MCP Server)", None, [], "")[0] == \
-        "mcp__fused_approvals__app_state"
+    assert m("other", "app_state (fused_render MCP Server)", None, [], "")[0] == \
+        "mcp__fused_render__app_state"
     # Values are BARE (the CLI never quotes), and may hold commas and colons:
     # a pair ends only where the next `, key: ` begins.
     name, inp = m("other", "terminal_send(id: t1, text: ls -la)", None, [], "")
-    assert name == "mcp__fused_approvals__terminal_send"
+    assert name == "mcp__fused_render__terminal_send"
     assert (inp["id"], inp["text"]) == ("t1", "ls -la")
     name, inp = m("other", "terminal_send(id: t3, text: echo a, b; date: now)", None, [], "")
     assert (inp["id"], inp["text"]) == ("t3", "echo a, b; date: now")
     name, inp = m("other", "canvas_screenshot(what: udf, udf: my_udf)", None, [], "")
-    assert name == "mcp__fused_approvals__canvas_screenshot" and inp["udf"] == "my_udf"
+    assert name == "mcp__fused_render__canvas_screenshot" and inp["udf"] == "my_udf"
     assert m("other", "app_state(keys: [a, b])", None, [], "")[1]["keys"] == "[a, b]"
     assert m("other", "other_tool(x: 1)", None, [], "")[0] == "other_tool(x: 1)"
     assert m("other", "echo (weather MCP Server)", None, [], "")[0] == "weather-echo"
@@ -577,10 +591,10 @@ def test_tool_mapping_table(host_mod, tmp_path):
                     "newText": "hello\n"}])
     assert (name, inp["file_path"], inp["content"]) == ("Write", "brand_new.txt", "hello\n")
     # Gemini titles an MCP call `<tool> (<server> MCP Server)` (D14).
-    name, inp = m("other", "app_state (fused_approvals MCP Server)", {"reason": "look"}, [], "")
-    assert name == "mcp__fused_approvals__app_state" and inp["reason"] == "look"
+    name, inp = m("other", "app_state (fused_render MCP Server)", {"reason": "look"}, [], "")
+    assert name == "mcp__fused_render__app_state" and inp["reason"] == "look"
     # An unmapped kind keeps the call's own input under `_acp.raw`.
-    assert inp["_acp"] == {"kind": "other", "title": "app_state (fused_approvals MCP Server)",
+    assert inp["_acp"] == {"kind": "other", "title": "app_state (fused_render MCP Server)",
                            "raw": {"reason": "look"}}
     assert m("other", "list_issues (github MCP Server)", {}, [], "")[0] == "github-list_issues"
     assert m("other", "some free title", {}, [], "")[0] == "some free title"
@@ -860,8 +874,15 @@ def test_an_interrupt_cancels_the_turn_and_answers_once(start, agent):
     assert any(e.get("msg", {}).get("method") == "session/cancel" for e in s.fake())
     answers = _perm_answers(s, _perm_rpc_id(s))
     assert [a["result"]["outcome"]["optionId"] for a in answers] == ["o-no"]
-    res = json.load(open(os.path.join(s.run_dir, "perm", card["id"] + ".res.json")))
-    assert res == {"decision": "deny", "reason": "cancelled"}
+    # `reject_pending` answers the RPC FIRST (that is what sets `done` and
+    # makes the card's id final) and only then writes the deny on disk, from
+    # the reader thread that handled the interrupt — so the fake can log the
+    # `o-no` answer, and the cancelled reply's `result` land, before the
+    # `.res.json` exists. Wait for the file itself (whole: it is written in
+    # place, O_EXCL as the first-writer-wins latch, so it can be read empty).
+    res_path = os.path.join(s.run_dir, "perm", card["id"] + ".res.json")
+    assert _wait_for(lambda: _json_file(res_path) is not None)
+    assert _json_file(res_path) == {"decision": "deny", "reason": "cancelled"}
     assert agent._permissions(s.run_dir)[0]["decision"] == "deny"
     p = agent._poll(os.path.basename(s.run_dir))
     assert p["done"] and p["error"]
@@ -1137,7 +1158,7 @@ def test_the_pane_mcp_server_rides_session_new(start, agent):
     assert new == {"cwd": s.cwd, "mcpServers": []}
     # A second session whose run dir carries an mcp.json before the host
     # spawns, in the exact shape `_write_mcp_config` writes.
-    s2 = start(mcp={"fused_approvals": {
+    s2 = start(mcp={"fused_render": {
         "command": sys.executable,
         "args": ["permission_server.py", "/perm", "--no-approve"],
         "env": {"PYTHONUTF8": "1", "FUSED_RENDER_TERMINAL_ORIGIN": "http://x"},
@@ -1146,7 +1167,7 @@ def test_the_pane_mcp_server_rides_session_new(start, agent):
     new = next(e["msg"]["params"] for e in s2.fake()
                if e.get("msg", {}).get("method") == "session/new")
     assert new["mcpServers"] == [{
-        "name": "fused_approvals", "command": sys.executable,
+        "name": "fused_render", "command": sys.executable,
         "args": ["permission_server.py", "/perm", "--no-approve"],
         "env": [{"name": "PYTHONUTF8", "value": "1"},
                 {"name": "FUSED_RENDER_TERMINAL_ORIGIN", "value": "http://x"}]}]

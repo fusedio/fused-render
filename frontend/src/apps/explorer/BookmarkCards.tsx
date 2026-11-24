@@ -19,6 +19,7 @@ import {
 } from "@platform/lib/router";
 import { thumbFrame } from "@platform/lib/thumb-frame";
 import { listDir, rawUrl, statPath } from "@platform/lib/api";
+import { isRemoteLocation } from "@platform/lib/remote";
 import type { FsEntry } from "@platform/lib/api";
 import { basename } from "@platform/lib/format";
 import { bestPeekFile, foldProbePick, isPreviewImage, peekRank } from "@apps/explorer/lib/folder-peek";
@@ -421,7 +422,9 @@ export function BookmarkPreviewCard({ b }: { b: Bookmark }) {
   const fsPath = bookmarkFsPath(b.url);
   // A saved layout (/_tab, /_panel — exact sentinel segments, not any
   // _-prefixed folder like _site) is never a directory — skip the stat.
-  const sentinel = fsPath === "/_tab" || fsPath === "/_panel";
+  // An `s3://` bookmark is no local path either: no /api/fs/stat for it (the
+  // card shows the file body, whose embed renders RemoteView).
+  const sentinel = fsPath === "/_tab" || fsPath === "/_panel" || isRemoteLocation(fsPath);
   const missing = isBookmarkMissing(b.id);
   const [isDir, setIsDir] = useState<boolean | null>(sentinel ? false : null);
   useEffect(() => {

@@ -161,15 +161,15 @@ class FakeAI:
 def steps_bot(tmp_path, monkeypatch):
     ws = tmp_path / "ws"
     monkeypatch.setenv("FUSED_RENDER_DIR", str(ws))
+    reset_bots_caches()
     os.makedirs(bpaths.apps_root())
     monkeypatch.setattr(apptools, "ROOTS", [bpaths.apps_root()])
     monkeypatch.setattr(apptools, "REGISTRY_FILES", [])
     monkeypatch.setattr(apptools, "_apps_cache_at", 0.0)
     monkeypatch.setattr(apptools, "_cache_at", 0.0)
     monkeypatch.setattr(botmod, "Browser", FakeBrowser)
-    registry.reset_for_tests()
-    bid = "s1"
-    os.makedirs(bpaths.bot_dir(bid))
+    bid = "5e5e5e5e"
+    bpaths.place(bid, "Shopper")  # the folder (<ws>/bots/shopper/) must exist before the meta is written
     store.write_meta(bid, {"id": bid, "name": "Shopper", "model": "sonnet", "effort": "low", "status": "idle",
                            "instructions": "", "created": time.time(), "task": "", "step": 0, "url": None, "title": None})
     b = registry.get(bid)
@@ -436,7 +436,7 @@ def test_approval_sets_waiting_on_its_card(steps_bot, monkeypatch):
 
 @pytest.mark.parametrize("stamp", ["card", "other"])
 def test_an_outside_yes_approves_only_the_card_it_was_stamped_for(steps_bot, monkeypatch, stamp):
-    # The phone's answer (bots/phone.py) and a texted one carry via["answers"] = the card's seq
+    # A phone-channel answer (channels.base.phone_via) and a texted one carry via["answers"] = the card's seq
     # (channels.base.answers_card): the steps engine's gate takes it as the verdict, as the agent engine's does.
     # One stamped for another card (settled between bot._texted_approval's check and the inbox write) is neither
     # a yes nor a no: the card stays up (no "Denied"), and the next, rightly stamped yes settles it.

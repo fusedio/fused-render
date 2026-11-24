@@ -255,9 +255,9 @@ function MemoryMeter({ data }: { data: MachineSnapshot | null }) {
 function FusedStat({ procs }: { procs: MachineProc[] }) {
   const t = fusedTotals(procs);
   return (
-    <section className="monitor-card monitor-card-stat" aria-label="fused-render's own cost">
+    <section className="monitor-card monitor-card-stat" aria-label="Fused Render's own cost">
       <header className="monitor-card-head">
-        <h2>fused-render</h2>
+        <h2>Fused Render</h2>
       </header>
       <div className="monitor-stat">
         <div>
@@ -937,7 +937,7 @@ export default function ProcessesTab({
     <div className="monitor-tab">
       <p className="monitor-subtitle monitor-tab-sub">
         {fusedOnly
-          ? "fused-render and the processes it runs: live CPU and memory."
+          ? "Fused Render and the processes it runs: live CPU and memory."
           : `Every process on ${machine}: live CPU and memory.`}
       </p>
 
@@ -962,7 +962,7 @@ export default function ProcessesTab({
           aria-pressed={fusedOnly}
           onClick={toggleFusedOnly}
         >
-          fused-render only
+          Fused Render only
         </button>
         <span className="monitor-count">
           {shownAll.length === scopeCount

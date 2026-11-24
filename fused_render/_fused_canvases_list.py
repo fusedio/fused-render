@@ -96,6 +96,13 @@ def main() -> None:
                 "preview_url": preview_url,
                 "preview_pending": preview_pending,
                 "n_code_udfs": _code_udf_count(collection),
+                # The canvas's public share token, when it has one: the card's
+                # share-link button opens <workbench>/canvas/<token>, as the
+                # hosted home card does. Already in the lite payload.
+                "share_token": collection.get("share_token")
+                if isinstance(collection.get("share_token"), str)
+                and collection.get("share_token")
+                else None,
                 "last_updated": collection.get("last_updated"),
             }
         )

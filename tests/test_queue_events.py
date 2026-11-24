@@ -27,6 +27,7 @@ import os
 import threading
 import time
 import urllib.request
+import uuid
 
 import pytest
 from fastapi.testclient import TestClient
@@ -44,6 +45,27 @@ HEADERS = {"X-Fused": "1"}
 #: from `queue_manager.ensure_duties_waiter` at test-body time, which would
 #: already be the patched no-op.
 _REAL_ENSURE_DUTIES_WAITER = queue_manager.ensure_duties_waiter
+
+
+@pytest.fixture(autouse=True)
+def _join_event_posts(monkeypatch, _release_dead_origins):
+    """Every `_post_event` / `card_raised` post runs `_send_event` on a daemon
+    thread, and only the `exited` one is joined by the code under test. An
+    unjoined `turn_ended` that outlives its test loses the test's patched
+    `urlopen`, fails against the dead origin, falls back to the server.json
+    in whatever FUSED_RENDER_HOME_DIR is set NOW (the next test's), and lands
+    on the next test's live server as a stray post. Wait for them here.
+    Requesting `monkeypatch` makes this teardown run before the patches are
+    undone, so a thread still in flight finishes against its own test; and
+    requesting `_release_dead_origins` keeps the test's dead ports reserved
+    (refusing, not reissued) until those threads are done."""
+    before = set(threading.enumerate())
+    yield
+    deadline = time.monotonic() + 10
+    for t in threading.enumerate():
+        if t in before or getattr(getattr(t, "_target", None), "__name__", "") != "_send_event":
+            continue
+        t.join(max(0.0, deadline - time.monotonic()))
 
 
 def _load(name):
@@ -156,7 +178,9 @@ class _FakeCli:
 
 @pytest.fixture()
 def host_run(tmp_path):
-    run_dir = tmp_path / "runs" / "20260917-120000-abcd"
+    # Unique per test: a `_LiveServer` keys on it to tell this test's posts
+    # from a stranger's (`_LiveServer.ours`).
+    run_dir = tmp_path / "runs" / ("20260917-120000-" + uuid.uuid4().hex[:8])
     run_dir.mkdir(parents=True)
     (run_dir / "out.jsonl").write_text("")
     (run_dir / "meta.json").write_text(json.dumps({"session_id": "sess-1"}))
@@ -194,7 +218,7 @@ def test_the_host_posts_turn_ended_once_when_a_result_row_lands(
     ended = posts.wait_for("turn_ended")
     assert len(ended) == 1, "the closed turn was announced on every idle tick"
     body = ended[0]["body"]
-    assert body["run_id"] == "20260917-120000-abcd"
+    assert body["run_id"] == host_run.name
     assert body["session_id"] == "sess-1"
     assert ended[0]["url"] == "http://127.0.0.1:9/api/tasks/queue/event"
     assert ended[0]["method"] == "POST"
@@ -234,7 +258,7 @@ def test_the_host_posts_turn_started_when_the_cli_reopens_a_turn(
     started = posts.wait_for("turn_started")
     assert len(started) == 1, "the open turn was announced on every tick"
     body = started[0]["body"]
-    assert body["run_id"] == "20260917-120000-abcd"
+    assert body["run_id"] == host_run.name
     assert body["session_id"] == "sess-1"
     assert isinstance(body["at"], float)
     assert abs(body["at"] - time.time()) < 5.0
@@ -263,7 +287,7 @@ def test_the_host_posts_exited_with_the_childs_return_code(
     assert len(exited) == 1
     assert exited[0]["body"]["code"] == 7
     assert exited[0]["body"]["pid"] == 4242
-    assert exited[0]["body"]["run_id"] == "20260917-120000-abcd"
+    assert exited[0]["body"]["run_id"] == host_run.name
     assert isinstance(exited[0]["body"]["at"], float)
     assert abs(exited[0]["body"]["at"] - time.time()) < 5.0
 
@@ -359,6 +383,289 @@ def test_a_post_that_keeps_failing_gives_up_after_the_retry(monkeypatch, posts,
     host._send_event("http://127.0.0.1:9" + host._EVENT_PATH, {"kind": "exited"})
 
     assert len(tries) == 2, "one retry, not a loop"
+
+
+# -------------------------------- a host that outlived its server (2026-11-08)
+#
+# The app was quit mid-run and relaunched on 1778 instead of 1777; the
+# still-running host kept posting to 1777 and every event was lost. A failed
+# post now re-resolves the live origin from THIS install's server.json
+# (`$FUSED_RENDER_HOME_DIR/server.json`, the server's own branch-resolved home).
+
+
+class _LiveServer:
+    """A real loopback HTTP server that records every event POSTed to it."""
+
+    def __init__(self, port=0):
+        import http.server
+
+        seen = self.seen = []
+
+        class _H(http.server.BaseHTTPRequestHandler):
+            def do_POST(self):
+                n = int(self.headers.get("Content-Length") or 0)
+                seen.append({"path": self.path,
+                             "fused": self.headers.get("X-Fused"),
+                             "body": json.loads(self.rfile.read(n))})
+                self.send_response(200)
+                self.send_header("Content-Length", "2")
+                self.end_headers()
+                self.wfile.write(b"{}")
+
+            def log_message(self, *a):
+                pass
+
+        self.httpd = http.server.HTTPServer(("127.0.0.1", port), _H)
+        self.origin = "http://127.0.0.1:%d" % self.httpd.server_address[1]
+        threading.Thread(target=self.httpd.serve_forever, daemon=True).start()
+
+    def ours(self, run_id):
+        """The posts that carry `run_id` — this test's own.
+
+        The server listens on an ephemeral port, and a port is reissued the
+        moment its last owner lets go. Host processes OTHER suites spawned
+        (detached, outliving their test by design) keep posting to the
+        origin they were spawned with; once that server is gone, its freed
+        port can come back as this one, and their `turn_ended` lands here
+        (`['turn_ended', 'card_raised'] == ['card_raised']`). Nothing in
+        this file can stop a stranger dialling the port, so every
+        assertion reads only the posts its own run id is on."""
+        return [p for p in self.seen if p["body"].get("run_id") == run_id]
+
+    def kinds(self, run_id):
+        return [p["body"]["kind"] for p in self.ours(run_id)]
+
+    def close(self):
+        self.httpd.shutdown()
+        self.httpd.server_close()
+
+
+#: Sockets `_dead_origin` keeps bound for the current test, by origin.
+_RESERVED = {}
+
+
+@pytest.fixture(autouse=True)
+def _release_dead_origins():
+    """Close every port `_dead_origin` reserved, after the test (and after
+    `_join_event_posts`, which depends on this, has waited out the posts)."""
+    yield
+    while _RESERVED:
+        _RESERVED.popitem()[1].close()
+
+
+def _dead_origin():
+    """A loopback origin nothing listens on — and nothing else CAN listen on.
+
+    The port stays bound (never `listen()`ed, no SO_REUSEADDR) until the test
+    ends: a connect to it is refused at once, and no other process can be
+    handed it. Binding and then releasing it, as this used to, raced the
+    other xdist workers: the kernel reissues a freed port to the next
+    `bind(0)` readily, so another worker's `live_server` could come up on it
+    and receive this test's "dead" `turn_ended` retries — failing THAT test
+    with `['turn_ended', 'card_raised'] == ['card_raised']`."""
+    import socket
+
+    s = socket.socket()
+    s.bind(("127.0.0.1", 0))
+    origin = "http://127.0.0.1:%d" % s.getsockname()[1]
+    _RESERVED[origin] = s
+    return origin
+
+
+def _release(origin):
+    """Give a `_dead_origin` port up so this test's own server can bind it."""
+    s = _RESERVED.pop(origin, None)
+    if s is not None:
+        s.close()
+
+
+@pytest.fixture()
+def live_server():
+    srv = _LiveServer()
+    yield srv
+    srv.close()
+
+
+@pytest.fixture()
+def relaunched(tmp_path, monkeypatch):
+    """The spawn-time origin is dead; `write(origin, pid)` publishes a
+    server.json in the host's home dir the way `write_server_json` does."""
+    home = tmp_path / "relaunched-home"
+    home.mkdir()
+    monkeypatch.setenv("FUSED_RENDER_HOME_DIR", str(home))
+    monkeypatch.setenv("FUSED_RENDER_ORIGIN", _dead_origin())
+
+    def write(origin, pid=None):
+        (home / "server.json").write_text(json.dumps({
+            "origin": origin, "pid": os.getpid() if pid is None else pid,
+            "version": "x", "boot_id": "b", "started": time.time()}))
+
+    return write
+
+
+@pytest.mark.parametrize("name", ["session_host", "copilot_host",
+                                  "codex_host", "gemini_host"])
+def test_a_host_whose_server_moved_posts_to_the_relaunched_one(
+        monkeypatch, host_run, live_server, relaunched, name):
+    host = _load(name)
+    monkeypatch.setattr(host, "_EVENT_RETRY_SECONDS", 0.01)
+    relaunched(live_server.origin)
+
+    host._post_event(str(host_run), "exited", code=0).join(10)
+
+    assert live_server.kinds(host_run.name) == ["exited"]
+    assert live_server.ours(host_run.name)[0]["path"] == host._EVENT_PATH
+    assert live_server.ours(host_run.name)[0]["fused"] == "1"
+
+
+def test_after_the_switch_later_events_go_straight_to_the_live_server(
+        monkeypatch, host_run, live_server, relaunched):
+    host = _load("session_host")
+    monkeypatch.setattr(host, "_EVENT_RETRY_SECONDS", 0.01)
+    relaunched(live_server.origin)
+    host._post_event(str(host_run), "turn_ended").join(10)
+
+    tries = []
+    real = urllib.request.urlopen
+
+    def spy(req, timeout=None):
+        tries.append(req.full_url)
+        return real(req, timeout=timeout)
+
+    monkeypatch.setattr(urllib.request, "urlopen", spy)
+    host._post_event(str(host_run), "exited").join(10)
+
+    assert tries == [live_server.origin + host._EVENT_PATH], \
+        "the cached live origin is tried first, not the dead spawn-time one"
+    assert live_server.kinds(host_run.name) == ["turn_ended", "exited"]
+
+
+@pytest.mark.parametrize("case", ["dead_pid", "same_origin", "absent",
+                                  "no_home_dir"])
+def test_no_switch_without_a_live_different_server_of_this_install(
+        monkeypatch, host_run, live_server, relaunched, case):
+    host = _load("session_host")
+    monkeypatch.setattr(host, "_EVENT_RETRY_SECONDS", 0.01)
+    dead = os.environ["FUSED_RENDER_ORIGIN"]
+    if case == "dead_pid":
+        # A stale file a crashed server left behind: its pid is gone, so even
+        # an origin that happens to answer is not this install's server.
+        relaunched(live_server.origin, pid=2 ** 22 + 12345)
+    elif case == "same_origin":
+        relaunched(dead)
+    elif case == "no_home_dir":
+        relaunched(live_server.origin)
+        monkeypatch.delenv("FUSED_RENDER_HOME_DIR")
+    tries = []
+    real = urllib.request.urlopen
+
+    def spy(req, timeout=None):
+        tries.append(req.full_url)
+        return real(req, timeout=timeout)
+
+    monkeypatch.setattr(urllib.request, "urlopen", spy)
+    host._post_event(str(host_run), "exited").join(10)
+
+    assert tries == [dead + host._EVENT_PATH] * 2, "the old two tries, no third"
+    assert live_server.ours(host_run.name) == []
+
+
+def _boots_late(origin, after):
+    """The relaunched server: server.json already names `origin`, but it
+    only listens `after` seconds later (uvicorn binds after the lifespan
+    startup). Returns a holder whose `server` is set once it listens."""
+    holder = {}
+
+    def boot():
+        time.sleep(after)
+        _release(origin)
+        holder["server"] = _LiveServer(port=int(origin.rsplit(":", 1)[1]))
+
+    threading.Thread(target=boot, daemon=True).start()
+    return holder
+
+
+@pytest.mark.parametrize("name", ["session_host", "copilot_host",
+                                  "codex_host", "gemini_host"])
+def test_the_fallback_waits_for_a_relaunched_server_still_booting(
+        monkeypatch, host_run, relaunched, name):
+    """Bugbot, PR #2192: server.json is written before uvicorn listens, so
+    the first post to the new origin can be refused. Each edge is emitted
+    once, so the fallback keeps trying — bounded by FALLBACK_SECONDS."""
+    host = _load(name)
+    monkeypatch.setattr(host, "_EVENT_RETRY_SECONDS", 0.05)
+    new_origin = _dead_origin()
+    relaunched(new_origin)
+    late = _boots_late(new_origin, 0.4)
+    try:
+        host._post_event(str(host_run), "turn_ended").join(10)
+        assert late["server"].kinds(host_run.name) == ["turn_ended"]
+    finally:
+        if "server" in late:
+            late["server"].close()
+
+
+def test_the_fallback_gives_up_once_its_budget_is_spent(
+        monkeypatch, host_run, relaunched):
+    host = _load("session_host")
+    monkeypatch.setattr(host, "_EVENT_RETRY_SECONDS", 0.05)
+    monkeypatch.setattr(host._EVENT_ORIGIN, "FALLBACK_SECONDS", 0.3)
+    never = _dead_origin()
+    relaunched(never)
+    tries = []
+    real = urllib.request.urlopen
+
+    def spy(req, timeout=None):
+        tries.append(req.full_url)
+        return real(req, timeout=timeout)
+
+    monkeypatch.setattr(urllib.request, "urlopen", spy)
+    started = time.monotonic()
+    host._post_event(str(host_run), "exited").join(10)
+
+    assert time.monotonic() - started < 3.0
+    to_new = [t for t in tries if t.startswith(never)]
+    assert 2 <= len(to_new) <= 10, "bounded retries, not one and not a loop"
+
+
+def test_the_exiting_host_waits_for_the_fallback_before_it_returns(
+        monkeypatch, host_run, relaunched):
+    """CodeRabbit, PR #2192: the `exited` post is JOINED because the host
+    returns out of `main` right after it — and the join has to cover the
+    fallback too, or the last word dies with the process."""
+    host = _load("session_host")
+    monkeypatch.setattr(host, "_EVENT_TIMEOUT", 0.2)
+    monkeypatch.setattr(host, "_EVENT_RETRY_SECONDS", 0.05)
+    new_origin = _dead_origin()
+    relaunched(new_origin)
+    # Later than the old join (`_EVENT_TIMEOUT + 1.0`) allowed.
+    late = _boots_late(new_origin, 1.5)
+    try:
+        _drive_host(monkeypatch, host, host_run, [])
+        assert "server" in late, "the host returned before the fallback landed"
+        assert "exited" in late["server"].kinds(host_run.name)
+    finally:
+        if "server" in late:
+            late["server"].close()
+
+
+def test_the_permission_server_posts_its_card_to_the_relaunched_server(
+        tmp_path, monkeypatch, live_server, relaunched):
+    """CodeRabbit, PR #2192: a card raised after a relaunch on another port
+    reaches the live server the same way the hosts' own events do."""
+    srv = _load("permission_server")
+    monkeypatch.setattr(srv, "_EVENT_RETRY_SECONDS", 0.01)
+    run_id = "20260917-130000-" + uuid.uuid4().hex[:8]
+    perm = tmp_path / "runs" / run_id / "perm"
+    perm.mkdir(parents=True)
+    monkeypatch.setattr(srv, "PERM_DIR", str(perm))
+    relaunched(live_server.origin)
+
+    srv._send_event(srv._event_origin().current() + srv._EVENT_PATH,
+                    {"kind": "card_raised", "run_id": run_id, "request_id": "q"})
+
+    assert live_server.kinds(run_id) == ["card_raised"]
+    assert srv._event_origin().current() == live_server.origin
 
 
 def test_the_host_falls_back_to_the_resumed_session_id(

@@ -371,6 +371,8 @@ def test_a_scheduled_entry_target_beats_the_pane_file(
     proj.mkdir()
     file = proj / "index.html"
     file.write_text("<html></html>")
+    # The entry's file EXISTS: a gone one falls back to its folder (below).
+    (proj / "report.py").write_text("print(1)\n")
     _seed_schedule([_entry("e1", "run the report", T9,
                            target=str(proj / "report.py"),
                            state=schedule.SENT,
@@ -382,6 +384,66 @@ def test_a_scheduled_entry_target_beats_the_pane_file(
 
     task = _tasks(client)[0]
     assert task["target"] == tasks_mod.canonical_fs_path(str(proj / "report.py"))
+
+
+def test_a_scheduled_entry_target_that_is_gone_falls_back_to_its_folder(
+        client, projects_dir, state_dir, tmp_path):
+    """A turn that renamed or split the task's file must not strand the task
+    on a path that is gone: while the folder is there the row names the
+    folder, which is where `agent._start` runs the follow-up (Akshil,
+    2026-11-08)."""
+    _already_using(state_dir)
+    proj = tmp_path / "wave"
+    proj.mkdir()
+    _seed_schedule([_entry("e1", "run the report", T9,
+                           target=str(proj / "split_away.py"),
+                           state=schedule.SENT,
+                           claude_session_id="sess-a")])
+    _write_transcript(projects_dir, "sess-a", str(proj), [
+        _user("run the report", T9),
+        _assistant("done", T10),
+    ])
+
+    task = _tasks(client)[0]
+    assert task["target"] == tasks_mod.canonical_fs_path(str(proj))
+
+
+def test_a_gone_entry_target_in_a_gone_folder_keeps_its_own_path(
+        client, projects_dir, state_dir, tmp_path):
+    """No folder to fall back to: the row keeps naming the path, so the
+    missing-folder state still reads off it."""
+    _already_using(state_dir)
+    gone = tmp_path / "gone" / "report.py"
+    _seed_schedule([_entry("e1", "run the report", T9,
+                           target=str(gone),
+                           state=schedule.SENT,
+                           claude_session_id="sess-a")])
+    _write_transcript(projects_dir, "sess-a", str(tmp_path / "gone"), [
+        _user("run the report", T9),
+        _assistant("done", T10),
+    ])
+
+    task = _tasks(client)[0]
+    assert task["target"] == tasks_mod.canonical_fs_path(str(gone))
+
+
+def test_a_gone_folder_target_keeps_its_own_path(
+        client, projects_dir, state_dir, tmp_path):
+    """A gone FOLDER (no extension — a deleted canvas clone) does not walk up
+    into its parent: the row keeps naming it (Bugbot #2195)."""
+    _already_using(state_dir)
+    gone = tmp_path / "deleted_clone"
+    _seed_schedule([_entry("e1", "tidy the canvas", T9,
+                           target=str(gone),
+                           state=schedule.SENT,
+                           claude_session_id="sess-a")])
+    _write_transcript(projects_dir, "sess-a", str(gone), [
+        _user("tidy the canvas", T9),
+        _assistant("done", T10),
+    ])
+
+    task = _tasks(client)[0]
+    assert task["target"] == tasks_mod.canonical_fs_path(str(gone))
 
 
 def test_started_is_the_clock_that_does_not_move_while_last_active_does(
@@ -490,7 +552,7 @@ def test_sidebar_pulse_is_the_compact_projection_of_the_task_rows(
     # listing answers, and the Board's Upcoming lane sorts by the next run.
     pulse_fields = (
         "key", "status", "unread", "last_active", "project",
-        "task_id", "title", "target", "session_id", "happened_at", "next_run",
+        "task_id", "icon_slot", "icon_picked", "title", "target", "session_id", "happened_at", "next_run",
         "next_run_entry", "next_run_repeats",
         # ...and where the row stands in its folder's line (2026-09-12): the
         # sidebar's Current apps section prints "n queued" beside "n running",
@@ -511,6 +573,9 @@ def test_sidebar_pulse_is_the_compact_projection_of_the_task_rows(
         # Held background work (2026-10-21): the sidebar paints such a row as
         # running, like the Tasks page, and needs the list to know.
         "background_jobs",
+        # The rail's favourites (2026-11-03): the card star and its open card
+        # — and when it was starred (2026-11-05), the favourites' sort key.
+        "starred", "starred_open", "starred_at",
     )
     # What the finished/needs-input notice titles a task by (the newest user
     # message unless renamed): riding only when the row has them.
@@ -615,6 +680,20 @@ def test_a_title_derived_from_the_entrys_own_message_is_not_a_user_name(
     task = _tasks(client)[0]
     assert task["title"] == "/development:investigate on windows:"
     assert task["title_source"] == "message"
+
+
+def test_the_usage_limit_comeback_title_is_not_a_user_name(client, projects_dir):
+    """The chat files its usage-limit continuation under a fixed title; the
+    session keeps the name it already had instead of taking that one."""
+    _write_transcript(projects_dir, "sess-a", "/p", [
+        _user("pull the news", T9), _ai_title("News puller"),
+    ])
+    _seed_schedule([_entry("e1", "Your usage limit has reset.", T10,
+                           state=schedule.SENT, fired=T10, turn="ok",
+                           claude_session_id="sess-a",
+                           title=tasks_mod.COMEBACK_TITLE)])
+    task = _tasks(client)[0]
+    assert (task["title"], task["title_source"]) == ("News puller", "ai")
 
 
 _LONG_LINE = ("pull today's news and file it in the shared folder every "
@@ -2697,7 +2776,7 @@ def test_a_failed_verdict_outvotes_liveness_the_same_way(client, projects_dir):
     idling in In Progress for the rest of the window."""
     _write_transcript(projects_dir, "sess-a", "/p", [
         _user("go", _near_now(-30), uuid="u1"),
-        _assistant("it broke", _near_now(-5)),
+        _api_error("API Error: Can't reach the API server", _near_now(-5)),
     ])
     _seed_schedule([_entry("e1", "go", _near_now(-30), state=schedule.SENT,
                            fired=_near_now(-30), turn="failed",
@@ -2705,6 +2784,24 @@ def test_a_failed_verdict_outvotes_liveness_the_same_way(client, projects_dir):
     task = _by_key(client)["sess-a"]
     assert task["status"] == "blocked"
     assert task["live"] is False
+
+
+def test_a_failed_verdict_over_an_answered_turn_reads_done(client, projects_dir):
+    """"Even when my task is done it shows blocked" (Akshil, 2026-11-23). The
+    watcher said `failed`, but the transcript the chat draws ends on an ANSWER
+    and no error row — nothing on screen says why it would be blocked, so it is
+    not."""
+    _write_transcript(projects_dir, "sess-a", "/p", [
+        _user("go", _near_now(-30), uuid="u1"),
+        _assistant("all done", _near_now(-5)),
+    ])
+    _seed_schedule([_entry("e1", "go", _near_now(-30), state=schedule.SENT,
+                           fired=_near_now(-30), turn="failed",
+                           claude_session_id="sess-a")])
+    task = _by_key(client)["sess-a"]
+    assert task["status"] == "done"
+    assert task["failed"] is False
+    assert task["blocked_reason"] == ""
 
 
 def test_a_new_turn_after_the_resolved_run_still_reads_as_running(
@@ -4470,11 +4567,17 @@ class _HostedAgent(_FakeAgent):
 
 
 def _bg_row(tasks):
-    """The CLI's background list; a task is an id, or `(id, description)`."""
+    """The CLI's background list; a task is an id, `(id, description)` or
+    `(id, description, task_type)`."""
+    def one(t):
+        if isinstance(t, str):
+            return {"task_id": t}
+        row = {"task_id": t[0], "description": t[1]}
+        if len(t) > 2:
+            row["task_type"] = t[2]
+        return row
     return {"type": "system", "subtype": "background_tasks_changed",
-            "tasks": [{"task_id": t} if isinstance(t, str)
-                      else {"task_id": t[0], "description": t[1]}
-                      for t in tasks]}
+            "tasks": [one(t) for t in tasks]}
 
 
 def _append(run, row):
@@ -4549,7 +4652,7 @@ def test_background_work_is_a_caption_not_a_status(
     # Exactly what the row's Stop hands the agent's `task_stop`: the run dir's
     # name and the CLI's own task id.
     assert task["background_jobs"] == {
-        "count": 1, "run_id": "r-1", "jobs": [{"id": "bash_1", "title": ""}]}
+        "count": 1, "run_id": "r-1", "jobs": [{"id": "bash_1", "title": "", "agent": False}]}
 
 
 def test_the_pulse_ships_a_done_rows_held_background_jobs(
@@ -4563,7 +4666,7 @@ def test_the_pulse_ships_a_done_rows_held_background_jobs(
     row = _pulse(client)[0]
     assert row["status"] == "done"
     assert row["background_jobs"] == {
-        "count": 1, "run_id": "r-1", "jobs": [{"id": "bash_1", "title": ""}]}
+        "count": 1, "run_id": "r-1", "jobs": [{"id": "bash_1", "title": "", "agent": False}]}
 
 
 def test_background_work_under_a_dead_host_does_not_count(
@@ -4726,6 +4829,23 @@ def test_the_caption_clears_when_the_background_list_empties(
     assert task["status"] == "done"
 
 
+def test_a_background_job_says_whether_it_is_a_subagent(
+        client, projects_dir, parked, monkeypatch, registry):
+    """`agent` is the CLI's `task_type == "local_agent"`: the UI holds the
+    "Task finished" notice for a background subagent, never for a dev server
+    or a Monitor."""
+    _replied(projects_dir)
+    _stage_hosted(parked.dir, "r-1", "sess-a",
+                  [("a1", "research", "local_agent"),
+                   ("b1", "dev server", "local_bash"),
+                   ("m1", "watch", "monitor_mcp")], os.getpid())
+    _install_hosted(monkeypatch, parked.dir)
+    registry("sess-a")
+    jobs = _by_key(client)["sess-a"]["background_jobs"]["jobs"]
+    assert {j["id"]: j["agent"] for j in jobs} == {
+        "a1": True, "b1": False, "m1": False}
+
+
 def test_background_jobs_name_every_job_and_follow_the_newest_list(
         client, projects_dir, parked, monkeypatch, registry):
     """The badge counts and names what the CLI's NEWEST list holds — "2 jobs
@@ -4739,8 +4859,8 @@ def test_background_jobs_name_every_job_and_follow_the_newest_list(
     registry("sess-a")
     jobs = _by_key(client)["sess-a"]["background_jobs"]
     assert jobs == {"count": 2, "run_id": "r-1",
-                    "jobs": [{"id": "b1", "title": "npm run dev"},
-                             {"id": "b2", "title": "sleep 900"}]}
+                    "jobs": [{"id": "b1", "title": "npm run dev", "agent": False},
+                             {"id": "b2", "title": "sleep 900", "agent": False}]}
 
     _append(run, _bg_row([("b1", "npm run dev")]))
     jobs = _by_key(client)["sess-a"]["background_jobs"]
@@ -4764,10 +4884,11 @@ def test_a_cold_read_of_a_long_run_parses_only_its_tail(
     _install_hosted(monkeypatch, parked.dir)
     registry("sess-a")
     jobs = _by_key(client)["sess-a"]["background_jobs"]
-    assert jobs["jobs"] == [{"id": "b1", "title": "npm run dev"}]
+    assert jobs["jobs"] == [
+        {"id": "b1", "title": "npm run dev", "agent": False}]
     offset, held = tasks_mod._bg_memo[str(run)]
     assert offset == (run / "out.jsonl").stat().st_size
-    assert held == (("b1", "npm run dev"),)
+    assert held == (("b1", "npm run dev", False),)
 
 
 def test_a_cold_read_stops_at_its_tail(
@@ -5297,14 +5418,14 @@ def test_title_mode_summary_when_summary_titles_on(client, projects_dir, tmp_pat
     assert row["title"]
 
 
-# ------------------------------------- task recap titles (task_recap_titles_enabled)
+# ------------------------------------- the haiku title queue (lanes, feed, worker)
 
 
 @pytest.fixture()
 def recap_on(monkeypatch):
-    """The flag on, and no worker thread: these tests read the queue, and a
-    real worker would run haiku."""
-    monkeypatch.setattr(prefs_mod, "task_recap_titles_enabled", lambda: True)
+    """Summary titles ON and no worker thread: these tests read the queue, and
+    a real worker would run haiku."""
+    monkeypatch.setattr(prefs_mod, "task_summary_titles_enabled", lambda: True)
     monkeypatch.setattr(tasks_mod, "_recap_worker", lambda: None)
 
 
@@ -5313,8 +5434,8 @@ def _recap_jobs():
     return [job for _, _, job in sorted(lanes)]
 
 
-def test_recap_flag_off_rows_carry_nothing_new(client, projects_dir, tmp_path):
-    """FLAG OFF IS MAIN: no `recap` key on any row and nothing queued."""
+def test_rows_never_carry_a_recap_and_nothing_queues_with_titles_off(
+        client, projects_dir, tmp_path):
     _write_transcript(projects_dir, "sess-a", str(tmp_path), [
         _user("fix the login bug", T9), _assistant("Fixed it.", T10)])
     row = _tasks(client)[0]
@@ -5324,65 +5445,6 @@ def test_recap_flag_off_rows_carry_nothing_new(client, projects_dir, tmp_path):
     assert row["last_message"]["text"] == "fix the login bug"
     assert tasks_mod._recap_heap == [] and tasks_mod._recap_backfill == []
     assert tasks_mod._recap_seen == set()
-
-
-def test_recap_flag_on_queues_a_finished_turn_once_and_shows_the_stored_one(
-        client, projects_dir, tmp_path, recap_on):
-    records_ = [_user("fix the login bug", T9), _assistant("Fixed it.", T10)]
-    _write_transcript(projects_dir, "sess-a", str(tmp_path), records_)
-    row = _tasks(client)[0]
-    assert row["recap"] is None
-    job, = _recap_jobs()
-    assert (job["session_id"], job["for_uuid"], job["file"]) == (
-        "sess-a", "sess-a-0", str(tmp_path))
-    assert job["key"] == row["key"]
-
-    _tasks(client)  # a second poll of the same turn queues nothing more
-    assert len(_recap_jobs()) == 1
-
-    tasks_store.record_recap("sess-a", "sess-a-0", "Login bug fixed", now=time.time())
-    row = _tasks(client)[0]
-    assert row["recap"] == {"text": "Login bug fixed", "for_uuid": "sess-a-0"}
-    assert row["last_message"]["text"] == "fix the login bug"  # untouched
-
-    # A newer send is a new turn: the old recap stops titling the row.
-    _write_transcript(projects_dir, "sess-a", str(tmp_path),
-                      records_ + [_user("now the logout one", T11)])
-    assert _tasks(client)[0]["recap"] is None
-
-
-def test_recap_candidate_rules(tmp_path):
-    """Running turns are never queued; a stored recap for the turn is shown and
-    not re-asked; one taken before the reply landed is re-asked with
-    `stale_before`; a fresh stored failure is neither shown nor re-asked."""
-    task = {"key": "k", "session_id": "s", "project": str(tmp_path)}
-    rec = {"tail": [{"anchor": "u1"}], "reply_at": 50.0}
-
-    def ask(status, settings, reply="Fixed it."):
-        out = []
-        return tasks_mod._recap_candidate(task, rec, status, reply, settings, out), out
-
-    assert ask("in_progress", {}) == (None, [])
-    assert ask("needs_attention", {}) == (None, [])
-    assert ask("queued", {}, reply=tasks_mod._QUEUED_REPLY)[1] == []
-    # A finished turn with no prose reply (tools only, a limit, an API error)
-    # is asked too: the worker's tail reaches back to the newest prose.
-    assert len(ask("done", {}, reply="")[1]) == 1
-    shown, out = ask("done", {})
-    assert shown is None and out[0]["stale_before"] == 0.0
-
-    def stored(text, at, for_uuid="u1"):
-        return {"s": {"model": "haiku",
-                      "recap": {"text": text, "for_uuid": for_uuid, "at": at}}}
-
-    assert ask("done", stored("Fixed", 60.0)) == (
-        {"text": "Fixed", "for_uuid": "u1"}, [])
-    shown, out = ask("done", stored("Fixed", 40.0))
-    assert shown == {"text": "Fixed", "for_uuid": "u1"}
-    assert out[0]["stale_before"] == 50.0
-    assert ask("done", stored("", time.time())) == (None, [])  # fresh failure: held off
-    shown, out = ask("done", stored("Older turn", 60.0, for_uuid="u0"))
-    assert shown is None and len(out) == 1
 
 
 def test_recap_feed_queues_every_eligible_turn_newest_first(recap_on):
@@ -5398,43 +5460,6 @@ def test_recap_feed_queues_every_eligible_turn_newest_first(recap_on):
     assert jobs[0]["reply_at"] == 24.0  # newest reply first
     tasks_mod._recap_feed(wants)  # already queued
     assert len(_recap_jobs()) == 25
-
-
-def test_recap_candidate_asks_blocked_and_archived_turns(tmp_path):
-    task = {"key": "k", "session_id": "s", "project": str(tmp_path)}
-    rec = {"tail": [{"anchor": "u1"}], "reply_at": 50.0}
-    for status in ("done", "blocked", "archived"):
-        out = []
-        tasks_mod._recap_candidate(task, rec, status, "Fixed it.", {}, out)
-        assert len(out) == 1, status
-
-
-def test_recap_run_asks_recap_then_wakes_the_page(monkeypatch, recap_on):
-    asked, woke = [], []
-    monkeypatch.setattr(tasks_mod, "_agent_module", lambda: object())
-    monkeypatch.setattr(sessions_mod, "_recap",
-                        lambda agent, f, sid, uuid, stale_before=0.0, transcript="", ended=False:
-                        asked.append((f, sid, uuid, stale_before, transcript, ended)) or "R")
-    monkeypatch.setattr(tasks_watch, "notify", lambda keys=None: woke.append(keys))
-    tasks_mod._recap_run({"key": "k", "file": "/f", "session_id": "s",
-                          "for_uuid": "u", "reply_at": 5.0, "stale_before": 5.0,
-                          "transcript": "/t.jsonl"})
-    assert asked == [("/f", "s", "u", 5.0, "/t.jsonl", True)]
-    assert woke == [{"k", "s"}]
-
-
-def test_recap_candidate_asks_interrupted_and_gone_folder_turns(tmp_path):
-    task = {"key": "k", "session_id": "s", "project": str(tmp_path)}
-    rec = {"tail": [{"anchor": "u1"}], "reply_at": 50.0}
-    out = []
-    tasks_mod._recap_candidate(task, rec, "done", tasks_mod._INTERRUPTED_REPLY, {}, out)
-    assert len(out) == 1
-    # A folder the disk has lost: the transcript path rides on the job instead.
-    gone = {"key": "k", "session_id": "s", "project": str(tmp_path / "gone"),
-            "path": "/t/s.jsonl"}
-    out = []
-    tasks_mod._recap_candidate(gone, rec, "done", "Fixed it.", {}, out)
-    assert out[0]["transcript"] == "/t/s.jsonl"
 
 
 @pytest.mark.filterwarnings("ignore::pytest.PytestUnhandledThreadExceptionWarning")
@@ -5465,76 +5490,6 @@ def test_recap_seen_is_capped(recap_on):
     tasks_mod._recap_feed([{"key": "k", "file": "/f", "session_id": "new", "for_uuid": "u",
                             "reply_at": 1.0, "stale_before": 0.0}])
     assert len(tasks_mod._recap_seen) == 1
-
-
-def test_recap_candidate_retries_a_stored_failure_after_the_cooldown(tmp_path):
-    task = {"key": "k", "session_id": "s", "project": str(tmp_path)}
-    rec = {"tail": [{"anchor": "u1"}], "reply_at": 50.0}
-
-    def ask(at):
-        out = []
-        settings = {"s": {"recap": {"text": "", "for_uuid": "u1", "at": at}}}
-        tasks_mod._recap_candidate(task, rec, "done", "Fixed it.", settings, out)
-        return out
-
-    assert ask(time.time() - 10) == []
-    old = ask(time.time() - tasks_mod._RECAP_RETRY_S - 5)
-    assert len(old) == 1 and old[0]["stale_before"] > 50.0
-
-
-def test_recap_run_unmarks_a_failed_job_only(monkeypatch, recap_on):
-    job = {"key": "k", "file": "/f", "session_id": "s", "for_uuid": "u",
-           "reply_at": 5.0, "stale_before": 0.0}
-    seen = ("s", "u", 5.0)
-    monkeypatch.setattr(tasks_mod, "_agent_module", lambda: object())
-    monkeypatch.setattr(tasks_watch, "notify", lambda keys=None: None)
-    for result, kept in (("", False), ("A real recap", True)):
-        tasks_mod._recap_seen.add(seen)
-        monkeypatch.setattr(sessions_mod, "_recap", lambda *a, _r=result, **k: _r)
-        tasks_mod._recap_run(job)
-        assert (seen in tasks_mod._recap_seen) is kept
-
-
-def test_recap_candidate_waits_out_the_settle_minute(tmp_path):
-    task = {"key": "k", "session_id": "s", "project": str(tmp_path)}
-
-    def ask(age):
-        out = []
-        rec = {"tail": [{"anchor": "u1"}], "reply_at": time.time() - age}
-        tasks_mod._recap_candidate(task, rec, "done", "Fixed it.", {}, out)
-        return out
-
-    young = ask(59.0)  # reported with its `due`, which `_recap_feed` holds back
-    assert len(young) == 1 and young[0]["due"] > time.time()
-    old = ask(61.0)
-    assert len(old) == 1 and "due" not in old[0]
-
-
-def test_recap_candidate_without_a_reply_settles_from_the_message(tmp_path):
-    """A turn whose newest event is the reader's message (no prose answered
-    it yet) is measured from THAT: a message sent 10 s ago is still settling
-    even though the last reply is an hour old — the turn is about to start —
-    and one from 2 min ago is asked, keyed on the message time."""
-    task = {"key": "k", "session_id": "s", "project": str(tmp_path)}
-
-    def ask(said_age, settings=None):
-        out = []
-        said_at = time.time() - said_age
-        rec = {"tail": [{"anchor": "u2", "at": said_at}],
-               "reply_at": time.time() - 3600.0}
-        shown = tasks_mod._recap_candidate(task, rec, "done", "", settings or {}, out)
-        return shown, out, said_at
-
-    _, young, _ = ask(10.0)
-    assert len(young) == 1 and young[0]["due"] > time.time()
-    _, old, said_at = ask(120.0)
-    assert len(old) == 1 and "due" not in old[0]
-    assert old[0]["reply_at"] == said_at
-    # Recapped after the message landed: settled, and shown.
-    stored = {"s": {"recap": {"text": "Asked for X, waiting",
-                              "for_uuid": "u2", "at": time.time() - 60.0}}}
-    shown, out, _ = ask(120.0, stored)
-    assert shown == {"text": "Asked for X, waiting", "for_uuid": "u2"} and out == []
 
 
 def _job(sid, reply_at):
@@ -5594,15 +5549,6 @@ def test_recap_backfill_pauses_while_a_task_is_running(lanes):
     tasks_mod._recap_feed([], machine_busy=False)
     with tasks_mod._recap_cond:
         assert tasks_mod._recap_next(t0 + 1e6)[0]["session_id"] == "a"
-
-
-def test_recap_candidate_treats_an_empty_mark_as_settled(tmp_path):
-    task = {"key": "k", "session_id": "s", "project": str(tmp_path)}
-    rec = {"tail": [{"anchor": "u1"}], "reply_at": 50.0}
-    out = []
-    settings = {"s": {"recap": {"text": "", "for_uuid": "u1", "at": 100.0, "empty": True}}}
-    tasks_mod._recap_candidate(task, rec, "done", "Fixed it.", settings, out)
-    assert out == []
 
 
 @pytest.mark.filterwarnings("ignore::pytest.PytestUnhandledThreadExceptionWarning")
@@ -6171,9 +6117,8 @@ def test_holds_are_not_on_the_list_payload(client, projects_dir, tmp_path):
 
 @pytest.fixture()
 def titles_on(monkeypatch):
-    """Summary flag ON, recap flag OFF, no worker thread: tests read the queue."""
+    """Summary flag ON, no worker thread: tests read the queue."""
     monkeypatch.setattr(prefs_mod, "task_summary_titles_enabled", lambda: True)
-    monkeypatch.setattr(prefs_mod, "task_recap_titles_enabled", lambda: False)
     monkeypatch.setattr(tasks_mod, "_recap_worker", lambda: None)
 
 
@@ -6200,12 +6145,13 @@ def test_title_candidate_first_title_then_waits_three_prompts(tmp_path):
     jobs = _title_job(task, _title_rec(count=1))
     assert len(jobs) == 1
     job = jobs[0]
-    assert job["want_title"] is True and job["want_recap"] is False
+    assert job["want_title"] is True and "want_recap" not in job
     assert job["current_title"] == "fix the login bug"
     assert job["first_message"] == "fix the login bug" and job["prompts"] == 1
 
     def stored(turns, text="Fixing the login bug", failed_at=0.0):
-        return {"s": {"ai_title": {"text": text, "at": 1.0, "turns": turns,
+        # `at` after the turn ended, so only the prompt count can want a refresh.
+        return {"s": {"ai_title": {"text": text, "at": time.time(), "turns": turns,
                                    "failed_at": failed_at}}}
 
     # Titled at 1 prompt: not again at 2 or 3, wanted at 4 (+3).
@@ -6233,16 +6179,8 @@ def test_title_candidate_skips_chosen_names_and_unstarted_turns(tmp_path):
 def test_title_candidate_titles_a_running_session_at_once(tmp_path):
     task = _title_task(tmp_path)
     job, = _title_job(task, _title_rec(age=1.0), status="in_progress", reply="")
-    assert job["want_title"] is True and job["want_recap"] is False
+    assert job["want_title"] is True and "want_recap" not in job
     assert "due" not in job
-
-
-def test_title_candidate_merged_into_a_recap_job_keeps_its_due(tmp_path):
-    task = _title_task(tmp_path)
-    recap = {"session_id": "s", "for_uuid": "u1", "want_recap": True,
-             "want_title": False, "due": 123.0}
-    out = _title_job(task, _title_rec(age=30.0), out=[recap])
-    assert out == [recap] and recap["want_title"] is True and recap["due"] == 123.0
 
 
 def test_title_candidate_retries_a_failure_after_the_cooldown(tmp_path):
@@ -6259,85 +6197,121 @@ def test_title_candidate_retries_a_failure_after_the_cooldown(tmp_path):
     assert _title_job(task, _title_rec(count=9), stored(10, "Old title")) == []
 
 
-def test_a_turn_wanting_both_is_one_merged_job(tmp_path):
-    task = _title_task(tmp_path)
-    rec = _title_rec()
-    out = []
-    tasks_mod._recap_candidate(task, rec, "done", "Fixed it.", {}, out)
-    _title_job(task, rec, out=out)
-    job, = out
-    assert job["want_recap"] is True and job["want_title"] is True
-    # Recap already stored (settled) and a title wanted: a title-only job.
-    settings = {"s": {"recap": {"text": "Done", "for_uuid": "u1", "at": time.time()}}}
-    out = []
-    tasks_mod._recap_candidate(task, rec, "done", "Fixed it.", settings, out)
-    _title_job(task, rec, settings, out=out)
-    job, = out
-    assert job["want_recap"] is False and job["want_title"] is True
-
-
 def _run_job(**over):
     job = {"key": "k", "file": "/f", "session_id": "s", "for_uuid": "u",
            "reply_at": 5.0, "stale_before": 0.0, "transcript": "/t.jsonl",
-           "want_recap": False, "want_title": True, "prompts": 4,
+           "want_title": True, "prompts": 4, "turns": 4,
            "current_title": "cur", "first_message": "first"}
     job.update(over)
     return job
 
 
-def test_recap_run_titles_with_the_recap_flag_off(monkeypatch, titles_on):
+def test_recap_run_asks_for_a_title_only_then_wakes_the_page(monkeypatch, titles_on):
     asked, woke = [], []
     monkeypatch.setattr(tasks_mod, "_agent_module", lambda: object())
 
-    def title_and_recap(agent, f, sid, uuid, transcript="", **kw):
+    def session_title(agent, f, sid, uuid, transcript="", **kw):
         asked.append((f, sid, uuid, transcript, kw))
-        return "A fine title", ""
+        return "A fine title"
 
-    monkeypatch.setattr(sessions_mod, "_title_and_recap", title_and_recap)
+    monkeypatch.setattr(sessions_mod, "_session_title", session_title)
     monkeypatch.setattr(sessions_mod, "_recap",
                         lambda *a, **k: pytest.fail("no recap call expected"))
     monkeypatch.setattr(tasks_watch, "notify", lambda keys=None: woke.append(keys))
-    tasks_mod._recap_run(_run_job(want_recap=True))  # a recap wanted, flag off
+    tasks_mod._recap_run(_run_job())
     (f, sid, uuid, transcript, kw), = asked
     assert (f, sid, uuid, transcript) == ("/f", "s", "u", "/t.jsonl")
-    assert kw == {"want_recap": False, "current": "cur", "first": "first",
-                  "prompts_seen": 4}
+    assert isinstance(kw.pop("started_at"), float)
+    assert kw == {"current": "cur", "first": "first", "prompts_seen": 4}
     assert woke == [{"k", "s"}]
 
 
-def test_recap_run_merged_job_asks_once_for_both(monkeypatch):
-    monkeypatch.setattr(prefs_mod, "task_summary_titles_enabled", lambda: True)
-    monkeypatch.setattr(prefs_mod, "task_recap_titles_enabled", lambda: True)
+def _store_title(monkeypatch, **fields):
+    stored = {"text": "Stored", "at": 10.0, "turns": 4, "failed_at": 0.0, **fields}
+    monkeypatch.setattr(tasks_mod.tasks_store, "settings_state", lambda: {})
+    monkeypatch.setattr(tasks_mod.tasks_store, "session_ai_title",
+                        lambda state, sid: stored)
+
+
+def test_recap_run_skips_when_the_same_title_is_already_stored(monkeypatch, titles_on):
+    """Another job already produced this exact title: no model call, no write."""
+    monkeypatch.setattr(tasks_mod, "_agent_module", lambda: object())
+    monkeypatch.setattr(sessions_mod, "_session_title",
+                        lambda *a, **k: pytest.fail("title already stored"))
+    monkeypatch.setattr(tasks_watch, "notify", lambda keys=None: None)
+    _store_title(monkeypatch, at=10.0, turns=4)
+    tasks_mod._recap_run(_run_job(reply_at=5.0, turns=4))
+
+
+def test_recap_run_still_asks_when_turns_or_time_differ(monkeypatch, titles_on):
     asked = []
     monkeypatch.setattr(tasks_mod, "_agent_module", lambda: object())
-    monkeypatch.setattr(sessions_mod, "_title_and_recap",
-                        lambda *a, **k: asked.append(k["want_recap"]) or ("T title", "R recap"))
-    monkeypatch.setattr(sessions_mod, "_recap",
-                        lambda *a, **k: pytest.fail("one call only"))
+    monkeypatch.setattr(sessions_mod, "_session_title",
+                        lambda *a, **k: asked.append(1) or "T")
     monkeypatch.setattr(tasks_watch, "notify", lambda keys=None: None)
-    tasks_mod._recap_run(_run_job(want_recap=True))
-    assert asked == [True]
+    _store_title(monkeypatch, at=10.0, turns=1)  # a 3-prompt refresh
+    tasks_mod._recap_run(_run_job(reply_at=5.0, turns=4))
+    _store_title(monkeypatch, at=1.0, turns=4)   # stored before the reply
+    tasks_mod._recap_run(_run_job(reply_at=5.0, turns=4))
+    _store_title(monkeypatch, at=10.0, turns=4, failed_at=11.0)
+    tasks_mod._recap_run(_run_job(reply_at=5.0, turns=4))
+    assert len(asked) == 3
 
 
-def test_recap_run_gates_each_half_per_flag(monkeypatch):
-    """Title flag off + recap flag on, a merged job: the plain recap call.
-    Both off: never asked, and un-marked so a later listing can queue it."""
-    recapped = []
+def test_title_candidate_jobs_carry_the_prompt_count_as_turns(tmp_path):
+    job, = _title_job(_title_task(tmp_path), _title_rec(count=3))
+    assert job["turns"] == 3
+
+
+def _two_time_rec(count, said_ago=300.0, reply_ago=120.0):
+    now = time.time()
+    return {"tail": [{"anchor": "u1", "at": now - said_ago}], "count": count,
+            "reply_at": now - reply_ago}
+
+
+def test_title_candidate_first_turn_settles_a_title_written_between_prompt_and_reply(tmp_path):
+    """First turn (stored turns <= 1): the first title came from the first
+    message only, so it settles once after the reply; not once it is newer."""
+    task = _title_task(tmp_path)
+    now = time.time()
+    rec = _two_time_rec(1)
+    job, = _title_job(task, rec, _settle_stored(at=now - 200.0, turns=1))
+    assert "due" not in job
+    assert _title_job(task, rec, _settle_stored(at=now - 60.0, turns=1)) == []
+
+
+def test_title_candidate_no_settle_for_a_title_written_mid_turn(tmp_path):
+    """The 3-prompt refresh ran when the 4th prompt was sent and stamped `at`
+    mid-turn: the turn already has its title, so no settle refresh follows."""
+    task = _title_task(tmp_path)
+    rec = _two_time_rec(4)
+    assert _title_job(task, rec, _settle_stored(at=time.time() - 200.0, turns=4)) == []
+
+
+def test_title_candidate_settles_a_title_that_predates_the_turn(tmp_path):
+    task = _title_task(tmp_path)
+    now = time.time()
+    rec = _two_time_rec(5)
+    stored = _settle_stored(at=now - 1000.0, turns=4)
+    job, = _title_job(task, rec, stored)
+    assert "due" not in job
+    rec = _two_time_rec(5, said_ago=100.0, reply_ago=30.0)
+    job, = _title_job(task, rec, stored)
+    assert job["due"] == rec["reply_at"] + tasks_mod._RECAP_SETTLE_S
+
+
+def test_recap_run_with_the_summary_flag_off_never_asks(monkeypatch):
+    """Flag off: never asked, and un-marked so a later listing can queue it."""
     monkeypatch.setattr(tasks_mod, "_agent_module", lambda: object())
-    monkeypatch.setattr(sessions_mod, "_recap",
-                        lambda *a, **k: recapped.append(1) or "R recap text")
-    monkeypatch.setattr(sessions_mod, "_title_and_recap",
+    monkeypatch.setattr(sessions_mod, "_session_title",
                         lambda *a, **k: pytest.fail("title flag is off"))
-    monkeypatch.setattr(tasks_watch, "notify", lambda keys=None: None)
+    monkeypatch.setattr(sessions_mod, "_recap",
+                        lambda *a, **k: pytest.fail("no recap call expected"))
     monkeypatch.setattr(prefs_mod, "task_summary_titles_enabled", lambda: False)
-    monkeypatch.setattr(prefs_mod, "task_recap_titles_enabled", lambda: True)
-    tasks_mod._recap_run(_run_job(want_recap=True))
-    assert recapped == [1]
-    monkeypatch.setattr(prefs_mod, "task_recap_titles_enabled", lambda: False)
-    job = _run_job(want_recap=True)
+    job = _run_job()
     tasks_mod._recap_seen.add(tasks_mod._job_seen(job))
     tasks_mod._recap_run(job)
-    assert recapped == [1] and tasks_mod._job_seen(job) not in tasks_mod._recap_seen
+    assert tasks_mod._job_seen(job) not in tasks_mod._recap_seen
 
 
 def test_recap_run_unmarks_a_failed_title_job(monkeypatch, titles_on):
@@ -6346,8 +6320,8 @@ def test_recap_run_unmarks_a_failed_title_job(monkeypatch, titles_on):
     monkeypatch.setattr(tasks_watch, "notify", lambda keys=None: None)
     for title, kept in (("", False), ("Real title", True)):
         tasks_mod._recap_seen.add(tasks_mod._job_seen(job))
-        monkeypatch.setattr(sessions_mod, "_title_and_recap",
-                            lambda *a, _t=title, **k: (_t, ""))
+        monkeypatch.setattr(sessions_mod, "_session_title",
+                            lambda *a, _t=title, **k: _t)
         tasks_mod._recap_run(job)
         assert (tasks_mod._job_seen(job) in tasks_mod._recap_seen) is kept
 
@@ -6368,7 +6342,7 @@ def test_listing_titles_rows_by_the_stored_ai_title_only_with_the_flag(
     row = _tasks(client)[0]
     assert (row["title"], row["title_source"]) == ("Login redirect bug fix", "ai")
     assert row["title_mode"] == "summary"
-    assert "recap" not in row  # the recap flag is still off
+    assert "recap" not in row
 
     _rename(client, "sess-a", "My own name")
     row = _tasks(client)[0]
@@ -6382,15 +6356,79 @@ def test_listing_queues_a_title_job_with_only_the_summary_flag(
     row = _tasks(client)[0]
     assert "recap" not in row
     job, = _recap_jobs()
-    assert job["want_title"] is True and job["want_recap"] is False
+    assert job["want_title"] is True and "want_recap" not in job
     assert job["session_id"] == "sess-a" and job["prompts"] == 1
     _tasks(client)  # polled again: still one job
     assert len(_recap_jobs()) == 1
 
 
+def _settle_stored(at, text="Fixing the login bug", turns=1, failed_at=0.0):
+    return {"s": {"ai_title": {"text": text, "at": at, "turns": turns,
+                               "failed_at": failed_at}}}
+
+
+def test_title_candidate_refreshes_a_title_written_before_the_turn_ended(tmp_path):
+    """Settle trigger: an ENDED turn whose stored AI title predates its end is
+    re-titled once the settle minute has passed, without waiting three prompts."""
+    task = _title_task(tmp_path)
+    rec = _title_rec(count=1, age=120.0)
+    stored = _settle_stored(at=rec["reply_at"] - 500.0)
+    job, = _title_job(task, rec, stored)
+    assert job["want_title"] is True and "due" not in job
+    assert job["current_title"] == "Fixing the login bug"
+    # Every ended status counts; a running one does not.
+    for status in ("blocked", "archived"):
+        assert len(_title_job(task, rec, stored, status=status)) == 1
+    for status in ("in_progress", "needs_attention"):
+        assert _title_job(task, rec, stored, status=status) == []
+
+
+def test_title_candidate_settle_refresh_inside_the_minute_is_held_with_a_due(tmp_path):
+    task = _title_task(tmp_path)
+    rec = _title_rec(count=1, age=30.0)
+    job, = _title_job(task, rec, _settle_stored(at=rec["reply_at"] - 500.0))
+    assert job["due"] == rec["reply_at"] + tasks_mod._RECAP_SETTLE_S
+    assert job["due"] > time.time()
+
+
+def test_title_candidate_settle_refresh_once_per_turn(tmp_path):
+    """A title stamped at or after the turn's end is current: not re-asked."""
+    task = _title_task(tmp_path)
+    rec = _title_rec(count=1, age=120.0)
+    assert _title_job(task, rec, _settle_stored(at=rec["reply_at"])) == []
+    assert _title_job(task, rec, _settle_stored(at=time.time())) == []
+
+
+def test_title_candidate_settle_refresh_respects_the_failure_cooldown(tmp_path):
+    task = _title_task(tmp_path)
+    rec = _title_rec(count=1, age=120.0)
+    stored = _settle_stored(at=rec["reply_at"] - 500.0, failed_at=time.time() - 10)
+    assert _title_job(task, rec, stored) == []
+
+
+def test_title_candidate_settle_refresh_never_for_chosen_names(tmp_path):
+    task = _title_task(tmp_path)
+    rec = _title_rec(count=1, age=120.0)
+    stored = _settle_stored(at=rec["reply_at"] - 500.0)
+    for source in ("renamed", "user"):
+        assert _title_job(task, rec, stored, source=source) == []
+
+
+def test_title_candidate_existing_triggers_skip_the_settle_wait(tmp_path):
+    """No stored title, or three more prompts: asked at once, even on a turn
+    that ended seconds ago."""
+    task = _title_task(tmp_path)
+    rec = _title_rec(count=1, age=5.0)
+    job, = _title_job(task, rec)
+    assert "due" not in job
+    rec = _title_rec(count=4, age=5.0)
+    job, = _title_job(task, rec, _settle_stored(at=rec["reply_at"] - 500.0, turns=1))
+    assert "due" not in job
+
+
 def test_title_candidate_wants_a_title_after_the_scan_count_resets(tmp_path):
     task = _title_task(tmp_path)
-    stored = {"s": {"ai_title": {"text": "Fixing the login bug", "at": 1.0,
+    stored = {"s": {"ai_title": {"text": "Fixing the login bug", "at": time.time(),
                                  "turns": 12, "failed_at": 0.0}}}
     # The scan record restarted (count 1 < stored turns 12): a reset, so wanted.
     jobs = _title_job(task, _title_rec(count=1), stored)
@@ -6408,3 +6446,465 @@ def test_add_worktree_backslash_path_survives_ntpath_normpath(monkeypatch):
     rec: dict = {}
     tasks_mod._add_worktree(rec, "C:\\repo\\.claude\\worktrees\\feat")
     assert rec["worktrees"] == ["C:/repo/.claude/worktrees/feat"]
+
+
+# A breakout (`breakouts.json`) is a Claude session that is never a task; the
+# parent chat it was forked from still lists.
+
+
+def test_a_breakout_session_is_not_listed_but_its_parent_is(
+        client, projects_dir):
+    _write_transcript(projects_dir, "sess-a", "/p", [_user("hi", T9)])
+    _write_transcript(projects_dir, "sess-b", "/p", [_user("side", T9)])
+    assert {t["key"] for t in _tasks(client)} == {"sess-a", "sess-b"}
+    tasks_store.mark_breakout("sess-b")
+    assert [t["key"] for t in _tasks(client)] == ["sess-a"]
+    assert [t["key"] for t in _pulse(client)] == ["sess-a"]
+
+
+# ---------------------------------------------------------------- favouriting
+# `POST /api/tasks/favourite` — the rail card's star. Global, keyed by task key,
+# at most one favourite open at a time.
+
+
+def _favourite(client, key, on=True, open=None, headers=_FUSED):
+    body = {"key": key, "on": on}
+    if open is not None:
+        body["open"] = open
+    return client.post("/api/tasks/favourite", headers=headers, json=body)
+
+
+def test_starring_a_task_puts_the_star_on_the_row_and_the_pulse(client,
+                                                                projects_dir):
+    _write_transcript(projects_dir, "sess-a", "/p", [_user("hi", T9)])
+    assert _by_key(client)["sess-a"]["starred"] is False
+    r = _favourite(client, "sess-a")
+    assert r.status_code == 200, r.text
+    assert r.json() == {"ok": True, "key": "sess-a", "starred": True, "open": True}
+    row = _by_key(client)["sess-a"]
+    assert (row["starred"], row["starred_open"]) == (True, True)
+    pulse = {t["key"]: t for t in _pulse(client)}["sess-a"]
+    assert (pulse["starred"], pulse["starred_open"]) == (True, True)
+    # When it was starred rides too (the rail sorts newest star first), and
+    # survives the card's open/close writes; unstarred it is None.
+    assert isinstance(pulse["starred_at"], float) and pulse["starred_at"] == row["starred_at"]
+    _favourite(client, "sess-a", on=None, open=False)
+    assert {t["key"]: t for t in _pulse(client)}["sess-a"]["starred_at"] == pulse["starred_at"]
+    _favourite(client, "sess-a", on=False)
+    assert {t["key"]: t for t in _pulse(client)}["sess-a"]["starred_at"] is None
+
+
+# ------------------------------------------------------------- task icons
+# `POST /api/tasks/icon` and the star (owner, 2026-11-16): the icon and the
+# star are two things — a pick is worn starred or not, Remove gives the ring
+# back starred or not, a star brings a removed icon back, and an unstar takes
+# only a face that came with the star.
+
+
+def _icon(client, key, slot):
+    return client.post("/api/tasks/icon", headers=_FUSED,
+                       json={"key": key, "slot": slot})
+
+
+def _face(client, key):
+    row = _by_key(client)[key]
+    pulse = {t["key"]: t for t in _pulse(client)}[key]
+    # The pulse (the rail's rings, the Tasks page's first paint) agrees.
+    assert (pulse["icon_slot"], pulse["icon_picked"]) == (
+        row["icon_slot"], row["icon_picked"])
+    return row["icon_slot"], row["icon_picked"]
+
+
+def test_a_picked_icon_shows_on_an_unstarred_row_and_stays_on_unstar(
+        client, projects_dir):
+    _write_transcript(projects_dir, "sess-a", "/p", [_user("hi", T9)])
+    assert _face(client, "sess-a") == (None, False)
+    r = _icon(client, "sess-a", 42)
+    assert r.status_code == 200, r.text
+    assert r.json() == {"ok": True, "icon_slot": 42, "icon_picked": True}
+    # The cached listing was told: the row repaints with the face.
+    assert _face(client, "sess-a") == (42, True)
+    _favourite(client, "sess-a")
+    assert _face(client, "sess-a") == (42, True)
+    _favourite(client, "sess-a", on=False)
+    assert _face(client, "sess-a") == (42, True)
+
+
+def test_remove_gives_a_favourite_the_ring_and_a_new_star_brings_it_back(
+        client, projects_dir):
+    _write_transcript(projects_dir, "sess-a", "/p", [_user("hi", T9)])
+    _favourite(client, "sess-a")
+    own, picked = _face(client, "sess-a")
+    assert own is not None and picked is False
+    r = _icon(client, "sess-a", None)
+    assert r.json() == {"ok": True, "icon_slot": None, "icon_picked": False}
+    assert _face(client, "sess-a") == (None, False)
+    assert _by_key(client)["sess-a"]["starred"] is True
+    # A stale window's second star on a task already starred does not undo
+    # the Remove: only a task BECOMING starred gets its icon back.
+    _favourite(client, "sess-a")
+    assert _face(client, "sess-a") == (None, False)
+    _favourite(client, "sess-a", on=False)
+    assert _face(client, "sess-a") == (None, False)
+    _favourite(client, "sess-a")
+    assert _face(client, "sess-a") == (own, False)
+
+
+def test_an_auto_icon_leaves_with_the_star(client, projects_dir):
+    _write_transcript(projects_dir, "sess-a", "/p", [_user("hi", T9)])
+    _favourite(client, "sess-a")
+    assert _face(client, "sess-a")[0] is not None
+    _favourite(client, "sess-a", on=False)
+    assert _face(client, "sess-a") == (None, False)
+
+
+def test_an_icon_for_a_task_with_no_number_is_a_quiet_409(client):
+    r = _icon(client, "nobody", 3)
+    assert r.status_code == 409
+    assert "number" in r.json()["error"]
+
+
+def test_an_icon_out_of_range_is_a_400(client, projects_dir):
+    _write_transcript(projects_dir, "sess-a", "/p", [_user("hi", T9)])
+    _by_key(client)
+    assert _icon(client, "sess-a", 299).status_code == 400
+    assert _icon(client, "sess-a", -1).status_code == 400
+
+
+def test_opening_a_second_favourite_closes_the_first(client, projects_dir):
+    """An explicit `open: true` still swaps the open card."""
+    _write_transcript(projects_dir, "sess-a", "/p", [_user("hi", T9)])
+    _write_transcript(projects_dir, "sess-b", "/p", [_user("yo", T10)])
+    _favourite(client, "sess-a")
+    assert _favourite(client, "sess-b", open=True).json()["open"] is True
+    rows = _by_key(client)
+    assert (rows["sess-a"]["starred"], rows["sess-a"]["starred_open"]) == (True, False)
+    assert (rows["sess-b"]["starred"], rows["sess-b"]["starred_open"]) == (True, True)
+    assert _favourite(client, "sess-a", open=False).json()["open"] is False
+    assert _by_key(client)["sess-b"]["starred_open"] is True
+
+
+def test_unstarring_clears_the_star(client, projects_dir, state_dir):
+    _write_transcript(projects_dir, "sess-a", "/p", [_user("hi", T9)])
+    _favourite(client, "sess-a")
+    r = _favourite(client, "sess-a", on=False)
+    assert r.json() == {"ok": True, "key": "sess-a", "starred": False, "open": False}
+    row = _by_key(client)["sess-a"]
+    assert (row["starred"], row["starred_open"]) == (False, False)
+    assert "sess-a" not in json.loads((state_dir / "favourites.json").read_text())
+
+
+def test_favouriting_a_task_that_is_not_there_is_a_404(client):
+    assert _favourite(client, "nope").status_code == 404
+
+
+def test_favouriting_without_a_key_is_a_400(client):
+    assert _favourite(client, "  ").status_code == 400
+
+
+def test_favouriting_without_the_fused_header_is_refused(client, projects_dir,
+                                                         state_dir):
+    _write_transcript(projects_dir, "sess-a", "/p", [_user("hi", T9)])
+    assert _favourite(client, "sess-a", headers={}).status_code == 403
+    assert not (state_dir / "favourites.json").exists()
+
+
+def test_favouriting_with_neither_on_nor_open_is_refused(client, projects_dir, state_dir):
+    """A bare `{key}` says nothing to set: 400, nothing written — the
+    update-only shape (`on` omitted) needs `open`."""
+    _write_transcript(projects_dir, "sess-a", "/p", [_user("hi", T9)])
+    r = client.post("/api/tasks/favourite", headers=_FUSED, json={"key": "sess-a"})
+    assert r.status_code == 400
+    assert "open" in r.json()["detail"]
+    assert not (state_dir / "favourites.json").exists()
+
+
+def test_favouriting_with_on_omitted_only_moves_open_on_a_starred_task(
+        client, projects_dir, state_dir):
+    _write_transcript(projects_dir, "sess-a", "/p", [_user("hi", T9)])
+    r = client.post("/api/tasks/favourite", headers=_FUSED,
+                    json={"key": "sess-a", "open": True})
+    assert r.status_code == 200, r.text
+    assert r.json() == {"ok": True, "key": "sess-a", "starred": False, "open": False}
+    assert not (state_dir / "favourites.json").exists(), "never re-stars"
+
+    _favourite(client, "sess-a")
+    r = client.post("/api/tasks/favourite", headers=_FUSED,
+                    json={"key": "sess-a", "open": False})
+    assert r.json() == {"ok": True, "key": "sess-a", "starred": True, "open": False}
+    row = _by_key(client)["sess-a"]
+    assert (row["starred"], row["starred_open"]) == (True, False)
+
+
+def test_update_only_on_a_task_that_is_not_there_answers_not_starred(
+        client, state_dir):
+    """Closing and opening touch only a starred record: an unknown key has
+    none, so both answer "not starred" from the store — no 404, nothing
+    written."""
+    for want in (False, True):
+        r = client.post("/api/tasks/favourite", headers=_FUSED,
+                        json={"key": "nope", "open": want})
+        assert r.status_code == 200, r.text
+        assert r.json() == {"ok": True, "key": "nope", "starred": False,
+                            "open": False}
+    assert not (state_dir / "favourites.json").exists()
+
+
+def test_update_only_open_on_a_starred_orphan_is_a_404(
+        client, projects_dir, state_dir):
+    """A starred record whose row is gone has no card to open: `open: true`
+    is a 404, and the real open favourite stays open."""
+    _write_transcript(projects_dir, "sess-a", "/p", [_user("hi", T9)])
+    _favourite(client, "sess-a")
+    favs = json.loads((state_dir / "favourites.json").read_text())
+    favs["ghost"] = {"at": 1.0, "open": False}
+    (state_dir / "favourites.json").write_text(json.dumps(favs))
+    r = client.post("/api/tasks/favourite", headers=_FUSED,
+                    json={"key": "ghost", "open": True})
+    assert r.status_code == 404, r.text
+    after = json.loads((state_dir / "favourites.json").read_text())
+    assert after["sess-a"]["open"] is True and after["ghost"]["open"] is False
+
+
+def test_an_archive_filed_during_the_star_write_lands_closed(
+        client, projects_dir, state_dir, monkeypatch):
+    """The archived check runs under the favourites lock, inside the store's
+    mutate: an archive filed after the route's own checks (the triage record
+    is written between them and the write) still leaves no open card."""
+    _write_transcript(projects_dir, "sess-a", "/p", [_user("hi", T9)])
+    real_set = tasks_store.set_favourite
+
+    def set_favourite(*a, **k):
+        sessions_mod.write_triage("sess-a", "archived")
+        return real_set(*a, **k)
+
+    monkeypatch.setattr(tasks_store, "set_favourite", set_favourite)
+    r = _favourite(client, "sess-a", open=True)
+    assert r.status_code == 200, r.text
+    assert r.json() == {"ok": True, "key": "sess-a", "starred": True, "open": False}
+    assert json.loads((state_dir / "favourites.json").read_text())["sess-a"]["open"] is False
+
+
+def test_the_locked_archived_check_never_builds_rows(
+        client, projects_dir, state_dir, monkeypatch):
+    """The check the store asks under the favourites lock reads the filing
+    records directly: `_task_rows`/`_collect` wait on `_BUILD_LOCK`, which the
+    warm build holds while it files a missing-folder task — and that filing
+    waits on the favourites lock (deadlock, CodeRabbit PR #2100)."""
+    _write_transcript(projects_dir, "sess-a", "/p", [_user("hi", T9)])
+    real_set = tasks_store.set_favourite
+    seen = []
+
+    def boom(*a, **k):
+        raise AssertionError("row build under the favourites lock")
+
+    def set_favourite(key, on, open_=None, *a, force_closed=False, **k):
+        assert callable(force_closed)
+        with monkeypatch.context() as m:
+            m.setattr(tasks_mod, "_task_rows", boom)
+            m.setattr(tasks_mod, "_collect", boom)
+            seen.append(force_closed())
+            sessions_mod.write_triage(key, "archived")
+            seen.append(force_closed())
+            return real_set(key, on, open_, *a, force_closed=force_closed, **k)
+
+    monkeypatch.setattr(tasks_store, "set_favourite", set_favourite)
+    r = _favourite(client, "sess-a", open=True)
+    assert r.status_code == 200, r.text
+    assert r.json()["open"] is False
+    assert seen == [False, True]
+
+
+def test_the_on_disk_filing_check_reads_triage_and_key_filings(
+        projects_dir, state_dir, monkeypatch):
+    """`_filed_on_disk`: a session key reads its triage record, a session-less
+    `pending:` key its key filing (`archived.json`) — no row build either way."""
+    def boom(*a, **k):
+        raise AssertionError("row build")
+
+    monkeypatch.setattr(tasks_mod, "_task_rows", boom)
+    monkeypatch.setattr(tasks_mod, "_collect", boom)
+    assert tasks_mod._filed_on_disk("sess-a") is False
+    sessions_mod.write_triage("sess-a", "archived")
+    assert tasks_mod._filed_on_disk("sess-a") is True
+    pending = tasks_store.PENDING_PREFIX + "e1"
+    assert tasks_mod._filed_on_disk(pending) is False
+    tasks_store.mark_archived(pending)
+    assert tasks_mod._filed_on_disk(pending) is True
+    # A key record never files a session key (`_row` never reads it there).
+    tasks_store.mark_archived("sess-b")
+    assert tasks_mod._filed_on_disk("sess-b") is False
+
+
+def test_a_plain_star_opens_its_card_and_closes_the_other(
+        client, projects_dir):
+    """A star you just pressed is a card you want to see: it opens, and the
+    favourite that was open closes."""
+    _write_transcript(projects_dir, "sess-a", "/p", [_user("hi", T9)])
+    _write_transcript(projects_dir, "sess-b", "/p", [_user("yo", T10)])
+    _favourite(client, "sess-a")
+    r = _favourite(client, "sess-b")
+    assert r.json() == {"ok": True, "key": "sess-b", "starred": True, "open": True}
+    rows = _by_key(client)
+    assert (rows["sess-a"]["starred"], rows["sess-a"]["starred_open"]) == (True, False)
+    assert (rows["sess-b"]["starred"], rows["sess-b"]["starred_open"]) == (True, True)
+
+
+def test_starring_an_archived_task_records_it_closed(client, projects_dir,
+                                                     state_dir):
+    """An archived task gets its star but never an open card — even with
+    `open: true` asked and nothing else open — and no error."""
+    _write_transcript(projects_dir, "sess-a", "/p", [_user("hi", T9)])
+    client.post("/api/tasks/archive", headers=_FUSED, json={"key": "sess-a"})
+    for body_open in (None, True):
+        r = _favourite(client, "sess-a", open=body_open)
+        assert r.status_code == 200, r.text
+        assert r.json() == {"ok": True, "key": "sess-a", "starred": True,
+                            "open": False}
+    rec = json.loads((state_dir / "favourites.json").read_text())["sess-a"]
+    assert rec["open"] is False
+    row = _by_key(client)["sess-a"]
+    assert (row["starred"], row["starred_open"]) == (True, False)
+
+
+def test_starring_an_archived_task_leaves_the_open_favourite_alone(
+        client, projects_dir):
+    _write_transcript(projects_dir, "sess-a", "/p", [_user("hi", T9)])
+    _write_transcript(projects_dir, "sess-b", "/p", [_user("yo", T10)])
+    _favourite(client, "sess-a")
+    client.post("/api/tasks/archive", headers=_FUSED, json={"key": "sess-b"})
+    assert _favourite(client, "sess-b", open=True).json()["open"] is False
+    assert _by_key(client)["sess-a"]["starred_open"] is True
+
+
+def test_unstar_and_close_never_build_tasks(client, projects_dir, state_dir,
+                                            monkeypatch):
+    """Unstar, close, and an open on an unstarred key answer from the store
+    alone — no `_collect`, no `_task_rows`."""
+    _write_transcript(projects_dir, "sess-a", "/p", [_user("hi", T9)])
+    _favourite(client, "sess-a")
+
+    def boom(*_a, **_k):
+        raise AssertionError("built tasks for a store-only write")
+
+    monkeypatch.setattr(tasks_mod, "_collect", boom)
+    monkeypatch.setattr(tasks_mod, "_task_rows", boom)
+    r = client.post("/api/tasks/favourite", headers=_FUSED,
+                    json={"key": "sess-a", "open": False})
+    assert r.json() == {"ok": True, "key": "sess-a", "starred": True, "open": False}
+    r = _favourite(client, "sess-a", on=False)
+    assert r.json() == {"ok": True, "key": "sess-a", "starred": False, "open": False}
+    r = client.post("/api/tasks/favourite", headers=_FUSED,
+                    json={"key": "sess-a", "open": True})
+    assert r.json() == {"ok": True, "key": "sess-a", "starred": False, "open": False}
+    assert json.loads((state_dir / "favourites.json").read_text()) == {}
+
+
+def test_a_corrupt_favourites_file_is_set_aside_on_the_next_star(
+        client, projects_dir, state_dir):
+    _write_transcript(projects_dir, "sess-a", "/p", [_user("hi", T9)])
+    (state_dir / "favourites.json").write_text("{oops")
+    assert _by_key(client)["sess-a"]["starred"] is False
+    assert _favourite(client, "sess-a").status_code == 200
+    aside = list(state_dir.glob("favourites.json.corrupt-*"))
+    assert len(aside) == 1 and aside[0].read_text() == "{oops"
+    assert json.loads((state_dir / "favourites.json").read_text())["sess-a"]["open"] is True
+    assert _by_key(client)["sess-a"]["starred"] is True
+
+
+def test_an_empty_favourites_file_is_fine(client, projects_dir, state_dir):
+    _write_transcript(projects_dir, "sess-a", "/p", [_user("hi", T9)])
+    (state_dir / "favourites.json").write_text("")
+    assert _favourite(client, "sess-a").status_code == 200
+    assert list(state_dir.glob("favourites.json.corrupt-*")) == []
+    assert _by_key(client)["sess-a"]["starred"] is True
+
+
+def test_a_task_with_no_session_cannot_be_starred(client, tmp_path, state_dir):
+    _seed_schedule([_entry("e1", "tomorrow", T12, target=str(tmp_path))])
+    key = _tasks(client)[0]["key"]
+    assert key.startswith("pending:")
+    r = _favourite(client, key)
+    assert r.status_code == 400
+    assert "started chat" in r.json()["detail"]
+    assert not (state_dir / "favourites.json").exists()
+
+
+def test_unstarring_an_unknown_key_is_ok(client):
+    r = _favourite(client, "erased-long-ago", on=False)
+    assert r.status_code == 200, r.text
+    assert r.json() == {"ok": True, "key": "erased-long-ago", "starred": False,
+                        "open": False}
+
+
+def test_unstarring_drops_an_orphan_record_whose_row_is_gone(client, state_dir):
+    (state_dir / "favourites.json").write_text(
+        json.dumps({"ghost": {"at": 1.0, "open": True}}))
+    assert _favourite(client, "ghost", on=False).status_code == 200
+    assert json.loads((state_dir / "favourites.json").read_text()) == {}
+
+
+def test_archiving_a_favourite_keeps_the_star_and_closes_its_card(
+        client, projects_dir, state_dir):
+    _write_transcript(projects_dir, "sess-a", "/p", [_user("hi", T9)])
+    _favourite(client, "sess-a")
+    r = client.post("/api/tasks/archive", headers=_FUSED, json={"key": "sess-a"})
+    assert r.status_code == 200, r.text
+    row = _by_key(client)["sess-a"]
+    assert row["status"] == "archived"
+    assert (row["starred"], row["starred_open"]) == (True, False)
+
+
+def test_an_archived_favourite_cannot_be_reopened_by_an_open_only_write(
+        client, projects_dir, state_dir):
+    """`archive_task` closed the card; an `open: true` with `on` omitted
+    (a fav ring press in a stale window) must not put it back."""
+    _write_transcript(projects_dir, "sess-a", "/p", [_user("hi", T9)])
+    _favourite(client, "sess-a")
+    client.post("/api/tasks/archive", headers=_FUSED, json={"key": "sess-a"})
+    r = client.post("/api/tasks/favourite", headers=_FUSED,
+                    json={"key": "sess-a", "open": True})
+    assert r.status_code == 409
+    row = _by_key(client)["sess-a"]
+    assert (row["starred"], row["starred_open"]) == (True, False)
+
+
+def test_archiving_does_not_star_an_unstarred_task(client, projects_dir,
+                                                   state_dir):
+    _write_transcript(projects_dir, "sess-a", "/p", [_user("hi", T9)])
+    client.post("/api/tasks/archive", headers=_FUSED, json={"key": "sess-a"})
+    assert not (state_dir / "favourites.json").exists()
+
+
+def test_deleting_a_favourite_drops_its_record(client, projects_dir, state_dir):
+    _write_transcript(projects_dir, "sess-a", "/p", [_user("hi", T9)])
+    _favourite(client, "sess-a")
+    r = client.post("/api/tasks/delete", headers=_FUSED, json={"key": "sess-a"})
+    assert r.status_code == 200, r.text
+    assert "sess-a" not in json.loads((state_dir / "favourites.json").read_text())
+
+
+def test_erasing_a_favourite_drops_its_record(client, projects_dir, state_dir):
+    _write_transcript(projects_dir, "sess-a", "/p", [_user("hi", T9)])
+    _favourite(client, "sess-a")
+    r = client.post("/api/tasks/erase", headers=_FUSED, json={"key": "sess-a"})
+    assert r.status_code == 200, r.text
+    assert "sess-a" not in json.loads((state_dir / "favourites.json").read_text())
+
+
+def test_thread_reads_the_relocated_transcript_not_the_exit_stub(client, projects_dir):
+    """EnterWorktree moved the conversation into the worktree's bucket, and the
+    CLI's exit bookkeeping re-created the original bucket's `<sid>.jsonl` with
+    no conversation in it. The stub's bucket sorts AFTER the worktree's (`-` <
+    `/`), so a last-wins pass filed the task on the stub and the thread came
+    back empty."""
+    _write_transcript(projects_dir, "sess-a", "/repo", [
+        _user("fix the CORS error", T9, uuid="a1"),
+        _user("is it done?", T10, uuid="a2"),
+    ], encoded="-repo--claude-worktrees-wt")
+    stub = projects_dir / "-repo" / "sess-a.jsonl"
+    stub.parent.mkdir(parents=True)
+    stub.write_text("\n".join(json.dumps(r) for r in _EXIT_ROWS) + "\n")
+
+    messages = client.get("/api/tasks/sess-a/messages").json()["messages"]
+    assert [m["body"] for m in messages] == ["is it done?", "fix the CORS error"]

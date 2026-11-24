@@ -165,9 +165,10 @@ async function openCard(
   return box!;
 }
 
-/** The property pill a control lives in — Model and Thinking share one. */
+/** The property pill a control lives in — Model, Effort and Permissions are
+ *  one pill each (Akshil, 2026-11-02, the composer's own row). */
 function pillOf(b: ReactTestRenderer, aria: string) {
-  const name = aria === "Thinking" ? "Model" : aria;
+  const name = aria;
   return b.root.findAll(
     (n) => n.type === "button" && n.props["aria-label"] === name
       && n.props["aria-haspopup"] === "dialog",
@@ -177,6 +178,10 @@ function pillOf(b: ReactTestRenderer, aria: string) {
 /** Everything a node prints, flattened — menu rows are text plus an icon. */
 function textOf(n: unknown): string {
   if (typeof n === "string") return n;
+  // A row's screen-reader-only description is not what it SAYS on screen.
+  if ((n as { props?: { className?: string } }).props?.className === "sr-only") return "";
+  // Nor is a model row's small description ("Fast") part of its NAME.
+  if ((n as { props?: { className?: string } }).props?.className === "nt-menu-desc") return "";
   const kids = (n as { children?: unknown[] }).children;
   return Array.isArray(kids) ? kids.map(textOf).join("") : "";
 }
@@ -187,18 +192,8 @@ function label(b: ReactTestRenderer, aria: string): string {
   const trigger = pillOf(b, aria);
   const said = trigger.findAll((n) => String(n.props?.className ?? "").startsWith("pp-v"))[0];
   const text = textOf(said);
-  // The pill says "Fable (low)": the model is the part before the brackets.
-  if (aria === "Model") return text.replace(/\s*\(.*\)$/, "");
-  if (aria === "Thinking") {
-    // Thinking is not in the pill (the row must stay on one line): read the
-    // checked row of the popover's Thinking group.
-    const find = () => b.root.findAll((n) => n.props?.role === "group" && n.props["aria-label"] === "Thinking")[0];
-    // The popover only mounts its rows while open: open it for the read.
-    if (!find()) act(() => { pillOf(b, "Model").props.onClick(); });
-    const group = find();
-    const on = group?.findAll((n) => n.type === "button" && n.props["aria-checked"] === true)[0];
-    return on ? textOf(on) : "";
-  }
+  // Each pill says its one word: "Fable", "Low", "Auto" — never "Fable (low)".
+  expect(text).not.toMatch(/\(/);
   return text;
 }
 
@@ -208,7 +203,7 @@ async function pick(b: ReactTestRenderer, aria: string, choice: string) {
   const find = () => aria === "Permissions"
     ? b.root.findAll((n) => n.props?.role === "menu" && n.props["aria-label"] === "Permissions")[0]
     : b.root.findAll((n) => n.props?.role === "group" && n.props["aria-label"] === aria)[0];
-  // Model and Thinking share one popover that stays up between picks.
+  // Every pill's popover is its own and closes on a pick: open it for this one.
   if (!find()) await act(async () => { pillOf(b, aria).props.onClick(); });
   const scope = find();
   expect(scope, `no ${aria} menu`).toBeTruthy();
@@ -216,6 +211,8 @@ async function pick(b: ReactTestRenderer, aria: string, choice: string) {
     .find((o) => textOf(o) === choice);
   expect(option, `no "${choice}" option under ${aria}`).toBeTruthy();
   await act(async () => { option!.props.onClick(); });
+  // One decision per popover: a pick closes it.
+  expect(find(), `${aria} popover stayed open after a pick`).toBeFalsy();
 }
 
 /** Type into one of the card's text boxes, addressed the way a reader finds it
@@ -242,17 +239,32 @@ test("picking a model and a thinking level is what the card then says", async ()
   const b = await openCard({}, []);
   // Opens on the global preference the stub answers — Fable / Low — not on a
   // "Default" placeholder.
-  expect([label(b, "Model"), label(b, "Thinking")]).toEqual(["Fable", "Low"]);
+  expect([label(b, "Model"), label(b, "Effort")]).toEqual(["Fable", "Low"]);
 
   await pick(b, "Model", "Opus");
-  await pick(b, "Thinking", "Max");
+  await pick(b, "Effort", "Max");
 
   // The LABEL, from the key the option carried — `taskRunLabel`'s round trip.
-  expect([label(b, "Model"), label(b, "Thinking")]).toEqual(["Opus", "Max"]);
+  expect([label(b, "Model"), label(b, "Effort")]).toEqual(["Opus", "Max"]);
   // …and the other field on that row is untouched. They are one row, not one
   // value: a picker wired to its neighbour's setter would still look right in
   // the assertion above.
   expect(label(b, "Permissions")).toBe("Auto");
+});
+
+test("the model menu reads lightest to heaviest, each row saying what it is for", async () => {
+  const b = await openCard({}, []);
+  await act(async () => { pillOf(b, "Model").props.onClick(); });
+  const menu = b.root.findAll((n) => n.props?.role === "group" && n.props["aria-label"] === "Model")[0];
+  const rows = menu.findAll((n) => n.type === "button" && n.props.role === "menuitemradio");
+  const descOf = (row: (typeof rows)[number]) =>
+    row.findAll((n) => n.props?.className === "nt-menu-desc").map((n) => n.children.join(""))[0];
+  expect(rows.map((r) => [textOf(r), descOf(r)])).toEqual([
+    ["Haiku", "Fast"],
+    ["Sonnet", "Balanced"],
+    ["Opus", "Deep reasoning"],
+    ["Fable", "Autonomous agents"],
+  ]);
 });
 
 test("what was picked is what Create sends", async () => {
@@ -260,7 +272,7 @@ test("what was picked is what Create sends", async () => {
   const b = await openCard({}, sent);
   await type(b, /What should Claude do/i, "My task\n\ndo the thing");
   await pick(b, "Model", "Opus");
-  await pick(b, "Thinking", "Max");
+  await pick(b, "Effort", "Max");
 
   const create = b.root
     .findAll((n) => n.type === "button")
@@ -281,7 +293,7 @@ test("what was picked survives the card being closed and reopened", async () => 
     sent,
   );
   await pick(first, "Model", "Opus");
-  await pick(first, "Thinking", "Max");
+  await pick(first, "Effort", "Max");
   await closeCard();
 
   const put = sent.find((s) => s.url === "/api/drafts/task/d1");
@@ -291,7 +303,7 @@ test("what was picked survives the card being closed and reopened", async () => 
   // the reader actually sees. Seeded from the PUT's own body, so the two
   // halves cannot pass while disagreeing about the spelling.
   const again = await openCard({ initialDraft: { id: "d1", form: put!.body } }, []);
-  expect([label(again, "Model"), label(again, "Thinking")]).toEqual(["Opus", "Max"]);
+  expect([label(again, "Model"), label(again, "Effort")]).toEqual(["Opus", "Max"]);
 });
 
 test("an edit opens on the model the task was saved with", async () => {
@@ -302,7 +314,7 @@ test("an edit opens on the model the task was saved with", async () => {
       model: "sonnet", effort: "high",
     },
   }, []);
-  expect([label(b, "Model"), label(b, "Thinking")]).toEqual(["Sonnet", "High"]);
+  expect([label(b, "Model"), label(b, "Effort")]).toEqual(["Sonnet", "High"]);
 });
 
 // ── THE OTHER HALF: the card never WRITES the global pair ──────────────────
@@ -316,8 +328,8 @@ test("picking on a new task card never writes the global setting", async () => {
   const sent: Sent[] = [];
   const b = await openCard({}, sent);
   await pick(b, "Model", "Opus");
-  await pick(b, "Thinking", "Max");
-  expect([label(b, "Model"), label(b, "Thinking")]).toEqual(["Opus", "Max"]);
+  await pick(b, "Effort", "Max");
+  expect([label(b, "Model"), label(b, "Effort")]).toEqual(["Opus", "Max"]);
   expect(sent.filter((s) => s.url === "/api/claude-sessions/defaults")).toEqual([]);
 });
 
@@ -331,12 +343,12 @@ test("a field the reader picked stops following the global; an untouched one sti
       JSON.stringify({ model: "haiku", effort: "high" }),
     );
   });
-  expect([label(b, "Model"), label(b, "Thinking")]).toEqual(["Opus", "High"]);
+  expect([label(b, "Model"), label(b, "Effort")]).toEqual(["Opus", "High"]);
 });
 
 test("a change made on another surface reaches an open card", async () => {
   const b = await openCard({}, []);
-  expect([label(b, "Model"), label(b, "Thinking")]).toEqual(["Fable", "Low"]);
+  expect([label(b, "Model"), label(b, "Effort")]).toEqual(["Fable", "Low"]);
 
   // The composer's pill, as far as this card can tell: the same module, the
   // same announcement. No reload, no reopen.
@@ -347,7 +359,7 @@ test("a change made on another surface reaches an open card", async () => {
       JSON.stringify({ model: "haiku", effort: "high" }),
     );
   });
-  expect([label(b, "Model"), label(b, "Thinking")]).toEqual(["Haiku", "High"]);
+  expect([label(b, "Model"), label(b, "Effort")]).toEqual(["Haiku", "High"]);
 });
 
 test("editing a stored task never rewrites the global setting", async () => {

@@ -7,6 +7,7 @@ import { afterEach, beforeEach, expect, mock, test } from "bun:test";
 import { createElement } from "react";
 import { act, create } from "react-test-renderer";
 import { dropSharedPrefsRead, type Task } from "@platform/lib/api";
+import { resetPrStatusForTests } from "@platform/lib/prStatus";
 
 const { TaskWorkspace } = await import("./TaskWorkspace");
 
@@ -67,12 +68,13 @@ function serve() {
   return posts;
 }
 
-async function render(tasks: Task[], onReload = () => {}) {
+async function render(tasks: Task[], onReload = () => {}, onOpenDraft?: (t: Task) => void) {
   let r!: ReturnType<typeof create>;
   await act(async () => {
     r = create(
       createElement(TaskWorkspace, {
         tasks, allTasks: tasks, emptyLabel: "Nothing.", peekOn: false, onReload, onNewTask: () => {},
+        ...(onOpenDraft ? { onOpenDraft } : {}),
       }),
     );
   });
@@ -89,6 +91,25 @@ test("rows run newest first, archived ones included", async () => {
   ]);
   const rows = r.root.findAll((n) => typeof n.props.className === "string" && /^ws-card( |$)/.test(n.props.className));
   expect(rows.map((n) => n.props["data-key"])).toEqual(["b", "a", "c"]);
+});
+
+test("a draft row sits under Needs you, opens its form on a press, and cannot be pinned or archived", async () => {
+  const posts = serve();
+  const opened: string[] = [];
+  const draft = task({
+    key: "draft:1", task_id: "", title: "half-written task", session_id: "", status: "upcoming",
+    kind: "draft", draft_id: "1", started: 5,
+  });
+  const r = await render([draft, task({ key: "a", started: 1 })], () => {}, (t) => opened.push(t.key));
+  const heads = r.root.findAll((n) => typeof n.props.className === "string" && n.props.className.includes("ws-group-head"));
+  expect(heads.map((h) => text(h))).toEqual(["Needs you1", "Safe to archive1Select all"]);
+  const card = r.root.findByProps({ "data-key": "draft:1" });
+  expect(text(within(card, "ws-title")[0] as { children: unknown[] })).toBe("half-written task");
+  expect(within(card, "ws-pin")).toHaveLength(0);
+  expect(within(card, "tasks-act")).toHaveLength(0);
+  await press(card);
+  expect(opened).toEqual(["draft:1"]);
+  expect(posts.filter((p) => p.url === "/api/tasks/archive")).toEqual([]);
 });
 
 test("an archived card wears no hold markers and its group has no checkbox", async () => {
@@ -304,7 +325,7 @@ test("the Undo toast says what the archive stopped and removed", async () => {
   }) as unknown as typeof fetch;
   void posts;
   const r = await render([task({ key: "a", title: "Fix it" })]);
-  const btn = r.root.findByProps({ className: "tasks-rowmark ws-mark" }).findByProps({ className: "tasks-act tasks-act--archive" });
+  const btn = r.root.findByProps({ className: "tasks-idslot" }).findByProps({ className: "tasks-act tasks-act--archive" });
   await act(async () => {
     btn.props.onClick({ stopPropagation() {} });
   });
@@ -454,7 +475,8 @@ const byClass = (r: ReturnType<typeof create>, c: string) =>
   r.root.findAll((n) => typeof n.props.className === "string" && n.props.className.split(" ").includes(c) && (/check/.test(c) ? (n.type as { name?: string }).name === "Checkbox" : typeof n.type === "string"));
 const press = async (el: { props: Record<string, (...a: unknown[]) => void> }, fn = "onClick") => {
   await act(async () => {
-    el.props[fn]({ stopPropagation() {} });
+    // A press ON the element (the card ignores clicks bubbled from a portal).
+    el.props[fn]({ stopPropagation() {}, currentTarget: { contains: () => true }, target: {} });
   });
 };
 const barButton = (r: ReturnType<typeof create>, label: string) =>
@@ -562,10 +584,10 @@ test("holds are read for every task, in chunks of at most 100; one chunk failing
   expect(ports.length).toBeLessThanOrEqual(100);
 });
 
-test("the card's ring slot holds the List's Archive button, and pressing it archives with Undo", async () => {
+test("the card's id slot holds the List's Archive button, and pressing it archives with Undo", async () => {
   const posts = serve();
   const r = await render([task({ key: "a", title: "Fix it" })]);
-  const mark = r.root.findByProps({ className: "tasks-rowmark ws-mark" });
+  const mark = r.root.findByProps({ className: "tasks-idslot" });
   const btn = mark.findByProps({ className: "tasks-act tasks-act--archive" });
   expect(btn.props["aria-label"]).toBe("Archive");
   expect(byClass(r, "ws-check").length).toBeGreaterThan(0);
@@ -588,7 +610,7 @@ test("holds not loaded yet: the card shows a shimmer pill in the badge slot, not
   expect(card.findByProps({ className: "skel-bar ws-skel" }).props["aria-hidden"]).toBe("true");
   expect(card.findByProps({ className: "ws-card-facts" }).props["aria-busy"]).toBe("true");
   expect(card.findAllByProps({ className: "ws-badge ws-marker" })).toHaveLength(0);
-  expect(text(card).toLowerCase().replace("checking worktree", "")).not.toContain("checking");
+  expect(text(card).toLowerCase().replace("checking status", "")).not.toContain("checking");
 });
 
 test("a failed holds load still shows 'unknown' as text, with no shimmer", async () => {
@@ -600,6 +622,37 @@ test("a failed holds load still shows 'unknown' as text, with no shimmer", async
   const card = r.root.findByProps({ "data-key": "a" });
   expect(text(card.findByProps({ className: "ws-badge ws-marker" }))).toBe("unknown");
   expect(card.findAllByProps({ className: "skel-bar ws-skel" })).toHaveLength(0);
+});
+
+test("a PR status still being asked shimmers, never prints 'PR #N unknown'", async () => {
+  resetPrStatusForTests();
+  globalThis.fetch = mock(async (url: string) => {
+    if (url === "/api/tasks/pr-status") return new Promise<Response>(() => {});
+    return new Response(JSON.stringify(url === "/api/tasks/ports" ? { ports: {} } : {}), { status: 200 });
+  }) as unknown as typeof fetch;
+  const r = await render([task({ key: "a", prs: [{ repo: "o/r", number: 5 }] } as Partial<Task>)]);
+  const card = r.root.findByProps({ "data-key": "a" });
+  expect(card.findAllByProps({ className: "skel-bar ws-skel" })).toHaveLength(1);
+  expect(card.findAllByProps({ className: "ws-badge ws-marker" })).toHaveLength(0);
+  expect(text(card)).not.toContain("unknown");
+  resetPrStatusForTests();
+});
+
+test("a PR status GitHub did not give is one short static badge, no shimmer", async () => {
+  resetPrStatusForTests();
+  serve();
+  const r = await render([
+    task({ key: "a", prs: [{ repo: "o/r", number: 5 }, { repo: "o/r", number: 6 }] } as Partial<Task>),
+  ]);
+  await act(async () => {
+    await new Promise((res) => setTimeout(res, 0));
+  });
+  const card = r.root.findByProps({ "data-key": "a" });
+  const badge = card.findByProps({ className: "ws-badge ws-marker" });
+  expect(text(badge)).toBe("PR status ?");
+  expect(badge.props.title).toBe("No GitHub status for #6, #5");
+  expect(card.findAllByProps({ className: "skel-bar ws-skel" })).toHaveLength(0);
+  resetPrStatusForTests();
 });
 
 // ---- Pins -------------------------------------------------------------------
@@ -659,7 +712,7 @@ test("archiving a pinned task from the view drops its pin and persists the list"
   pinnedPref = ["a", "other"];
   const posts = serve();
   const r = await render([task({ key: "a", title: "Fix it" })]);
-  const btn = r.root.findByProps({ className: "tasks-rowmark ws-mark" }).findByProps({ className: "tasks-act tasks-act--archive" });
+  const btn = r.root.findByProps({ className: "tasks-idslot" }).findByProps({ className: "tasks-act tasks-act--archive" });
   await act(async () => {
     btn.props.onClick({ stopPropagation() {} });
   });
@@ -704,6 +757,22 @@ test("a failed write reverts only its own key; the last write carries the other 
   expect(putBodies(posts)).toEqual([["a", "b"], ["b"]]);
   expect(r.root.findByProps({ "data-key": "b" }).findAllByProps({ "aria-label": "Unpin" }).length).toBeGreaterThan(0);
   expect(r.root.findByProps({ "data-key": "a" }).findAllByProps({ "aria-label": "Unpin" })).toHaveLength(0);
+});
+
+// The page's Workspace and the rail's Tasks card's, both up (CodeRabbit,
+// 2026-11-08): a pin on one side shows on the other, and the other's next
+// write carries it — not its own stale copy.
+test("two Workspaces share one pin list: the second write carries the first's pin", async () => {
+  const posts = serve();
+  const rows = [task({ key: "a", status: "needs_attention" }), task({ key: "b", status: "needs_attention", started: 0 })];
+  const page = await render(rows);
+  const card = await render(rows);
+  await clickPin(page, "a", "Pin to top");
+  expect(card.root.findByProps({ "data-key": "a" }).findAllByProps({ "aria-label": "Unpin" }).length).toBeGreaterThan(0);
+  await clickPin(card, "b", "Pin to top");
+  await act(async () => {});
+  expect(putBodies(posts)).toEqual([["a"], ["a", "b"]]);
+  expect(page.root.findByProps({ "data-key": "b" }).findAllByProps({ "aria-label": "Unpin" }).length).toBeGreaterThan(0);
 });
 
 test("a toggle after a failed pin load re-reads the stored pins first, so they are not wiped", async () => {
@@ -754,4 +823,35 @@ test("n unfolds a folded Pinned group that holds the only task needing you", asy
   });
   const card = r.root.findByProps({ "data-key": "p" });
   expect(card.props["aria-selected"]).toBe(true);
+});
+
+test("a Needs-you card says why in the preview's seat, instead of the last message", async () => {
+  serve();
+  const last = { role: "assistant" as const, text: "I asked a thing.", at: 1 };
+  const r = await render([
+    task({ key: "q", status: "needs_attention", blocked_reason: "question", attention: { tool: "AskUserQuestion", summary: "Ship it?" }, last_message: last } as Partial<Task>),
+    task({ key: "l", status: "blocked", blocked_reason: "usage_limit", resumes_at: 0 } as Partial<Task>),
+    task({ key: "f", status: "blocked", blocked_reason: "failed" } as Partial<Task>),
+    task({ key: "ok", status: "done", last_message: last } as Partial<Task>),
+  ]);
+  const ask = (key: string) =>
+    within(r.root.findByProps({ "data-key": key }), "ws-preview ws-ask") as Array<{ children: unknown[] }>;
+  expect(ask("q")).toHaveLength(1);
+  expect(ask("q")[0].children).toEqual(["Waiting on your answer · Ship it?"]);
+  expect(within(r.root.findByProps({ "data-key": "q" }), "ws-preview")).toHaveLength(0);
+  expect(ask("l")[0].children).toEqual(["Usage limit"]);
+  expect(ask("f")[0].children).toEqual(["Run failed"]);
+  expect(ask("ok")).toHaveLength(0);
+  expect(within(r.root.findByProps({ "data-key": "ok" }), "ws-preview")).toHaveLength(1);
+});
+
+test("a queued task carrying a usage-limit reason keeps its preview: it is not in Needs you", async () => {
+  serve();
+  const last = { role: "assistant" as const, text: "Waiting my turn.", at: 1 };
+  const r = await render([
+    task({ key: "qd", status: "queued", blocked_reason: "usage_limit", resumes_at: 0, last_message: last } as Partial<Task>),
+  ]);
+  const card = r.root.findByProps({ "data-key": "qd" });
+  expect(within(card, "ws-preview ws-ask")).toHaveLength(0);
+  expect(within(card, "ws-preview")).toHaveLength(1);
 });

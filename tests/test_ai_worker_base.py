@@ -3674,3 +3674,44 @@ def test_importing_supervisor_does_not_import_worker_base():
         capture_output=True, text=True, timeout=30)
     assert out.returncode == 0, out.stderr
     assert out.stdout.strip() == "False", out.stderr
+
+
+def test_think_splitter_separates_deliberation_from_the_answer():
+    from fused_render.ai.runners.worker_base import ThinkSplitter
+    sp = ThinkSplitter()
+    out = sp.feed("<think>let me ") + sp.feed("see</thi") + sp.feed("nk>\nHello") + sp.finish()
+    assert out == [("reasoning", "let me "), ("reasoning", "see"), ("text", "Hello")]
+    # The template left the block open: no opening tag ever arrives; the
+    # newlines after the close are dropped even across chunks.
+    sp = ThinkSplitter(open=True)
+    out = sp.feed("plan a</think>") + sp.feed("\n\nAnswer <tool_call>x</tool_call>") + sp.finish()
+    assert out == [("reasoning", "plan a"), ("text", "Answer <tool_call>x</tool_call>")]
+    # Never closed: everything is thinking.
+    sp = ThinkSplitter(open=True)
+    assert sp.feed("still going") + sp.finish() == [("reasoning", "still going")]
+    # No block at all: plain text; a lone '<' is released once it is not a tag.
+    sp = ThinkSplitter()
+    assert sp.feed("a < b <t") + sp.feed("ag>") + sp.finish() == [("text", "a < b "), ("text", "<tag>")]
+    sp = ThinkSplitter()
+    assert sp.feed("<thinking>x</thinking>y") + sp.finish() == [("reasoning", "x"), ("text", "y")]
+
+
+def test_text_writer_splits_once_at_the_worker_and_flushes_on_done():
+    from fused_render.ai.runners.worker_base import TextWriter, open_think
+    assert open_think("<|im_start|>assistant\n<think>\n") is True
+    assert open_think("<|im_start|>assistant\n<think>\n\n</think>\n\n") is False
+    rows = []
+    w = TextWriter(rows.append, "...assistant\n<think>\n")
+    w({"type": "chunk", "text": "hmm"})
+    w({"type": "chunk", "text": "</think>\n\nHi <"})
+    w({"type": "done", "ok": True, "tokens": 3})
+    assert rows == [
+        {"type": "chunk", "text": "hmm", "channel": "reasoning"},
+        {"type": "chunk", "text": "Hi "},
+        {"type": "chunk", "text": "<"},          # flushed by the done row
+        {"type": "done", "ok": True, "tokens": 3},
+    ]
+    rows = []
+    w = TextWriter(rows.append, "plain prompt")
+    w({"type": "chunk", "text": "answer"}); w({"type": "done", "ok": True})
+    assert rows == [{"type": "chunk", "text": "answer"}, {"type": "done", "ok": True}]

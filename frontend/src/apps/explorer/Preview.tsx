@@ -3,10 +3,11 @@
 //   2. else                      -> fallback metadata card
 // No file-type checks live in the shell — html arrives through stat.templates
 // like everything else, via the "_render" sentinel (SPEC PT-12).
+import { usePanePresence } from "@platform/lib/pane-presence";
 import { canonFsPath } from "@platform/lib/path-url";
 import { AppModelGate } from "./AppModelGate";
 import { isBackendEnabled, useAgentBackends } from "@platform/lib/agent-backends";
-import { useEffect, useLayoutEffect, useRef, useState, useSyncExternalStore, type ReactNode } from "react";
+import { useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore, type ReactNode } from "react";
 import { createPortal } from "react-dom";
 import {
   getAppEntry,
@@ -53,9 +54,14 @@ import { recordFsOp } from "@apps/explorer/lib/fs-undo";
 import { dismissNotification, dismissPopup, notify } from "@platform/lib/notifications";
 import { syncRegistryToast, troubleReport } from "@platform/lib/trouble";
 import { templateModeIcon, modeTitle, KNOWN_SENTINEL_MODES } from "@apps/explorer/ModeSwitcher";
+import { embedSrc } from "@platform/lib/layout-codec";
+import { nodeOfFile, nodePageShot, type NodeOfFile } from "@apps/explorer/lib/node-shot";
+import { useCanvasPageShotResponder } from "@apps/claude/shots/canvas-page-shot-responder";
 import {
   isModePending,
+  isNodeEntry,
   isSidebarMode,
+  modesUnderSnapshot,
   partitionModes,
   unavailableReason,
   visibleModes,
@@ -92,7 +98,9 @@ import {
 import { disarmSidebarOnFailedSelect } from "@apps/explorer/lib/snapshot-clear";
 import { usePreviewSnapshot } from "@apps/explorer/lib/usePreviewSnapshot";
 import { ModeMenu, OverflowMenu } from "@apps/explorer/BarMenu";
-import { SideReopenEdge, SideToggleButton } from "@apps/explorer/SideChrome";
+import { SideReopenEdge, SideToggleButton, startSideReopenPull } from "@apps/explorer/SideChrome";
+import { ClaudeRail, RAIL_W, paneHomeHref } from "@shell/claude-rail/ClaudeRail";
+import { placeRoot } from "@shell/claude-rail/claude-rail-lib";
 import { useAppActionRows } from "@apps/explorer/EntryActionsMenu";
 import { useCanRunInTerminal, openTerminal } from "@platform/lib/terminalDockStore";
 import { runOrCopyInTerminal } from "@platform/lib/runOrCopyInTerminal";
@@ -117,6 +125,19 @@ const HIDE_PANE = new URLSearchParams(location.search).get("_hidepane") === "1";
 const hidePaneInParent = () => {
   window.parent.postMessage({ type: "fused-canvas-hide-pane" }, location.origin);
 };
+// …and, in that pane, the chat head's place tag asks the editor to select
+// the node (apps/claude ui/PlaceTag; CanvasWorkspace `fused-canvas-select-node`).
+// `?_canvas=<env>:<name>` (CanvasWorkspace `nodeEmbedSrc`): the canvas this
+// node pane stands in — the tag's place root, and named in the ask so the
+// editor acts for its own canvas only.
+const FRAME_CANVAS = (() => {
+  const v = new URLSearchParams(location.search).get("_canvas");
+  const i = v ? v.indexOf(":") : -1;
+  return v && i > 0 ? { env: v.slice(0, i), name: v.slice(i + 1) } : null;
+})();
+const selectNodeInParent = (udfName: string | null, sessionId?: string | null) => {
+  window.parent.postMessage({ type: "fused-canvas-select-node", udfName, sessionId: sessionId ?? null, ...FRAME_CANVAS }, location.origin);
+};
 // `?_saveon=blur`: the host frames this document as a canvas node's code pane
 // (CanvasWorkspace). Forwarded onto the CONTENT frame's render URL, where the
 // code template reads it and saves on blur / Shift+Enter instead of 250 ms
@@ -132,6 +153,7 @@ import { Button } from "@platform/shadcn/ui/button";
 import { PromptDialog, ConfirmDialog, nameError } from "@apps/explorer/FsDialogs";
 import Listing from "@apps/explorer/Listing";
 import { FileSearchField } from "@apps/explorer/FileSearchField";
+import { breakoutOpener } from "@platform/lib/breakouts";
 
 // The window global the injected runtime calls to hand this shell the commit the
 // git sidebar just selected (static/runtime.js `noteSnapshotSelected`, reached
@@ -259,6 +281,33 @@ export function shareRow(args: {
   ];
 }
 
+// THE FILE MENU FOR A REMOTE LOCATION (`remoteUrl`, RemoteView.tsx): the file
+// on screen is the cache's local copy of an `s3://` object, and every verb of
+// the ordinary menu — rename, delete, duplicate, cut, reveal, share, open in
+// terminal, splits, the app rows — would act on (or show) that cache file, not
+// on anything the reader opened. What is left speaks the s3 address.
+function remoteFileMenu(remoteUrl: string): MenuEntry[] {
+  return fileMenu({
+    open: [
+      {
+        label: "Open in New Tab",
+        icon: MenuIcons.newTab,
+        onClick: () => window.open(urlForFsPath(remoteUrl), "_blank", "noopener"),
+      },
+    ],
+    copy: [
+      {
+        label: "Copy Address",
+        icon: MenuIcons.copyPath,
+        onClick: () =>
+          void copyToClipboard(remoteUrl).then((ok) => {
+            if (ok) notify({ title: "Address copied", tone: "info" });
+          }),
+      },
+    ],
+  });
+}
+
 // One open modal for the preview file menu: a Rename prompt or a Delete confirm
 // (the trash-unsupported fallback). Mirrors Listing's DialogState, kept local
 // so the two views don't couple through a shared dialog type.
@@ -290,6 +339,9 @@ function usePreviewFileMenu(
   // returned the groups it composes. Absent (FallbackPreview, which has no
   // kebab), the bar shows this hook's groups alone.
   fileMenuRef?: React.MutableRefObject<(() => MenuEntry[]) | null>,
+  // An `s3://` location whose cached copy `fsPath` is (remoteFileMenu): both
+  // menus this hook opens shrink to the address's own verbs.
+  remoteUrl?: string,
 ) {
   const [menu, setMenu] = useState<{ x: number; y: number; items: MenuEntry[] } | null>(null);
   const [dialog, setDialog] = useState<PreviewDialog | null>(null);
@@ -449,7 +501,7 @@ function usePreviewFileMenu(
 
   const onContextMenu = (e: React.MouseEvent) => {
     e.preventDefault();
-    setMenu({ x: e.clientX, y: e.clientY, items: buildMenu() });
+    setMenu({ x: e.clientX, y: e.clientY, items: remoteUrl ? remoteFileMenu(remoteUrl) : buildMenu() });
   };
 
   // Where the status-bar drawer exists, run a new Claude Code session on this
@@ -481,7 +533,8 @@ function usePreviewFileMenu(
   useEffect(() => {
     let alive = true;
     setIsAppEntry(false);
-    if (stat.is_dir) return;
+    // A remote location's cache folder is no app (and nothing reads the answer).
+    if (stat.is_dir || remoteUrl) return;
     getAppEntry(parent)
       .then((r) => {
         if (alive) setIsAppEntry(r.entry != null && canonFsPath(r.entry) === fsPath);
@@ -492,7 +545,7 @@ function usePreviewFileMenu(
     return () => {
       alive = false;
     };
-  }, [fsPath, parent, stat.is_dir]);
+  }, [fsPath, parent, stat.is_dir, remoteUrl]);
 
   // SHARE, FOR THE FILE ITSELF — same flag as the app sheet (share-app-flag.ts:
   // "ON, each surface shows ONE Share entry"), reused here so a reader flips
@@ -509,7 +562,7 @@ function usePreviewFileMenu(
   });
   useEffect(() => {
     setShareEligibility({ canShare: false, refusal: null });
-    if (!sharingFilesEnabled || stat.is_dir) return;
+    if (!sharingFilesEnabled || stat.is_dir || remoteUrl) return;
     let alive = true;
     getShareFileStatus(fsPath)
       .then((s) => {
@@ -522,7 +575,7 @@ function usePreviewFileMenu(
     return () => {
       alive = false;
     };
-  }, [fsPath, stat.is_dir, sharingFilesEnabled]);
+  }, [fsPath, stat.is_dir, sharingFilesEnabled, remoteUrl]);
   const doShareFile = () => {
     if (!shareEligibility.canShare) return;
     openShareFile({ path: fsPath, name: stat.name });
@@ -658,6 +711,7 @@ function usePreviewFileMenu(
   // published one, this hook's groups alone otherwise — in the same
   // arrangement, so FallbackPreview's bar reads like TemplatePreview's.
   const barMenuItems = (): MenuEntry[] => {
+    if (remoteUrl) return remoteFileMenu(remoteUrl);
     if (fileMenuRef?.current) return fileMenuRef.current();
     const own = fileGroups();
     return fileMenu({
@@ -685,7 +739,10 @@ function usePreviewFileMenu(
     setMenu({
       x,
       y,
-      items: crumb
+      // A remote location's crumbs are s3 prefixes, never local folders to
+      // reveal (Breadcrumb draws them without the crumb-path attribute, so
+      // `crumb` is undefined there anyway; checked here too).
+      items: crumb && !remoteUrl
         ? crumbMenu({
             onReveal: () =>
               revealPath(crumb).catch((e) =>
@@ -744,8 +801,10 @@ function usePreviewFileMenu(
 // `_mode` (shell URL) selects among stat.templates by name (SPEC PT-9): absent
 // or unknown/stale value falls back to the default silently. The default is
 // the first UNCONDITIONAL entry (CT-12: a gated template is never the default
-// while a normal one exists) — only an all-conditional list falls back to its
-// first (by then verdict-allowed) entry.
+// while a normal one exists), with one exception: a node file's preferred
+// canvas node template (PT-8 `prefer`: the path is shaped like a canvas node
+// file), which is the default at once — no verdict is waited for. An
+// all-conditional list falls back to its first (by then verdict-allowed) entry.
 // Both rules live in lib/mode-visibility so every mode surface resolves the
 // same way; `templates` here is already the visible list, so a gate-denied
 // `_mode` lands on the default exactly like an unknown one.
@@ -816,6 +875,30 @@ const FRAME_SWAP_TIMEOUT_MS = 4000;
 const annotateTargetFrame = (): HTMLIFrameElement | null =>
   document.querySelector<HTMLIFrameElement>("iframe[data-fused-annotate-target]");
 
+// A box the shell draws into, in the held-frame swap (an uncached bucket
+// object's download card): what a frame's `load` is to an iframe, its mount
+// is to this, so there is nothing to wait for before showing it.
+function NativePane({
+  className,
+  onReady,
+  children,
+}: {
+  className: string;
+  onReady: () => void;
+  children: ReactNode;
+}) {
+  const ready = useRef(onReady);
+  ready.current = onReady;
+  useEffect(() => {
+    ready.current();
+  }, []);
+  return (
+    <div className={className + " preview-native"}>
+      {children}
+    </div>
+  );
+}
+
 // THIS FILE ONCE HOSTED NO SNAPSHOT INDICATOR OF ITS OWN — the reasoning was
 // that a content pane is the ordinary template rendering ordinary bytes, the
 // code editor looks exactly like the code editor, with no room to say "these
@@ -834,6 +917,17 @@ const annotateTargetFrame = (): HTMLIFrameElement | null =>
 // still exists for browsing the app's OWN subfolders under a snapshot, for
 // the same reason: a listing has no per-row heading a template could wear
 // instead.
+/** An uncached bucket object's content per mode (RemoteView.tsx, D1492). A
+ *  mode whose template streams the object is framed on its `s3://` address as
+ *  usual; any other mode shows `pane` (the download card) in place of its
+ *  frame, and opens on the cached copy once it lands. */
+export interface RemoteContent {
+  /** What `mode` shows instead of its frame, or null to frame it. */
+  pane: (mode: string) => ReactNode | null;
+  /** A bar above the active mode's pane, or null. */
+  banner: (mode: string) => ReactNode | null;
+}
+
 function TemplatePreview({
   fsPath,
   stat,
@@ -841,6 +935,8 @@ function TemplatePreview({
   conditions,
   onRenderedTitle,
   actionsInTopbar,
+  remoteUrl,
+  remoteContent,
 }: {
   fsPath: string;
   stat: StatResult;
@@ -848,12 +944,35 @@ function TemplatePreview({
   conditions: Record<string, boolean> | null;
   onRenderedTitle?: (title: string | null) => void;
   actionsInTopbar?: boolean;
+  remoteUrl?: string;
+  remoteContent?: RemoteContent;
 }) {
   // Caller only renders this when `templates` (already sentinel-filtered by
   // Preview's dispatch, SPEC PT-12) is non-empty. Entries whose condition.py
   // verdict is still in flight (CT-12) are present but PENDING — shown in the
-  // switcher as a disabled spinner, not selectable, never the default.
+  // switcher as a disabled spinner, not selectable, never the default. A
+  // preferred canvas node template (PT-8) is never pending: the path check
+  // opens it at once.
   const isPending = (t: TemplateEntry) => isModePending(t, conditions);
+
+  // The shell's git snapshot (`_snapshot`): see "the shell's git snapshot"
+  // below for the whole story.
+  const urlVersion = useUrlVersion();
+  const {
+    sha: snapshotSha,
+    snap: snapshotResolved,
+    pending: snapshotPending,
+    error: snapshotError,
+    retry: retrySnapshot,
+    backToLive,
+    applySelected: applySelectedSnapshot,
+  } = usePreviewSnapshot(fsPath, urlVersion);
+  // A CANVAS NODE TEMPLATE IS LIVE BY NATURE (SPEC §53.2): it draws the node
+  // as it stands now, never as of a commit. Under a snapshot it is not
+  // offered at all, so the pane falls back to a mode that honours the commit
+  // (Code) instead of drawing the live node under "Showing this file as of
+  // commit …"; Back to live brings it back.
+  const offered = modesUnderSnapshot(templates, snapshotSha);
 
   // --- the content/sidebar split (`_side`) ----------------------------------
   // ONE surface splits: a single FILE opened on the explorer route in its own
@@ -866,8 +985,11 @@ function TemplatePreview({
   //     user built, sized by them, with their own bar (PaneModeMenu) writing
   //     `_mode`. A pane that grew a second split of its own would be answering a
   //     layout question the user already answered;
-  const splitCapable = !!actionsInTopbar && !stat.is_dir && !IS_EMBED;
-  const parts = partitionModes(templates);
+  // Never for a remote location's cache copy (RemoteView.tsx): the companions
+  // (Claude chat, git, the parent's MCP) and the rail would all be about the
+  // cache folder, not the `s3://` object the reader opened.
+  const splitCapable = !!actionsInTopbar && !stat.is_dir && !IS_EMBED && !remoteUrl;
+  const parts = partitionModes(offered);
 
   // --- the BORROWED companion `git`, and the parent's `mcp`, from this file's parent folder -
   // A working tree belongs to the FOLDER (templates/git/condition.py), and so does
@@ -948,7 +1070,9 @@ function TemplatePreview({
   // the two differ only for a file with no companions of its own, where both
   // branches are the same list anyway, and the sidebar half has to keep listing
   // the pending entry for the deep link's sake.
-  const contentModes = split.offered ? parts.content : templates;
+  // A remote cache copy never gets here with a companion in `templates`
+  // (Preview drops them upstream), so this needs no remote case.
+  const contentModes = split.offered ? parts.content : offered;
   const sidebarModes = split.offered ? split.all : [];
   // What the sidebar's switcher DRAWS, which is a longer list than the one above:
   // all three companions, the ones this file cannot show disabled and explaining
@@ -1044,6 +1168,12 @@ function TemplatePreview({
   // paint framing it, because `activeSide` is recomputed from the lists every
   // render and an unhonourable request falls to the default (lib/preview-side).
   const activeSide = resolveSide(sideReq, split, getSideTab());
+  // THE COLUMN SLIDES (platform/lib/pane-presence): held mounted through its
+  // exit, still showing the companion it had, like the app page's pane.
+  const heldSide = useRef(activeSide);
+  if (activeSide) heldSide.current = activeSide;
+  const sidePane = usePanePresence(!!activeSide);
+  const shownSide = activeSide ?? (sidePane.mounted ? heldSide.current : null);
   const sideEntry = activeSide ? sidebarModes.find((e) => e.mode === activeSide) ?? null : null;
   // Which companion a bare "open the sidebar" reopens: the last one the user had
   // open on this file, so closing and reopening is not a reset. STATE, not a ref,
@@ -1101,16 +1231,9 @@ function TemplatePreview({
   // AND the git sidebar hop — round 3 findings 2 and 7), and `snapshotError`
   // is the round 3 finding 8 fix: a non-404 resolve failure used to leave
   // this pane pending forever with no way out.
-  const urlVersion = useUrlVersion();
-  const {
-    sha: snapshotSha,
-    snap: snapshotResolved,
-    pending: snapshotPending,
-    error: snapshotError,
-    retry: retrySnapshot,
-    backToLive,
-    applySelected: applySelectedSnapshot,
-  } = usePreviewSnapshot(fsPath, urlVersion);
+  // (The hook itself is called at the top of this component: the canvas node
+  // templates' snapshot rule, below `isPending`, needs `snapshotSha` before the mode
+  // lists are built.)
   useEffect(() => {
     // Only the splitting surface installs the hook: it is the one surface with a
     // git sidebar to select in, and two instances racing for one window global
@@ -1176,6 +1299,26 @@ function TemplatePreview({
   // The box the sidebar goes in — StatView's, one level up from #content, so the
   // column stands beside the crumb bar rather than under it.
   const sideSlot = usePreviewSideSlot();
+  // Where the rail stands while the column is shut (below): this file, in
+  // its folder — the folder's other chats ride under the file's own, faded
+  // (claude-rail-lib `railRows`; owner, 2026-11-16).
+  const railPlace = useMemo(
+    () => ({ kind: "file" as const, file: fsPath, dir: parentDir }),
+    [fsPath, parentDir],
+  );
+  // THE RAIL IS CLAUDE'S: it stands only where the Claude companion is ready
+  // to open (`sideTargets`, the settled list), and its door opens CLAUDE —
+  // not the last companion the toggle would (a git column reopened from a
+  // rail of chat rings would be a lie). A file whose only companion is git
+  // keeps the crumb bar's Show button and the bare reopen edge.
+  // …and never beside a FULL-BODY chat (`_mode=claude`, the content pane
+  // itself the chat): a rail of this file's chats next to this file's chat
+  // would be the same thing twice. The bar's Show button and the bare edge
+  // stand there, as they did.
+  const railHere = !!sideSlot && activeMode !== CHAT_MODE && sideTargets.some((e) => e.mode === "claude");
+  const openClaudeSide = () => setSide("claude");
+  // The rail's Git section opens the git companion where this file has one.
+  const railGitDoor = sideTargets.some((e) => e.mode === "git") ? () => setSide("git", "git") : undefined;
 
   // The one writer. `null` CLOSES, and closing is a value (`_side=off`) rather
   // than a deleted param now that absence means open — while choosing the
@@ -1845,6 +1988,42 @@ function TemplatePreview({
   // after asking for A. Entries are dropped when their frame is retired: a later
   // mount of the same mode is a NEW document that has to load again.
   const loadedFrames = useRef<Set<string>>(new Set());
+
+  // THE AGENT'S `canvas_screenshot`, ANSWERED FROM THIS PANE (SPEC §53.8).
+  // While the pane shows a canvas node through its node template, a chat
+  // working on that node can be shown its output from here: this page says
+  // it shows the node (the responder's heartbeat), and pictures its own
+  // content frame when asked. Only the surface with the frame the sidebar
+  // points at (`splitCapable`, the mark `annotateTargetFrame` reads), and
+  // never under a snapshot (no node template is offered there).
+  const shownIsNode =
+    splitCapable && !isListing && contentModes.some((t) => t.mode === shown && isNodeEntry(t));
+  const [nodeShown, setNodeShown] = useState<NodeOfFile | null>(null);
+  useEffect(() => {
+    if (!shownIsNode) {
+      setNodeShown(null);
+      return;
+    }
+    let cancelled = false;
+    void nodeOfFile(fsPath).then((n) => {
+      if (!cancelled) setNodeShown(n);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [shownIsNode, fsPath]);
+  const nodeShot = useMemo(
+    () => nodePageShot(annotateTargetFrame, nodeShown?.node ?? ""),
+    [nodeShown?.node],
+  );
+  useCanvasPageShotResponder({
+    env: nodeShown?.env ?? null,
+    name: nodeShown?.name ?? "",
+    node: nodeShown?.node,
+    shot: nodeShot,
+    frameUp: () => !!annotateTargetFrame() && loadedFrames.current.has(shown),
+    error: null,
+  });
   // `snapshotPending` in the mix too (code review finding [6], round 2):
   // without it, `srcFor` returns `null` for a pending resolve but this stayed
   // `false` — the frame still mounted with `src={null}`, React omits the
@@ -1945,9 +2124,9 @@ function TemplatePreview({
     else if (sideOn && isSidebarMode(m)) setSide(m, m);
     else void setMode(m);
   };
-  const loadOpenWith = () => Promise.resolve(buildOpenWithItems(templates, openMode));
+  const loadOpenWith = () => Promise.resolve(buildOpenWithItems(offered, openMode));
   const fileMenuRef = useRef<(() => MenuEntry[]) | null>(null);
-  const fileOps = usePreviewFileMenu(fsPath, stat, loadOpenWith, actionsInTopbar, fileMenuRef);
+  const fileOps = usePreviewFileMenu(fsPath, stat, loadOpenWith, actionsInTopbar, fileMenuRef, remoteUrl);
 
   // THE APP ROWS (EntryActionsMenu's hook): App Doctor, Share, Open as project,
   // MCP config, gated on this file being its folder's entry page (the hook asks
@@ -1966,7 +2145,8 @@ function TemplatePreview({
   // strip still carries the query back for anyone who wants it.
   const appRows = useAppActionRows({
     fsPath,
-    isEntry: stat.is_dir ? false : undefined,
+    // A remote cache copy is nobody's entry page: no app rows, no probe.
+    isEntry: stat.is_dir || remoteUrl ? false : undefined,
     snapshotSha,
     snapshotResolved,
     snapshotPending,
@@ -2016,6 +2196,7 @@ function TemplatePreview({
   // instead.
   const ownsFileBar = !!actionsInTopbar && !stat.is_dir;
   const buildFileMenu = (): MenuEntry[] => {
+    if (remoteUrl) return remoteFileMenu(remoteUrl);
     if (!ownsFileBar) return fileMenu({ app: [...appRows.app, ...appRows.doctor], embed: appRows.embed });
     const own = fileOps.fileGroups();
     return fileMenu({
@@ -2110,7 +2291,7 @@ function TemplatePreview({
           (Listing.tsx's buildFolderMenu, with its own Open in embed row), so
           this one stands down — two `⋮` in one bar was the bug. */}
       {!(stat.is_dir && isListing) && (
-        <OverflowMenu items={buildFileMenu()} title="File actions" badge={appRows.badge} />
+        <OverflowMenu items={buildFileMenu()} title="File actions" badge={remoteUrl ? undefined : appRows.badge} />
       )}
       {/* The sidebar's OPENER, LAST in the bar — the shared control (SideChrome),
           which is where the "one affordance, two places, chosen by state" split
@@ -2125,7 +2306,7 @@ function TemplatePreview({
           Absent entirely when this file has no companion at all (no `claude`, no
           `git` in the parent, or a gate denied them): a control for
           nothing is worse than no control. */}
-      {sideTargetEntry && !activeSide && (
+      {sideTargetEntry && !activeSide && !railHere && (
         <SideToggleButton what={modeTitle(sideTargetEntry.mode)} onClick={toggleSide} />
       )}
     </>
@@ -2239,6 +2420,7 @@ function TemplatePreview({
                 </div>
               )
             )}
+            {remoteContent?.banner(activeMode)}
             {/* One frame per mounted mode (see the held-frame swap above). Each
              key is its own mode, so a frame is created once and never
              re-created by a switch away and back within the swap window. */}
@@ -2256,6 +2438,7 @@ function TemplatePreview({
               // thing that decides which of the mounted panes is on screen.
               if (m === CHAT_MODE) return (
                 <ChatMount
+                  onBreakout={breakoutOpener()}
                   // The content pane's chat remounts for a fresh ask on the same
                   // rule the sidebar's does: `initialAsk` is read once, at boot
                   // (ClaudeChat's `booted`), so a second ask arriving while this
@@ -2281,6 +2464,12 @@ function TemplatePreview({
                     : {})}
                   {...(CANVAS_SHOT ? { canvasShot: CANVAS_SHOT_FROM_PARENT } : {})}
                   {...(HIDE_PANE ? { onHidePane: hidePaneInParent } : {})}
+                  {...(HIDE_PANE && FRAME_CANVAS ? { onSelectNode: selectNodeInParent } : {})}
+                  // The head's place tags: this file's own page — or, in the
+                  // canvas pane, the canvas the pane stands in, so the node's
+                  // tag selects its node in the editor and the Canvas tag
+                  // fits the canvas.
+                  pageRoot={FRAME_CANVAS ? `canvas:${FRAME_CANVAS.env}:${FRAME_CANVAS.name}` : placeRoot({ kind: "file", file: fsPath })}
                   {...(nativeAsk && claudeAskRoute === "content"
                     ? { initialAsk: nativeAsk }
                     : {})}
@@ -2292,6 +2481,21 @@ function TemplatePreview({
                     if (m === activeMode) setShown(m);
                   }}
                 />
+              );
+              // An uncached bucket object in a mode that does not stream it
+              // (D1492): the download card in this mode's pane, not a frame.
+              const remotePane = remoteContent?.pane(m);
+              if (remotePane) return (
+                <NativePane
+                  key={m}
+                  className={"preview-frame" + (m === shown ? " is-shown" : "")}
+                  onReady={() => {
+                    loadedFrames.current.add(m);
+                    if (m === activeMode) setShown(m);
+                  }}
+                >
+                  {remotePane}
+                </NativePane>
               );
               // THE ONE FRAME ELEMENT, for every mode but the chat. Written once
               // because of the capability marks on it — each is a contract
@@ -2447,18 +2651,26 @@ function TemplatePreview({
           open/close: nothing above `.preview-body` is restructured, so React never
           re-parents the frame, and re-parenting an iframe reloads its document
           (the same rule the held-frame swap keeps for reordering). */}
-      {activeSide &&
-        sideSlot &&
+      {/* ONE PORTAL FOR THE SLOT'S THREE TENANTS, in this order — the column,
+          the rail, the bare reopen edge: two portals into one container
+          append in mount order, so a column opened while the rail stood
+          (favourites on, the rail beside the open column) would land to the
+          rail's RIGHT. One portal keeps the column first and the rail at the
+          window's edge, and the rail in one slot either way (no remount). */}
+      {sideSlot &&
         createPortal(
+          <>
+          {shownSide && (
           <PreviewSidebar
+            phase={sidePane.phase}
             entries={sidebarMenu.map((t) => ({
               mode: t.mode,
               icon: templateModeIcon(t),
               pending: isSidePending(t),
               disabledReason: t.disabledReason,
             }))}
-            active={activeSide}
-            src={sideEntry && isSidePending(sideEntry) ? null : sideSrcFor(activeSide)}
+            active={shownSide}
+            src={sideEntry && isSidePending(sideEntry) ? null : sideSrcFor(shownSide)}
             chat={
               /* THE SIDEBAR'S CHAT, `chat_only` because the chat's own left
                  pane would be this same file previewed twice in one window. The
@@ -2466,8 +2678,10 @@ function TemplatePreview({
                  remount with it. A thumbnail must not take the keyboard (D348),
                  and the ask itself is PULLED here, in the host. */
               <ChatMount
+                onBreakout={breakoutOpener()}
                 key={claudeMountKey(CHAT_MODE)}
                 file={fsPath}
+                pageRoot={placeRoot({ kind: "file", file: fsPath })}
                 chatOnly
                 /* `chat_only` takes the chat's OWN pane away, not the pane:
                    the app is still on screen in the middle column, and that
@@ -2492,8 +2706,79 @@ function TemplatePreview({
             }
             onSelect={(m) => setSide(m, m ?? undefined)}
             onClose={() => setSide(null)}
-          />,
-          sideSlot
+          />
+          )}
+      {/* And when it is SHUT, THE CLAUDE RAIL takes the edge, into the same
+          slot (shell/claude-rail — the canvas page's rail, the same on every
+          page since 2026-11-01): the way back in (its panel button, which is
+          the crumb bar's Show button moved to the column's own edge — exactly
+          one opener on screen, SideChrome's rule), a + that opens the New
+          task card on this file, and one ring per chat ON THIS FILE in the
+          List's order — what the shut column's Claude tab was showing — then
+          a hairline and the folder's other chats, faded (owner, 2026-11-16:
+          the canvas rail's node sort, for an open file). Its
+          inner seam is the reopen drag the invisible SideReopenEdge used to
+          carry (startSideReopenPull). Only where Claude is a ready companion
+          (`railHere`): a file whose column holds git alone keeps the button
+          and the bare edge below, because there would be no chats on the
+          other side of a rail.
+          It stands past the OPEN column too, at the
+          split's right edge (ClaudeRail `paneOpen`; owner, 2026-11-05) —
+          open on CLAUDE only: a column showing git keeps the rail's glyph and
+          seam, its way into the chat. */}
+      {sideTargetEntry && railHere && (
+          <ClaudeRail
+            paneOpen={activeSide === "claude"}
+            place={railPlace}
+            newTask={{ target: fsPath, waiting: null, on: null }}
+            git={{ path: fsPath, ...(railGitDoor ? { onOpenGit: railGitDoor } : {}) }}
+            // The file's other modes as doors above Git (owner, 2026-11-20):
+            // the mode menu's own list and order, the active entry and any
+            // whose gate has not answered left out; a door's card draws the
+            // file in that mode (an embed frame), its Open is the menu's
+            // switch.
+            {...(stat.is_dir
+              ? {}
+              : {
+                  fileModes: {
+                    path: fsPath,
+                    rev: snapshotSha ?? "",
+                    doors: contentModes
+                      .filter((t) => t.mode !== entry.mode && !isPending(t))
+                      .map((t) => ({ mode: t.mode, title: modeTitle(t.mode), icon: templateModeIcon(t) })),
+                    src: (m: string) =>
+                      embedSrc(
+                        fsPath,
+                        "?" +
+                          new URLSearchParams({ _mode: m, ...(snapshotSha ? { _snapshot: snapshotSha } : {}) }).toString(),
+                      ),
+                    onOpen: (m: string) => void setMode(m),
+                  },
+                })}
+            activeSessionId={new URLSearchParams(location.search).get("session_id")}
+            onOpen={openClaudeSide}
+            // A ring's door is its chat's own page with the session
+            // (`taskHref`): for this file's chats that is this file's URL —
+            // the sidebar opens on it like any `_side=claude` link; a faded
+            // ring's (the folder's, another file's) navigates there.
+            onOpenChat={(href) => navigateUrl(href)}
+            // The + beside the open column: this file's chat with no
+            // session, its Recent chats page (already there: nothing to load).
+            onNewChat={() => {
+              const home = paneHomeHref(location.href);
+              if (home) navigateUrl(home);
+            }}
+            onPullStart={(e) =>
+              startSideReopenPull(e, e.currentTarget.closest<HTMLElement>(".stat-split"), openClaudeSide, RAIL_W)
+            }
+          />
+      )}
+      {/* …and with no Claude companion, the seam the shut column left behind
+          (SideReopenEdge): drag the split's right edge to pull the column
+          back, the way it always was. */}
+      {sideTargetEntry && !activeSide && !railHere && <SideReopenEdge onOpen={toggleSide} />}
+          </>,
+          sideSlot,
         )}
       {/* The MCP companion's dialog — the kebab's row and Open With → MCP both
           open it (McpDialog). `mcpSrc` is re-checked here rather than trusted
@@ -2501,14 +2786,6 @@ function TemplatePreview({
       {mcpOpen && mcpSrc && (
         <McpDialog src={mcpSrc} folderName={basename(parentDir)} onClose={() => setMcpOpen(false)} />
       )}
-      {/* And when it is SHUT, the seam it left behind, into the same slot: drag
-          the split's right edge to pull the column back (SideChrome's
-          SideReopenEdge, which argues why a gesture is allowed here when a second
-          button would not be). Gated on exactly what the opener button is gated
-          on — a file with no companion at all gets no edge, because there would
-          be nothing on the other side of it. */}
-      {sideTargetEntry && !activeSide && sideSlot &&
-        createPortal(<SideReopenEdge onOpen={toggleSide} />, sideSlot)}
       {fileOps.overlays}
       {/* The App Doctor's dialog, off the file menu's row (useAppActionRows). */}
       {appRows.modal}
@@ -2659,16 +2936,18 @@ function FallbackPreview({
   stat,
   actionsInTopbar,
   onReload,
+  remoteUrl,
 }: {
   fsPath: string;
   stat: StatResult;
   actionsInTopbar?: boolean;
   onReload?: () => void;
+  remoteUrl?: string;
 }) {
   // No renderable views back this file (that's why it's the fallback), so Open
   // With resolves to the empty "No views available" list without a re-stat.
   const loadOpenWith = () => Promise.resolve(buildOpenWithItems([], () => {}));
-  const fileOps = usePreviewFileMenu(fsPath, stat, loadOpenWith, actionsInTopbar);
+  const fileOps = usePreviewFileMenu(fsPath, stat, loadOpenWith, actionsInTopbar, undefined, remoteUrl);
   return (
     <>
       {!actionsInTopbar && <Header fsPath={fsPath} stat={stat} onContextMenu={fileOps.onContextMenu} />}
@@ -2679,8 +2958,9 @@ function FallbackPreview({
             <dl>
               <dt>Name</dt>
               <dd>{stat.name}</dd>
-              <dt>Path</dt>
-              <dd>{fsPath}</dd>
+              {/* A remote location names its address, not the cache copy. */}
+              <dt>{remoteUrl ? "Address" : "Path"}</dt>
+              <dd>{remoteUrl ?? fsPath}</dd>
               <dt>Size</dt>
               <dd>{formatSize(stat.size)}</dd>
               <dt>Modified</dt>
@@ -2713,9 +2993,29 @@ interface PreviewProps {
   // a manual refresh. Undefined for callers that don't wire up StatView's
   // reload, where FallbackPreview simply omits the "reloading…" step.
   onReload?: () => void;
+  // Set when `fsPath` is the local CACHE COPY of a remote (`s3://`) location
+  // (apps/explorer/RemoteView.tsx). The viewer renders the cache file as usual
+  // — templates only ever see local paths — while the location the reader is
+  // at stays this address: the bar's merged search field stands down (it would
+  // show the cache folder as the path), the sidebar/rail/companion modes are
+  // off, and the file menus shrink to the address's own verbs
+  // (remoteFileMenu). Undefined for every local view.
+  remoteUrl?: string;
+  // An UNCACHED remote object (RemoteView.tsx, D1492): `fsPath` and
+  // `remoteUrl` are both its `s3://` address, `stat.templates` its modes, and
+  // this says which of them show the download card instead of a frame.
+  remoteContent?: RemoteContent;
 }
 
-export default function Preview({ fsPath, stat, onRenderedTitle, actionsInTopbar, onReload }: PreviewProps) {
+export default function Preview({
+  fsPath,
+  stat,
+  onRenderedTitle,
+  actionsInTopbar,
+  onReload,
+  remoteUrl,
+  remoteContent,
+}: PreviewProps) {
   // Flush relay for a host framing THIS document (the canvas node pane, two
   // frames up from the editor): the host asks this window, and the ask goes
   // down to the shown content frame's own `__fusedFlushEdits` (the code
@@ -2741,7 +3041,7 @@ export default function Preview({ fsPath, stat, onRenderedTitle, actionsInTopbar
   // same way regardless of which of those a file lands in — the field is a
   // property of the FILE, not of how its body happens to render.
   const ownsBar = !!actionsInTopbar && !stat.is_dir;
-  const fileSearchField = <FileSearchField active={ownsBar} fsPath={fsPath} />;
+  const fileSearchField = <FileSearchField active={ownsBar && !remoteUrl} fsPath={fsPath} />;
   // Turning down an app's AI-model overview means the app does not open: go
   // back to where the user came from. Inside a frame (a tab, a panel) there is
   // no history of the user's to walk, so the gate keeps its own placeholder.
@@ -2754,8 +3054,16 @@ export default function Preview({ fsPath, stat, onRenderedTitle, actionsInTopbar
   // a recognized sentinel (`_render`, `_listing`) is dropped. Filtering here
   // keeps the non-empty dispatch check honest (an all-unknown list falls back
   // instead of crashing TemplatePreview).
+  // A remote location's cache copy (`remoteUrl`) is untrusted bucket content:
+  // never offered as a running page (`_render`, which /render also refuses for
+  // the cache) — an html/svg/js object opens in its source/code view instead.
+  // Nor any companion (Claude, git): with no split they would come back as
+  // content modes aimed at the cache folder, not the `s3://` object. A file
+  // whose only views are companions falls back to FallbackPreview.
   const templates = stat.templates.filter(
-    (t) => t.path !== null || KNOWN_SENTINEL_MODES.has(t.mode)
+    (t) =>
+      (t.path !== null || KNOWN_SENTINEL_MODES.has(t.mode)) &&
+      !(remoteUrl && (t.mode === "_render" || isSidebarMode(t.mode)))
   );
   // Deferred gates (CT-12): resolve condition.py verdicts in the background.
   // The first unconditional template renders immediately — only an
@@ -2837,26 +3145,44 @@ export default function Preview({ fsPath, stat, onRenderedTitle, actionsInTopbar
       </>
     );
   }
+  // A bucket object is never an app folder, so it skips the AI-model gate.
+  const templatePreview = (
+    <TemplatePreview
+      fsPath={fsPath}
+      stat={stat}
+      templates={visible}
+      conditions={conditions}
+      onRenderedTitle={onRenderedTitle}
+      actionsInTopbar={actionsInTopbar}
+      remoteUrl={remoteUrl}
+      remoteContent={remoteContent}
+    />
+  );
   if (visible.length > 0)
     return (
       <>
         {fileSearchField}
-        <AppModelGate path={fsPath} onDecline={declineAppModels}>
-          <TemplatePreview
-            fsPath={fsPath}
-            stat={stat}
-            templates={visible}
-            conditions={conditions}
-            onRenderedTitle={onRenderedTitle}
-            actionsInTopbar={actionsInTopbar}
-          />
-        </AppModelGate>
+        {remoteUrl ? (
+          templatePreview
+        ) : (
+          <AppModelGate path={fsPath} onDecline={declineAppModels}>
+            {templatePreview}
+          </AppModelGate>
+        )}
       </>
     );
   return (
     <>
       {fileSearchField}
-      <FallbackPreview fsPath={fsPath} stat={stat} actionsInTopbar={actionsInTopbar} onReload={onReload} />
+      {remoteContent ? remoteContent.pane("") : (
+        <FallbackPreview
+          fsPath={fsPath}
+          stat={stat}
+          actionsInTopbar={actionsInTopbar}
+          onReload={onReload}
+          remoteUrl={remoteUrl}
+        />
+      )}
     </>
   );
 }

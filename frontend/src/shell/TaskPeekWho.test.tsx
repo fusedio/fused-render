@@ -43,11 +43,16 @@ function render(props: Parameters<typeof TaskPeekWho>[0]) {
 const said = (text: string) =>
   task({ last_message: { role: "user", text, at: 1 } } as Partial<Task>);
 
-test("the header prints the row's line — the newest message, first line only", () => {
+test("the header prints the row's title, not the newest message", () => {
   const v = render({ task: said("Renamed it.\nMore below") });
+  expect(v.text()).toContain("Rename the pane noun");
+  expect(v.text()).not.toContain("Renamed it.");
+});
+
+test("an empty title falls back to the newest message, first line only", () => {
+  const v = render({ task: task({ title: "", last_message: { role: "user", text: "Renamed it.\nMore below", at: 1 } } as Partial<Task>) });
   expect(v.text()).toContain("Renamed it.");
   expect(v.text()).not.toContain("More below");
-  expect(v.text()).not.toContain("Rename the pane noun");
 });
 
 test("nothing said yet: the task's own name, first line only, as the row does", () => {
@@ -171,13 +176,14 @@ async function saveUntouched(
   return { calls, v };
 }
 
-test("not renamed, headline is the last message: saving it unchanged pins it as the name", async () => {
+test("not renamed, headline is the base title: saving it unchanged pins it as the name", async () => {
   const t = task({
+    title: "Base title",
     title_source: "message",
     last_message: { role: "user", text: "Newest message", at: 1 },
   } as Partial<Task>);
   const { calls } = await saveUntouched(t);
-  expect(calls).toEqual(["Newest message"]);
+  expect(calls).toEqual(["Base title"]);
 });
 
 test("renamed: saving the stored name unchanged calls nothing", async () => {
@@ -213,7 +219,7 @@ test("the title input carries the server's 200-character cap", () => {
 test("an over-long prefill is shown and saved at 200 characters", async () => {
   const calls: string[] = [];
   const v = render({
-    task: said("x".repeat(300)),
+    task: task({ title: "x".repeat(300) }),
     rename: async (_k, t) => void calls.push(t),
   });
   act(() => {
@@ -240,4 +246,182 @@ test("an Enter that confirms an IME candidate does not save", async () => {
   }
   expect(calls).toEqual([]);
   expect(inputOf(v.r)).toBeDefined();
+});
+
+// ---- `part`: the halves a stacked head draws on its two rows -----------------
+
+const whoBox = (r: ReactTestRenderer) =>
+  r.root.findAll((n) => n.type === "div" && String(n.props.className).startsWith("task-side-peek-who"))[0];
+
+test("part: all is the block every caller has always drawn, class list included", () => {
+  const v = render({ task: task() });
+  expect(whoBox(v.r).props.className).toBe("task-side-peek-who");
+  expect(v.text()).toContain("T042");
+  expect(v.text()).toContain("Rename the pane noun");
+  expect(pencilOf(v.r)).toBeDefined();
+});
+
+test("part: marks is the ring and the number with no title and no pencil", () => {
+  const v = render({ task: task(), part: "marks" });
+  expect(whoBox(v.r).props.className).toBe("task-side-peek-who is-marks");
+  expect(v.text()).toContain("task-side-peek-status");
+  expect(v.text()).toContain("T042");
+  expect(v.text()).not.toContain("Rename the pane noun");
+  expect(pencilOf(v.r)).toBeUndefined();
+});
+
+test("part: title is the title and its pencil, none of the marks", () => {
+  const v = render({ task: task(), part: "title", titleId: "t-1", className: "host-seat" });
+  expect(whoBox(v.r).props.className).toBe("task-side-peek-who is-title host-seat");
+  expect(v.text()).not.toContain("task-side-peek-status");
+  expect(v.text()).not.toContain("T042");
+  expect(titleSpan(v.r)!.props.id).toBe("t-1");
+  expect(pencilOf(v.r)).toBeDefined();
+});
+
+// ---- a host's own pieces (the rail card on the shared head) ------------------
+
+test("a host's star stands in the star's seat, its overlay over the ring, its reply after the title", () => {
+  const v = render({
+    task: task(),
+    star: true,
+    starNode: createElement("button", { className: "host-star" }, "★"),
+    statusOverlay: createElement("button", { className: "host-archive" }, "a"),
+    subtitle: "the last reply",
+  });
+  const status = v.r.root.findAll((n) => n.type === "span" && n.props.className === "task-side-peek-status")[0]!;
+  expect(status.findAll((n) => n.props.className === "host-archive")).toHaveLength(1);
+  expect(v.r.root.findAll((n) => n.props.className === "host-star")).toHaveLength(1);
+  expect(v.text()).not.toContain("task-star");
+  const sub = v.r.root.findAll((n) => n.type === "span" && n.props.className === "task-head-subtitle")[0]!;
+  expect(sub.children).toEqual(["the last reply"]);
+  // The marks half has no title, so no reply either.
+  expect(render({ task: task(), part: "marks", subtitle: "x" }).text()).not.toContain("task-head-subtitle");
+});
+
+test("onRenamed is heard after a rename the server took — and not after a failed one", async () => {
+  let heard = 0;
+  const ok = render({ task: task(), rename: async () => {}, onRenamed: () => (heard += 1) });
+  act(() => titleSpan(ok.r).props.onDoubleClick());
+  edit(ok.r, "Better");
+  await act(async () => key(ok.r, "Enter"));
+  expect(heard).toBe(1);
+  const bad = render({
+    task: task(),
+    rename: async () => {
+      throw new Error("no");
+    },
+    onRenamed: () => (heard += 1),
+  });
+  act(() => titleSpan(bad.r).props.onDoubleClick());
+  edit(bad.r, "Worse");
+  await act(async () => key(bad.r, "Enter"));
+  expect(heard).toBe(1);
+});
+
+test("while the title is being renamed, the input carries the dialog's title id (no heading role)", () => {
+  const v = render({ task: task(), titleId: "dlg-t" });
+  expect(titleSpan(v.r)!.props.id).toBe("dlg-t");
+  act(() => titleSpan(v.r).props.onDoubleClick());
+  const input = inputOf(v.r);
+  expect(input.props.id).toBe("dlg-t");
+  expect(input.props.role).toBeUndefined();
+  expect(input.props["aria-label"]).toBe("Task title");
+});
+
+test("a host's ring facts reach the ring: the unread mark, the held draft, a failure", () => {
+  const { StatusIcon } = require("./ScheduleTaskViews") as typeof import("./ScheduleTaskViews");
+  const ringOf = (props: Record<string, unknown>) =>
+    render({ task: task(), ...props }).r.root.findAllByType(StatusIcon)[0]!.props as Record<string, unknown>;
+  // Nothing passed: the ring is the listing row's, as before.
+  const plain = ringOf({});
+  expect(plain.unread).toBeUndefined();
+  expect(plain.draftHeld).toBeUndefined();
+  const marked = ringOf({ ring: { unread: true, draftHeld: true, failed: true } });
+  expect(marked.unread).toBe(true);
+  expect(marked.draftHeld).toBe(true);
+  expect(marked.failed).toBe(true);
+  // A live turn still outranks a stale failure, the block's own rule.
+  expect(ringOf({ ring: { failed: true }, running: true }).failed).toBe(false);
+});
+
+test("idAt: a stacked head's number leads the title half; the marks half draws none (2026-11-16)", () => {
+  const overlay = createElement("button", { className: "host-archive" });
+  // One row: the marks hold the id slot, the title half none.
+  const marks = render({ task: task(), part: "marks", idOverlay: overlay });
+  expect(marks.text()).toContain("task-head-idslot");
+  expect(render({ task: task(), part: "title", idOverlay: overlay }).text()).not.toContain("T042");
+  // Stacked: the other way round, the number before the title.
+  expect(render({ task: task(), part: "marks", idOverlay: overlay, idAt: "title" }).text()).not.toContain("T042");
+  const title = render({ task: task(), part: "title", idOverlay: overlay, idAt: "title" }).text();
+  expect(title).toContain("host-archive");
+  expect(title.indexOf("T042")).toBeGreaterThan(-1);
+  expect(title.indexOf("T042")).toBeLessThan(title.indexOf("Rename the pane noun"));
+});
+
+test("picking: the icon picker open in the other half keeps the stacked id slot's Archive away", () => {
+  const overlay = createElement("button", { className: "host-archive" });
+  const v = render({ task: task(), part: "title", idOverlay: overlay, idAt: "title", picking: true });
+  expect(v.text()).toContain("T042");
+  expect(v.text()).not.toContain("host-archive");
+});
+
+test("the pencil stands over the title's end only where no room is left after it (`is-rename-over`, 2026-11-16)", () => {
+  const whoOf = (r: ReactTestRenderer) =>
+    r.root.findAll(
+      (n) => n.type === "div" && String(n.props.className ?? "").split(" ").includes("task-side-peek-who"),
+    )[0]!;
+  // The seat's right edge at 300px, the title ending `free` px before it.
+  const pointerOn = (free: number) => ({
+    currentTarget: {
+      getBoundingClientRect: () => ({ right: 300 }),
+      querySelector: () => ({ getBoundingClientRect: () => ({ right: 300 - free }) }),
+    },
+  });
+  const v = render({ task: task(), part: "title" });
+  // Read when the pointer comes onto the title half — never before.
+  expect(whoOf(v.r).props.className).not.toContain("is-rename-over");
+  // Under 26px (the 8px gap, the 16px pencil, a hair): over the title's end.
+  act(() => whoOf(v.r).props.onMouseEnter(pointerOn(10)));
+  expect(whoOf(v.r).props.className).toContain("is-rename-over");
+  act(() => whoOf(v.r).props.onMouseEnter(pointerOn(25)));
+  expect(whoOf(v.r).props.className).toContain("is-rename-over");
+  // Room for it: next to the title.
+  act(() => whoOf(v.r).props.onMouseEnter(pointerOn(26)));
+  expect(whoOf(v.r).props.className).not.toContain("is-rename-over");
+  // A node with nothing to measure (a test's stand-in) or no title on
+  // screen (mid-rename) changes nothing.
+  act(() => whoOf(v.r).props.onMouseEnter(pointerOn(0)));
+  act(() => whoOf(v.r).props.onMouseEnter({ currentTarget: {} }));
+  act(() =>
+    whoOf(v.r).props.onMouseEnter({
+      currentTarget: { getBoundingClientRect: () => ({ right: 300 }), querySelector: () => null },
+    }),
+  );
+  expect(whoOf(v.r).props.className).toContain("is-rename-over");
+  // Only the shared head's title half measures: the marks half and the
+  // block every older caller draws hear no pointer.
+  expect(whoOf(render({ task: task(), part: "marks" }).r).props.onMouseEnter).toBeUndefined();
+  expect(whoOf(render({ task: task() }).r).props.onMouseEnter).toBeUndefined();
+});
+
+test("the pencil in the shared head's title half is skipped by the fit ladder (it overlays the title's end)", () => {
+  const started = task({ renamed: false } as Partial<Task>);
+  const title = render({ task: started, part: "title" }).text();
+  if (title.includes("task-side-peek-rename")) expect(title).toContain("data-fit-skip");
+  // The block every older caller draws charges its pencil as before.
+  expect(render({ task: started }).text()).not.toContain("data-fit-skip");
+});
+
+// The status seat's instant caption says the ring's own word (Bugbot on
+// #2344: it read the lane's raw key, `draft`, once the ring's native tooltip
+// was silenced under it).
+test("the ring's word: the lane's label, \"Blocked\" for a red ring off a card, \"Background\" for the blue one", async () => {
+  const { statusRingWord } = await import("./ScheduleTaskViews");
+  expect(statusRingWord({ status: "draft" })).toBe("Draft");
+  expect(statusRingWord({ status: "done" })).toBe("Done");
+  expect(statusRingWord({ status: "done", failed: true })).toBe("Blocked");
+  // Parked on a card, with an earlier run's flag still set: still waiting.
+  expect(statusRingWord({ status: "needs_attention", failed: true })).not.toBe("Blocked");
+  expect(statusRingWord({ status: "done", background: true })).toBe("Background");
 });

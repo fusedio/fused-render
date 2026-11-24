@@ -7,6 +7,7 @@ detached /bin/sh child that outlives this process (a dying app cannot `open`
 its own successor), asserted at the Popen boundary — nothing real is spawned.
 """
 import os
+import shlex
 import subprocess
 import sys
 
@@ -77,6 +78,56 @@ def test_relauncher_quotes_a_bundle_path_with_spaces():
                              popen=lambda *a, **k: calls.append((a, k)))
     script = calls[0][0][0][2]
     assert "'/Applications/My Apps/FusedRender.app'" in script
+
+
+def test_relauncher_falls_back_to_the_renamed_bundle_only_for_a_legacy_name():
+    """The quit's update rung may move `FusedRender.app` to `Fused Render.app`
+    (update/mac.py `_rename_legacy_bundle`); the relauncher then opens the
+    new path. A bundle already under the current name needs no fallback."""
+    from fused_render.update import mac as mac_update
+
+    legacy = _script_for(1)
+    renamed = f"/Applications/{mac_update._BUNDLE_NAME}.app"
+    assert f'[ ! -d "$bundle" ] && [ -d {shlex.quote(renamed)} ]' in legacy
+    assert f"bundle={shlex.quote(renamed)};" in legacy
+    assert legacy.index("bundle moved to") < legacy.index('"$opener" -a "$bundle"')
+
+    calls = []
+    app_mod.spawn_relauncher(renamed, 1, popen=lambda *a, **k: calls.append(a))
+    assert "bundle moved to" not in calls[0][0][2]
+
+
+@pytest.mark.skipif(not all(os.path.exists(p) for p in ("/bin/sh", "/bin/date", "/bin/kill", "/bin/sleep")),
+                    reason="the relauncher shell needs /bin/date, /bin/kill and /bin/sleep")
+def test_relauncher_opens_the_renamed_bundle_when_the_old_path_is_gone(monkeypatch, tmp_path):
+    """The real shell: the legacy path is gone, the renamed bundle exists, so
+    the one `open` names the renamed bundle."""
+    import subprocess
+    import time
+    from fused_render.update import mac as mac_update
+
+    _fast_clock(monkeypatch, deadline=5)
+    renamed = tmp_path / f"{mac_update._BUNDLE_NAME}.app"
+    renamed.mkdir()
+    opens = tmp_path / "opens.txt"
+    pidfile = tmp_path / "server.pid"
+    opener = tmp_path / "opener.sh"
+    # The stub "launch" writes the pidfile, so the shell sees a successor at once.
+    opener.write_text(f'#!/bin/sh\nprintf "%s\\n" "$2" >> {shlex.quote(str(opens))}\n'
+                      f'echo 1 > {shlex.quote(str(pidfile))}\n')
+    opener.chmod(0o755)
+    log = tmp_path / "relaunch.log"
+
+    victim = subprocess.Popen(["/bin/sh", "-c", "sleep 0.2"])
+    app_mod.spawn_relauncher(str(tmp_path / "FusedRender.app"), victim.pid, log=str(log),
+                             pidfile=str(pidfile), opener=str(opener), alive_probe="false")
+    victim.wait()
+    deadline = time.monotonic() + 8
+    while time.monotonic() < deadline and not (log.exists() and "successor is up" in log.read_text()):
+        time.sleep(0.1)
+
+    assert opens.read_text().splitlines() == [str(renamed)]
+    assert "bundle moved to" in log.read_text()
 
 
 # ---- what the relauncher does AFTER our pid dies (real-app test, PR #1214) --

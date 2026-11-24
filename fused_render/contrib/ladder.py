@@ -2,10 +2,20 @@
 
 `status(app_dir)` is ONE composition read for an app's Community tab and
 Share sheet: which rung the app stands on (1 On this Mac, 2 On GitHub, 3 In
-the Marketplace), whose app it is, the GitHub facts the rung-1 checklist and
-the rung-2 strip draw, the Marketplace listing (§18.6, the ListingStrip's
-own answer), the App Doctor verdict the listing gate applies, and the flags.
-Nothing new is decided here: kind/mine come from the record (`store`, the
+the Marketplace), whose app it is (`role`/`reason`, §21), the GitHub facts
+the rung-1 checklist and the rung-2 strip draw, the Marketplace listing
+(§18.6, the ListingStrip's own answer), the App Doctor verdict the listing
+gate applies, and the flags.
+
+THE ROLE IS DERIVED HERE, ONCE (`role_of`, §21): owner | remixer |
+collaborator | contributor | reader | trier | unknown (+ `reason` identity
+| checking | no-record), from the record and the cached identity, no
+network. `actions.facts` and `GET /api/contrib/app` read the same function
+(`role_for`). READ SIDE ONLY: git decisions read `classify.kind_of` and
+nothing else (§16.0 P1). `mine` (= role owner/remixer) stays one release
+as an alias.
+
+Nothing new is decided here: kind/role come from the record (`store`, the
 ownership rule `classify` applies), the link from `share_app`, the listing
 from `listing.view` + `actions_listing.decide`, the doctor from
 `listing.doctor_blockers` — the same gate Publish refuses on.
@@ -270,39 +280,135 @@ def _doctor(app_dir: str, root: str | None, unpushed: int = 0, *, fresh: bool = 
 # ------------------------------------------------------------------- status
 
 
-def _who(app_dir: str, root: str | None, origin: str | None, login: str | None,
-         *, ask: bool = True) -> dict:
-    """`{kind, mine, repo, remix_of, pending, recorded}` from the record
-    (`recorded`: the record's own repo) — or, for a folder with no record
-    yet, the ownership rule applied to what is known without asking GitHub
-    (`pending: True` while that is not enough). `ask`: queue the org-role
-    lookup that settles it (off with every Community switch off)."""
+#: The app roles (§21), one string each. `owner`/`remixer` are "mine".
+ROLES = ("owner", "remixer", "collaborator", "contributor", "reader", "trier", "unknown")
+#: Why a role is `unknown` (§21): no GitHub login known; the record is
+#: missing or unchecked and classification is queued/running; classify
+#: refuses to invent a record (a `fused.kind=marketplace` folder without one).
+REASONS = ("identity", "checking", "no-record")
+MINE_ROLES = ("owner", "remixer")
+
+
+def _role(role: str, reason: str | None = None, *, kind, repo, remix_of=None,
+          recorded=None, mine: bool | None = None) -> dict:
+    """One `role_of` answer. `mine` defaults to the alias (`role in
+    MINE_ROLES`); `pending` = unknown and something is settling it — a
+    `no-record` folder has nothing that will (classify refuses it), so it
+    is not pending."""
+    return {"role": role, "reason": reason if role == "unknown" else None, "kind": kind,
+            "mine": role in MINE_ROLES if mine is None else mine, "repo": repo,
+            "remix_of": remix_of, "pending": role == "unknown" and reason != "no-record",
+            "recorded": recorded}
+
+
+def role_of(app_dir: str, root: str | None, origin: str | None, login: str | None,
+            *, ask: bool = True) -> dict:
+    """The app's role (§21) — `{role, reason, kind, mine, repo, remix_of,
+    pending, recorded}` — derived ONCE here, read side only: git decisions
+    read `classify.kind_of` and nothing else (§16.0 P1), so nothing that
+    moves or pushes ever branches on `role`. From the record (`recorded`:
+    its own repo) — or, for a folder with no record yet, the ownership rule
+    applied to what is known without asking GitHub (`_owns_cached`). No
+    network: `ask` only QUEUES the org-role lookup that settles an unknown
+    owner (off with every Community switch off).
+
+    `root`: the folder's own repo root (`follow.is_repo_root`) or None;
+    `origin`: its GitHub `owner/name` (`classify._origin_repo`) or None — a
+    non-GitHub origin is None, so such a folder is the user's own."""
     from fused_render.contrib import classify, flags, store
 
     rec = store.get(app_dir)
     if rec is None:
+        if root is not None and classify._local_config(root, classify.KIND_CONFIG) \
+                == "marketplace":
+            # `classify.ensure` refuses to invent a record for a marketplace
+            # copy's duplicate (M4): nothing will classify it, so not pending.
+            return _role("unknown", "no-record", kind=None, repo=origin)
         # The background classification a folder with no record gets (A1 on,
         # workspace folders only — `_kick`'s rule; nothing new here).
         if flags.sources():
             classify.kind_of(app_dir, kick=True)
         if not origin:
-            return {"kind": "own", "mine": True, "repo": None, "remix_of": None,
-                    "pending": False, "recorded": None}
+            return _role("owner", kind="own", repo=None)
         owned = _owns_cached(_owner_of(origin), login)
         if owned is None and login and ask:
             _ask_owner(_owner_of(origin))
-        return {"kind": None if owned is None else ("own" if owned else "github"),
-                "mine": bool(owned), "repo": origin, "remix_of": None,
-                "pending": owned is None, "recorded": None}
+        if owned is None:
+            return _role("unknown", "checking" if login else "identity", kind=None,
+                         repo=origin)
+        return _role("owner" if owned else "contributor", kind="own" if owned else "github",
+                     repo=origin)
     kind = rec.get("kind")
-    mine = kind == "own" or (kind == "scratch" and not rec.get("try_of"))
-    pending = kind == "github" and not rec.get("owner_checked")
-    if mine and classify._needs_rebind(app_dir, rec):
+    recorded = rec.get("repo")
+    remix_of = rec.get("remix_of")
+    if kind == "own":
+        role = "remixer" if remix_of else "owner"
+    elif kind == "scratch":
+        role = "trier" if rec.get("try_of") else "owner"  # untried scratch = legacy own
+    elif kind == "github":
+        if not rec.get("owner_checked"):
+            return _role("unknown", "checking" if login else "identity", kind=kind,
+                         repo=recorded, remix_of=remix_of, recorded=recorded)
+        # `can_push` is noted by `classify._with_push_rights` for a checked
+        # copy, beside the login it was asked for: another account signed in
+        # since is a contributor until its own answer lands (a record from
+        # before the login was stored — no `can_push_login` — is trusted).
+        asked_for = rec.get("can_push_login")
+        same = not asked_for or (login or "").lower() == str(asked_for).lower()
+        role = "collaborator" if rec.get("can_push") is True and same else "contributor"
+    elif kind == "marketplace":
+        role = "reader"
+    else:
+        return _role("unknown", "checking", kind=kind, repo=recorded, remix_of=remix_of,
+                     recorded=recorded)
+    if role in MINE_ROLES and classify._needs_rebind(app_dir, rec):
+        # §19.2: the origin on disk names a repo the record does not yet —
+        # the rebind may reclassify (someone else's origin → github). The
+        # role stays the record's claim for that short window, `pending`
+        # says it is being re-read: the ladder keeps drawing rung 2 right
+        # after a Publish to GitHub instead of blanking ("must not lag",
+        # module doc), and the page never flips to the unknown card for a
+        # folder it was drawing as the user's a moment ago.
         classify.rebind_in_background(app_dir)
-        pending = True
-    repo = (rec.get("repo") or origin) if mine else rec.get("repo")
-    return {"kind": kind, "mine": mine, "repo": repo, "remix_of": rec.get("remix_of"),
-            "pending": pending, "recorded": rec.get("repo")}
+        return {**_role(role, kind=kind, repo=recorded or origin, remix_of=remix_of,
+                        recorded=recorded), "pending": True}
+    repo = (recorded or origin) if role in MINE_ROLES else recorded
+    return _role(role, kind=kind, repo=repo, remix_of=remix_of, recorded=recorded)
+
+
+def _login(ident: dict | None = None) -> str | None:
+    """The GitHub login from cached reads only — never a network call.
+    `refresh.github_identity`'s snapshot when this machine has one (a
+    signed-out snapshot answers None: `gh.cached_identity` may still name
+    the account that just signed out, and an unrecorded folder under that
+    name must not read as the user's); `gh.cached_identity` only while the
+    snapshot is still `checking`."""
+    from fused_render.contrib import gh, refresh
+
+    if ident is None:
+        ident = refresh.github_identity()
+    ident = ident or {}
+    if ident.get("login"):
+        return ident["login"]
+    if ident.get("checking"):
+        return (gh.cached_identity() or {}).get("login")
+    return None
+
+
+def role_for(app_dir: str, *, ask: bool = True) -> dict:
+    """`role_of` for `app_dir` with the folder's facts read here (local git
+    + cached identity, as `status` reads them) — for callers that do not
+    already have them (`actions.facts`, `GET /api/contrib/app`). Never
+    raises: a failure is `unknown`/`checking`."""
+    from fused_render.contrib import classify, follow, store
+
+    try:
+        app_dir = store.key(app_dir)
+        root = follow.is_repo_root(app_dir)
+        return role_of(app_dir, root, classify._origin_repo(root), _login(), ask=ask)
+    except Exception:  # noqa: BLE001 — a read helper never fails its caller
+        logger.warning("ladder: role failed for %s", app_dir, exc_info=True)
+        return _role("unknown", "checking", kind=None, repo=None)
 
 
 def _blocked(app_dir: str, root: str | None, top: str | None) -> str | None:
@@ -347,11 +453,7 @@ def status(app_dir: str, *, fresh: bool = False) -> dict:
     app_dir = store.key(app_dir)
     fl = _flags()
     ident = refresh.github_identity()
-    login = ident.get("login")
-    if not login:
-        from fused_render.contrib import gh
-
-        login = (gh.cached_identity() or {}).get("login")
+    login = _login(ident)
     root = follow.is_repo_root(app_dir)
     top = root or gu.repo_root(app_dir)
     origin = classify._origin_repo(root)
@@ -362,13 +464,14 @@ def status(app_dir: str, *, fresh: bool = False) -> dict:
     # feeds the Marketplace listing gate, so it follows that switch as
     # `listing` does.
     community = bool(fl["marketplace"] or fl["sources"])
-    who = _who(app_dir, root, origin, login, ask=community)
+    who = role_of(app_dir, root, origin, login, ask=community)
     mine = who["mine"]
     github = {"installed": _gh_installed(), "signed_in": bool(ident.get("signed_in")),
               "checking": bool(ident.get("checking")), "login": login,
               "repo": who["repo"], "visibility": None, "unpushed": 0, "link": None,
               "blocked": None}
-    out = {"ok": True, "rung": None, "kind": who["kind"], "mine": mine,
+    out = {"ok": True, "rung": None, "role": who["role"], "reason": who["reason"],
+           "kind": who["kind"], "mine": mine,
            "pending": who["pending"], "remix_of": who["remix_of"], "github": github,
            "listing": None, "doctor": {"clear": None, "failing": None}, "flags": fl}
     if not mine:

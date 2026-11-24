@@ -13,6 +13,7 @@ import { useState } from "react";
 import { TroubleCard } from "@platform/ui/TroubleCard";
 import { navigateUrl } from "@platform/lib/router";
 import { AGENT_PREFS_URL } from "@platform/lib/agent-backends";
+import { openTerminal, useCanRunInTerminal } from "@platform/lib/terminalDockStore";
 
 import { limitExplain } from "../protocol/quota";
 import { useAgent } from "./agent-context";
@@ -122,6 +123,10 @@ export interface TroubleViewProps {
    *  is still up — false once the user cancels it, so the card stops promising
    *  a follow-up that will not come. Absent = trust the flag. */
   comebackPending?: boolean;
+  /** The newest error row above this card already says `trouble.message`: the
+   *  card keeps its title, explanation and actions but does not print the
+   *  message a second time. */
+  messageShownAbove?: boolean;
 }
 
 /** `SAID` with the AGENT named (D18): "Claude Code" is the CLI's own name and
@@ -132,6 +137,22 @@ const AGENT_WORDS: Record<string, { cli: string; agent: string }> = {
   copilot: { cli: "Copilot CLI", agent: "Copilot" },
   codex: { cli: "Codex CLI", agent: "Codex" },
   gemini: { cli: "Gemini CLI", agent: "Gemini" },
+  opencode: { cli: "OpenCode", agent: "OpenCode" },
+  cursor: { cli: "Cursor CLI", agent: "Cursor" },
+};
+
+/** The one command that signs each agent's CLI back in — what the `login`
+ *  card's button runs in the terminal drawer. Each is the CLI's own
+ *  non-TUI sign-in (Claude's opens the browser and finishes on its own
+ *  loopback callback), so the drawer shows it working and nothing has to be
+ *  typed. Gemini has no such subcommand: its card keeps the Preferences
+ *  route. */
+export const SIGN_IN_COMMAND: Record<string, string> = {
+  claude: "claude auth login",
+  copilot: "copilot login",
+  codex: "codex login",
+  opencode: "opencode auth login",
+  cursor: "cursor-agent login",
 };
 
 function saidFor(kind: TroubleKind, backend: string): { title: string; explain: string } | undefined {
@@ -149,8 +170,10 @@ export function TroubleView({
   retryLabel,
   said: saidProp,
   comebackPending,
+  messageShownAbove,
 }: TroubleViewProps) {
   const agent = useAgent();
+  const canRun = useCanRunInTerminal();
   // A `disabled` card names the agent the REFUSAL named, which is this chat's
   // (the context) unless the trouble says otherwise.
   const backend = trouble.kind === "disabled" ? trouble.backend || agent.backend : agent.backend;
@@ -194,6 +217,7 @@ export function TroubleView({
            install box below. */
         kind={platformKindOf(trouble.kind)}
         backend={backend}
+        quoteError={!messageShownAbove}
         {...(said ? { title: said.title } : {})}
         {...(explain ? { explain } : {})}
         {...(onRetry ? { onRetry } : {})}
@@ -205,6 +229,26 @@ export function TroubleView({
             the card prints — so it gets its own button rather than being
             reworded into the report. */}
         {trouble.detail ? <CopyDetail text={trouble.detail} /> : null}
+        {/* THE FIX, ONE PRESS AWAY. A signed-out CLI is fixed by one command,
+            and the message used to only name it. Where the terminal drawer
+            exists the button opens it and RUNS the command (the command is
+            ours, not model text, so there is nothing to read first); where it
+            does not, or the agent has no such command, it opens the Agents
+            section, whose Sign in button does the same job. */}
+        {trouble.kind === "login" ? (
+          <button
+            type="button"
+            className="version-panel-link"
+            data-testid="trouble-sign-in"
+            onClick={() => {
+              const command = SIGN_IN_COMMAND[backend];
+              if (canRun && command) openTerminal({ command, execute: true });
+              else navigateUrl(AGENT_PREFS_URL);
+            }}
+          >
+            Sign in
+          </button>
+        ) : null}
       </TroubleCard>
       {/* ONE VERBATIM BLOCK PER CARD, which is all T:13676-13679 draws. The card
           above already prints a `.trouble-error` (the CLI's own words), so a
@@ -259,8 +303,39 @@ function CopyDetail({ text, label = "Copy the full output" }: { text: string; la
  *  saying most of this in the right shape. */
 export function TroubleMessage({ text }: { text: string }) {
   const lines = splitTroubleMessage(text);
+  const agent = useAgent();
+  const canRun = useCanRunInTerminal();
   if (!lines.action && !lines.help && !lines.raw) {
     return <>{linkifyTrouble(lines.lead)}</>;
+  }
+  // SIGNED OUT, AND THE FIX IS ONE COMMAND: say what happened and offer the
+  // button that runs it in the terminal drawer, instead of a sentence telling
+  // the reader where to go and type it. `-login` is the help anchor
+  // `_account_error`'s login branch (and only it) appends. Without the drawer
+  // or a command for this agent, the instruction lines below stand.
+  const signIn = canRun && /-login$/.test(lines.help ?? "") ? SIGN_IN_COMMAND[agent.backend] : undefined;
+  if (signIn) {
+    return (
+      <>
+        <div className="err-line">{linkifyTrouble(lines.lead)}</div>
+        <div className="err-line">
+          <button
+            type="button"
+            className="err-cta"
+            data-testid="err-sign-in"
+            title={`Runs ${signIn} in the terminal`}
+            onClick={() => openTerminal({ command: signIn, execute: true })}
+          >
+            Sign in
+          </button>
+        </div>
+        {lines.raw ? (
+          <div className="err-line err-raw" title={lines.raw}>
+            {lines.raw}
+          </div>
+        ) : null}
+      </>
+    );
   }
   return (
     <>

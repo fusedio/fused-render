@@ -16,6 +16,8 @@ import { cn } from "@platform/lib/utils";
 
 import { chipHint, chipWhen } from "./run-when";
 import { useMinuteTick } from "./useMinuteTick";
+import { expertToolLabel } from "../experts/tool-labels";
+import { canvasToolLabel } from "../experts/view-card";
 
 import {
   SIDECAR_KEYS,
@@ -36,6 +38,7 @@ import {
   toolStatusGlyph,
 } from "../protocol/summaries";
 import { COPY_RESET_MS } from "../protocol/markdown";
+import { stripUnansweredMarker } from "../protocol/unanswered";
 import { useCanRunInTerminal, openTerminal } from "@platform/lib/terminalDockStore";
 import { isAgentTool, subagentChipModel, taskFor, type SubagentChipModel } from "../protocol/tasks";
 import type { Segment, ToolSegment } from "../protocol/types";
@@ -44,6 +47,7 @@ import { MarkdownView } from "./MarkdownView";
 import { activateOnKey } from "./planAffordance";
 import { PlanModal } from "./PlanModal";
 import { useFilePreview } from "./filePreview";
+import { DeniedLine } from "./DeniedLine";
 import { useTaskIndex } from "./tasksContext";
 
 import "../styles/tasks.css";
@@ -229,7 +233,7 @@ function ChipBody({
   const inp = asRecord(seg.input);
   // The host sidecars (`_acp`, `_codex`) are plumbing, never a leftover.
   const extra = leftoverInput(inp, [...usedKeys(seg, inp), ...SIDECAR_KEYS]);
-  const out = chipOutput(seg.output);
+  const out = chipOutput(stripUnansweredMarker(seg.output));
   const children = Array.isArray(seg.children) ? seg.children : [];
   return (
     <>
@@ -485,7 +489,11 @@ function ChipHeaderView({
   status,
   model,
 }: ChipHeaderProps & { model: SubagentChipModel }) {
-  const pretty = seg.orphan ? model.title : prettyToolName(raw);
+  const pretty = seg.orphan
+    ? model.title
+    : (expertToolLabel(raw, seg.input?.expert, seg.status !== "running") ??
+      canvasToolLabel(raw, seg.input, seg.status !== "running") ??
+      prettyToolName(raw));
   // A COPILOT TOOL WE HAVE NO NAME FOR arrives under its free-text ACP title
   // (D14) and draws as a plain chip; its ACP `kind` ("execute", "edit",
   // "fetch", …) is the one classifier it has, so it rides as the chip's hint
@@ -578,6 +586,7 @@ export const ToolChip = memo(function ToolChip({ seg, cardKey, cwd, nested }: To
         </span>
       ) : null}
       <ChipHeader seg={seg} raw={raw} linked={linked} parts={parts} full={full} status={status} />
+      {seg.denied ? <DeniedLine seg={seg} /> : null}
       <CollapsibleContent className="chip-body">
         <ChipBody seg={seg} cwd={cwd} {...(nested ? { nested } : {})} />
       </CollapsibleContent>

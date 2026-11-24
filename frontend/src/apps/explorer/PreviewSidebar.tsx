@@ -33,6 +33,7 @@
 // the portal (preview-side-slot.ts). Rendered as a FRAGMENT of two flex items (the
 // divider and the column) into a `display: contents` slot, so both end up direct
 // flex children of the split container.
+import type { PanePhase } from "@platform/lib/pane-presence";
 import { useEffect, useLayoutEffect, useRef, useState, type ReactNode } from "react";
 import { modeTitle } from "@platform/lib/mode-name";
 import { SideCloseButton, SideTabs } from "@apps/explorer/SideChrome";
@@ -58,6 +59,7 @@ import {
   subscribeSideWidth,
 } from "@apps/explorer/lib/side-store";
 import { committedWidth, resizeWidth } from "@platform/lib/panel-drag";
+import { railInset } from "@shell/claude-rail/ClaudeRail";
 
 // The split container's class, and the drag's frame of reference. Looked up from
 // the divider with `closest` rather than handed down as a ref: the two live in
@@ -120,6 +122,7 @@ export default function PreviewSidebar({
   onSelect,
   onClose: closeSide,
   chat,
+  phase = "open",
 }: {
   // The switcher's whole list: every companion, in SIDEBAR_MODES order, the ones
   // this file cannot show disabled and carrying their reason.
@@ -143,6 +146,9 @@ export default function PreviewSidebar({
    * goes.
    */
   chat?: ReactNode;
+  /** The slide in/out (platform/lib/pane-presence): the caller holds this
+   *  column mounted through its exit and says which way it is moving. */
+  phase?: PanePhase;
 }) {
   // Full screen (lib/side-maximized-store). Closing the column always drops it,
   // so a later reopen is not unexpectedly full screen.
@@ -213,7 +219,9 @@ export default function PreviewSidebar({
     const el = splitEl();
     if (!el) return;
     const clamp = () => {
-      const containerW = el.getBoundingClientRect().width;
+      // Less a rail standing past the column (favourites on, rail-peek-lib
+      // `railInset`): the content column's floor is measured beside it.
+      const containerW = el.getBoundingClientRect().width - railInset(el);
       setWidth((w) => clampSideWidth(w, getSideWidth(), containerW));
     };
     clamp();
@@ -243,7 +251,8 @@ export default function PreviewSidebar({
   useEffect(() => subscribeSideWidth(() => {
     const w = getSideWidth();
     if (w === null) return;
-    const containerW = splitEl()?.getBoundingClientRect().width ?? 0;
+    const el = splitEl();
+    const containerW = el ? el.getBoundingClientRect().width - railInset(el) : 0;
     const clamped = containerW > 0 ? clampSideWidth(w, w, containerW) : w;
     setWidth((prev) => (prev === clamped ? prev : clamped));
   }), []);
@@ -275,15 +284,20 @@ export default function PreviewSidebar({
     let closed = false;
     const onMove = (ev: PointerEvent) => {
       if (closed) return;
-      const rect = splitEl()?.getBoundingClientRect();
+      const el = splitEl();
+      const rect = el?.getBoundingClientRect();
       if (!rect) return;
-      const max = rect.width - CONTENT_MIN_W;
+      // Less the rail standing past the column (favourites on, rail-peek-lib
+      // `railInset`): the column's edge is the rail's, not the split's, and
+      // the content column's floor is measured beside the rail.
+      const inset = railInset(el);
+      const max = rect.width - inset - CONTENT_MIN_W;
       if (max < MIN_W) return; // container too narrow to express a split
       // IMPLIED WIDTH — how wide the pointer is asking this column to be. A
       // RIGHT-hand panel grows as the cursor moves LEFT, which is the whole of
       // the mirroring; `resizeWidth` speaks only in widths and never learns
       // which edge of the window it is on (platform/lib/panel-drag).
-      const next = resizeWidth(rect.right - ev.clientX, MIN_W, max);
+      const next = resizeWidth(rect.right - inset - ev.clientX, MIN_W, max);
       if (next === null) {
         // Dragged clean through the floor: the gesture means SHUT, and it hands
         // off to the same `_side=off` the header's chevron writes. Deliberately
@@ -317,7 +331,7 @@ export default function PreviewSidebar({
 
   return (
     <>
-      {!maximized && (
+      {!maximized && phase !== "leaving" && (
         <div
           className="preview-side-divider"
           ref={dividerRef}
@@ -327,8 +341,11 @@ export default function PreviewSidebar({
         />
       )}
       <aside
-        className={maximized ? "preview-side maximized" : "preview-side"}
-        style={{ flexBasis: width }}
+        className={
+          (maximized ? "preview-side maximized" : "preview-side") +
+          (!maximized && phase !== "open" ? " is-" + phase : "")
+        }
+        style={{ flexBasis: width, ["--pane-w" as string]: width + "px" }}
         aria-label={modeTitle(active) + " sidebar"}
       >
         <div className="preview-side-header">

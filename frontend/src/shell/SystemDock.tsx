@@ -134,8 +134,8 @@ export function SystemCardView({
         tone="on"
         open={!collapsed}
         pinned={pinned}
-        title={collapsed ? "Show what fused-render is using" : "Hide"}
-        ariaLabel={`fused-render is using ${label}${
+        title={collapsed ? "Show what Fused Render is using" : "Hide"}
+        ariaLabel={`Fused Render is using ${label}${
           alert?.headline ? ` · ${alert.headline}` : ""
         }`}
         onClick={onToggle}
@@ -162,13 +162,13 @@ export function SystemCardView({
           {stats.length === 0 && (
             <div className="dl-section">
               <div className="dl-section-head">
-                fused-render CPU · last minute{" "}
+                Fused Render CPU · last minute{" "}
                 <span className="dl-section-count">{formatCpu(data.totals.cpuPct)}</span>
               </div>
               <div className="sys-spark-wrap">
                 <Sparkline
                   points={data.history.map((h) => ({ t: h.t, v: h.appCpuPct }))}
-                  label="fused-render CPU, last 60 seconds"
+                  label="Fused Render CPU, last 60 seconds"
                 />
               </div>
             </div>

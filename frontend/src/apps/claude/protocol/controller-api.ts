@@ -9,7 +9,6 @@
 import type {
   Activity,
   AppStateRow,
-  CanvasShotRow,
   ContextUsage,
   Decision,
   DecisionScope,
@@ -47,6 +46,15 @@ export interface UserTurn {
   appState?: true;
   uuid?: string;
   /**
+   * `SendOptions.clientId` of the send that drew this bubble — the same id the
+   * server stamps on the run's inbox entry (`InboxMessage.uuid`). It is how the
+   * queue strip knows an inbox entry is THIS bubble, already on screen, and not
+   * a second message with the same words (`protocol/queued-lines`). Only on the
+   * message that OPENS a turn (`sendMessage`): a follow-up's bubble lives in the
+   * strip and is matched there as it always was. A restored turn has none.
+   */
+  clientId?: string;
+  /**
    * WHEN this message was sent, epoch SECONDS. A restored turn takes it from
    * the transcript record's `timestamp` (agent.py `_row_ts`); a live send is
    * stamped by the controller the moment the bubble goes up. Optional on both
@@ -70,12 +78,19 @@ export interface UserTurn {
   /**
    * THIS PAGE HAS NOT HANDED THE LINE TO THE RUN YET (the page outbox,
    * `ui/outbox.ts`). `"queued"` — typed while a send was in flight, waiting
-   * its turn; `"notSent"` — handed back (a failed send, an interrupt) and
-   * waiting for the reader to decide. Drawn as a small grey tag on the bubble,
-   * the way Claude Code's terminal greys a queued line. Comes off when the real
-   * send adopts the row (`addUser` rebuilds the turn without it).
+   * its turn; `"held"` — Ctrl+Enter: waiting until the session is done;
+   * `"notSent"` — handed back (a failed send, an interrupt) and
+   * waiting for the reader to decide. `"queued"` and `"held"` lines are drawn
+   * in the queued strip above the composer (`protocol/queued-lines`), not in the
+   * transcript; `"notSent"` stays a tagged bubble. Comes off when the real send
+   * adopts the row (`addUser` rebuilds the turn without it).
+   *
+   * `"sending"` is a follow-up typed into a LIVE run, from the keypress until the
+   * controller has it (the pane's photograph and the app-state read happen in
+   * between, and can take seconds): it is drawn in the queue strip at once, with
+   * no actions — the page is not holding it, the send is under way.
    */
-  pending?: "queued" | "notSent";
+  pending?: "queued" | "held" | "notSent" | "sending";
 }
 
 export interface AssistantTurn {
@@ -237,7 +252,7 @@ export interface ChatState {
   file: string | null;
   sessionId: string | null;
   /**
-   * WHICH AGENT THIS CONVERSATION RUNS ON — "claude" | "copilot" | "codex" | "gemini" — as the
+   * WHICH AGENT THIS CONVERSATION RUNS ON — "claude" | "copilot" | "codex" | "gemini" | "opencode" — as the
    * server reported it (poll, history, defaults), or "" while nothing has
    * (docs/COPILOT_BACKEND.md D2). Immutable once a session has a turn: the
    * Agent pill fixes on it, and a send names it. "" for a brand-new chat,
@@ -273,8 +288,6 @@ export interface ChatState {
   permissions: PermissionRow[];
   /** Unanswered app-state requests the pane must answer (T:15758-15869). */
   appState: AppStateRow[];
-  /** Unanswered `canvas_screenshot` requests a canvas page must answer. */
-  canvasShot: CanvasShotRow[];
   skills: SkillRow[];
   working: Working | null;
   trouble: Trouble | null;
@@ -292,6 +305,8 @@ export interface ChatState {
   permissionMode: PermissionMode;
   /** Follow-ups typed while a run is live, not yet acknowledged (T:16024 sendFollowUp). */
   queued: string[];
+  /** The transcript keys of those follow-ups' bubbles (same order as `queued`). */
+  queuedKeys: string[];
   /**
    * THE SAME MESSAGES AS THE RUN SEES THEM — the live host's undrained inbox
    * (`PollResponse.inbox`), reported by the poll and therefore SURVIVING A
@@ -304,6 +319,10 @@ export interface ChatState {
    * between runs: a run that has ended has drained or died with its inbox.
    */
   inbox: InboxMessage[];
+  /** The uuids the CLI has taken off its queue (`PollResponse.inbox_taken`),
+   *  kept for the run: what retires a `queued` entry and what a reload's dedupe
+   *  counts as known. */
+  taken: string[];
   historyLoading: boolean;
   /**
    * A RESTORE IS NOT FINISHED UNTIL ADOPTION HAS SPOKEN. True from the first
@@ -319,6 +338,14 @@ export interface ChatState {
    * the transcript and the card paint in ONE frame.
    */
   adopting: boolean;
+  /**
+   * THE LIVE-RUN ADOPTION WATCH IS IN FLIGHT (`adoptLiveRun`), through the
+   * adopted run's own end. `adopting` clears when the history lands, before the
+   * watch has found the run, so a restored chat reads `status: "idle"` for a
+   * live run in that gap; a line that must wait for the session to be done (a
+   * held one) waits on this too.
+   */
+  adoptingRun: boolean;
   transcript: TranscriptStat | null;
   /**
    * HOW FULL THE CONTEXT WINDOW IS — the latest usable `usage` the API
@@ -388,6 +415,10 @@ export interface ChatState {
    *  hand-built state predating the field still compiles; the controller
    *  always writes it (`null` when there is no fork). */
   fork?: ForkState | null;
+  /** Set once by a fork start whose response carried `fork_clamped`
+   *  (the server forked at the last compaction); never cleared for the life of
+   *  the controller. */
+  forkClamped?: boolean;
   /** Monotonic; bumps on every state change so cheap memo keys work. */
   rev: number;
 }
@@ -420,6 +451,14 @@ export interface SendOptions {
    * question of the right send.
    */
   sendId?: string;
+  /**
+   * THE PAGE'S DURABLE ID FOR THIS LINE (a uuid, unlike `sendId` which restarts
+   * at 1 on every load). Sent to the server as `client_uuid`, which stamps the
+   * inbox entry with it, so a page that reloaded with the line still in its
+   * sessionStorage can ask the history "is this id here?" instead of guessing
+   * by text. Echoed in `onSendDelivered`, `onSendReturned` and `StrandedLine`.
+   */
+  clientId?: string;
   /**
    * ADDED (PR3): a user bubble ALREADY on screen that this send's bubble should
    * ADOPT rather than duplicate.
@@ -461,6 +500,8 @@ export interface StrandedLine {
   text: string;
   /** The page's own id for the send (`SendOptions.sendId`), when it gave one. */
   sendId?: string;
+  /** `SendOptions.clientId`: the line's durable id, when the page gave one. */
+  clientId?: string;
   /** This send's `returnSend` already fired for THIS stop — its pictures went
    *  back through `onSendReturned` in the same tick. The words still come
    *  through here (a page that keys rows by `sendId` may already have posted
@@ -516,6 +557,18 @@ export interface ResumeOptions {
   neverShown?: boolean;
   quiet?: boolean;
   retryUnknown?: boolean;
+  /**
+   * THE CONVERSATION THIS MOUNT ALREADY HAS ON SCREEN (boot, with both
+   * `session_id` and `run` on the URL). A run whose first poll neither names
+   * this session nor resumed it (`foreignRun`) is not this chat's: the param was left behind by an earlier
+   * conversation on the same page — the canvas page's "Fix with Claude" run
+   * re-handed to every later mount — and adopting it swapped the header, the
+   * composer's settings and the URL onto that other task while the transcript
+   * stayed on this one (Sina, 2026-11-10: T004 opened as T006). Such a run is
+   * written off like a stale param instead. Only boot passes it: the standing
+   * watch and the scheduled attach never carry a foreign id.
+   */
+  ownSession?: string;
 }
 
 export interface ChatController {
@@ -552,6 +605,14 @@ export interface ChatController {
   cancelFork(): void;
   /** Stop the live run (T:15870-16023 stopRun). No-op when idle. */
   stopRun(): Promise<void>;
+  /**
+   * SEND NOW, the one interrupt of a Ctrl+X: the `send_now` interrupt naming the
+   * oldest line the run holds, so the CLI ends the MAIN agent's turn and runs
+   * every queued line next. No stop: background
+   * subagents, Bash and Monitors keep running. Resolves true when an interrupt
+   * was sent, false when no landed line could be named.
+   */
+  sendQueuedNow(): Promise<boolean>;
   /** The Approvals pill changed: when a run is live, switch ITS mode now through
    *  the `set_mode` action (no message, no turn) and follow the reply into
    *  `ChatState.permissionMode`. No live run → nothing; the value rides the next send. */
@@ -559,6 +620,9 @@ export interface ChatController {
 
   /** Permission card (T:13899 buildPermCard → decide). */
   decidePermission(id: string, decision: Decision, scope?: DecisionScope, mode?: SwitchableMode): Promise<void>;
+  /** The Allow button on a tool auto mode refused: record the approval of that
+   *  one call on the run, then ask the agent to run it again. */
+  allowDenied(toolUseId: string): Promise<void>;
   /** Question card (T:14056 buildQuestionCard → decide with answers/custom). */
   answerQuestion(id: string, answers: Record<string, string[]>, custom?: Record<string, string>): Promise<void>;
   /** Plan card (T:14476 buildPlanCard). `note` ADDED: the free text beside
@@ -569,9 +633,6 @@ export interface ChatController {
 
   /** Answer an app-state request with a snapshot block (T:15804 answerAppState). */
   answerAppState(id: string, block: string): Promise<void>;
-  /** Answer a `canvas_screenshot` request: the uploaded picture's path (in the
-   *  shots dir) and mime, or a sentence saying why there is none. */
-  answerCanvasShot(id: string, answer: { image: string; mime: string; udf?: string } | { error: string }, askedBy?: string): Promise<boolean>;
 
   /** Load a session's history and make it current (T:17984 loadHistory). */
   /** `backend`: the arriving conversation's agent, when the opener knows it
@@ -679,6 +740,19 @@ export interface ChatController {
 export interface ControllerDeps {
   file: string | null;
   params: import("../params/store").ParamsStore;
+  /**
+   * BREAKOUT POSTURE: this controller drives a research-only side chat that
+   * starts as a fresh session. Its first send starts it (`breakout: "1"`,
+   * carrying `breakoutContext`), it never probes or attaches to another live
+   * run, and every later start is `breakout: "resume"`. See server
+   * `agent._start`.
+   */
+  breakout?: boolean;
+  /** With `breakout`: the `<breakout-context>` block the first send carries. */
+  breakoutContext?: string;
+  /** Extra fields merged into every `start` / `send` body (an expert
+   *  session's `{expert: "<id>:main"}`, docs/experts.md). */
+  extraStartParams?: Record<string, string>;
   /** For the working-line clock and tests. MONOTONIC as far as this file is
    *  concerned: every reader of it measures a DURATION (elapsed run time, a
    *  retry budget, a poll deadline), a test is free to hand it `() => 1_000`,
@@ -777,6 +851,11 @@ export interface ControllerDeps {
    *  never by text (Bugbot round 3, PR #1323). A line the CLI named that this
    *  page has no entry for carries no id. */
   onStranded?: (lines: StrandedLine[]) => void;
+  /** ADDED: the server ACKNOWLEDGED this line — the inbox took a follow-up, or
+   *  `start` / the live host's `send` answered for a turn's opening message.
+   *  From here the server owns it and a reload needs nothing from the page.
+   *  Named by `SendOptions.clientId`. */
+  onSendDelivered?: (clientId: string) => void;
   /** ADDED: every 8th poll (~3.2 s) and once at the run's end — where PR4 hangs
    *  its artifacts read (T:16229, 16330). */
   onArtifactsTick?: () => void;
@@ -844,6 +923,8 @@ export interface ControllerDeps {
     attachments?: Receipt[];
     /** `SendOptions.sendId`, echoed: WHICH send came back (see its own note). */
     sendId?: string;
+    /** `SendOptions.clientId`, echoed. */
+    clientId?: string;
     /**
      * The send was turned away BEFORE any bubble went up (disposed, the
      * `sending` gate, nothing to send) — so `text` is not in the transcript,
@@ -861,3 +942,6 @@ export interface ControllerDeps {
 }
 
 export type { HistoryTurn };
+
+/** A request to open a breakout; the type lives in platform (see there). */
+export type { BreakoutContext, BreakoutRequest } from "@platform/lib/breakouts";

@@ -53,19 +53,22 @@ def bot(tmp_path, monkeypatch):
     """A Bot with a folder and a transcript but no Chrome: enough for offers."""
     ws = tmp_path / "ws"
     monkeypatch.setenv("FUSED_RENDER_DIR", str(ws))
+    reset_bots_caches()
     apps_root = bpaths.apps_root()
     os.makedirs(apps_root)
     monkeypatch.setattr(apptools, "ROOTS", [apps_root])
     monkeypatch.setattr(apptools, "SKIP_DIR", "/nonexistent")
     monkeypatch.setattr(apptools, "_apps_cache_at", 0.0)
+    bid = "a1a1a1a1"
+    bpaths.place(bid, "Tester")  # <ws>/bots/tester/ (+ .fused/): the folder a Bot's paths resolve through
     b = agents.Bot.__new__(agents.Bot)
-    b.id = "t1"
-    b.dir = bpaths.bot_dir("t1")
-    b.cache_dir = bpaths.bot_cache_dir("t1")
-    os.makedirs(b.dir, exist_ok=True)
+    b.id = bid
+    b.dir = bpaths.bot_dir(bid)
+    b.public_dir = bpaths.bot_folder(bid)
+    b.cache_dir = bpaths.bot_cache_dir(bid)
     b.events_path = os.path.join(b.dir, "events.jsonl")
     b.lock = threading.RLock()
-    b.meta = {"id": "t1", "name": "Tester", "status": "idle"}
+    b.meta = {"id": bid, "name": "Tester", "status": "idle", "apps": []}
     b.seq = 0
     b.inbox, b.wake = [], threading.Event()
     b.stop_flag, b.pause_flag = threading.Event(), threading.Event()

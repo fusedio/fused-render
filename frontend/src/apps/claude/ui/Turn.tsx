@@ -2,9 +2,10 @@
 // reply behind the spark avatar (T:13446-13504, and the skin note at T:7-12 —
 // "right-aligned user bubbles, full-width assistant prose behind a spark
 // avatar", the shape claude.ai / v0 / ChatGPT all settled on).
-import { memo, useId, useMemo } from "react";
+import { memo, useId, useMemo, type MouseEvent as ReactMouseEvent } from "react";
 
 import { SquareTerminal, Undo2 } from "lucide-react";
+import { PickCheck, pickContextHandler, pickRootProps, type TurnPick } from "./TurnPick";
 import { cn } from "@platform/lib/utils";
 import { parseTerminalAsk } from "@platform/lib/terminalFocus";
 
@@ -12,6 +13,7 @@ import type { AssistantTurn, Turn as TurnRow, UserTurn } from "../protocol/contr
 import { splitCommand } from "../protocol/commands";
 import { viewKind, type SegmentKind } from "../protocol/segments";
 import { toolChipSummary } from "../protocol/summaries";
+import { unansweredNotices } from "../protocol/unanswered";
 import { INTERRUPT_MARK, isInterruptMark, isMarkerOnly, parseInbound, type AnnotationWire } from "../protocol/wire";
 import type { Viewable } from "./attachApi";
 import { MarkerText } from "./AttachIcon";
@@ -57,6 +59,10 @@ function UserBubbleBody({ turn, notes }: { turn: UserTurn; notes: AnnotationWire
 
 export interface TurnProps {
   turn: TurnRow;
+  /** Draw the reply's rows flat, with no run grouping or `show more` triggers,
+   *  for a caller that wants every row on screen (the agent peek). Passed
+   *  straight to `SegmentView`. */
+  unfolded?: boolean;
   /** The turn a `?msg=` link addressed — a halo that fades (T:1699-1713). */
   anchored?: boolean;
   /** "What was sent": the raw outgoing text, wire blocks and all (T:10970).
@@ -92,14 +98,22 @@ export interface TurnProps {
    *  is never foldable — the run is blocked on something inside it, and folding
    *  the block away is folding away the thing to do (design.md §B). */
   pendingCard?: boolean;
-  /** A click on a bubble this page has NOT handed to the run yet
-   *  (`UserTurn.pending`): the line goes back into the box to edit — Claude
-   *  Code's ↑, as a click. One callback for the log, keyed by the turn. */
+  /** A click on a "not sent" bubble (`UserTurn.pending`): the line goes back
+   *  into the box to edit. One callback for the log, keyed by the turn. */
   onPullPending?: (key: string) => void;
+  /** A click on a user bubble opens the reply under it — or folds it again
+   *  (always on since 2026-11-06): one callback for the log, keyed by the
+   *  turn. */
+  onOpenReply?: (key: string) => void;
   /** "Fork from here" on a sent user turn: park it and everything after it and
    *  re-ask it in the composer. Passed only for a Claude chat that is idle;
    *  absent, no button is drawn. One callback for the log, keyed by the turn. */
   onFork?: (key: string) => void;
+  /** Breakout pick mode: the exchange this turn belongs to is a click target. */
+  pick?: TurnPick;
+  /** Right-click on a turn: true when the host took it (breakout), see
+   *  `pickContextHandler`. One stable callback for the log, keyed by the turn. */
+  onBreakoutContext?: (key: string) => boolean;
   /** The chat's working directory, threaded down to `SegmentView`/`ToolChip`/
    *  `MarkdownView` so a shell fence's or a Bash chip's "run" button `cd`'s
    *  there first. */
@@ -120,6 +134,7 @@ export interface TurnProps {
  *  passed only to the turns that actually hold one (Transcript's `parkedIn`). */
 export const Turn = memo(function Turn({
   turn,
+  unfolded,
   anchored,
   onShowSent,
   onOpenShot,
@@ -131,7 +146,10 @@ export const Turn = memo(function Turn({
   onToggleCollapse,
   pendingCard,
   onPullPending,
+  onOpenReply,
   onFork,
+  pick,
+  onBreakoutContext,
   cwd,
   workedFor,
   workedHint,
@@ -173,11 +191,9 @@ export const Turn = memo(function Turn({
     // for a live send. Absent on an old transcript, and then no time is drawn.
     const ts = turn.ts;
     const stamp = formatStamp(ts);
-    // THE OUTBOX TAG (ui/outbox.ts). A line this page is still holding wears
-    // "queued" — grey, the way Claude Code's terminal lists a line typed while it
-    // works — or "not sent" for one handed back. Both are a door: the click
-    // pulls the words back into the box, so a queued line is never a bubble the
-    // reader can only watch.
+    // A line handed back unsent wears "not sent": the click pulls the words
+    // back into the box. Queued lines are not drawn here; they live in the strip
+    // above the composer (ui/QueuedStrip).
     const pending = turn.pending;
     // A terminal ask (Ask Claude / Fix with AI) is drawn as a chip + selection
     // block, not its raw `[terminal id: ...]` line and code fences.
@@ -185,7 +201,9 @@ export const Turn = memo(function Turn({
     const termDir = termAsk?.cwd ? termAsk.cwd.replace(/\/+$/, "").split("/").pop() || "/" : "";
     return (
       <div
-        className={cn("turn", "user", anchored && "is-anchored", pending && "is-pending")}
+        className={cn("turn", "user", anchored && "is-anchored", pending && "is-pending", ...pickRootProps(pick).cls)}
+        onClick={pickRootProps(pick).onClick}
+        onContextMenu={pickContextHandler(turn.key, onBreakoutContext)}
         // The uuid a `?msg=` link addresses. On the element itself, because the
         // anchor is looked for right after the append (T:13459-13463).
         {...(turn.uuid ? { "data-msg": turn.uuid } : {})}
@@ -202,6 +220,7 @@ export const Turn = memo(function Turn({
             (design.md §C). The receipts stay SIBLINGS of this line — see
             below — so nothing the re-attach probe reads moves. */}
         <div className="turn-line">
+          {pick ? <PickCheck pick={pick} /> : null}
           {stamp ? (
             <span className="turn-stamp" {...(stampTitle(ts) ? { "data-hint": stampTitle(ts)! } : {})}>
               {stamp}
@@ -229,7 +248,23 @@ export const Turn = memo(function Turn({
             instead — "pane screenshot", "files" — each with the lucide glyph
             the chip and the receipt wear (P2-7). Anything the reader actually
             typed is their own words and gets none. */}
-          <div className={cn("bubble", termAsk && "is-terminal-ask")}>
+          <div
+            className={cn("bubble", termAsk && "is-terminal-ask")}
+            {...(onOpenReply && !pick
+              ? {
+                  onClick: (e: ReactMouseEvent<HTMLDivElement>) => {
+                    // Selecting words to copy is not a click on the message,
+                    // and neither is a press on a link, a chip or a button
+                    // inside it (reviewer: a toggle would fold the reply
+                    // under a link the reader followed).
+                    if (window.getSelection?.()?.toString()) return;
+                    const t = e?.target as Element | null;
+                    if (t && typeof t.closest === "function" && t.closest("a, button, [role='button'], input, textarea, select")) return;
+                    onOpenReply(turn.key);
+                  },
+                }
+              : {})}
+          >
             {termAsk ? (
               <>
                 <div
@@ -254,19 +289,15 @@ export const Turn = memo(function Turn({
             )}
           </div>
         </div>
-        {pending ? (
+        {pending === "notSent" ? (
           <button
             type="button"
-            className={cn("turn-pending", pending === "notSent" && "is-not-sent")}
-            title={
-              pending === "notSent"
-                ? "This was not sent. Click to put it back in the box."
-                : "Waiting to send. Click to put it back in the box."
-            }
+            className="turn-pending is-not-sent"
+            title="This was not sent. Click to put it back in the box."
             onClick={onPullPending ? () => onPullPending(turn.key) : undefined}
             disabled={!onPullPending}
           >
-            {pending === "notSent" ? "not sent · click to edit" : "queued"}
+            not sent · click to edit
           </button>
         ) : null}
         {/* SIBLINGS of the bubble, not wrappers around it: the re-attach probe
@@ -342,9 +373,19 @@ export const Turn = memo(function Turn({
   const bodyId = uid + "body";
   const folded = foldable && collapsed;
   const line = folded ? collapsedLine(turn) : null;
+  // Folded, every unanswered call is drawn; open, only the ones no settled card
+  // sits under (`cardsAfter`) — a restored transcript has no card row, so its
+  // error chip would otherwise be the only trace of the ask.
+  const notices = (turn.segments ?? []).flatMap((seg, i) =>
+    !folded && cardsAfter?.has(i) ? [] : unansweredNotices([seg]),
+  );
   return (
     <>
-      <div className={cn("turn", "assistant", anchored && "is-anchored", folded && "is-folded")}>
+      <div
+        className={cn("turn", "assistant", anchored && "is-anchored", folded && "is-folded", ...pickRootProps(pick).cls)}
+        onClick={pickRootProps(pick).onClick}
+        onContextMenu={pickContextHandler(turn.key, onBreakoutContext)}
+      >
         {/* THE MARK IS THE TOGGLE (design.md §B). The one glyph every assistant
             turn already wears, in the lane the eye runs down when it is looking
             for where a reply begins — so the control for "show me less of this
@@ -448,6 +489,7 @@ export const Turn = memo(function Turn({
               cardsAfter={cardsAfter ?? null}
               live={!!turn.streaming}
               cwd={cwd}
+              unfolded={unfolded}
             >
               {children}
             </SegmentView>
@@ -465,6 +507,23 @@ export const Turn = memo(function Turn({
               {children}
             </>
           )}
+          {/* AN UNANSWERED QUESTION OR APPROVAL: the one thing in a fold the
+              reader needs to see (nobody was there when it was asked), and on
+              an open turn the line a missing settled card would have said. */}
+          {notices.length ? (
+            <div className="turn-unanswered-list">
+              {notices.map((n, i) => (
+                <div key={i} className="turn-unanswered" role="note">
+                  <div className="turn-unanswered-title">{n.title}</div>
+                  {n.detail.map((d, j) => (
+                    <div key={j} className="turn-unanswered-detail">
+                      {d}
+                    </div>
+                  ))}
+                </div>
+              ))}
+            </div>
+          ) : null}
           {workedFor && !folded && !turn.streaming ? (
             <div className="turn-worked" {...(workedHint ? { "data-hint": workedHint } : {})}>
               {workedFor}
@@ -475,7 +534,7 @@ export const Turn = memo(function Turn({
       {/* The run was stopped by the user: a note beside the conversation, not
           part of the reply (T:13718-13734, runEnding's "Stopped."). */}
       {turn.stopped ? (
-        <div className="turn note">
+        <div className="turn note is-stop-note">
           <span className="eye" aria-hidden="true">
             ⏹
           </span>
@@ -570,7 +629,7 @@ const KIND_NOUN: Record<SegmentKind, string> = {
  */
 export function collapsedLine(turn: TurnRow): CollapsedLine {
   const segs = (turn as AssistantTurn).segments ?? [];
-  for (const seg of segs) {
+  for (const seg of segs.filter((s) => s?.kind === "text").concat(segs)) {
     if (!seg || viewKind(seg) !== "text") continue;
     const line = firstLine((seg as { text?: string }).text ?? "");
     if (line) return { text: line, muted: false };

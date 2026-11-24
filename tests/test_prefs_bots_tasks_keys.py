@@ -101,3 +101,14 @@ def test_pinned_tasks_roundtrip_and_validation(tmp_path, monkeypatch):
         r = client.put("/api/prefs", headers=FUSED, json={"pinned_tasks": bad})
         assert r.status_code == 400, bad
     assert client.get("/api/prefs").json()["pinned_tasks"] == ["a", "b"]
+
+
+def test_every_put_answers_a_larger_revision(tmp_path, monkeypatch):
+    """Windows that hear two PUT answers out of order keep the newer one by
+    this field (api.ts `onPrefsWrittenElsewhere`): it only ever grows."""
+    client = _client(tmp_path, monkeypatch)
+    before = client.get("/api/prefs").json()["revision"]
+    first = client.put("/api/prefs", headers=FUSED, json={"bots_sounds": False}).json()["revision"]
+    second = client.put("/api/prefs", headers=FUSED, json={"bots_sounds": True}).json()["revision"]
+    assert before < first < second
+    assert "revision" not in _stored()

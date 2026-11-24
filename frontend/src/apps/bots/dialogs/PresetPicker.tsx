@@ -12,7 +12,8 @@ import { Input } from "@platform/shadcn/ui/input";
 import { Face } from "../components/Face";
 import { api, type Preset } from "../lib/api";
 import { SUPER_BLURB, SUPER_FACE, SUPER_NAME, highlightRuns, pickCards, queryWords, searchRows, type NewBotPick } from "../lib/presets";
-import { act, useBotsSelector } from "../state/store";
+import { useExpertsEnabled } from "@platform/lib/experts-flag";
+import { act, openDialog, useBotsSelector } from "../state/store";
 import { DIALOG_CLASS, DIALOG_SIZE, HEADER_CLASS } from "./shell";
 
 const CARD = "pcard flex min-w-0 cursor-pointer appearance-none flex-col items-center gap-1 rounded-2xl border-2 border-transparent bg-foreground/[0.04] px-2 pt-4 pb-3 text-center text-foreground outline-none transition-[border-color,transform] duration-150 hover:-translate-y-0.5 hover:border-primary focus-visible:border-primary";
@@ -44,6 +45,7 @@ export function PresetPicker({ onDone }: { onDone: (pick: NewBotPick | null) => 
 
   // Super Bot card shows only while there is no Super Bot yet (one per Mac; the backend refuses a second).
   const hasSuper = useBotsSelector((s) => s.bots.some((b) => b.kind === "super"));
+  const experts = useExpertsEnabled();
   const cards = useMemo(() => pickCards(presets, !hasSuper), [presets, hasSuper]);
   const words = queryWords(query), searching = !!words.length;
   const rows = useMemo(() => searchRows(cards, query), [cards, query]);
@@ -98,6 +100,12 @@ export function PresetPicker({ onDone }: { onDone: (pick: NewBotPick | null) => 
             </div>
           ) : (
             <div id="pgrid" className="grid grid-cols-6 gap-2.5 pt-0.5">
+              {experts ? (
+                <button type="button" className={cn(CARD, "col-span-full flex-row justify-center gap-3 py-3 text-left")} onClick={() => openDialog({ kind: "expert" })}>
+                  <span className="size-10 shrink-0 [&>svg]:block [&>svg]:size-full"><Face b={{ name: "Expert" }} /></span>
+                  <span className="flex flex-col items-start"><b className="text-[13px] font-medium">Expert</b><small className="text-[11px] text-muted-foreground">Knows one subject, remembers what you teach it, helps your tasks</small></span>
+                </button>
+              ) : null}
               {cards.map((c, i) => {
                 if (c.pick.kind === "super") {
                   return (

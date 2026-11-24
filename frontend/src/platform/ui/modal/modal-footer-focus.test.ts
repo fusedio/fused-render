@@ -45,7 +45,8 @@ describe("a focused footer button says so", () => {
   });
 
   test("the chassis still parks initial focus in the body/footer, past the head", () => {
-    expect(modal).toContain('focusables.find((el) => !el.closest(".modal-head"))');
+    // …and past a caller's own head too (Modal `head`, in `.modal-head-slot`).
+    expect(modal).toContain('focusables.find((el) => !el.closest(".modal-head, .modal-head-slot"))');
   });
 
   test("the Delete task dialog opens with Delete forever focused", () => {

@@ -19,7 +19,7 @@ const { ShotViewerBody, ShotViewerFooter, shotViewerTitle } = await import("./Sh
 const { SentPopBody } = await import("./SentPop");
 
 const HERE = dirname(new URL(import.meta.url).pathname);
-const { composeOutgoing, formatAnnotations, paneShotBlock, APP_STATE_TAG } = await import(
+const { composeOutgoing, formatAnnotations, formatBreakoutContext, paneShotBlock, APP_STATE_TAG } = await import(
   "../protocol/wire"
 );
 type UserTurn = import("../protocol/controller-api").UserTurn;
@@ -76,15 +76,15 @@ function texts(root: ReactTestRenderer, className: string): string[] {
 
 test("a restored turn rebuilds every receipt row from its own wire (T:10903)", () => {
   const r = mount(<Receipts turn={turn} paneNoun="preview" onOpenShot={() => {}} probe={async () => false} />);
-  // The overview and pane captions are gone (the thumbnail says it); images,
-  // files and a refusal keep theirs, and the comments live in the bubble now.
+  // The overview, pane and image captions are gone (the thumbnail says it, and
+  // the name is its hover title); files and a refusal keep theirs, and the comments live in the bubble now.
   expect(texts(r, "annsum-txt")).toEqual([
-    "image attached: pasted.png",
     "file attached: rows.csv",
     "no image — could not be saved",
   ]);
   expect(els(r, "annsum-row annsum-note")).toHaveLength(0);
-  expect(JSON.stringify(r.toJSON())).not.toContain("annotated overview attached");
+  // The label is the picture's hover title now, not a caption row.
+  expect(JSON.stringify(r.toJSON())).toContain('"title":"annotated overview attached"');
   // Pictures are drawn; a file and a refusal are not (an <img> pointed at a .csv
   // is a broken-image glyph, which reads as a bug).
   expect(panes(r).length).toBe(3);
@@ -309,20 +309,31 @@ test("a FILE has no pixels, so it gets its own template framed in the body", asy
     size: 4096,
     pending: false,
   };
-  const r = mount(<ShotViewerBody shot={file} paneNoun="preview" />);
-  // The line that promises a preview is up while the stat is in flight: a blank
-  // box for those seconds reads as a preview that failed (T:4384).
-  expect(texts(r, "c-shotview-loading")).toEqual(["loading preview…"]);
-  expect(r.root.findAll((n) => n.type === "img").length).toBe(0);
-  // No stat answer here (no server): the promise settles to null and the line
-  // goes, which is the D616 "no template for this extension" case — and the
-  // glyph takes the empty body, so the viewer never shows nothing at all.
-  await act(async () => {
-    await Promise.resolve();
-    await Promise.resolve();
-  });
-  expect(els(r, "c-shotview-loading").length).toBe(0);
-  expect(els(r, "c-shotview-blank").length).toBe(1);
+  // NO SERVER, said by this test and not left to the process: the stat must
+  // fail at once. Leaning on the real `fetch` (which rejects a relative URL
+  // synchronously) let any earlier file's leftover stub decide instead — one
+  // that never answers kept the line up forever, red on CI only (Linux file
+  // order), never locally.
+  const realFetch = globalThis.fetch;
+  (globalThis as { fetch: unknown }).fetch = () => Promise.reject(new TypeError("no server"));
+  try {
+    const r = mount(<ShotViewerBody shot={file} paneNoun="preview" />);
+    // The line that promises a preview is up while the stat is in flight: a blank
+    // box for those seconds reads as a preview that failed (T:4384).
+    expect(texts(r, "c-shotview-loading")).toEqual(["loading preview…"]);
+    expect(r.root.findAll((n) => n.type === "img").length).toBe(0);
+    // No stat answer here (no server): the promise settles to null and the line
+    // goes, which is the D616 "no template for this extension" case — and the
+    // glyph takes the empty body, so the viewer never shows nothing at all.
+    await act(async () => {
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    expect(els(r, "c-shotview-loading").length).toBe(0);
+    expect(els(r, "c-shotview-blank").length).toBe(1);
+  } finally {
+    (globalThis as { fetch: unknown }).fetch = realFetch;
+  }
 });
 
 // ---- "what was sent" -------------------------------------------------------
@@ -434,4 +445,47 @@ test("a wordless-caption turn with only an overview draws no empty wrapper", () 
   const r2 = mount(<Receipts turn={noThumb} paneNoun="preview" onOpenShot={() => {}} probe={async () => false} />);
   // The glyph-only failure/no-thumb case keeps its label.
   expect(texts(r2, "annsum-txt")).toEqual(["annotated overview attached"]);
+});
+
+test("a breakout's first turn wears a collapsible chip of the messages it carried", () => {
+  const raw = composeOutgoing("and eviction?", [
+    formatBreakoutContext({
+      title: "Cache chat",
+      messages: [
+        { role: "user", text: "How does it work?" },
+        { role: "assistant", text: "It keys on path." },
+      ],
+      files: [],
+    }),
+  ]);
+  const t: UserTurn = { role: "user", key: "u:9", text: "and eviction?", raw };
+  const r = mount(<Receipts turn={t} paneNoun="preview" onOpenShot={() => {}} probe={async () => false} />);
+  const chip = els(r, "annsum-lbl annsum-breakout")[0]!;
+  expect(chip.props["aria-expanded"]).toBe(false);
+  expect(chip.props.title).toBe("2 messages from Cache chat");
+  expect(els(r, "annsum-breakout-count")[0]!.props.children).toBe("2 messages");
+  expect(els(r, "annsum-breakout-title")[0]!.props.children).toBe(" from Cache chat");
+  expect(els(r, "annsum-breakout-body")).toHaveLength(0);
+  act(() => chip.props.onClick());
+  const body = els(r, "annsum-breakout-body")[0]!;
+  expect(body.props.children).toBe("User: How does it work?\n\nAssistant: It keys on path.");
+});
+
+test("opening the breakout chip holds the follow tail through the card policy", async () => {
+  const { CardPolicyProvider, createCardPolicy } = await import("./cardPolicy");
+  const raw = composeOutgoing("hi", [
+    formatBreakoutContext({ messages: [{ role: "user", text: "q" }], files: [] }),
+  ]);
+  const t: UserTurn = { role: "user", key: "u:10", text: "hi", raw };
+  const policy = createCardPolicy();
+  let held = 0;
+  policy.holdTail = () => held++;
+  const r = mount(
+    <CardPolicyProvider value={policy}>
+      <Receipts turn={t} paneNoun="preview" onOpenShot={() => {}} probe={async () => false} />
+    </CardPolicyProvider>,
+  );
+  act(() => els(r, "annsum-lbl annsum-breakout")[0]!.props.onClick());
+  expect(held).toBe(1);
+  expect(els(r, "annsum-breakout-body")).toHaveLength(1);
 });

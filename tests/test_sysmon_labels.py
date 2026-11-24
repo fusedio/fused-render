@@ -282,7 +282,7 @@ def test_a_claude_run_is_labelled_by_the_task_its_host_session_belongs_to(tmp_pa
     assert owner.label == owner.base == "TASK-075 · Continue"
     task = owner.ref["task"]
     assert (task["task_id"], task["state"], task["model"], task["folder"]) == \
-        ("TASK-075", "done", "sonnet", "fused-render")
+        ("TASK-075", "background", "sonnet", "fused-render")
     assert task["bg_jobs"] == [{"id": "b", "description": "poll"}]
     assert owner.ref["run_id"] == run.name
 
@@ -349,3 +349,14 @@ def test_a_helper_inside_a_run_tree_is_not_its_own_entry():
     got = labels.claude_tasks({10: run, 11: run}, {12: labels.HELPER_LABEL, 30: labels.HELPER_LABEL}, procs)
     assert [(t["root_pid"], t["helper"]) for t in got] == [(10, False), (30, True)]
     assert got[0]["mem_bytes"] == 250
+
+
+def test_task_state_is_background_only_while_a_job_runs(tmp_path):
+    run = {"run_id": "r", "run_dir": str(tmp_path), "meta": {}}
+    done = {"status": "done", "task_id": "T-1"}
+    assert labels._task_info(done, run, {}, "", [])["state"] == "done"
+    jobs = {**done, "background_jobs": {"count": 1, "jobs": [{"id": "b", "title": "poll"}]}}
+    assert labels._task_info(jobs, run, {}, "", [])["state"] == "background"
+    # Running and waiting outrank the jobs.
+    assert labels._task_info({**jobs, "status": "in_progress"}, run, {}, "", [])["state"] == "running"
+    assert labels._task_info({**jobs, "attention": True}, run, {}, "", [])["state"] == "waiting"

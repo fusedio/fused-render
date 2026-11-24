@@ -6,7 +6,7 @@ Three ways in, tried in order:
 1. `osascript` from this process (works when the host app may control Notes);
 2. NotesBridge.app, a tiny applet built here with osacompile and started through
    `open`, so macOS asks the user once "NotesBridge wants to control Notes" (the
-   host, FusedRender, cannot get that prompt: its Info.plist lacks
+   host, Fused Render, cannot get that prompt: its Info.plist lacks
    NSAppleEventsUsageDescription);
 3. reads only: the Notes database, read-only.
 
@@ -300,7 +300,7 @@ def _db():
     try:
         return sqlite3.connect(f"file:{STORE}?mode=ro", uri=True, timeout=5)
     except sqlite3.OperationalError as e:
-        raise PermissionError("cannot open the Notes database (Full Disk Access for FusedRender is needed): " + str(e))
+        raise PermissionError("cannot open the Notes database (Full Disk Access for Fused Render is needed): " + str(e))
 
 
 _NOTE_SQL = """select n.Z_PK, n.ZIDENTIFIER, n.ZTITLE1, n.ZSNIPPET, n.ZMODIFICATIONDATE1, coalesce(n.ZCREATIONDATE1, n.ZCREATIONDATE3, n.ZCREATIONDATE), f.ZTITLE2, n.ZISPASSWORDPROTECTED, f.ZFOLDERTYPE

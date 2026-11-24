@@ -1,4 +1,4 @@
-// Entry point of the `FusedRender Helper*.app` bundles: CEF's renderer, GPU,
+// Entry point of the `Fused Render Helper*.app` bundles: CEF's renderer, GPU,
 // utility and plugin processes. LoadInHelper() loads the CEF framework from
 // `<helper executable dir>/../../../Chromium Embedded Framework.framework`
 // — the engine dir, where the helpers sit beside it — and the process runs

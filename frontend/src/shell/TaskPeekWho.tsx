@@ -18,15 +18,16 @@
 // hosts `@apps/claude`'s `ChatMount`, so a chat importing it would close an
 // import cycle — and the boundary check (scripts/check-boundaries.mjs) opens a
 // hole for named shell modules one file at a time for the same reason.
-import { useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useRef, useState, type CSSProperties, type ReactNode } from "react";
 import { Pencil } from "lucide-react";
 import { renameTask, type Task } from "@platform/lib/api";
+import { TaskStar } from "@platform/ui/TaskStar";
 import { agentLabel, agentNamed, modelLabelsOf, useAgentBackends } from "@platform/lib/agent-backends";
-import { columnLabel } from "./schedule-lib";
 import { pokeTasks } from "./tasksPulse";
-import { StatusIcon, TaskAgentMark } from "./ScheduleTaskViews";
+import { QueueCaptionText, StatusIcon, TaskAgentMark, statusRingWord } from "./ScheduleTaskViews";
+import type { QueueCaption } from "@platform/lib/queue";
+import { TaskIconPick } from "./TaskIconPick";
 import {
-  BACKGROUND_LABEL,
   basename,
   cardTitleLine,
   firstLine,
@@ -88,8 +89,94 @@ function renamable(task: Task): boolean {
  * automatic title back. Same draft / busy / error shape as the Current apps
  * rename. `rename` is injectable so a test needs no network.
  */
-export function TaskPeekWho({ task, running = false, rename = renameTask }: {
+export function TaskPeekWho({
+  task,
+  running = false,
+  bare = false,
+  rename = renameTask,
+  star = false,
+  part = "all",
+  className,
+  titleId,
+  starNode,
+  statusOverlay,
+  ring,
+  subtitle,
+  onRenamed,
+  iconPress = false,
+  place,
+  idOverlay,
+  idAt = "marks",
+  editing = false,
+  onEditingChange,
+  picking = false,
+  onPickingChange,
+}: {
   task: Task;
+  /** RING FACTS ONLY THE HOST KNOWS (the rail card: RailPeek): the unread
+   *  mark, the unsent-draft dot, and a failure the merged row carries. The
+   *  listing row this block reads has none of them. */
+  ring?: { unread?: boolean; draftHeld?: boolean; failed?: boolean };
+  /**
+   * WHICH HALF OF THE BLOCK, for a head that has folded its title onto a row of
+   * its own (shell/TaskHead `stacked`): `"marks"` is the ring, the agent mark,
+   * the star and the number with no title; `"title"` is the title and its
+   * rename pencil with none of the marks. `"all"` — the default — is the block
+   * every caller has always drawn, byte for byte.
+   */
+  part?: "all" | "marks" | "title";
+  /** Extra class on the block's own box (TaskHead marks the seat its ladder
+   *  folds away). Absent: the class list every caller has always had. */
+  className?: string;
+  /** An `id` on the title's own span — the shared head's `titleId`, which a
+   *  `Modal` names its dialog by (`aria-labelledby`). On the TITLE and not the
+   *  block, so the dialog's name is the task's title and not "Rename task". */
+  titleId?: string;
+  /** A host's own star control in the star's seat, instead of `TaskStar` (the
+   *  rail card's, which tells its rail and dismisses on unstar). */
+  starNode?: ReactNode;
+  /** Drawn INSIDE the ring's seat, over it (the rail card's hover-archive). */
+  statusOverlay?: ReactNode;
+  /** A muted line after the title, in the title's row (the rail card's last
+   *  reply). */
+  subtitle?: ReactNode;
+  /** After a rename the server took (and `pokeTasks`): the host re-reads. */
+  onRenamed?: () => void;
+  /** The status ring or icon opens the icon picker at ANY time (the shared
+   *  head, 2026-11-15; any task, not only a favourite, 2026-11-16). Off:
+   *  only during a rename, as the older heads do. */
+  iconPress?: boolean;
+  /** Where the task lives, between the agent mark and the number (the shared
+   *  head's folder seat). */
+  place?: ReactNode;
+  /** THE ID SLOT'S OTHER OCCUPANT (the shared head's Archive / Unarchive):
+   *  given at all — even `null` — the number stands in a two-occupant slot
+   *  (`.task-head-idslot`, task-head.css). Withheld during a rename and while
+   *  the icon picker is open. */
+  idOverlay?: ReactNode;
+  /** WHICH HALF HOLDS THE NUMBER (Akshil, 2026-11-16: "when title goes to
+   *  second line have task id go to second line as well"): `"marks"` — the
+   *  default — after the marks; `"title"` — a stacked head's row 2, the
+   *  number leading the title it names. A half asked for the other's seat
+   *  draws no number. */
+  idAt?: "marks" | "title";
+  /** The title is being edited in the head's OTHER half (`part="title"`),
+   *  for the half that holds the marks. */
+  editing?: boolean;
+  /** The icon picker is open in the head's OTHER half (`part="marks"`), for
+   *  the half that holds the number when the head is stacked (`idAt`): its
+   *  Archive stays away meanwhile, as it does in one row (CodeRabbit on
+   *  #2287). */
+  picking?: boolean;
+  /** The icon picker opened or closed — for a head that splits the block in
+   *  two. Pass a STABLE function (a state setter). */
+  onPickingChange?: (picking: boolean) => void;
+  /** The title input stood up or went away — for a head that splits the
+   *  block in two. Pass a STABLE function (a state setter). */
+  onEditingChange?: (editing: boolean) => void;
+  /** Title only: no ring, agent mark or task number (the chat in a side pane,
+   *  where the width is the title's). */
+  bare?: boolean;
   /**
    * THE PAGE KNOWS A TURN IS LIVE before the listing does. A chat sent from
    * this app runs `claude -p`, which the server's watcher learns about from
@@ -100,6 +187,9 @@ export function TaskPeekWho({ task, running = false, rename = renameTask }: {
    */
   running?: boolean;
   rename?: (key: string, title: string) => Promise<unknown>;
+  /** The favourite star left of the id (platform/ui/TaskStar), in the side
+   *  peek's head and the chat's own header. */
+  star?: boolean;
 }) {
   // THE SAME LINE THE LIST ROW PRINTS. With "Title a task by your last message"
   // on, the row under this header shows the reader's newest message; a header still
@@ -108,11 +198,46 @@ export function TaskPeekWho({ task, running = false, rename = renameTask }: {
   const title = useTaskHeadline(task);
   const canRename = renamable(task);
   const [draft, setDraft] = useState<string | null>(null);
+  // The icon picker is open (TaskIconPick): the host's overlay stays away.
+  const [iconPicking, setIconPicking] = useState(false);
+  // THE PENCIL STANDS OVER THE TITLE'S END ONLY WHERE THERE IS NO ROOM AFTER
+  // IT (Akshil, 2026-11-16: "this edit icon overlap should only happen if it
+  // is at the end of the right side, otherwise it can pop next to it"). Read
+  // when the pointer comes onto the title half — the moment the pencil shows:
+  // room for it between the title's end and the seat's edge, or not.
+  const [renameOver, setRenameOver] = useState(false);
+  const measureRename = (e: { currentTarget: HTMLElement }) => {
+    const seat = e.currentTarget;
+    if (typeof seat?.querySelector !== "function" || typeof seat.getBoundingClientRect !== "function") return;
+    const titleEl = seat.querySelector<HTMLElement>(".task-side-peek-title");
+    if (!titleEl) return;
+    // The seat's gap (8px, 12px in a two-line head), the pencil's 16px, and
+    // a hair.
+    let gap = 8;
+    try {
+      gap = Number.parseFloat(getComputedStyle(seat).columnGap) || 8;
+    } catch {
+      /* a stand-in seat in a test has no style: the one-row gap */
+    }
+    const free = seat.getBoundingClientRect().right - titleEl.getBoundingClientRect().right;
+    setRenameOver(free < gap + 18);
+  };
+  useEffect(() => {
+    if (!iconPicking) return;
+    onPickingChange?.(true);
+    return () => onPickingChange?.(false);
+  }, [iconPicking, onPickingChange]);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   // Enter saves and the unmount-time blur must not save twice; Escape must not
   // be undone by the blur it causes.
   const settled = useRef(false);
+  const renaming = draft !== null;
+  useEffect(() => {
+    if (!renaming) return;
+    onEditingChange?.(true);
+    return () => onEditingChange?.(false);
+  }, [renaming, onEditingChange]);
   const startRename = () => {
     if (!canRename || busy) return;
     settled.current = false;
@@ -139,6 +264,7 @@ export function TaskPeekWho({ task, running = false, rename = renameTask }: {
       setDraft(null);
       setError("");
       pokeTasks();
+      onRenamed?.();
     } catch (e) {
       setError((e as Error).message || "Could not rename");
     } finally {
@@ -154,25 +280,114 @@ export function TaskPeekWho({ task, running = false, rename = renameTask }: {
   // …and a finished turn whose chat still holds a live background job wears the
   // List row's blue "Background" ring (tasks-lib.liveJobRow).
   const background = !running && liveJobRow(task);
+  // The ring drawn red ("Blocked"): what the ring is handed below, and what
+  // its seat's caption says — one word for both.
+  const ringBroke = running ? false : !!(ring?.failed || ringFailed(task));
+  // IS THE TITLE CLIPPED? Measured, not guessed (RailPeek's own rule): only a
+  // title that does not fit wears the app's instant caption — one fully in
+  // view says nothing twice. Re-read when the title or its box changes.
+  const titleRef = useRef<HTMLSpanElement | null>(null);
+  const [titleClipped, setTitleClipped] = useState(false);
+  const titleShown = part !== "marks" && draft === null;
+  useLayoutEffect(() => {
+    const el = titleRef.current;
+    if (!el) {
+      setTitleClipped(false);
+      return;
+    }
+    const check = () => setTitleClipped(el.scrollWidth > el.clientWidth + 1);
+    check();
+    if (typeof ResizeObserver === "undefined") return;
+    const ro = new ResizeObserver(check);
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, [title, titleShown]);
+  const showMarks = !bare && part !== "title";
+  const showTitle = part !== "marks";
+  // THE NUMBER'S SEAT, drawn by whichever half holds it (`idAt`).
+  const idSeat =
+    idOverlay === undefined ? (
+      <span className="task-side-peek-id">{shortTaskId(task.task_id)}</span>
+    ) : (
+      // One box, two occupants: the number at rest, the filing button while
+      // the head is pointed at (task-head.css, "THE A/B SLOTS").
+      <span className="task-head-slot task-head-idslot">
+        <span className="task-side-peek-id task-head-slot-a">{shortTaskId(task.task_id)}</span>
+        <span className="task-head-slot-b">
+          {renaming || editing || iconPicking || picking ? null : idOverlay}
+        </span>
+      </span>
+    );
   return (
-    <div className="task-side-peek-who">
+    <div
+      className={
+        "task-side-peek-who" +
+        (part === "all" ? "" : ` is-${part}`) +
+        (renameOver ? " is-rename-over" : "") +
+        (className ? ` ${className}` : "")
+      }
+      {...(part === "title" ? { onMouseEnter: measureRename } : {})}
+    >
+      {!showMarks ? null : (
+        <>
       <span
         className="task-side-peek-status"
-        title={background ? BACKGROUND_LABEL : status ? columnLabel(status) : undefined}
+        // The app's instant caption (platform/lib/hints), as the head's
+        // buttons have it — not the browser's slow `title` (owner,
+        // 2026-11-18). The ring's own word (`statusRingWord`): "Blocked" on a
+        // red ring, "Draft" on a draft's — never the lane's raw key.
+        data-hint={status ? statusRingWord({ status, failed: ringBroke, background }) : undefined}
       >
-        <StatusIcon
-          status={status}
-          failed={running ? false : ringFailed(task)}
-          background={background}
-        />
+        <TaskIconPick
+          task={task}
+          editing={renaming || editing}
+          {...(iconPress ? {} : { onlyWhileEditing: true })}
+          onOpenChange={setIconPicking}
+          {...(onRenamed ? { onDone: onRenamed } : {})}
+        >
+          <StatusIcon
+            status={status}
+            failed={ringBroke}
+            background={background}
+            icon={task.icon_slot}
+            {...(ring?.unread ? { unread: true } : {})}
+            {...(ring?.draftHeld ? { draftHeld: true } : {})}
+            // The seat's instant caption says it (above): no native tooltip
+            // a second later with the same word.
+            quiet
+          />
+        </TaskIconPick>
+        {/* Not while the title is being edited: the host's overlay (the rail
+            card's Archive) stands OVER the ring, and during a rename the ring
+            is the icon picker's button — a press there must open the picker,
+            not archive (RailPeek's own rule, #2238). Nor while that picker is
+            open: its filter box takes the focus, the rename ends, and the
+            overlay would be back under the pointer that pressed the glyph. */}
+        {draft === null && !iconPicking ? statusOverlay : null}
       </span>
       <TaskAgentMark backend={task.backend} />
-      <span className="task-side-peek-id">{shortTaskId(task.task_id)}</span>
-      {draft === null ? (
+      {place}
+      {starNode ?? (star && <TaskStar task={task} />)}
+      {idAt === "marks" ? idSeat : null}
+        </>
+      )}
+      {/* A stacked head's number leads its title on row 2 (`idAt`). */}
+      {showTitle && part === "title" && idAt === "title" ? idSeat : null}
+      {!showTitle ? null : draft === null ? (
         <>
           <span
             className="task-side-peek-title"
-            title={title}
+            // …and the heading role the dialog's `h2` carried before the
+            // shared head replaced it (Modal `head`).
+            {...(titleId ? { id: titleId, role: "heading", "aria-level": 2 } : {})}
+            ref={titleRef}
+            // The whole title at once when it is cut short (platform/lib/hints;
+            // owner, 2026-11-18: the windows' tooltips instant, not the
+            // browser's `title`).
+            {...(titleClipped ? { "data-hint": title } : {})}
+            // The floor's cap: a short title's floor is its own width
+            // (task-head.css `min-width`).
+            style={{ "--title-ch": Math.min(Array.from(title).length, 12) } as CSSProperties}
             onDoubleClick={canRename ? startRename : undefined}
           >
             {title}
@@ -181,8 +396,13 @@ export function TaskPeekWho({ task, running = false, rename = renameTask }: {
             <button
               type="button"
               className="icon-btn task-side-peek-rename"
+              // In the shared head the pencil stands OVER the title's end and
+              // takes no room (task-head.css): the fit ladder must not charge
+              // it a seat and a gap it does not hold (row-fit `rowNeed`) — it
+              // folded the where-tag's word 24px before the row was full.
+              {...(part === "title" ? { "data-fit-skip": "" } : {})}
               aria-label="Rename task"
-              title="Rename task"
+              data-hint="Rename task"
               onClick={startRename}
             >
               <Pencil size={12} aria-hidden />
@@ -193,6 +413,11 @@ export function TaskPeekWho({ task, running = false, rename = renameTask }: {
         <>
           <input
             className="task-side-peek-title-input"
+            // THE DIALOG KEEPS ITS NAME while the title is being edited: a
+            // Modal's `aria-labelledby` points at `titleId`, which lived only on
+            // the title span this input replaces. The input carries it for as
+            // long as it stands (no heading role — it is a field).
+            {...(titleId ? { id: titleId } : {})}
             value={draft}
             maxLength={TITLE_MAX_LENGTH}
             disabled={busy}
@@ -219,6 +444,14 @@ export function TaskPeekWho({ task, running = false, rename = renameTask }: {
           {error && <span className="task-side-peek-rename-error">{error}</span>}
         </>
       )}
+      {showTitle && subtitle ? (
+        // `data-fit-skip`: the reply is the first thing to give and asks the
+        // fit ladder for nothing — charged a text floor, it pushed the time
+        // and a pane's seats off a head that had the room (row-fit `rowNeed`).
+        <span className="task-head-subtitle" data-fit-skip="">
+          {subtitle}
+        </span>
+      ) : null}
     </div>
   );
 }
@@ -251,6 +484,49 @@ export function TaskPeekProject({ task, home = "" }: { task: Task; home?: string
   return (
     <span className="task-side-peek-project" title={tildePath(task.project, home)}>
       {basename(task.project)}
+    </span>
+  );
+}
+
+/**
+ * WHERE THIS CHAT STANDS IN ITS FOLDER'S LINE — "after TASK-046 | 2nd".
+ *
+ * THE TASKS ROW'S OWN MARKUP, classes and all (`tasks-row-queue` /
+ * `tasks-queue-text`, styles/tasks.css, which `shell.css` loads for every page —
+ * the chat draws inside that document). The words are `queueCaption`'s, the
+ * pointer's title is the row's, and the ink is the row's muted register: one
+ * fact, one sentence, one look, wherever a reader meets it.
+ *
+ * NO ⤒ AND NO SECOND COLOUR, for the reason the row and the card dropped them
+ * (Akshil, 2026-09-19): a skip changes the ORDER, which this sentence prints,
+ * and nothing about it is a highlight.
+ *
+ * THE HEADER IS NOT A ROW, so there is nothing for a press on the words to open
+ * — only the id is a door, and it is the same `<a>` the list draws.
+ *
+ * IT IS NOT THE USAGE LIMIT'S SEAT any more (`.c-tb-paused`, which keeps its one
+ * job): that span is Blocked's red at the right end of the line, and a queued
+ * chat is neither blocked nor at the end of anything — it is a task with a place
+ * in a line, and the place belongs beside the name it is a place for.
+ *
+ * `aria-live="polite"`: an ambient state, mentioned when the reader next comes up
+ * for air. The ring beside it already says "Queued" out loud.
+ *
+ * LIVES HERE, beside the identity block it trails, since 2026-11-10: the chat's
+ * Topbar and the shared task head (shell/TaskHead) both draw it, and the chat
+ * may import this module (scripts/check-boundaries.mjs) where the head may not
+ * import the chat's.
+ */
+export function QueuedCaption({ line }: { line: QueueCaption }) {
+  return (
+    <span
+      className="tasks-row-queue"
+      data-hint={line.aheadTitle || line.text}
+      aria-live="polite"
+    >
+      <span className="tasks-queue-text">
+        <QueueCaptionText queue={line} />
+      </span>
     </span>
   );
 }

@@ -206,14 +206,18 @@ def repo_root(path):
     return os.path.realpath(top) if top else None
 
 
-def _default_branch(root):
+def _default_branch(root, *, ask=True):
     """The remote's default branch name, off the `refs/remotes/origin/HEAD`
     symref a clone records, with a `remote set-head --auto` re-ask
     fallback for a clone (or a hand-init'd repo) missing that symref. None
     when there is no `origin` remote, or git cannot resolve it — either way,
-    nothing to compare HEAD against."""
+    nothing to compare HEAD against. `ask=False` skips the re-ask — a
+    network call — for a read that must stay local (the Claude rail's GET,
+    routers/git_rail.py), answering None where the symref is missing."""
     result = _run_safe(root, "symbolic-ref", "--short", "refs/remotes/origin/HEAD")
     if not _ok(result):
+        if not ask:
+            return None
         fixed = _run_safe(root, "remote", "set-head", "origin", "--auto")
         if not _ok(fixed):
             return None

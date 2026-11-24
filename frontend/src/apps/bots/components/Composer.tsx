@@ -125,6 +125,16 @@ async function micTranscribe(path: string, note: Note): Promise<{ text: string }
   }
 }
 
+/** YOUR OWN SEND SHOWS THE MESSAGE YOU JUST SENT — in THIS composer's thread (Thread reads the mark off its own
+ *  element) — and the store flag only triggers the render. Two threads on one store (the page's and the rail's bot
+ *  card beside it, 2026-11-06) each answer to their own composer: a send in one never pins the other to the end
+ *  (Bugbot on #2161). */
+function askScrollToEnd(threadRef: RefObject<HTMLDivElement>): void {
+  const th = threadRef.current;
+  if (th) th.dataset.scrollEnd = "1";
+  setScrollToEnd(true);
+}
+
 export function Composer({ b, reply, setReply, threadRef }: ComposerProps) {
   const on = !!b;
   const ta = useRef<HTMLTextAreaElement>(null);
@@ -280,7 +290,7 @@ export function Composer({ b, reply, setReply, threadRef }: ComposerProps) {
   const runCommand = (c: Command) => {
     const t = ta.current; if (!t || !b) return;
     t.value = ""; fitInput(); setCmd(null);
-    if (c.name === "clear") { setReply(null); setScrollToEnd(true); void act(() => api.clearContext(b.id)); }
+    if (c.name === "clear") { setReply(null); askScrollToEnd(threadRef); void act(() => api.clearContext(b.id)); }
     t.focus();
   };
   // Tab: complete the box to the highlighted command's name (the popup stays open on the exact name; Enter runs it).
@@ -309,7 +319,7 @@ export function Composer({ b, reply, setReply, threadRef }: ComposerProps) {
         if (res?.name) names.push(res.name);
       }
       if (names.length) text = (text ? text + "\n\n" : "") + `Attached (in your FILES folder, use \`upload\` when a page needs them): ${names.join(", ")}`;
-      setScrollToEnd(true);   // consumed by the thread: show the message you just sent
+      askScrollToEnd(threadRef);   // consumed by THIS thread: show the message you just sent
       setBase(b.id, b.seq);   // sending resets the count: only what the bot says from here on is new
       markSeen(b.id, b.seq);  // and you have plainly read everything up to your own message
       await act(() => api.send(b.id, text, r ? r.seq : null));

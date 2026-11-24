@@ -1,0 +1,1782 @@
+// THE CARD THAT OPENS OFF THE CLAUDE RAIL (owner, 2026-10-30: "when it is
+// collapsed can we show a card preview of it when I hover over the chat
+// items; I should be able to interact with it as well — scroll and add
+// something, click something"). The rings' side of the wiring is ClaudeRail.tsx, the
+// timings and the geometry are rail-peek-lib.ts. A hover on a ring opens it;
+// a press holds it open (ClaudeRail header) — the card itself draws the same
+// either way.
+//
+// WHAT IT IS: the chat itself. Not a caption, not a picture — the same
+// `ChatMount` the Tasks page's side peek frames (`peek`, `chatOnly`), on the
+// hovered chat's session, in a 420×640 card a gap off the rail. The reader
+// scrolls the transcript, answers a question, types a message, follows a
+// link, as in the pane; "Open" in the card's head is the door the ring's own
+// press opens (`taskHref`), for when a preview turns into a session. The
+// head is two rows: facts and seats (×, star, number, where, unread + when,
+// archive, Open, ⋮), then the title alone.
+//
+// WHY IT NEVER FLASHES:
+//   - ONE CARD, kept in the DOM, shown and hidden by a class: the open is an
+//     opacity fade and a 6px slide (var(--dur-med)); the close the reverse.
+//     Moving from ring to ring moves the card and swaps what is in it; the
+//     card itself never closes and reopens.
+//   - PLACED, THEN SHOWN, on two frames: the box is set while the card is
+//     hidden (no transition runs on a hidden card's position), and the
+//     `is-on` class lands on the next frame — so a card that closed at the
+//     bottom of the rail and opens at the top does not fly between the two.
+//     With the card up, a position change DOES glide, which is the swap.
+//   - `position: fixed` in a body portal, with no transform on the box: a
+//     transformed ancestor would re-root every fixed-position popover inside
+//     the chat (the model menu, the attach picker). The slide is on an inner
+//     wrapper and ends at `transform: none` once the card is up, which is no
+//     containing block — the 6px offset exists only while hidden or fading,
+//     when the card is inert and nothing in it can open a popover.
+//
+// WHY IT IS FAST: every previewed chat stays mounted after its card closes
+// (`kept`, newest first, PEEK_KEEP of them) — `visibility: hidden`, not
+// `display: none`, so its scroll position and layout survive — and the
+// hovered one's mount starts on the pointer's arrival, before the open wait
+// has run (ClaudeRail `warm`). The chat's chunk is fetched when the rail
+// mounts (`preloadChat`).
+//
+// A PRESS ON A RING LANDS IN THE COMPOSER (owner, 2026-10-31: "when we click
+// the chat item we focus on the card composer so user can type — instead of
+// opening the sidebar"): `focusComposer`, retried until the chat has mounted.
+//
+// A PINNED CARD RESIZES (owner, 2026-11-02: "when we click to preview let's
+// give the panel ability to resize … top left and bottom left corner … and
+// we remember that size; only for click though, hover size remain same"):
+// two grips on the card's left corners, shown only while the card is PINNED
+// (`pinned`: a ring press, a press inside) and the seat has a chat.
+// The right edge stands against the rail, so a drag moves the left edge for
+// the width; the top-left grip moves the top edge (the bottom stays), the
+// bottom-left the bottom (the top stays) — rail-peek-lib `dragResize`, with
+// its minimums and the row's edges. The size lands in the ui-layout
+// document (`canvasRailPeek`, D1386: it must survive a relaunch on another
+// port) and is the size of every pinned card from then on; with favourites
+// off a hover card is always the default 420×640, so a hover keeps reading
+// as a glance and a click as the thing the reader shaped.
+// ONE SIZE PER CARD KIND, favourites on (owner, 2026-11-05: "the hover
+// preview and the click preview of a normal task must be the same size";
+// `oneSize`, rail-peek-lib `listCardWish`): the remembered `canvasRailPeek`
+// size is the hover card's too, and the card wears its grips hovered or
+// pinned — a drag from either lands in the one size. The favourite's card
+// keeps its own (`canvasRailFav`), and NEVER STANDS TALLER THAN HALF THE
+// WINDOW (`favCardWish`, `favMaxHeight`): on open, as the window shrinks,
+// and through a drag. The drag moves the box literally
+// (a top-left drag lifts the top edge); when it ENDS the card is placed
+// again at its new size — top level with the ring, as always (owner,
+// 2026-11-02: "when resize ends, we should match top to top again").
+// AND FROM ITS EDGES (owner, 2026-11-04: "allow resize of the window from
+// edges as well: left, top and bottom"): a 6px strip down the left edge
+// (the width), along the top (the height, growing up) and along the bottom
+// (the height, growing down), the corners over their ends. A bottom drag
+// stops a gap over the favourite's card when this one stands above it
+// (`bottomClear`). The favourite's card wears the same grips whenever it is
+// up (`resizeKey`, its own ui-layout `canvasRailFav`) — its bottom ones too
+// (owner, 2026-11-04: "fav card preview: no option to resize from bottom"):
+// a bottom drag keeps its TOP where it was and moves the bottom, never past
+// the rail's bottom; on release the new height is kept and the card stands
+// on the rail's bottom again. No accent while a drag is on (owner,
+// 2026-11-04): the cursor and the grip's own quiet trace are the feedback.
+// A press INSIDE a hover card pins
+// it too — but the remembered size waits for that press to END (`grown`):
+// a card that grew under a pressed pin would move the pin out from under
+// the pointer before the click landed.
+//
+// × AND STAR (owner, 2026-11-03: "remove the pin; a click keeps the card open
+// anyway — keep a close, and a star beside it to favourite the chat"): the
+// head's first two seats are the × — always there, it is the one way to shut a
+// card a click has held, bar the Open door — and the STAR, which makes the
+// chat a favourite (`setTaskFavourite`; the server keeps the stars, so every
+// rail lists the same ones). Starred, the star is filled in the
+// accent. A favourite's card is the one that may stay open between visits:
+// which favourite is open is PER WINDOW (platform/lib/last-chat
+// `useFavOpen`; the server's `starred_open` is followed by no card since
+// 2026-11-04), so the × on the favourite's card closes it in this window and
+// writes nothing, and unstarring the favourite's own card shuts it
+// (`dismissOnUnstar`: the ring leaves the foot). A star pressed ON in the
+// rail's card lets that card go of the chat and opens the favourite's card
+// in this window (`onStarred`, ClaudeRail); the list leaves the chat out
+// (ClaudeRail header). The rail's card may still show a favourite on a hover
+// of its ring (ClaudeRail header, 2026-11-04).
+//
+// ACCESSIBILITY: the card is a non-modal `dialog` named for its chat; the ring
+// that opened it says `aria-expanded` and `aria-controls` (ClaudeRail). The
+// keyboard's way in is ArrowLeft on a focused ring (`focusChat` lands in the
+// composer, or on the card's first button while the chat is still loading);
+// Escape anywhere in the card hands focus back to the ring and closes. A card
+// that holds focus never closes under the pointer (PeekIntent `hold`).
+import {
+  forwardRef,
+  useImperativeHandle,
+  useLayoutEffect,
+  useEffect,
+  useCallback,
+  useMemo,
+  useRef,
+  useState,
+  type FocusEvent as ReactFocusEvent,
+  type KeyboardEvent as ReactKeyboardEvent,
+  type MutableRefObject,
+  type PointerEvent as ReactPointerEvent,
+} from "react";
+import { createPortal } from "react-dom";
+import { Archive, ArchiveRestore, Star } from "lucide-react";
+import { notify } from "@platform/lib/notifications";
+import { archiveTask, setTaskFavourite, unarchiveTask, type Task } from "@platform/lib/api";
+import { pokeTasks } from "@shell/tasksPulse";
+import { useHoldOpenTask } from "@shell/task-open-read";
+import { useArchiveConfirm } from "@shell/archive-confirm";
+import { shortTaskId } from "@platform/lib/task-id";
+import { ChatMount, draftHref } from "@apps/claude";
+import { breakoutOpener } from "@platform/lib/breakouts";
+import { Kebab, type KebabExtraItem } from "@apps/claude/ui/Kebab";
+import type { BreakoutControl } from "@apps/claude/ClaudeChat";
+import { opensInSidePane, requestSideMaximized } from "@platform/lib/side-maximized-store";
+import { AgentProvider } from "@apps/claude/ui/agent-context";
+import { timeAgo } from "@platform/lib/format";
+import { chatDraftKey, peekDraftSyncer } from "@platform/lib/drafts";
+import { getUiLayout, patchUiLayout, subscribeUiLayout, type UiLayoutDoc } from "@platform/lib/ui-layout";
+import {
+  cardTitleLine,
+  draftRing,
+  isDraftTask,
+  messageStamp,
+  nextRunAt,
+  relativeWhen,
+  taskColumn,
+  taskHref,
+  taskWhen,
+  type CardTitle,
+  taskChatTarget,
+} from "@shell/tasks-lib";
+import { NAV_EVENT, navigateUrl, rewriteLegacyUrl } from "@platform/lib/router";
+import { chipPlace, hasWhereTag, queuedEditHref, railScope, type RailHere, type RailPlace, type RailRow } from "./claude-rail-lib";
+import { queueCaption } from "@platform/lib/queue";
+import { ForceStartButton } from "@shell/ForceStartButton";
+import { PlaceTags } from "./PlaceTags";
+// THE ONE TASK HEAD (design.md "One task head, everywhere").
+import { TaskHead } from "@shell/TaskHead";
+import { TaskPrChip } from "@shell/TaskPrChip";
+import { useUrlVersion } from "@platform/lib/hooks";
+import { openInTasksItem } from "@platform/ui/openInTasks";
+import { CANVAS_FOCUS_PARAM } from "@apps/canvases/api";
+import {
+  PEEK_MAX_HEIGHT,
+  PEEK_MAX_WIDTH,
+  PEEK_MIN_HEIGHT,
+  PEEK_MIN_WIDTH,
+  PEEK_WIDTH,
+  STAR_MARK_MS,
+  bottomClear,
+  dragMaxWidth,
+  dragResize,
+  errorWords,
+  snapWidth,
+  favCardWish,
+  favMaxHeight,
+  listCardWish,
+  inSafeCone,
+  onHop,
+  clampAnchor,
+  favLike,
+  placeClear,
+  pulseFace,
+  rowOf,
+  starMarkStep,
+  starOutcome,
+  statusWords,
+  type Box,
+  type PeekWish,
+  type ResizeEdge,
+  type StarMark,
+} from "./rail-peek-lib";
+import { publishWindowABox, setSnapGuide, setSnapGuides, windowABox } from "./card-snap";
+import { RailPinButton } from "./RailPin";
+import {
+  FLOAT_GRIPS,
+  RAIL_HEAD_SELECTOR,
+  floatPlacement,
+  floatResize,
+  BOTH_AXES,
+  dockedBAxes,
+  isDockEdge,
+  snapResize,
+  type ResizeAxes,
+  viewportOf,
+  wishSize,
+  type MoveEdge,
+  type RailWindow,
+} from "./rail-move-lib";
+import { commitWindowBox, magnetBox, usePusher, useWindowBox, windowPos } from "./rail-move-store";
+import { drawnBox, useCardMove, useRailResizing } from "./useCardMove";
+import { useRailExtras } from "./rail-extras-flag";
+import { placeColumn } from "./rail-slots-lib";
+import { watchRailWidth } from "./rail-width-watch";
+
+/** Where a card's dragged size is kept in the ui-layout document: the
+ *  rail's pinned card, or the favourite's (RailPeekProps `resizeKey`). */
+export type RailSizeKey = "canvasRailPeek" | "canvasRailFav";
+
+/** The size the reader last dragged a card to (ui-layout `key`, by default
+ *  the rail's pinned card's `canvasRailPeek`), floored at the grips'
+ *  minimums; null for "never". `doc`: a patch's own document (the server's
+ *  copy on a replay before hydrate), else this window's. */
+export function storedPeekSize(
+  key: RailSizeKey = "canvasRailPeek",
+  doc: UiLayoutDoc = getUiLayout(),
+): { width: number; height: number } | null {
+  const s = doc[key];
+  if (!s) return null;
+  return {
+    width: Math.min(PEEK_MAX_WIDTH, Math.max(PEEK_MIN_WIDTH, s.width)),
+    height: Math.max(PEEK_MIN_HEIGHT, s.height),
+  };
+}
+
+/** Every grip, corners last so they paint (and hit) over the edges' ends —
+ *  the favourite's card's too (header). */
+const ALL_GRIPS: readonly ResizeEdge[] = ["l", "t", "b", "tl", "bl"];
+
+/** No head seat (RailPeek's chip and status seats): one object, so setting
+ *  "none" twice is not a state change. */
+const NO_SEAT: { key: string | null; el: HTMLElement | null } = { key: null, el: null };
+
+/** What one seat is, for the head and the body: the pulse row, the full row
+ *  once held, and the answers both halves ask (RailPeek `seatFacts`). */
+interface SeatFacts {
+  t: RailRow["pulse"];
+  row: Task | null;
+  /** The pulse's live status over the full row (or the pulse alone). */
+  merged: Task | RailRow["pulse"];
+  label: string;
+  /** Where its press goes: a draft's New task card, else the chat's door. */
+  href: string | null;
+  draft: boolean;
+  /** `#T12` — "" on a draft, which has no task number yet. */
+  id: string;
+  scope: ReturnType<typeof railScope>;
+  /** The place the where-chip names (claude-rail-lib `chipPlace`): the
+   *  rail's own, or — a favourite from elsewhere — the row's. */
+  at: RailPlace;
+  words: string;
+  /** How many messages the chat holds (the listing's `message_count`; 0
+   *  until the full row is held, or for a chat with none). */
+  count: number;
+  /** Replies not yet read, 0 for none. */
+  unread: number;
+  /** When the chat last moved, in the list's relative register ("3m ago"); "" when it never has. */
+  when: string;
+  /** …and the same moment in full, for the hover. */
+  whenFull: string;
+  /** The server can rename it: a started session (TaskPeekWho `renamable`). */
+  renamable: boolean;
+  /** The title line as the List row builds it (its `hint` is the whole text). */
+  line: CardTitle;
+  /** The reply line the List row prints after the title in italics; ""
+   *  when the row holds none, or is pulse-only. */
+  reply: string;
+}
+
+function seatFacts(seat: RailRow, place: RailPlace): SeatFacts {
+  const { pulse: t, row } = seat;
+  // The live status AND the face are the pulse's (`pulseFace`).
+  const merged = row ? { ...row, status: t.status, ...pulseFace(t) } : t;
+  // The List's own title line (recap as the title once recaps are on).
+  const line = cardTitleLine(merged);
+  const draft = !!row && isDraftTask(row);
+  const href = (row && draft ? draftHref(row) : null) ?? taskHref(merged) ?? queuedEditHref(row, t.status);
+  const at = chipPlace(merged, place);
+  return {
+    t,
+    row,
+    merged,
+    label: line.text || t.title || "Chat",
+    href,
+    draft,
+    id: draft ? "" : shortTaskId(t.task_id),
+    scope: railScope(merged, at),
+    at,
+    words: draft ? "draft" : statusWords(t, !!row?.failed),
+    count: Math.max(0, row?.message_count ?? 0),
+    unread: t.unread > 0 ? t.unread : 0,
+    // The List row's own clock and caption (tasks-lib `taskWhen`: "Last run
+    // <time>", "Drafted <time>"…) once the full row is held; the pulse's
+    // own stamp until then.
+    when: row ? taskWhen(merged as Task).text : relativeWhen(t.happened_at || t.last_active || 0),
+    whenFull: row ? taskWhen(merged as Task).title : messageStamp(t.happened_at || t.last_active || 0),
+    renamable: !!t.session_id && !draft && !/^(pending|draft|new):/.test(t.key),
+    line,
+    reply: row ? (row.last_reply || "").trim() : "",
+  };
+}
+
+export interface RailPeekHandle {
+  /** Put the keyboard in the shown chat's composer (or on the card's first
+   *  button while the chat is still loading). False when nothing is shown. */
+  focusChat(): boolean;
+  /** Put the keyboard in the shown chat's composer and nowhere else: false
+   *  until the composer has mounted (the chat chunk may still be loading), so
+   *  a press that wants to type is never parked on the card's × meanwhile. */
+  focusComposer(): boolean;
+}
+
+export interface RailPeekProps {
+  /** The card's DOM id — what the ring's `aria-controls` names. */
+  id: string;
+  /** The seat the card shows, or null while it is closed (the last shown
+   *  seat stays drawn through the fade-out). */
+  shown: RailRow | null;
+  /** Every seat whose chat stays mounted: the shown one and the recently
+   *  previewed ones (rail-peek-lib `keepAlive`). */
+  kept: readonly RailRow[];
+  /** The ring element for a seat (its anchor), or null if it is not drawn. */
+  anchorOf: (key: string) => HTMLElement | null;
+  /** The element the hover cone starts at; default `anchorOf` (the favourite's
+   *  card stands on the rail but its cone starts at its ring). */
+  coneOf?: (key: string) => HTMLElement | null;
+  /** The rail, for its edge and for the row it stands in (its parent). */
+  railEl: HTMLElement | null;
+  /** Where the rail stands (claude-rail-lib `RailPlace`): what a row's
+   *  target is read against to name its node or file (`railScope`) — a row
+   *  not in it (a favourite from elsewhere) is read against its own place
+   *  (`chipPlace`). */
+  place: RailPlace;
+  /** The ⋮ filed or deleted a task: re-read the listing now rather than on
+   *  the pulse's next move. */
+  onReload: () => void;
+  onPointerEnter: () => void;
+  onPointerLeave: () => void;
+  /** The pointer entered (`true`) or left (`false`) the safe cone between
+   *  the shown ring and the card, or the bridge over the gap (rail-peek-lib
+   *  `inSafeCone`, PeekIntent `enterCone`/`leaveCone`). */
+  onCone: (inside: boolean) => void;
+  /** A pointer went down inside the card — on the card itself or on one of
+   *  the chat's portaled popovers (React's capture phase crosses portals,
+   *  the DOM's `contains` does not): hold it through the gesture, and tell
+   *  the host's outside-press watcher this press was ours. */
+  onPressInside: () => void;
+  /** The card took (`true`) or lost (`false`) the keyboard focus. */
+  onHold: (on: boolean) => void;
+  /** The owner typed in the card (an `input` inside it, the composer's
+   *  words): the rail's pinned card then never swaps on a favourite's
+   *  hover (rail-peek-lib `PeekIntent.typed`). */
+  onTyped?: () => void;
+  /** Escape inside the card, or its close button — or the Open door
+   *  (`"door"`), or an unstar that shuts the card (`"unstar"`,
+   *  `dismissOnUnstar`): a host that records "closed" on the × keeps the
+   *  record through the door, and writes nothing for an unstar, which
+   *  dropped the record already (FavouritePeek). */
+  onDismiss: (why?: "door" | "unstar") => void;
+  /** The row left no room for a card (rail-peek-lib `peekPlacement` null —
+   *  a window under ~140px tall or ~170px wide): the host drops the show so
+   *  the ring is not left saying `aria-expanded` for a card that never drew. */
+  onNoRoom: () => void;
+  /** "Open in panel →", and any hop the chat itself makes. */
+  onOpenChat: (href: string) => void | Promise<boolean>;
+  /** The canvas the PAGE stands on, where the page can select a node in
+   *  place (claude-rail-lib `RailHere`; the canvas page only): the where-chip
+   *  of a chat on that canvas selects its node there instead of navigating.
+   *  A getter, read at render and at the press — the favourite's card reads
+   *  it off the rail it stands beside (fav-peek-store `railHere`). */
+  here?: () => RailHere | null;
+  /** WHERE THE PAGE STANDS (claude-rail-lib `placeRoot`): the rail's own
+   *  place for its card, the place of the rail the favourite's card stands
+   *  beside (fav-peek-store `page`). A where-chip naming it goes nowhere and
+   *  is plain text (`chipDoor`) — favourites on only. */
+  pageRoot?: string | null;
+  /** The where-chip NAVIGATED away from this page with chat `key` in the
+   *  card (not a select in place, not a modified press), heard at the push —
+   *  only once the router's leave guard let it (rail-peek-lib `onHop`): the
+   *  rail's card hands a favourite's chat to the favourite's card, so it goes
+   *  with the reader (ClaudeRail `onChipLeave`). `keyboard`: the press was
+   *  the keyboard's. */
+  onChipLeave?: (key: string, keyboard: boolean) => void;
+  /** The chip was pressed: pin the shown card (a keyboard press has no
+   *  pointer-down to do it, `onPressInside`), and see the keyboard into its
+   *  composer once that has mounted (ClaudeRail `focusComposerSoon`). */
+  onPin: () => void;
+  /** The card is HELD (owner, 2026-11-03: a press on a ring or inside the
+   *  card keeps it open): nothing but its × — or the Open door — closes it:
+   *  not an outside press, not a press into the workbench, not Escape. */
+  held: boolean;
+  /** The × / Open / an unstar let go (`false`). */
+  onHeld: (held: boolean) => void;
+  /** The star was pressed and the server answered: `on` is the star as it
+   *  now stands. Ahead of the pulse, for the rail's own bookkeeping. */
+  onStarred?: (key: string, on: boolean) => void;
+  /** A FIXED SIZE AND EDGE (the favourite's card, shell/claude-rail
+   *  FavouritePeek): the card takes this wish for every seat instead of the
+   *  default / stored sizes, and never grows on a pin. */
+  size?: PeekWish;
+  /** ONE SIZE FOR HOVER AND PIN (header): the list card
+   *  takes the remembered size whatever its state, and wears its grips
+   *  hovered too. */
+  oneSize?: boolean;
+  /** …SIZED BY THE READER (the favourite's card, `canvasRailFav`): the
+   *  card wears its grips whenever it is up, pinned or not, and the size
+   *  dragged lands under this ui-layout key and stands over `size`'s width
+   *  and height from then on. A card on the rail's foot (`align: "bottom"`)
+   *  takes a bottom drag with its top held, never past the rail's bottom,
+   *  and stands on the rail's bottom again on release. */
+  resizeKey?: "canvasRailFav";
+  /** Another card's box to keep clear of (the favourite's card, at the
+   *  rail's foot; rail-peek-lib `placeClear`: above it, else to its left,
+   *  else over it as the last resort). */
+  avoid?: Box | null;
+  /** An UNSTAR shuts this card (the favourite's own card: its record is
+   *  gone). The rail's card leaves it false — it lets go on the star
+   *  itself (`onStarred`), so an unstar never reaches it. */
+  dismissOnUnstar?: boolean;
+  /** The head's Open carries an ↗ after the word (the favourite's card,
+   *  Akshil 2026-11-07: Open there changes the window — the card goes, the
+   *  pane takes the chat — so it reads as a door out) — asked per href: only
+   *  when Open leaves the page on screen (Akshil 2026-11-09; FavouritePeek). */
+  openIcon?: (href: string) => boolean;
+  /** Where the card stands now, or null while it is closed — for a host
+   *  that places another card around it. */
+  onBox?: (box: Box | null) => void;
+  /** The card is PINNED (PeekIntent: a ring press, a press inside) — not a
+   *  passing hover. Only a pinned card wears the corner grips
+   *  and takes the remembered size (header). */
+  pinned: boolean;
+  /** HOVER / TEMP / PIN (rail-pin-lib): the head's pin icon, its first
+   *  button (no × with it) — `pinned` the card's pin (not a press's),
+   *  `onToggle` its press. Escape closes a hover and a temp card and only a
+   *  pinned one ignores it. */
+  pinCtl: { pinned: boolean; onToggle: () => void };
+  /** WHICH WINDOW THE CARD IS (rail-move-lib `RailWindow`), said outright —
+   *  a slot in its pin's role (free pins, rail-slots-store). Absent,
+   *  the card says it the way it always did: the favourite's (`resizeKey`) is
+   *  window B's, any other window A's. */
+  win?: RailWindow;
+}
+
+/** A seat with no conversation yet (header of the body above). */
+function PlainBody({ facts }: { facts: SeatFacts }) {
+  const { row, draft, label, merged } = facts;
+  // A QUEUED ROW (the project queue; owner, 2026-11-09) waits for its folder,
+  // not for a time: it says so in the Tasks page's own words (`queueCaption`:
+  // "after TASK-038 · 2nd"), and its words are the message waiting to go —
+  // the List row's sole message — rather than "No message yet".
+  const queue = !draft ? queueCaption(merged) : null;
+  const form = (row?.form ?? {}) as Record<string, unknown>;
+  const str = (v: unknown) => (typeof v === "string" ? v.trim() : "");
+  // The words: a task draft's description, a chat draft's composer preview.
+  // Never the title again — it is in the head.
+  const preview = str(row?.draft?.preview);
+  const description = str(form.description);
+  const waiting = queue ? str(row?.messages?.find((m) => m.state === "pending")?.body) : "";
+  const words = (draft ? description || preview : waiting) || "";
+  const same = words.toLowerCase() === label.trim().toLowerCase();
+  const saved = draft ? timeAgo(row?.draft?.updated_at) : null;
+  // The run itself, not the List's chip: `nextRunChip` is null for an
+  // Upcoming row because the row's own stamp already says the time there —
+  // this card has no such stamp (CodeRabbit on #2029).
+  const at = !draft && !queue && row ? nextRunAt(row) : null;
+  const next = at ? `Runs ${relativeWhen(at)} · ${messageStamp(at)}` : null;
+  const meta = draft
+    ? [str(form.model), str(form.effort), str(form.permission)].filter(Boolean)
+    : [str(row?.model), str(row?.effort)].filter(Boolean);
+  return (
+    <div className="claude-rail-peek-plain">
+      <div className="claude-rail-peek-plain-row">
+        <span className={"claude-rail-peek-pill" + (draft ? " is-draft" : queue ? " is-queued" : "")}>
+          {draft ? "Draft" : queue ? "Queued" : "Scheduled"}
+        </span>
+        <span className="claude-rail-peek-plain-when">
+          {draft
+            ? saved
+              ? `Not sent · saved ${saved}`
+              : "Not sent"
+            : queue
+            ? queue.text
+            : next ?? "Not started yet"}
+        </span>
+      </div>
+      <p className={"claude-rail-peek-plain-words" + (!words || same ? " is-empty" : "")}>
+        {words && !same ? words : draft ? "No description yet." : "No message yet."}
+      </p>
+      {/* A QUEUED TASK CAN BE STARTED FROM ITS CARD (Akshil, 2026-11-18): this
+          seat has no chat to carry the verb, so the card carries it. Drawn only
+          once the row says the task stands in a line (`canForceStart`). */}
+      {queue ? <ForceStartButton facts={merged} target={{ key: facts.t.key }} /> : null}
+      {meta.length > 0 && <p className="claude-rail-peek-plain-meta">{meta.join(" · ")}</p>}
+    </div>
+  );
+}
+
+export const RailPeek = forwardRef<RailPeekHandle, RailPeekProps>(function RailPeek(
+  {
+    id,
+    shown,
+    kept,
+    anchorOf,
+    coneOf,
+    railEl,
+    place: where,
+    onReload,
+    onPointerEnter,
+    onPointerLeave,
+    onCone,
+    onPressInside,
+    onHold,
+    onTyped,
+    onDismiss,
+    onNoRoom,
+    onOpenChat,
+    here,
+    pageRoot,
+    onChipLeave,
+    onPin,
+    held,
+    onHeld,
+    onStarred,
+    size,
+    resizeKey,
+    oneSize = false,
+    avoid = null,
+    dismissOnUnstar = false,
+    openIcon,
+    onBox,
+    pinned,
+    pinCtl,
+    win,
+  },
+  ref,
+) {
+  const cardRef = useRef<HTMLDivElement | null>(null);
+  // FREE PINS (rail-slots-lib): a pinned card is
+  // FROZEN — its size and position are the window's mark's, not the shared
+  // remembered size — and a non-pin shares the rail's column and pushes the
+  // pins it would cover.
+  const freePins = useRailExtras();
+  const freePinsRef = useRef(false);
+  freePinsRef.current = freePins;
+  // A PINNED WINDOW MOVES (rail-move-lib; owner, 2026-11-17): the list's card
+  // is window A's, the favourite's (`resizeKey`) window B's. Pinned and
+  // dragged, it FLOATS: placed at the window's position, not beside the rail.
+  const moveWin: RailWindow = win ?? (resizeKey === "canvasRailFav" ? "b" : "a");
+  const move = useCardMove({
+    win: moveWin,
+    movable: pinCtl.pinned,
+    headSelector: RAIL_HEAD_SELECTOR,
+    shown: shown?.pulse.key ?? null,
+  });
+  const floatingRef = useRef(false);
+  floatingRef.current = move.floating;
+  // The last seat shown, so the fade-out has something to fade — the head
+  // AND the chat: both key on `view`, so the transcript stays visible through
+  // the fade rather than vanishing under a fading empty frame (Bugbot).
+  const last = useRef<RailRow | null>(null);
+  if (shown) last.current = shown;
+  const view = shown ?? last.current;
+  const viewKey = view?.pulse.key ?? null;
+
+  const [box, setBox] = useState<Box | null>(null);
+  const [on, setOn] = useState(false);
+  const shownKey = shown?.pulse.key ?? null;
+
+  // One composer ref per kept mount (ChatMount `focusRef`).
+  const focusRefs = useRef(new Map<string, MutableRefObject<HTMLTextAreaElement | null>>());
+  const focusRefFor = (key: string) => {
+    let r = focusRefs.current.get(key);
+    if (!r) {
+      r = { current: null };
+      focusRefs.current.set(key, r);
+    }
+    return r;
+  };
+  for (const key of [...focusRefs.current.keys()]) {
+    if (!kept.some((s) => s.pulse.key === key)) focusRefs.current.delete(key);
+  }
+
+  // WHAT SIZE (header): a seat with no session gets the short card
+  // (PEEK_PLAIN_HEIGHT); a pinned chat card takes the remembered size, and
+  // keeps a top-left drag's top while it stays on the same chat
+  // (`dragTop`); a hover card is the default. Refs, not state: `place` runs
+  // from listeners and effects whose closures would otherwise go stale.
+  // GROWN (header): the pinned card takes the remembered size — at once for
+  // a ring press, after the pointer comes up for a press inside
+  // the card (`onPressInside` runs in the capture phase, before the pin
+  // flips; the window's pointerup ends it).
+  const [grown, setGrown] = useState(false);
+  const grownRef = useRef(false);
+  grownRef.current = grown;
+  const pressingInside = useRef(false);
+  const growAfterPress = useRef(false);
+  const onPressInsideCapture = () => {
+    pressingInside.current = true;
+    move.notePress();
+    onPressInside();
+  };
+  useEffect(() => {
+    const up = () => {
+      pressingInside.current = false;
+      if (growAfterPress.current) {
+        growAfterPress.current = false;
+        setGrown(true);
+      }
+    };
+    window.addEventListener("pointerup", up, true);
+    window.addEventListener("pointercancel", up, true);
+    return () => {
+      window.removeEventListener("pointerup", up, true);
+      window.removeEventListener("pointercancel", up, true);
+    };
+  }, []);
+  useEffect(() => {
+    if (!pinned) {
+      growAfterPress.current = false;
+      setGrown(false);
+    } else if (pressingInside.current) growAfterPress.current = true;
+    else setGrown(true);
+  }, [pinned]);
+  const wishFor = (key: string): PeekWish => {
+    // A FREE PIN'S SIZE IS ITS OWN (rail-slots-lib "A PIN IS FROZEN"): what
+    // its mark froze, whatever the shared sizes say now.
+    if (freePinsRef.current && floatingRef.current) {
+      const frozen = move.size();
+      if (frozen) return { ...(size ?? {}), width: frozen.width, maxHeight: frozen.height };
+    }
+    if (size) {
+      // A PINNED window has no height limit but its room (owner, 2026-11-17:
+      // "remove the restrictions of height only from pin window"): the half-
+      // window ceiling is the hover's and the temp card's. No window height
+      // handed over is no ceiling (`favMaxHeight`).
+      if (resizeKey === "canvasRailFav") return favCardWish(size, storedPeekSize(resizeKey), pinCtl.pinned ? Infinity : window.innerHeight);
+      const stored = resizeKey ? storedPeekSize(resizeKey) : null;
+      return stored ? { ...size, width: stored.width, maxHeight: stored.height } : size;
+    }
+    return listCardWish({
+      hasSession: !!kept.find((s) => s.pulse.key === key)?.pulse.session_id,
+      stored: storedPeekSize(),
+      grown: grownRef.current,
+      oneSize,
+    });
+  };
+  // The rail's left edge as of the last placement: where the bridge below
+  // ends. A ref, not state — `place` runs before every `setBox`, so the
+  // render that draws the new box reads a fresh value.
+  const railLeft = useRef(0);
+  // Resolved once per rail element, not per placement: `rowOf` reads computed
+  // style, and `place` runs on every scroll of the rail's list.
+  const row = useMemo(() => rowOf(railEl), [railEl]);
+  // THE EXPANDABLE RAIL (rail-width-watch; Rail extras, the free pins' own
+  // switch): its edge moves with no window resize and no row reshaping — the
+  // card follows it too.
+  const followRailWidth = freePins;
+  const place = (key: string): Box | null => {
+    // FLOATING: at the window's position (read live — a drag moves it between
+    // renders), at the card's size, inside the viewport; never "no room".
+    const floatAt = floatingRef.current ? move.at() : null;
+    if (floatAt) return floatPlacement(floatAt, wishSize(wishFor(key)), viewportOf(window));
+    const anchor = anchorOf(key);
+    if (!anchor || !railEl || !row) return null;
+    const rail = railEl.getBoundingClientRect();
+    railLeft.current = rail.left;
+    // Clear of the other card (`avoid`): above it, else beside it, else —
+    // a window too small for either — over it (rail-peek-lib `placeClear`).
+    // A list ring scrolled past the list's box anchors at the box's edge
+    // (rail-peek-lib `clampAnchor`), never above or below it.
+    const scroller = anchor.closest(".claude-rail-chats");
+    const at = clampAnchor(anchor.getBoundingClientRect(), scroller ? scroller.getBoundingClientRect() : null);
+    // FREE PINS: the two sections' non-pins share the rail's ONE column —
+    // above the other, never beside it (rail-slots-lib `placeColumn`).
+    return (freePinsRef.current ? placeColumn : placeClear)(at, rail, row.getBoundingClientRect(), avoid, wishFor(key));
+  };
+  // THE CORNER AND EDGE DRAG (header). `resizing` names the held grip while
+  // a drag is on: the card drops its glide transitions and the placement
+  // effects stand back so the box follows the pointer alone.
+  const [resizing, setResizing] = useState<MoveEdge | null>(null);
+  const resizingRef = useRef<MoveEdge | null>(null);
+  resizingRef.current = resizing;
+  useRailResizing(resizing !== null);
+  const dragStart = useRef<{
+    x: number;
+    y: number;
+    box: Box;
+    pointerId: number;
+    corner: MoveEdge;
+    el: HTMLElement;
+    /** The card floats (rail-move-lib): the drag is clamped to the viewport,
+     *  with no magnet, and a left or top grip moves the window's position. */
+    floating: boolean;
+    /** The bottom the drag may not pass (rail-peek-lib `bottomClear`). */
+    floor: number | undefined;
+    /** The height the drag may not pass (the favourite's card, header). */
+    cap: number | undefined;
+    /** The other window's card as it stood at the press, for the held edge's
+     *  magnet (rail-move-lib `snapResize`) — null: no magnet. Read ONCE: a
+     *  docked window A re-places itself from window B's box, and a target
+     *  read per move would run from the edge nearing it. */
+    other: Box | null;
+    /** The axes the edge magnet works on (below); null: none — the docked
+     *  width magnet alone, with the pin off. */
+    magnet: ResizeAxes | null;
+  } | null>(null);
+  // The box the last move asked for — what the release saves. A ref, not
+  // `box`: the move's state write may not have committed when the pointer
+  // comes up (reviewer).
+  const dragLast = useRef<Box | null>(null);
+  const onGripDown = (corner: MoveEdge) => (e: ReactPointerEvent<HTMLDivElement>) => {
+    if (e.button !== 0 || !box) return;
+    e.preventDefault();
+    e.currentTarget.setPointerCapture(e.pointerId);
+    const floating = move.floating;
+    // A bottom drag stops a gap over the favourite's card when this card
+    // stands above it (`avoid`); the favourite's own card, standing on the
+    // rail's bottom, stops there (header). Floating: the viewport's bottom.
+    const floor = floating
+      ? undefined
+      : size?.align === "bottom" && railEl
+        ? railEl.getBoundingClientRect().bottom
+        : bottomClear(box, avoid);
+    // The favourite's card: never past half the window (header) — unless it
+    // is PINNED, which has no height limit but its room (owner, 2026-11-17).
+    const cap = resizeKey === "canvasRailFav" && !pinCtl.pinned ? favMaxHeight(window.innerHeight) : undefined;
+    const otherWin = moveWin === "a" ? "b" : "a";
+    // THE EDGE MAGNET (rail-move-lib `snapResize`), with the pin: both axes
+    // for window A's card (window B never moves for it); for window B's, the
+    // axes window A holds still on (`dockedBAxes`).
+    const otherBox = magnetBox(otherWin, floating);
+    const magnet =
+      moveWin === "a"
+        ? BOTH_AXES
+        : // FREE PINS: a docked window B card's neighbour is window A's NON-PIN,
+          // which never floats — only window A's pin does.
+          dockedBAxes({ floating, aFloats: !freePins && windowPos("a") !== null, mine: box, other: otherBox });
+    dragStart.current = {
+      x: e.clientX,
+      y: e.clientY,
+      box,
+      pointerId: e.pointerId,
+      corner,
+      el: e.currentTarget,
+      floating,
+      floor,
+      cap,
+      other: magnet ? otherBox : null,
+      magnet,
+    };
+    dragLast.current = null;
+    setResizing(corner);
+  };
+  const onGripMove = (e: ReactPointerEvent<HTMLDivElement>) => {
+    const start = dragStart.current;
+    if (!start || start.pointerId !== e.pointerId) return;
+    const dx = e.clientX - start.x;
+    const dy = e.clientY - start.y;
+    // The other window's card as it stood at the press (`dragStart.other`):
+    // what the held edge's magnet reaches for (`snapResize`).
+    const otherCard = start.other;
+    // FLOATING (rail-move-lib `floatResize`): inside the viewport, not the
+    // row; the same minimums and maximums; the edge magnet and its guides
+    // (owner, 2026-11-18: "top bottom left right … everywhere").
+    if (start.floating || !isDockEdge(start.corner)) {
+      const lim = {
+        minWidth: PEEK_MIN_WIDTH,
+        minHeight: PEEK_MIN_HEIGHT,
+        maxWidth: PEEK_MAX_WIDTH,
+        ...(start.cap !== undefined ? { maxHeight: start.cap } : {}),
+      };
+      const view = viewportOf(window);
+      const pulled = snapResize(start.corner, dx, dy, (x, y) => floatResize(start.corner, start.box, x, y, view, lim), otherCard, view);
+      setSnapGuides(pulled.x, pulled.y);
+      const fl = pulled.box;
+      dragLast.current = fl;
+      setBox((prev) =>
+        prev && prev.left === fl.left && prev.top === fl.top && prev.width === fl.width && prev.height === fl.height ? prev : fl,
+      );
+      return;
+    }
+    if (!row) return;
+    const bounds = row.getBoundingClientRect();
+    const dock = start.corner;
+    let next: Box;
+    if (start.magnet) {
+      // WITH THE PIN (the other card may float): the held edge's magnet, on
+      // either axis (`snapResize`) — the width magnet below is its
+      // left↔left case.
+      const pulled = snapResize(
+        dock,
+        dx,
+        dy,
+        (x, y) => dragResize(dock, start.box, x, y, bounds, start.floor, start.cap),
+        otherCard,
+        viewportOf(window),
+        undefined,
+        start.magnet,
+      );
+      setSnapGuides(pulled.x, pulled.y);
+      next = pulled.box;
+    } else {
+      const asked = dragResize(dock, start.box, dx, dy, bounds, start.floor, start.cap);
+      // THE WIDTH MAGNET (card-snap.ts): the other window's card — window A's
+      // for the favourite's card, window B's (`avoid`) for the list's.
+      const snapped = snapWidth(asked, dock, resizeKey ? windowABox() : avoid, PEEK_MIN_WIDTH, dragMaxWidth(start.box, bounds));
+      setSnapGuide(snapped.guide);
+      next = snapped.box;
+    }
+    dragLast.current = next;
+    setBox((prev) =>
+      prev && prev.left === next.left && prev.top === next.top && prev.width === next.width && prev.height === next.height
+        ? prev
+        : next,
+    );
+  };
+  // The drag ends: `save` on the grip's own release; not when the card swapped
+  // chat, unpinned or hid under the pointer (the effect below) — that drag
+  // was about a card that is gone (CodeRabbit on #2062). Either way the
+  // placement effects take over again and set the card level with its ring
+  // at the size it now has (header).
+  const sizeKey: RailSizeKey = resizeKey ?? "canvasRailPeek";
+  const endDrag = (save: boolean) => {
+    const start = dragStart.current;
+    dragStart.current = null;
+    setResizing(null);
+    setSnapGuides([], []);
+    const last = dragLast.current;
+    dragLast.current = null;
+    if (start && start.el.hasPointerCapture?.(start.pointerId)) start.el.releasePointerCapture(start.pointerId);
+    // A FREE PIN'S RESIZE IS THE PIN'S ALONE (rail-slots-lib): the box as the
+    // drag left it is the window's frozen box now — never the shared size the
+    // non-pins take.
+    if (start?.floating && freePinsRef.current) {
+      if (
+        save &&
+        last &&
+        (last.left !== start.box.left || last.top !== start.box.top || last.width !== start.box.width || last.height !== start.box.height)
+      )
+        commitWindowBox(moveWin, last);
+      return;
+    }
+    // A FLOATING card's left or top grip moved its corner: the window stands
+    // there now (rail-move-lib).
+    if (save && start?.floating && last && (last.left !== start.box.left || last.top !== start.box.top))
+      move.setPos({ left: last.left, top: last.top });
+    // A press that never moved saves nothing — not the default size, not a
+    // size the row clamped (reviewer).
+    if (!save || !start || !last || !shownKey || (last.width === start.box.width && last.height === start.box.height)) return;
+    // WHAT IS REMEMBERED (Bugbot and CodeRabbit on #2062): only a dimension
+    // the drag changed, and only when the row let it reach the minimum — a
+    // height-only drag in a narrow window must not persist the width the row
+    // clamped the card to, and a drag in a row shorter than PEEK_MIN_HEIGHT
+    // must not replace a remembered height with the row's. The other
+    // dimension keeps what was remembered, else the pinned card's default —
+    // read off the updater's own document, so a replay onto the server's
+    // copy (ui-layout, before hydrate) keeps that copy's value (ClaudeRail
+    // `savePopSize`; CodeRabbit on #2407).
+    const pick = (changed: boolean, got: number, min: number, kept: number | undefined, fallback: number) =>
+      changed && got >= min ? got : (kept ?? fallback);
+    const widthMoved = last.width !== start.box.width;
+    const heightMoved = last.height !== start.box.height;
+    const got = { width: last.width, height: last.height };
+    // SET, never toggle (ui-layout header): the same answer on any base.
+    patchUiLayout((d) => {
+      const prev = storedPeekSize(sizeKey, d);
+      // Nothing remembered yet: the card's default — the pinned card's, or
+      // the fixed wish's (the favourite's 380×520).
+      const width = pick(widthMoved, got.width, PEEK_MIN_WIDTH, prev?.width, size?.width ?? PEEK_WIDTH);
+      const height = pick(heightMoved, got.height, PEEK_MIN_HEIGHT, prev?.height, size?.maxHeight ?? PEEK_MAX_HEIGHT);
+      return d[sizeKey]?.width === width && d[sizeKey]?.height === height ? d : { ...d, [sizeKey]: { width, height } };
+    });
+  };
+  const onGripUp = (e: ReactPointerEvent<HTMLDivElement>) => {
+    const start = dragStart.current;
+    if (!start || start.pointerId !== e.pointerId) return;
+    endDrag(true);
+  };
+  // The grip can leave mid-drag (Escape, the chat pruned, the card unpinned
+  // or hidden), or the card can SWAP chat under it (another ring's press):
+  // the drag is cancelled there, unsaved — or `.is-resizing` would stick,
+  // the follow-the-ring paths would stand back for good (reviewer), and a
+  // release would save a size that was about the old chat (CodeRabbit).
+  const visible = on && box !== null && shownKey !== null;
+  // Its live box, docked or floating, for the other window's head drag to
+  // snap to (rail-move-store `windowBox`).
+  useWindowBox(moveWin, visible ? box : null, freePins && move.floating);
+  // A CLICKED-OPEN NON-PIN PUSHES THE PINS IT COVERS (rail-slots-lib): open
+  // by a press (`pinned`, the list's; `held`, the favourite's), beside the
+  // rail. A hover's preview pushes nothing.
+  usePusher(moveWin, freePins && visible && !move.floating && (pinned || held) ? box : null);
+  // OPEN, SO READ (task-open-read `useHoldOpenTask`): a chat the reader
+  // pressed open here — pinned or held, not a passing hover — is a chat on
+  // screen; what lands in it while it shows is read, and raises no notice.
+  useHoldOpenTask(visible && (pinned || held) && shown?.pulse.session_id ? shownKey : null);
+  // The host that places another card around this one hears where it is.
+  const onBoxRef = useRef(onBox);
+  onBoxRef.current = onBox;
+  // …but not where it FLOATS (rail-move-lib): the other window places itself
+  // as if this one were not there.
+  useEffect(() => {
+    onBoxRef.current?.(visible && !move.floating ? box : null);
+  }, [visible, box, onBox, move.floating]);
+  useEffect(() => () => onBoxRef.current?.(null), []);
+  // The list's card is window A's: the box window B's grips snap to
+  // (card-snap.ts).
+  useEffect(() => {
+    if (resizeKey || !visible || !box || move.floating) return;
+    publishWindowABox("list", box);
+    return () => publishWindowABox("list", null);
+  }, [resizeKey, visible, box, move.floating]);
+  // A pinned list card — any list card with favourites on (`oneSize`) — or
+  // a card sized by the reader whatever its pin (the favourite's,
+  // `resizeKey`); a fixed-size card never.
+  const gripsOn = (size ? !!resizeKey : pinned || oneSize) && visible && !!view?.pulse.session_id;
+  const dragKey = useRef<string | null>(null);
+  useEffect(() => {
+    if (dragStart.current && (!gripsOn || dragKey.current !== shownKey)) endDrag(false);
+    dragKey.current = shownKey;
+    // `endDrag` reads refs; the flag and the key are what decide.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [gripsOn, shownKey]);
+  // …and a card that leaves the page under a resize takes its guides with it
+  // (no pointerup will come to clear them; reviewer, 2026-11-18).
+  useEffect(
+    () => () => {
+      if (dragStart.current) setSnapGuides([], []);
+    },
+    [],
+  );
+  // A ui-layout hydrate that lands after the first render replaces the
+  // cache without a render of ours: re-render, so a pinned card up at that
+  // moment is re-placed at the saved size (CodeRabbit on #2062).
+  const [, setLayoutTick] = useState(0);
+  useEffect(() => subscribeUiLayout(() => setLayoutTick((n) => n + 1)), []);
+
+  // PLACED, THEN SHOWN (header). Hidden → shown sets the box on this frame and
+  // the class on the next; shown → shown (a swap) moves the box under the
+  // class, which glides; shown → hidden drops the class and keeps the box.
+  useLayoutEffect(() => {
+    if (!shownKey) {
+      setOn(false);
+      return;
+    }
+    const next = place(shownKey);
+    if (!next) {
+      onNoRoom();
+      return;
+    }
+    setBox(next);
+    const id = requestAnimationFrame(() => setOn(true));
+    return () => cancelAnimationFrame(id);
+    // `place` reads the DOM; the key is what decides when to re-read.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [shownKey]);
+
+  // A WARM MOUNT NEEDS A REAL BOX: the first chat mounts before anything is
+  // shown, and a chat laid out at 0×0 would do its first paint and its
+  // scroll-to-end in a box it is about to leave. Place the hidden card for
+  // the warmed ring, so the mount lays out at the size it will be shown at.
+  const warmKey = kept[0]?.pulse.key ?? null;
+  useLayoutEffect(() => {
+    if (box || !warmKey) return;
+    setBox(place(warmKey) ?? { left: -PEEK_WIDTH - 50, top: 0, width: PEEK_WIDTH, height: PEEK_MAX_HEIGHT });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [box, warmKey]);
+
+  // FOLLOW THE RING while up: a window resize, the rail's own list scrolling
+  // under the pointer on a short window, and the row changing shape (the
+  // sidebar folding, a pane opening); plus every render, cheaply — the pulse
+  // re-sorts the rail, and a ring that moved takes its card with it.
+  useEffect(() => {
+    if (!shownKey || !railEl) return;
+    const re = () => {
+      if (resizingRef.current) return;
+      const next = place(shownKey);
+      // The row shrank under the card (a window resized down to nothing):
+      // the card leaves rather than standing clamped over the canvas.
+      if (!next) {
+        onNoRoom();
+        return;
+      }
+      setBox((prev) =>
+        next && prev && next.left === prev.left && next.top === prev.top && next.width === prev.width && next.height === prev.height
+          ? prev
+          : next,
+      );
+    };
+    window.addEventListener("resize", re);
+    // The rail's list scrolls and so do its favourites: the
+    // ring moves under a card that is up, and the card goes with it.
+    railEl.addEventListener("scroll", re, true);
+    const ro = row && typeof ResizeObserver !== "undefined" ? new ResizeObserver(re) : null;
+    if (row && ro) ro.observe(row);
+    const unwatch = followRailWidth ? watchRailWidth(railEl, re) : null;
+    return () => {
+      window.removeEventListener("resize", re);
+      railEl.removeEventListener("scroll", re, true);
+      ro?.disconnect();
+      unwatch?.();
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [shownKey, railEl, followRailWidth]);
+  useEffect(() => {
+    if (!shownKey || resizing) return;
+    const next = place(shownKey);
+    if (next && box && (next.top !== box.top || next.left !== box.left || next.width !== box.width || next.height !== box.height))
+      setBox(next);
+  });
+
+  // LEAVING A CHAT SAVES ITS DRAFT (owner, 2026-10-30: "if I make the draft
+  // in the card it doesn't update instantly"). A session chat's composer
+  // writes its unsent words on window blur, page hide or its own UNMOUNT —
+  // never per keystroke (Composer, "one rule for every composer") — and a
+  // kept-alive mount never unmounts: the card hid, the words sat unwritten,
+  // the ring's draft dot waited for the pane to open. So the card hiding, or
+  // swapping to another chat, is the leave: the chat that just left view
+  // flushes its draft syncer now, and the listing feed carries the dot back
+  // to the ring (ClaudeRail `onDraftChange` → `refreshListing`).
+  const lastShownKey = useRef<string | null>(null);
+  useEffect(() => {
+    const prev = lastShownKey.current;
+    lastShownKey.current = shownKey;
+    if (!prev || prev === shownKey) return;
+    const seat = kept.find((s) => s.pulse.key === prev);
+    const sid = seat?.pulse.session_id;
+    if (!sid) return;
+    const file = seat.row?.target || seat.pulse.target || seat.pulse.project;
+    peekDraftSyncer(chatDraftKey(sid, file))?.flushNow();
+    // `kept` only matters for the seat that just left; the key is the trigger.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [shownKey]);
+
+  // THE SAFE CONE (header; rail-peek-lib `inSafeCone`): while the card is up,
+  // every pointer move is tested against the triangle from the shown ring's
+  // centre to the card's padded right edge. Inside → `onCone(true)`: the
+  // card holds and a ring crossed on the way does not swap; outside →
+  // `onCone(false)`: the intent re-arms for whatever the pointer rests on.
+  // The bridge's own enter/leave feed the same switch, so one clock
+  // (PEEK_CONE_MS) covers both.
+  const coneOn = useRef(false);
+  const setCone = (inside: boolean) => {
+    if (coneOn.current === inside) return;
+    coneOn.current = inside;
+    onCone(inside);
+  };
+  useEffect(() => {
+    // None for a FLOATING card (rail-move-lib): it is pinned, and stands
+    // nowhere near its ring.
+    if (!on || !box || !shownKey || move.floating) return;
+    const anchor = (coneOf ?? anchorOf)(shownKey);
+    if (!anchor) return;
+    // The apex is read per move, not once: with the card anchored on the
+    // list's top (ClaudeRail `anchorOf`, 2026-11-06) the list can scroll
+    // under a resting card, moving the ring without moving the box
+    // (CodeRabbit on #2161).
+    const onMove = (e: PointerEvent) => {
+      const inCard = cardRef.current?.contains(e.target as Node) ?? false;
+      const r = anchor.getBoundingClientRect();
+      const apex = { x: r.left + r.width / 2, y: r.top + r.height / 2 };
+      setCone(!inCard && inSafeCone({ x: e.clientX, y: e.clientY }, apex, box));
+    };
+    document.addEventListener("pointermove", onMove, true);
+    return () => {
+      document.removeEventListener("pointermove", onMove, true);
+      setCone(false);
+    };
+    // `onCone` is the host's stable callback.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [on, box, shownKey, move.floating]);
+
+  // INERT WHILE HIDDEN (React 18 has no `inert` prop): the fading card and
+  // the warm mounts behind it take no focus, no hit, and are out of the
+  // accessibility tree — `aria-hidden` on a subtree that might still hold
+  // focus is the thing this avoids.
+  useLayoutEffect(() => {
+    cardRef.current?.toggleAttribute("inert", !visible);
+  }, [visible]);
+
+  useImperativeHandle(
+    ref,
+    () => ({
+      focusChat() {
+        if (!shownKey) return false;
+        const box = focusRefs.current.get(shownKey)?.current;
+        const target = box ?? cardRef.current?.querySelector<HTMLElement>("button");
+        if (!target) return false;
+        target.focus({ preventScroll: true });
+        return true;
+      },
+      focusComposer() {
+        const box = shownKey ? focusRefs.current.get(shownKey)?.current : null;
+        if (!box) return false;
+        box.focus({ preventScroll: true });
+        return true;
+      },
+    }),
+    [shownKey],
+  );
+
+  // WHICH FOCUS HOLDS THE CARD. Typing (an editable), a popup of the chat's
+  // (its ⋮ menu, a picker, a dialog), or focus that the KEYBOARD brought here
+  // (Tab, an arrow — the ArrowLeft way in) — those are a reader using the
+  // card, and it must not close under them. A plain button focused by a
+  // click, or by a menu handing focus back to its trigger on Escape, is not:
+  // a reader who closed the ⋮ and moved the pointer away expects the card to
+  // follow the pointer rule again, not to stand until a second Escape.
+  const lastKeyAt = useRef(0);
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Tab" || e.key.startsWith("Arrow")) lastKeyAt.current = Date.now();
+    };
+    // A pointer press focuses by mouse: a click right after a Tab is not
+    // keyboard focus (CodeRabbit on #2029).
+    const onPointer = () => {
+      lastKeyAt.current = 0;
+    };
+    document.addEventListener("keydown", onKey, true);
+    document.addEventListener("pointerdown", onPointer, true);
+    return () => {
+      document.removeEventListener("keydown", onKey, true);
+      document.removeEventListener("pointerdown", onPointer, true);
+    };
+  }, []);
+  const onFocusCapture = (e: ReactFocusEvent<HTMLDivElement>) => {
+    const t = e.target as HTMLElement;
+    const editable =
+      t.matches("textarea, input, select, [contenteditable=''], [contenteditable='true']");
+    // NOT the card itself, which is a `dialog` too: the nearest popup role
+    // above the target has to be something INSIDE the card.
+    const pop = t.closest("[role='menu'], [role='listbox'], [role='dialog'], [role='alertdialog']");
+    const popup = !!pop && pop !== cardRef.current;
+    const keyboard = Date.now() - lastKeyAt.current < 400;
+    onHold(editable || popup || keyboard);
+  };
+  const onBlurCapture = (e: ReactFocusEvent<HTMLDivElement>) => {
+    const next = e.relatedTarget as Node | null;
+    if (next && e.currentTarget.contains(next)) return;
+    onHold(false);
+  };
+  // Escape ON THE HEAD only. The chat hands its own Escape up through
+  // `onEscape` once nothing of its own (a menu, the shot viewer) is open; a
+  // card-wide handler would close the card under an open menu and, having
+  // prevented default, stop the chat's handler from closing the menu itself.
+  const onHeadKeyDown = (e: ReactKeyboardEvent<HTMLDivElement>) => {
+    if (e.key === "Escape" && !e.defaultPrevented && !heldRef.current) {
+      e.preventDefault();
+      onDismiss();
+    }
+  };
+
+  const head = view ? seatFacts(view, where) : null;
+  // The Open's ↗ (`openIcon`): only for a door that leaves the page on screen.
+  const openArrow = !!head?.href && !!openIcon?.(head.href);
+
+  // THE ⋮ IS THE CHAT'S OWN (owner, 2026-10-30: "it is not the same kebab
+  // menu — fix that"): `@apps/claude/ui/Kebab`, the menu the pane's chat
+  // wears — continue in terminal, copy the command, download the transcript,
+  // archive, delete — with its own labels, refusals and erase dialog. Its
+  // popup is a portal; the card HOLDS through it because the popup takes the
+  // keyboard focus and React's focus events cross portals (`onFocusCapture`
+  // → `onHold(true)`), and a press on one of its rows is "inside" by the
+  // same route (`onPressInside`). Filing or erasing the task re-reads the
+  // listing; the pulse then takes the ring, and the card with it (prune).
+  // ONE ⋮ EVERYWHERE (Akshil, 2026-11-09: "keep all options in window A/B
+  // kebab menu as well"): the pane chat's menu leads with Full screen and
+  // Breakout…, so this card's does too. Breakout is reported by each mounted
+  // chat (`onBreakoutControl`, TaskPeek's route); one stable reporter per chat
+  // key, because a fresh callback each render would re-fire the chat's report
+  // effect and loop.
+  const [breakoutCtls, setBreakoutCtls] = useState<Record<string, BreakoutControl | null>>({});
+  const breakoutReporters = useRef(new Map<string, (ctl: BreakoutControl | null) => void>());
+  const breakoutReporter = (key: string) => {
+    let fn = breakoutReporters.current.get(key);
+    if (!fn) {
+      fn = (ctl) => setBreakoutCtls((m) => (m[key] === ctl ? m : { ...m, [key]: ctl }));
+      breakoutReporters.current.set(key, fn);
+    }
+    return fn;
+  };
+  const onFiled = () => {
+    // A filed or erased chat leaves the rail: a held card lets go with it
+    // (a hold must not keep a ring for a chat the reader just put away).
+    onHeld(false);
+    onReload();
+  };
+  // The Archive seat's call can finish after a ring press swapped the card
+  // to another (held) chat: only the chat that was filed lets go of the hold,
+  // read off the ref when the call returns, not when it started.
+  const shownKeyRef = useRef(shownKey);
+  shownKeyRef.current = shownKey;
+  const onFiledKey = (key: string) => {
+    if (shownKeyRef.current === key) onHeld(false);
+    onReload();
+  };
+
+  // THE ARCHIVE SEAT (owner, 2026-11-02): the ⋮'s Archive as a button of its
+  // own on the head's first row. Same door, same rule: a run in flight asks
+  // first (`useArchiveConfirm`, the wording every single-task archive
+  // shares), a filed task re-reads the listing and the pulse takes the ring.
+  // Its dialog renders INSIDE the card so a press on it is "inside"
+  // (`onPressInside` runs in React's capture phase, which crosses portals)
+  // and the card holds through the ask. `filing` greys the seat while the
+  // call is out, so a second press cannot file the task twice.
+  const archiveAsk = useArchiveConfirm();
+  const cancelArchiveAsk = archiveAsk.cancel;
+  // Which chat the pending ask is about: the dialog draws only while that
+  // chat is still the shown one — a swap or close with the ask up must not
+  // leave a Confirm that files the chat that left view.
+  const askedKey = useRef<string | null>(null);
+  const [filing, setFiling] = useState(false);
+  /** THE ARCHIVE SEAT: the shared head seats it over its status ring
+   *  (owner, 2026-11-06). */
+  const archiveButton = (facts: SeatFacts) => (
+    <button
+      type="button"
+      className="claude-rail-peek-btn claude-rail-peek-archive"
+      disabled={filing}
+      // ONE WORD, the List seat's caption (tasks-lib `filingIntent`;
+      // Akshil, 2026-10-05: "just say archive").
+      data-hint={facts.t.status === "archived" ? "Unarchive" : "Archive"}
+      aria-label={facts.t.status === "archived" ? "Unarchive this task" : "Archive this task"}
+      onClick={() => fileTask(facts)}
+    >
+      {facts.t.status === "archived" ? (
+        <ArchiveRestore size={14} aria-hidden="true" />
+      ) : (
+        <Archive size={14} aria-hidden="true" />
+      )}
+    </button>
+  );
+  /** A place tag's door walked through: the hand-over of chat `key` runs at
+   *  the push, never on a hop the leave guard refused (rail-peek-lib
+   *  `onHop`, `onChipLeave`). */
+  const walkDoor = (key: string, href: string, isDir: boolean | undefined, keyboard: boolean) => {
+    const go = () => navigateUrl(href, isDir === undefined ? undefined : { isDir });
+    if (!onChipLeave) {
+      go();
+      return;
+    }
+    const want = new URL(rewriteLegacyUrl(href), location.href);
+    // Less the view ask (`focus=`): the canvas page takes it off the URL on
+    // the same nav event this listens to (Bugbot on #2167).
+    const bare = (search: string) => {
+      const q = new URLSearchParams(search);
+      q.delete(CANVAS_FOCUS_PARAM);
+      return q.toString();
+    };
+    onHop(
+      window,
+      NAV_EVENT,
+      () => location.pathname === want.pathname && bare(location.search) === bare(want.search),
+      () => onChipLeave(key, keyboard),
+      go,
+    );
+  };
+  const fileTask = (facts: SeatFacts) => {
+    askedKey.current = facts.t.key;
+    const archived = facts.t.status === "archived";
+    const go = async () => {
+      setFiling(true);
+      try {
+        if (archived) await unarchiveTask(facts.t.key);
+        else await archiveTask(facts.t.key);
+        onFiledKey(facts.t.key);
+      } catch (e) {
+        notify({ title: (e as Error).message, tone: "error" });
+      } finally {
+        setFiling(false);
+      }
+    };
+    if (archived) void go();
+    else
+      archiveAsk.guard(
+        // The pulse's status and jobs, not the listing row's: the row can still
+        // read "done" a moment after a new turn started.
+        { status: facts.t.status, kind: facts.row?.kind ?? "task", background_jobs: facts.t.background_jobs },
+        () => void go(),
+      );
+  };
+
+  // THE STAR (header): the server stores it, the pulse brings it back to
+  // every rail. A star pressed on opens the favourite's card in THIS window
+  // (the host's `onStarred`, ClaudeRail) — a star you just pressed is a card
+  // you want to see; the server's own `starred_open` answer is not read.
+  // UNSTARRING shuts the card only under `dismissOnUnstar`
+  // (the favourite's card host, FavouritePeek) — its ring leaves the foot,
+  // and a card with no ring to stand beside lets go — and only if the card
+  // is still on that chat when the call returns.
+  // THE STAR SHOWS THE ANSWER AT ONCE (`starMark`): the pulse that carries
+  // `starred` back is a poll away — seconds on a busy Mac — and a star that
+  // stays hollow after its press reads as a dead button. The server's answer
+  // is kept per key until the pulse agrees — or has had its chance to: the
+  // SECOND distinct pulse row after the press, or STAR_MARK_MS, ends it
+  // whatever it says (another window may have flipped the star meanwhile;
+  // rail-peek-lib `starMarkStep`). The rail is told too (`onStarred`), so its
+  // own rules (letting go of a chat the favourite's card takes) run before
+  // the pulse.
+  // THE HEAD'S TAG SEATS (Akshil, 2026-11-19: "I would rather have a PR thing
+  // on this tab and also know about the branch"): the shown chat portals its
+  // branch tag into the head's chips (ChatMount `headChipsHost`) and its pause
+  // word beside the identity (`headStatusHost`) — the Tasks card's chat head,
+  // which had them; a task's own card had neither, nor the PR tag.
+  //
+  // EACH SEAT REMEMBERS WHICH CHAT'S HEAD IT IS IN. The head is keyed on the
+  // chat, so a swap to another chat makes new seats — and for one render the
+  // new chat would be handed the old head's seats, mount its worktree menu
+  // into a node about to be thrown away, and mount it again in the new one
+  // (two worktree listings a swap; review, 2026-11-19). A seat is given only
+  // to the chat it was made for.
+  const headKeyRef = useRef<string | null>(null);
+  headKeyRef.current = viewKey;
+  const [chipsSeat, setChipsSeat] = useState<{ key: string | null; el: HTMLElement | null }>(NO_SEAT);
+  const [statusSeat, setStatusSeat] = useState<{ key: string | null; el: HTMLElement | null }>(NO_SEAT);
+  const setChipsHost = useCallback(
+    (el: HTMLElement | null) => setChipsSeat(el ? { key: headKeyRef.current, el } : NO_SEAT),
+    [],
+  );
+  const setStatusHost = useCallback(
+    (el: HTMLElement | null) => setStatusSeat(el ? { key: headKeyRef.current, el } : NO_SEAT),
+    [],
+  );
+  // "Open in Tasks" reads the page's path: a card kept across a hop re-reads it.
+  useUrlVersion();
+  const [starMark, setStarMark] = useState<StarMark | null>(null);
+  const starSeq = useRef(0);
+  const starOf = (t: RailRow["pulse"]): boolean =>
+    starMark && starMark.key === t.key ? starMark.on : !!t.starred;
+  useEffect(() => {
+    if (!starMark) return;
+    // The shown seat too.
+    const t = (kept.find((s) => s.pulse.key === starMark.key) ?? (view?.pulse.key === starMark.key ? view : null))?.pulse;
+    const next = starMarkStep(starMark, t);
+    if (next !== starMark) setStarMark(next);
+  }, [kept, view, starMark]);
+  const starMarkSeq = starMark?.seq ?? 0;
+  useEffect(() => {
+    if (!starMarkSeq) return;
+    const id = window.setTimeout(() => setStarMark((m) => (m && m.seq === starMarkSeq ? null : m)), STAR_MARK_MS);
+    return () => window.clearTimeout(id);
+  }, [starMarkSeq]);
+  const toggleStar = async (t: RailRow["pulse"]) => {
+    const on = !starOf(t);
+    let res: Awaited<ReturnType<typeof setTaskFavourite>>;
+    try {
+      res = await setTaskFavourite(t.key, on);
+    } catch (e) {
+      notify({ title: errorWords(e, "The star could not be saved"), tone: "error" });
+      return;
+    }
+    starSeq.current += 1;
+    setStarMark({ key: t.key, on: res.starred, pulse: t, seen: 0, seq: starSeq.current });
+    onStarred?.(t.key, res.starred);
+    // Unstarred but still blocked: still a favourite as the rail counts one
+    // (rail-peek-lib `favLike`), so its card stays.
+    if (starOutcome(favLike({ status: t.status, starred: res.starred }), t.key, shownKeyRef.current, dismissOnUnstar).dismiss) {
+      onHeld(false);
+      onDismiss("unstar");
+    }
+    onReload();
+    pokeTasks();
+  };
+
+  // A HELD card ignores Escape (header): the head's and the chat's Escape
+  // both read the flag off a ref, so the chat's handler need not re-mount.
+  const heldRef = useRef(held);
+  // …and with the pin (`pinCtl`) Escape has one rule (owner, 2026-11-16: "a
+  // consistent behaviour"): a hover and a temp card close on it, only a
+  // PINNED one ignores it — a favourite's open card included, which is
+  // `held` for every other purpose.
+  heldRef.current = pinCtl.pinned;
+  const onChatEscape = useCallback(() => {
+    if (!heldRef.current) onDismiss();
+  }, [onDismiss]);
+
+  // A swap to another chat, or the card closing, drops an Archive ask still
+  // waiting for its answer: it was about the chat that left view and must
+  // not come back with it.
+  useEffect(() => {
+    askedKey.current = null;
+    cancelArchiveAsk();
+  }, [shownKey, cancelArchiveAsk]);
+
+  // THE BRIDGE (owner, 2026-10-30: "an invisible [strip] between the item I
+  // am hovering and the preview, so the user doesn't have to move fast or
+  // time it"): a transparent band over the gap between the card's right edge
+  // and the rail, the card's full height, that counts as the card for the
+  // pointer — resting in the gap holds the card open past the grace, and
+  // the canvas wrapper under the gap never sees the pointer (it focuses its
+  // frame on enter). It stops 3px short of the rail so the rail's seam (the
+  // drag that opens the pane) keeps its own hit area. Only while the card is
+  // up (`.is-on`), like the card itself.
+  // None while FLOATING (rail-move-lib): a pinned card never closes on leave.
+  const bridge =
+    !move.floating && box && railLeft.current > box.left + box.width + 1
+      ? { left: box.left + box.width, top: box.top, width: Math.max(0, railLeft.current - 3 - (box.left + box.width)), height: box.height }
+      : null;
+
+  // THE HEAD'S SEATS (the shared head, TaskHead): the place and the ⋮.
+  const placeEl = (head: SeatFacts, part?: "place" | "where") => (
+      // THE PLACE TAGS (PlaceTags; owner, 2026-11-06: "in the first
+      // line we have the × and then the tag"): the place, then
+      // where in it — each a door to its view; on this canvas the
+      // second tag selects its node or fits the canvas IN PLACE
+      // (`RailHere.tag`), the card pinned first since the rail
+      // narrows to the node and only a pinned card is held through
+      // that (CodeRabbit on #2044). A navigation hands a
+      // favourite's chat over at the push (`onChipLeave`, the
+      // where-chip's rule below).
+      <PlaceTags
+        scope={head.scope}
+        at={head.at}
+        pageRoot={pageRoot ?? null}
+        sessionId={head.t.session_id ?? null}
+        {...(part ? { part } : {})}
+        {...(here?.()?.tag
+          ? {
+              onSelectNode: (udfName: string | null, sessionId?: string | null) => {
+                onPin();
+                here?.()?.tag?.(udfName, sessionId ?? null);
+              },
+            }
+          : {})}
+        onNavigate={(href, o) => {
+          // A door out closes the card, the Open button's way
+          // (owner, 2026-11-06: "open in the fav window closes the
+          // window and opens the view and the chat"). The rail's
+          // own card (`onChipLeave` given) hops the where-chip's
+          // way, handing a favourite's chat over at the push; the
+          // favourite's window walks the Open door (`onOpenChat`:
+          // the page's door, the card closed once the hop went).
+          // A tag is a VIEW move, not a door out: the favourite's
+          // window stays up across the hop (owner, 2026-11-07:
+          // "why does the fav window close?") — a plain
+          // navigation, never the Open door, which closes it. The
+          // rail's card hops the where-chip's way, handing a
+          // favourite's chat over at the push.
+          if (onChipLeave) walkDoor(head.t.key, href, o.isDir, o.keyboard);
+          else void navigateUrl(href, o.isDir === undefined ? undefined : { isDir: o.isDir });
+        }}
+        onSelected={(e) => {
+          // Back to the composer (the where-chip's rule below).
+          const box = shownKey ? focusRefs.current.get(shownKey)?.current : null;
+          (box ?? cardRef.current?.querySelector<HTMLElement>("button") ?? e.currentTarget).focus({
+            preventScroll: true,
+          });
+        }}
+      />
+  );
+  const starButton = (head: SeatFacts) => (
+    <button
+      type="button"
+      className={"claude-rail-peek-btn claude-rail-peek-star" + (starOf(head.t) ? " is-on" : "")}
+      aria-pressed={starOf(head.t)}
+      // One label, the state in `aria-pressed`.
+      aria-label="Favourite"
+      data-hint={starOf(head.t) ? "Remove from favourites" : "Add to favourites"}
+      onClick={() => void toggleStar(head.t)}
+    >
+      <Star size={14} fill={starOf(head.t) ? "currentColor" : "none"} aria-hidden="true" />
+    </button>
+  );
+  const kebabFor = (head: SeatFacts, hostItems?: KebabExtraItem[]) => {
+    // OPEN IN TASKS (off the Tasks page): the Open door's close, after a hop
+    // to the Tasks page with this task's panel up.
+    const inTasks = openInTasksItem({
+      on: true,
+      taskKey: head.t.session_id ? head.t.key : null,
+      onOpen: (href) => {
+        void navigateUrl(href);
+        onHeld(false);
+        onDismiss("door");
+      },
+    });
+    const extraItems = inTasks ? [...(hostItems ?? []), inTasks] : hostItems;
+    return (
+    <AgentProvider backend={head.row?.backend ?? head.t.backend ?? ""}>
+      <Kebab
+        // Keyed per chat: the menu caches its labels per session.
+        key={head.t.key}
+        file={head.row?.target || head.t.target || head.t.project}
+        sessionId={head.t.session_id}
+        running={taskColumn(head.t) === "in_progress" || taskColumn(head.t) === "queued"}
+        asking={taskColumn(head.t) === "needs_attention"}
+        queued={taskColumn(head.t) === "queued"}
+        onErased={onFiled}
+        onArchived={onFiled}
+        // FULL SCREEN: the Open door, then the Claude panel
+        // filling the window (side-maximized-store).
+        {...(head.href && head.t.session_id && opensInSidePane(head.href) ? {
+          fullScreen: {
+            on: false,
+            onToggle: () => {
+              // A request the side-pane chat takes once it is
+              // mounted there (side-maximized-store) — made only
+              // once the hop went, so a refused leave never
+              // maximizes the pane it stayed on.
+              const sid = head.t.session_id;
+              void Promise.resolve(onOpenChat(head.href!)).then((went) => {
+                if (went !== false) requestSideMaximized(sid);
+              });
+              onHeld(false);
+              onDismiss("door");
+            },
+          },
+        } : {})}
+        {...(breakoutCtls[head.t.key]?.available ? {
+          breakout: {
+            picking: breakoutCtls[head.t.key]!.picking,
+            onToggle: breakoutCtls[head.t.key]!.toggle,
+          },
+        } : {})}
+        {...(extraItems ? { extraItems } : {})}
+      />
+    </AgentProvider>
+    );
+  };
+
+  // A FREE PIN IS DRAWN WHERE ITS WINDOW STANDS THIS RENDER (owner, 2026-11-19:
+  // a pushed pin trailed the edge of the window being resized): `box` follows
+  // the window's position through a placement effect, a render or two behind;
+  // the position itself (`move.pos`, pushed and all) is in hand now. The size
+  // is the box's. Not while this card's own grip is held: the grip moves it.
+  const drawn = freePins && move.floating && !resizing ? drawnBox(box, move.pos) : box;
+  return createPortal(
+    <>
+    {bridge && (
+      <div
+        className={"claude-rail-peek-bridge" + (visible ? " is-on" : "")}
+        aria-hidden="true"
+        style={bridge}
+        onPointerEnter={() => setCone(true)}
+        onPointerLeave={() => setCone(false)}
+      />
+    )}
+    <div
+      ref={cardRef}
+      id={id}
+      className={
+        "claude-rail-peek" +
+        (visible ? " is-on" : "") +
+        " favs-on" +
+        (resizing ? " is-resizing" : "") +
+        (view && !view.pulse.session_id ? " is-plain" : "") +
+        move.className
+      }
+      role="dialog"
+      // Which window the card is, for the pin icon (RailPin `windowOf`).
+      {...(freePins ? { "data-rail-win": moveWin } : {})}
+      // Ours: never makes the canvas screenshot refuse (canvas-shot-native).
+      data-shot-own=""
+      aria-label={head ? `${head.label} — preview` : "Chat preview"}
+      style={
+        drawn
+          ? view?.pulse.session_id
+            ? { left: drawn.left, top: drawn.top, width: drawn.width, height: drawn.height }
+            : { left: drawn.left, top: drawn.top, width: drawn.width }
+          : undefined
+      }
+      onPointerEnter={onPointerEnter}
+      onPointerLeave={onPointerLeave}
+      onPointerDownCapture={onPressInsideCapture}
+      onPointerDown={move.onPointerDown}
+      onDoubleClick={move.onDoubleClick}
+      onFocusCapture={onFocusCapture}
+      onBlurCapture={onBlurCapture}
+      onInputCapture={onTyped}
+    >
+      {gripsOn &&
+        // THE GRIPS (header): the card's two left corners and its left, top
+        // and bottom edges, hit areas with a resize cursor, only on a pinned
+        // chat card (or the favourite's). `aria-hidden`: a pointer-only
+        // affordance; the card's size is a preference, not a control the
+        // keyboard needs.
+        // …and, FLOATING, the right edge and corners too (rail-move-lib).
+        (move.floating ? FLOAT_GRIPS : ALL_GRIPS).map((corner) => (
+          <div
+            key={corner}
+            className={"claude-rail-peek-grip is-" + corner + (resizing === corner ? " is-active" : "")}
+            aria-hidden="true"
+            onPointerDown={onGripDown(corner)}
+            onPointerMove={onGripMove}
+            onPointerUp={onGripUp}
+            onPointerCancel={onGripUp}
+            onLostPointerCapture={() => dragStart.current && endDrag(true)}
+          />
+        ))}
+      {gripsOn &&
+        (move.floating ? FLOAT_GRIPS : ALL_GRIPS).map((e) => <div key={"ring-" + e} className={"rail-grip-ring is-" + e} aria-hidden="true" />)}
+      <div className="claude-rail-peek-card">
+        {head && (
+          // THE SHARED HEAD (shell/TaskHead), TWO LINES AT EVERY WIDTH (a
+          // rail window's rule, 2026-11-16): row 1 is the pin, `folder › file`,
+          // then the count ↔ the card's star, the time ↔ Open, and the ⋮
+          // once the card has been pressed; row 2 is the ring, the number ↔
+          // the card's archive, and the title. The wrapper keeps the old
+          // head's class for its Escape and lays out as nothing
+          // (`is-unified`, task-head.css).
+          <div className="claude-rail-peek-head is-unified" onKeyDown={onHeadKeyDown}>
+            <TaskHead
+              reveal="window"
+              // KEYED ON THE CHAT: a rename half-typed on one chat must not
+              // survive a swap to another and save there (the old head
+              // dropped its draft on every change of shown chat).
+              key={head.t.key}
+              className="claude-rail-peek-task-head"
+              pinNode={<RailPinButton pinned={pinCtl.pinned} onToggle={pinCtl.onToggle} />}
+              // WITH THE PIN no card has a × (owner, 2026-11-16: "we don't need
+              // a × button"): a click outside closes a temp card, and a
+              // pinned one is unpinned first. The pin is the head's first seat.
+              lead={null}
+              task={head.merged as Task}
+              // THE CARD'S OWN STAR (toggleStar): it tells the rail, marks the
+              // ring's pulse and dismisses the card on an unstar — the
+              // identity's plain TaskStar does none of that.
+              star={false}
+              {...(head.t.session_id ? { starNode: starButton(head) } : {})}
+              // …and its archive in the id slot, on hover. The card's own `fileTask`, which tells the rail to let go
+              // of the chat, so the head's own seat stays off: one archive,
+              // not two.
+              {...(head.t.session_id && !head.draft ? { statusOverlay: archiveButton(head) } : {})}
+              fileSeat={false}
+              // The ring's own facts, as the old head passed them to its
+              // StatusIcon: the unread mark, the unsent-draft dot, a failure.
+              ring={{
+                unread: head.unread > 0,
+                draftHeld: !!head.row && draftRing(head.merged as Task),
+                ...(head.row?.failed ? { failed: true } : {}),
+              }}
+              // The last reply after the title, as the old title row drew it
+              // — WHILE THE CARD IS A HOVER PREVIEW ONLY (Akshil, 2026-11-16):
+              // a preview says what the chat last said; a card the reader
+              // pressed (pinned, held: a ring press, a press inside, the
+              // favourite's window opened by a press) is the chat itself, and
+              // its last reply is on screen below.
+              {...(head.reply && !pinned && !held
+                ? {
+                    subtitle: (
+                      <span
+                        className="claude-rail-peek-reply"
+                        data-hint={head.reply}
+                        data-hint-title={head.line.hint ?? head.label}
+                        data-hint-reply={head.reply}
+                      >
+                        {head.reply}
+                      </span>
+                    ),
+                  }
+                : {})}
+              onRenamed={onReload}
+              // The task's pull request, and the chat's branch tag before it.
+              {...(head.t.session_id && !head.draft
+                ? { chips: <TaskPrChip task={head.merged as Task} />, chipsRef: setChipsHost, statusRef: setStatusHost }
+                : {})}
+              stacked="auto"
+              // Measured only while the card is up.
+              fitEnabled={!!shownKey}
+              // TWO LINES (Akshil, 2026-11-16): row 1 reads `folder › file`
+              // in every card, window A and B alike — the place's name (the
+              // canvas's or the folder's), then where in it (Canvas, the
+              // node, the file), which the head joins with a chevron. The
+              // name was the favourite window's alone while the head was one
+              // row.
+              place={placeEl(head, "place")}
+              {...(hasWhereTag(head.scope, head.at) ? { where: placeEl(head, "where") } : {})}
+              // The pulse's facts in the head's own slots: how many messages
+              // (the unread ones turn it to ink) and when it last moved — none
+              // for a draft or a chat with no session, as the pulse had none.
+              count={
+                head.t.session_id && !head.draft && head.count > 0
+                  ? { n: head.count, unread: head.unread }
+                  : null
+              }
+              when={
+                head.t.session_id && !head.draft && head.when
+                  ? { text: head.when, ...(head.whenFull ? { title: head.whenFull } : {}) }
+                  : null
+              }
+              open={
+                head.href
+                  ? {
+                      href: head.href,
+                      label: head.draft ? "Open the draft" : "Open this chat in the Claude panel",
+                      // ↗ only for a door that leaves the page on screen (#2218).
+                      arrow: openArrow,
+                      // No caption over the window's head (TaskHead `quiet`).
+                      quiet: true,
+                      onOpen: (href) => {
+                        onOpenChat(href);
+                        onHeld(false);
+                        onDismiss("door");
+                      },
+                    }
+                  : null
+              }
+              // THE ⋮ COMES WITH THE STAR AND THE DOOR (Akshil, 2026-11-17:
+              // "show the kebab when we show fav and open icon"): every card
+              // has it — hover preview, temp, pinned — and the head shows it
+              // with its other acts (TaskHead, the acts' layer).
+              kebab={head.t.session_id && shownKey ? kebabFor(head) : null}
+            />
+            {askedKey.current === head.t.key && archiveAsk.node}
+          </div>
+        )}
+        <div className="claude-rail-peek-body">
+          {kept.map((seat) => {
+            const { pulse: t, row } = seat;
+            const facts = seatFacts(seat, where);
+            return (
+              <div
+                key={t.key}
+                className={"claude-rail-peek-chat" + (t.key === viewKey ? " is-shown" : "")}
+              >
+                {t.session_id ? (
+                  <ChatMount
+                    onBreakout={breakoutOpener()}
+                    onBreakoutControl={breakoutReporter(t.key)}
+                    file={taskChatTarget(row ?? t)}
+                    sessionId={t.session_id}
+                    // The task's own settings, a seed (TaskPeek passes the same).
+                    {...(row?.model ? { model: row.model } : {})}
+                    {...(row?.effort ? { effort: row.effort } : {})}
+                    {...(row?.backend ?? t.backend ? { backend: (row?.backend ?? t.backend)! } : {})}
+                    chatOnly
+                    peek
+                    // A hover must never take the keyboard: the reader is pointing,
+                    // not typing, until they click into the card or ArrowLeft in.
+                    noFocus
+                    // No annotate seats: the card has no canvas of its own to mark.
+                    noAnnTools
+                    paramsSource="memory"
+                    focusRef={focusRefFor(t.key)}
+                    onEscape={onChatEscape}
+                    // A hop out of the chat (a Recent row, a link) is the ring's
+                    // own navigation: the canvas page's hop reader does the rest.
+                    onNavigate={onOpenChat}
+                    // ONE LINE UNTIL ASKED (ComposerCard `smallCard`): typing
+                    // in a card never opens the shelf; it folds back when the
+                    // card shows another chat or closes.
+                    smallCard
+                    smallCardShown={!!shown && t.key === shown.pulse.key}
+                    // Only the chat the head names fills the head's seats, and
+                    // only while the card is up: a card that has closed keeps
+                    // its last chat mounted, and its seats would keep that
+                    // chat's worktree menu and pause word (a listing each)
+                    // alive behind a card nobody is looking at.
+                    {...(shownKey && t.key === viewKey && chipsSeat.key === t.key && statusSeat.key === t.key
+                      ? { headChipsHost: chipsSeat.el, headStatusHost: statusSeat.el }
+                      : {})}
+                  />
+                ) : (
+                  // NO SESSION YET — a draft, or a scheduled task that has not
+                  // run: no conversation to show, so the card is SHORT and
+                  // says what the row is in the List's own vocabulary — the
+                  // `Draft` pill, when it was last touched, the words it holds
+                  // (the form's description or the composer's preview; the
+                  // title is already in the head), and the settings it would
+                  // run with. The head's Open is its one door.
+                  <PlainBody facts={facts} />
+                )}
+              </div>
+            );
+          })}
+        </div>
+      </div>
+    </div>
+    </>,
+    document.body,
+  );
+});

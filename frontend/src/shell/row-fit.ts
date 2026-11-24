@@ -55,7 +55,12 @@ export const ROW_DROP_SELECTOR: Record<RowDrop, string> = {
   // it. `:has()` rather than a new class on either: the wrapper is one
   // component's, used by both, and giving it a second name per caller would be
   // a distinction that exists only for this file.
-  project: ".schedule-tv-id-shield:has(.schedule-tv-id)",
+  //
+  // NEVER ON THE A/B ROW (owner, 2026-11-16: "it hides folder tag why, don't
+  // hide that"): there the rung keeps its number and folds nothing — measured
+  // as costing nothing, so the ladder does not spend a level on it — and the
+  // title gives instead. The stylesheet's rule carries the same guard.
+  project: ".tasks-row:not(.tasks-row--ab) .schedule-tv-id-shield:has(.schedule-tv-id)",
   draft: ".schedule-tv-id-shield:has(.tasks-draft-pill), .tasks-row .tasks-draft-pill",
 };
 
@@ -264,6 +269,11 @@ export function rowNeed(scope: HTMLElement, restore?: readonly number[]): number
     // its rect is the row's own width — charged as a seat it made every row
     // read as twice too wide and pinned the ladder at its last rung.
     if (style.position === "absolute" || style.position === "fixed") continue;
+    // NOR DOES A SEAT THAT SAYS SO (`data-fit-skip`): the list row's star and
+    // door seats are zero-width at rest and take a box only while the row is
+    // pointed at (tasks.css, "The a/b row"). A read that lands mid-hover must
+    // get the number the row has at rest, or the level would flap on a hover.
+    if (typeof child.hasAttribute === "function" && child.hasAttribute("data-fit-skip")) continue;
     const rect = child.getBoundingClientRect();
     if (style.display === "none") {
       // FOLDED BY THE LADDER ITSELF — put it back, at the width it had when it
@@ -353,6 +363,42 @@ export function rowNeed(scope: HTMLElement, restore?: readonly number[]): number
     }
   }
   if (seats > 1) need += gap * (seats - 1);
+  return need;
+}
+
+/** Is this a/b row showing its b items — pointed at, or a b control tabbed
+ *  to (tasks.css, "Under a pointer")? */
+function showsB(row: HTMLElement): boolean {
+  if (typeof row.matches !== "function") return false;
+  try {
+    return (
+      row.matches(".tasks-row--ab:hover") ||
+      (row.matches(".tasks-row--ab") && !!row.querySelector(".tasks-act:focus-visible, .task-star:focus-visible"))
+    );
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * A ROW POINTED AT IS CHARGED WHAT IT NEEDED AT REST (the a/b row, 2026-11-16).
+ * Under a pointer its count and time leave the flow and the star and the door
+ * take their places (tasks.css, "Under a pointer"), so a read that lands
+ * mid-hover — a listing's re-read lands about once a second while a session
+ * is live — would see a row that does not exist at rest, and the level could
+ * flap on a hover. `rest` holds each row's last resting need; a row pointed at
+ * before it was ever read is measured as it stands.
+ */
+export function rowRestNeed(
+  row: HTMLElement,
+  restore: readonly number[] | undefined,
+  rest: WeakMap<HTMLElement, number>,
+): number {
+  const pointed = showsB(row);
+  const seen = pointed ? rest.get(row) : undefined;
+  if (seen !== undefined) return seen;
+  const need = rowNeed(row, restore);
+  if (!pointed) rest.set(row, need);
   return need;
 }
 
@@ -452,6 +498,9 @@ export function useRowFit(
   // The cache outlives every measurement: an item's width is a fact about the
   // CONTENT, and re-reading it while the item is hidden would read zero.
   const costs = useRef<number[]>([]);
+  // Each row's need at rest, for a read that lands while it is pointed at
+  // (`rowRestNeed`).
+  const rest = useRef(new WeakMap<HTMLElement, number>());
   // The measurement, reachable from the epoch effect below without re-running
   // the observer effect: a listing lands about once a second while a session
   // is live, and tearing the observer down and up for each (one sweep on
@@ -469,9 +518,13 @@ export function useRowFit(
   // it can see a scroller that was not there the last time (Bugbot, #1524:
   // TaskList returns the empty state until rows arrive, so a binding made
   // once on mount observed nothing, ever).
-  const bound = useRef<{ el: HTMLElement; ro: ResizeObserver } | null>(null);
+  const bound = useRef<{ el: HTMLElement; ro: ResizeObserver; leave: () => void } | null>(null);
   const unbind = () => {
     bound.current?.ro.disconnect();
+    if (bound.current && typeof bound.current.el.removeEventListener === "function") {
+      bound.current.el.removeEventListener("pointerout", bound.current.leave, true);
+      bound.current.el.removeEventListener("focusout", bound.current.leave, true);
+    }
     bound.current = null;
     readRef.current = () => {};
   };
@@ -497,7 +550,7 @@ export function useRowFit(
       let need = 0;
       for (let i = 0; i < Math.min(rows.length, SAMPLE_ROWS); i += 1) {
         const row = rows[i];
-        if (row) need = Math.max(need, rowNeed(row, costs.current));
+        if (row) need = Math.max(need, rowRestNeed(row, costs.current, rest.current));
       }
       const next = pickRowFit({
         floored: flooredRef.current, available: el.clientWidth, need, costs: costs.current,
@@ -527,7 +580,15 @@ export function useRowFit(
     // whose box did not change.
     const ro = new ResizeObserver(schedule);
     ro.observe(el);
-    bound.current = { el, ro };
+    // A POINTED ROW ANSWERS WITH ITS LAST AT-REST NEED (`rowRestNeed`), so a
+    // listing update that lands while it is pointed at is not measured. Read
+    // again when the pointer or the focus leaves a row (CodeRabbit, #2285).
+    const leave = () => readRef.current();
+    if (typeof el.addEventListener === "function") {
+      el.addEventListener("pointerout", leave, true);
+      el.addEventListener("focusout", leave, true);
+    }
+    bound.current = { el, ro, leave };
     // NO MutationObserver ANY MORE (2026-10-09, Tasks latency design D5). It
     // watched the content for width changes — a poll landing new rows, a
     // folder chip appearing — and re-measured thirty rows' computed styles,
@@ -649,11 +710,9 @@ export interface ToolbarFit {
  * 220px, and the TITLE is what gives — it ellipsises, which is what a title is
  * for. Everything else in the row is a mark or a control, and a mark that
  * ellipsises is a mark that lies. So when even a floored title will not fit,
- * two things leave, in this order:
+ * one thing leaves:
  *
- *   1. the project NAME — a fact, repeated on the row behind the panel, and the
- *      door beside it already says where the folder is;
- *   2. the Open door — an act, so it does not simply vanish: it reappears in
+ *   1. the Open door — an act, so it does not simply vanish: it reappears in
  *      the ⋮ (TaskPeek `menuItems`). A hidden control has to be somewhere.
  *
  * The panel-hide button, the chevrons, the status ring, the number and the ⋮
@@ -661,9 +720,252 @@ export interface ToolbarFit {
  * to its actions, is the one thing a narrow window must not do.
  */
 export const PEEK_HEAD_DROPS = [
-  ".task-side-peek-project",
   ".task-side-peek-open",
 ] as const;
+
+/**
+ * THE SHARED TASK HEAD'S LADDER (shell/TaskHead.tsx; design.md, "One task head,
+ * everywhere"; the a/b slots, Akshil, 2026-11-15). What NEVER moves and never
+ * hides: the lead corner (× / ←), the folder, and the ⋮ — the way out, where
+ * the task lives, and the door to everything else. ↗ Open is the time slot's
+ * other occupant and stays reachable at every rung. What gives, in order,
+ * cumulatively:
+ *
+ *   1. the where-tag's word (TaskHead `where`: Canvas, the node, the file —
+ *      its icon stays; Akshil, 2026-11-16) and the BRANCH TAG (the worktree
+ *      pill and the worktree hint), whole: its name is shown in full or the
+ *      tag is not shown at all — never cut, never an icon alone (Akshil,
+ *      2026-11-19: "let's not show the worktree icon, let's show it full
+ *      only, if width is there");
+ *   2. the PR chip — THE LAST TAG TO LEAVE (2026-11-19: "priority PR first,
+ *      then worktree if there is space as width opens"), and it gives before
+ *      the title is cut;
+ *   3. the facts, where the title still cannot be read whole beside them.
+ *      In a panel or a pane the time leaves; its door comes back as the ↗
+ *      while the head is pointed at. In a rail window (`.is-window`: a card
+ *      off the rail) the facts STAY — every seat there holds its box so
+ *      nothing shifts under the pointer (2026-11-16), and the acts need the
+ *      facts' room anyway — and only the door's word folds to its ↗;
+ *   4. IN A RAIL WINDOW ONLY: the title, its reply and the trail leave row 1
+ *      for a row of their own (`stacked`) once the title would be cut below
+ *      `TASK_HEAD_TITLE_ROOM`; the status, the folder and the id slot stay
+ *      up, and row 1 has room for the facts again. A panel or a pane keeps
+ *      one row and lets the title ellipsise;
+ *   5. the host's seats (the pane's tools);
+ *   6. the ↑↓ chevrons (the lead stays);
+ *   7. the place is capped (its tags are cut) — never the id slot.
+ *
+ * The selectors document which seat each rung folds; the stylesheet
+ * (styles/task-head.css) does the folding off `data-fit`, and rung 4 is the
+ * component's own layout. `taskHeadNeed` below is what the rungs are measured
+ * by: both rows, so a rung can answer either row's overflow.
+ */
+/**
+ * A TWO-LINE PANEL OR PANE HAS ITS OWN ORDER (TaskHead `twoLine`; Akshil,
+ * 2026-11-17: "first expand PR tags and WT tags, then if space expand these
+ * icon + word buttons"). Its title is on row 2, so row 1 is the place, the
+ * tags, a pane's tools and the facts — and what gives, cumulatively, is:
+ *
+ *   1. the tools' WORDS (Screenshot, Comment, Annotate become icon buttons);
+ *   2. the branch tag, whole (shown in full or not at all, 2026-11-19);
+ *   3. the PR chip — the last tag to leave (2026-11-19);
+ *   4. the time;  5. the tools themselves;  6. the ↑↓ chevrons;
+ *   7. the place and the where-tag are cut.
+ *
+ * The stylesheet still folds off the one-row ladder's `data-fit`, so each rung
+ * here names the one-row rung whose folds it wears (`TASK_HEAD_PANEL_FIT`);
+ * rung 1 has none and is a class of its own (`is-seats-tight`).
+ */
+export const TASK_HEAD_PANEL_DROPS = [
+  ".task-head-seats .c-lbl",
+  ".task-head-chips-host, .task-head-chips .chat-worktree-menu, .task-head-chips .chat-worktree-hint",
+  ".task-head-chips",
+  ".task-head-time",
+  ".task-head-seats",
+  ".task-head-nav",
+  ".task-head-place, .task-head-where",
+] as const;
+
+/** The one-row rung (`data-fit`) each two-line panel rung wears, by level. */
+export const TASK_HEAD_PANEL_FIT = [0, 0, 1, 2, 3, 5, 6, 7] as const;
+
+export const TASK_HEAD_DROPS = [
+  ".task-head-where .place-tag-word, .task-head-chips-host, .task-head-chips .chat-worktree-menu, .task-head-chips .chat-worktree-hint",
+  ".task-head-chips",
+  ".task-head-time",
+  ".task-head-title-seat",
+  ".task-head-seats",
+  ".task-head-nav",
+  ".task-head-place",
+] as const;
+
+/** The `data-fit` rung at which the facts give (the chips went first). */
+export const TASK_HEAD_FACTS_LEVEL = 3;
+
+/** The `data-fit` rung at which a rail window's title takes its own row
+ *  (TaskHead `stacked`). */
+export const TASK_HEAD_STACK_LEVEL = 4;
+
+/** What a title must keep on row 1 before it is given a row of its own
+ *  (Akshil, 2026-11-16: "if space is less just move it to second line"). */
+export const TASK_HEAD_TITLE_ROOM = 180;
+
+/** THE TITLE'S CLAIM ON THE ROW (Akshil, 2026-11-16: "give title max 400px
+ *  width, then show PR and worktree, and then if there is space left we can
+ *  show more of title"; task-head.css gives `.task-side-peek-title` the same
+ *  number as its flex basis). The ladder charges a title "whole" only up to
+ *  here, so the chips and the facts give only when the title cannot have
+ *  this much; width left over once they stand goes back to the title. */
+export const TASK_HEAD_TITLE_MAX = 400;
+
+/**
+ * WHAT A TASK HEAD NEEDS — the wider of its rows (`.task-head-row`, and the
+ * stacked `.task-head-titlerow` once it exists), each measured the row's way
+ * (`rowNeed`), plus the head's own side padding: the ladder compares this with
+ * the head's `clientWidth`, which counts that padding.
+ */
+export function taskHeadNeed(head: HTMLElement): number {
+  const cs = getComputedStyle(head);
+  const pad = (Number.parseFloat(cs.paddingLeft) || 0) + (Number.parseFloat(cs.paddingRight) || 0);
+  // (A measured stand-in in a test has no attributes; it reads as rung 0.)
+  const level = typeof head.getAttribute === "function" ? Number(head.getAttribute("data-fit")) || 0 : 0;
+  const isWindow = !!head.classList?.contains?.("is-window");
+  let need = 0;
+  for (const row of Array.from(head.children) as HTMLElement[]) {
+    const cls = typeof row.className === "string" ? row.className.split(" ") : [];
+    if (!cls.includes("task-head-row") && !cls.includes("task-head-titlerow")) continue;
+    let rowWants = rowNeed(row);
+    if (cls.includes("task-head-row") && typeof row.querySelector === "function") {
+      // THE TITLE'S CLAIM ON ROW 1. `rowNeed` charges it a 72px floor; that
+      // let the chips and the facts stand beside a title cut to a word. So
+      // until the facts have gone (rungs 0–2) the title is charged whole, for
+      // every head. Past that a rail window keeps `TASK_HEAD_TITLE_ROOM` or
+      // takes row 2; a panel or a pane keeps the floor: one row, ellipsised.
+      // What opens only under the pointer is charged the same either way.
+      if (level < TASK_HEAD_FACTS_LEVEL) rowWants += titleWants(row, TASK_HEAD_TITLE_MAX);
+      else if (level === TASK_HEAD_FACTS_LEVEL && isWindow) rowWants += titleWants(row, TASK_HEAD_TITLE_ROOM);
+      // A RAIL WINDOW'S SEATS HOLD THEIR BOXES AT REST AND UNDER THE POINTER
+      // (task-head.css, "IN A RAIL WINDOW NOTHING MOVES", 2026-11-16), so
+      // what is measured is what it needs. A panel's folded time slot still
+      // opens under the pointer and is charged for it. The paired facts box
+      // — a window's or a panel's — wears the pair it shows (2026-11-17) and
+      // is charged for the wider one either way.
+      rowWants += factsSpare(row);
+      if (!isWindow && level >= TASK_HEAD_FACTS_LEVEL) rowWants += hoverDelta(row, ".task-head-timeslot");
+      if (isWindow) rowWants -= crumbGive(row);
+    }
+    need = Math.max(need, rowWants);
+  }
+  return need + pad;
+}
+
+/**
+ * THE FACTS BOX IS CHARGED FOR ITS WIDER PAIR (task-head.css, "THE BOX IS AS
+ * WIDE AS THE PAIR IT SHOWS"): it is the count and the time at rest and
+ * star · Open · ⋮ under the pointer, two different widths. Measured as it
+ * stands, a read at rest and a read mid-hover would disagree and a tag could
+ * fold on the way in and come back on the way out. What the wider pair needs
+ * past the box as it is now goes on, in both states.
+ */
+function factsSpare(row: HTMLElement): number {
+  const box = row.querySelector<HTMLElement>(".task-head-facts.has-acts");
+  if (!box) return 0;
+  const now = box.getBoundingClientRect().width;
+  let widest = now;
+  for (const layer of Array.from(box.children) as HTMLElement[]) {
+    widest = Math.max(widest, layer.getBoundingClientRect().width);
+  }
+  return widest - now;
+}
+
+/** What a tag of a rail window's crumb keeps when the crumb gives width: its
+ *  pill and a few letters ("fus…"). */
+export const TASK_HEAD_CRUMB_TAG = 48;
+/** The crumb's chevron and the gap on each side of it (task-head.css). */
+const TASK_HEAD_CRUMB_SEP = 19;
+
+/**
+ * A RAIL WINDOW'S CRUMB GIVES WIDTH — ONCE THE BRANCH TAG HAS GONE, AND
+ * BEFORE THE PR CHIP DOES (Akshil, 2026-11-19: "PR should have higher
+ * priority on visibility … when width is smaller"). The stylesheet holds the
+ * crumb at its width while the branch tag stands (`data-fit="0"`), so until
+ * then it is charged whole and this is nothing. After, it shrinks and
+ * ellipsises, and `rowNeed` charges a seat that shrinks what it occupies NOW
+ * — so the row always "needed" exactly the head's width, give or take a
+ * rounded half pixel, and whether the PR chip stood beside a shortened folder
+ * or left with the folder whole was a coin toss (measured at 320px,
+ * 2026-11-19: 318.3 against 318).
+ *
+ * What the crumb is charged instead is THE FLOOR IT MAY BE CUT TO: each tag
+ * the lesser of its whole width and `TASK_HEAD_CRUMB_TAG`. Returned as the
+ * difference from what `rowNeed` charged — NEGATIVE once a tag has been
+ * squeezed below its floor, which is the row saying it no longer fits, so
+ * the PR chip leaves there and not when the folder's name is down to nothing.
+ */
+export function crumbGive(row: HTMLElement): number {
+  if (typeof row.querySelector !== "function") return 0;
+  const crumb = row.querySelector<HTMLElement>(".task-head-crumb");
+  if (!crumb) return 0;
+  // Held (`flex: 0 0 auto`): charged its whole width, which is the point.
+  if (!((Number.parseFloat(getComputedStyle(crumb).flexShrink) || 0) > 0)) return 0;
+  let tags = 0;
+  let floor = 0;
+  for (const kid of Array.from(crumb.children) as HTMLElement[]) {
+    const cls = typeof kid.className === "string" ? kid.className.split(" ") : [];
+    if (!cls.includes("task-head-place") && !cls.includes("task-head-where")) continue;
+    tags += 1;
+    floor += Math.min(tagWhole(kid), TASK_HEAD_CRUMB_TAG);
+  }
+  if (!tags) return 0;
+  if (tags > 1) floor += TASK_HEAD_CRUMB_SEP;
+  return rowNeed(crumb) - floor;
+}
+
+/** A crumb tag's width with nothing cut: what it occupies now, plus what
+ *  each of its ellipsised words is short by. */
+function tagWhole(tag: HTMLElement): number {
+  let whole = tag.getBoundingClientRect().width;
+  const inner = typeof tag.querySelectorAll === "function" ? Array.from(tag.querySelectorAll<HTMLElement>("*")) : [];
+  for (const el of inner) {
+    // A word: a leaf of the tag. (A box's own `scrollWidth` would count the
+    // same missing letters a second time.)
+    if (el.children.length) continue;
+    whole += Math.max(0, (el.scrollWidth || 0) - (el.clientWidth || 0));
+  }
+  return whole;
+}
+
+/** The b control a folded fact slot shows while the head is pointed at: one glyph. */
+const TASK_HEAD_GLYPH = 22;
+
+/** What the title on this row wants past the floor `rowNeed` charged it, up
+ *  to `cap`. A stacked title (row 2) is not on this row. */
+function titleWants(row: HTMLElement, cap: number): number {
+  const title = row.querySelector<HTMLElement>(".task-side-peek-title");
+  if (!title) return 0;
+  const charged = Math.min(title.getBoundingClientRect().width, FIT_TEXT_FLOOR);
+  return Math.max(0, Math.min(title.scrollWidth, cap) - charged);
+}
+
+/**
+ * WHAT OPENS ONLY UNDER THE POINTER IS CHARGED THE SAME EITHER WAY
+ * (task-head.css): a panel's folded time slot. A read that lands mid-hover
+ * would otherwise see a wider row than one at rest and the level could flap.
+ * Whatever the slots measure now comes off; a glyph per slot that has a b
+ * control goes on. (A rail window holds every seat at all times and needs
+ * none of this.)
+ */
+function hoverDelta(row: HTMLElement, slots: string): number {
+  const marks = row.querySelector<HTMLElement>(".task-head-marks");
+  const gap = marks ? Number.parseFloat(getComputedStyle(marks).columnGap) || 0 : 0;
+  let delta = 0;
+  for (const slot of Array.from(row.querySelectorAll<HTMLElement>(slots))) {
+    const width = slot.getBoundingClientRect().width;
+    if (width > 0) delta -= width + gap;
+    if (slot.querySelector(".task-head-slot-b > :is(a, button, [role='button'])")) delta += TASK_HEAD_GLYPH + gap;
+  }
+  return delta;
+}
 
 /**
  * WATCH ONE ROW AND ANSWER HOW MANY OF ITS SEATS HAVE TO FOLD — the engine
@@ -683,6 +985,10 @@ export function useStripFit(
    *  is not a row of seats (the app page's header charges its title a floor
    *  and its actions their natural width; shell/app-page-fit.ts). */
   measure: (el: HTMLElement) => number = rowNeed,
+  /** A change here forgets every rung's measurement and reads again: the
+   *  strip's content changed in a way the current rung's own need cannot show
+   *  (a long title swapped for a shorter one — CodeRabbit, #2285). */
+  resetKey?: string,
 ): [number, (el: HTMLElement | null) => void] {
   const [level, setLevel] = useState(0);
   // A CALLBACK REF, not a `useRef`, and the difference is the whole reason the
@@ -764,6 +1070,10 @@ export function useStripFit(
       mo.disconnect();
     };
   }, [el, enabled, drops, measure]);
+  useLayoutEffect(() => {
+    needAt.current = [];
+    readRef.current?.();
+  }, [resetKey]);
   return [enabled ? level : 0, setEl];
 }
 

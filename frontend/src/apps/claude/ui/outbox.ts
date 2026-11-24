@@ -38,6 +38,9 @@ export interface OutboxEntry<T> {
    *  interrupted follow-up. Drawn as "not sent" so the reader knows the run
    *  never saw it, and never silently merged into what they are typing now. */
   notSent?: boolean;
+  /** Ctrl+Enter: the line waits until the session is done — the turn over and
+   *  every other line ahead of it answered — and then goes as its own turn. */
+  hold?: true;
 }
 
 export function pushBack<T>(list: readonly OutboxEntry<T>[], entry: OutboxEntry<T>): OutboxEntry<T>[] {
@@ -75,14 +78,19 @@ export function popNewest<T>(
   return { entry: list[list.length - 1]!, rest: list.slice(0, -1) };
 }
 
-/** The next line the DRAIN may send — the oldest one that is not "not sent" —
+/** The next line the DRAIN may send — the oldest ordinary one that is not "not sent",
+ *  else (when `holdOpen`) the oldest held one —
  *  and the list without it. A `notSent` line is the reader's to resend (the run
  *  may already have read those words before a stop), so the drain steps over
  *  it and leaves it in place, order kept. */
 export function shiftOldestSendable<T>(
   list: readonly OutboxEntry<T>[],
+  holdOpen = false,
 ): { entry: OutboxEntry<T> | null; rest: OutboxEntry<T>[] } {
-  const i = list.findIndex((e) => !e.notSent);
+  // A HELD line goes only when the session is done (`holdOpen`) and no
+  // ordinary line is left to go ahead of it, one per turn, in typed order.
+  let i = list.findIndex((e) => !e.notSent && !e.hold);
+  if (i < 0 && holdOpen) i = list.findIndex((e) => !e.notSent);
   if (i < 0) return { entry: null, rest: [...list] };
   return { entry: list[i]!, rest: [...list.slice(0, i), ...list.slice(i + 1)] };
 }
@@ -114,4 +122,88 @@ export function outboxHint(sendable: number, notSent = 0): string {
       : `${notSent} messages not sent · click one to edit`;
   }
   return "";
+}
+
+// ---- THE PENDING JOURNAL (what survives a reload) ---------------------------
+//
+// A line the reader sent is OWNED BY THE SERVER once the inbox write (or the
+// turn's `start`) is acknowledged: the inbox is on disk and history replays it.
+// Before that — the round trip itself, and the outbox's latch window — the line
+// lives only in this page, and a reload used to lose it. So every sent line is
+// journalled in sessionStorage under its session, named by a uuid the SERVER
+// stamps on the inbox entry (`client_uuid`), and dropped the moment the server
+// acknowledges it (or the line is handed back to the reader).
+//
+// After a reload the page asks history which ids it already has
+// (`splitPending`): those are the server's now and are dropped; the rest were
+// never acknowledged and are sent again, once. Ids, never text.
+
+/** One sent-but-unacknowledged line. Words only: pictures are not kept. */
+export interface PendingLine {
+  id: string;
+  text: string;
+  /** A Ctrl+Enter line the page is holding: a reload keeps it held. */
+  hold?: true;
+}
+
+export function pendingKey(sessionId: string): string {
+  return "claude.outbox:" + sessionId;
+}
+
+type PendingStore = Pick<Storage, "getItem" | "setItem" | "removeItem">;
+
+function pendingStore(): PendingStore | null {
+  try {
+    return typeof sessionStorage === "undefined" ? null : sessionStorage;
+  } catch {
+    return null;
+  }
+}
+
+/** Writes a session's pending lines; an empty list removes the key. False when
+ *  the store refused to keep lines (full, blocked): they then live only in this
+ *  page and a reload loses them. */
+export function savePending(
+  sessionId: string,
+  lines: readonly PendingLine[],
+  store: PendingStore | null = pendingStore(),
+): boolean {
+  if (!sessionId) return true;
+  if (!store) return !lines.length;
+  try {
+    if (lines.length) store.setItem(pendingKey(sessionId), JSON.stringify(lines));
+    else store.removeItem(pendingKey(sessionId));
+    return true;
+  } catch {
+    return !lines.length;
+  }
+}
+
+/** Reads a session's pending lines back. Anything unreadable is an empty list. */
+export function loadPending(sessionId: string, store: PendingStore | null = pendingStore()): PendingLine[] {
+  if (!sessionId || !store) return [];
+  try {
+    const raw = store.getItem(pendingKey(sessionId));
+    const parsed: unknown = raw ? JSON.parse(raw) : [];
+    if (!Array.isArray(parsed)) return [];
+    return parsed.flatMap((l: unknown) => {
+      const line = l as { id?: unknown; text?: unknown; hold?: unknown };
+      if (typeof line?.id !== "string" || !line.id || typeof line.text !== "string" || !line.text) return [];
+      return [line.hold === true ? { id: line.id, text: line.text, hold: true as const } : { id: line.id, text: line.text }];
+    });
+  } catch {
+    return [];
+  }
+}
+
+/** Splits stored lines against the ids the server's history already holds (the
+ *  inbox rows and the transcript's user turns): `resend` never reached it. */
+export function splitPending(
+  lines: readonly PendingLine[],
+  serverIds: ReadonlySet<string>,
+): { resend: PendingLine[]; drop: PendingLine[] } {
+  const resend: PendingLine[] = [];
+  const drop: PendingLine[] = [];
+  for (const l of lines) (serverIds.has(l.id) ? drop : resend).push(l);
+  return { resend, drop };
 }

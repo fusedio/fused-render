@@ -40,7 +40,7 @@ export interface AppPageGitPeekWidth {
   dragging: boolean;
 }
 
-/** `splitRef` is the `.app-page-split` row both the frame and the peek share —
+/** `splitRef` is the `.app-page-left` row both the frame and the peek share —
  *  read for its width, never written to. */
 export function useAppPageGitPeekWidth(
   splitRef: RefObject<HTMLElement | null>,

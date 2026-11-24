@@ -118,6 +118,10 @@ def _container_index(raw):
         index = json.loads(idx)
     except ValueError as e:
         raise ValueError(f"invalid .fused index: {e}")
+    if isinstance(index, dict) and "fused_bot_file" in index:
+        # Same codec, other kind (appfile_container.KINDS): a .fusedbot dropped on the apps panel installs a bot,
+        # which this gallery cannot do; say where it opens instead of the generic refusal below.
+        raise ValueError("this is a bot package; open it from the Bots page")
     if not isinstance(index, dict) or index.get("fused_app_file") != 2 or not isinstance(index.get("files"), list):
         raise ValueError("not a fused app file (no fused_app_file: 2 index)")
     return index, HEADER.size + icsize

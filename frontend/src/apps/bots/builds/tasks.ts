@@ -46,6 +46,7 @@ export interface TaskHandle {
   entryId: string;
   /** Resolves with the task's last row once it settles (done/archived twice in a row after it ran). Never rejects. */
   done: Promise<TaskRow>;
+  release(): void;
 }
 
 const CHANGES_WAIT_S = 25, BACKOFF_MS = 3000, FLOOR_MS = 20000, CATCH_UP_MS = 1000;
@@ -315,13 +316,16 @@ function taskHandle(firstKey: string, entryId: string, under: string): TaskHandl
   const mine = (r: TaskRow) => r.key === key || (!!entryId && r.entry_id === entryId);
   let stop = () => {};
 
-  const finish = (row: TaskRow) => {
-    if (finished) return;
+  const release = () => {
     finished = true;
     if (confirm) clearTimeout(confirm);
     confirm = null;
-    settle(row);
     stop();
+  };
+  const finish = (row: TaskRow) => {
+    if (finished) return;
+    release();
+    settle(row);
   };
   const consider = (row: TaskRow) => {
     key = row.key; last = row;
@@ -355,5 +359,5 @@ function taskHandle(firstKey: string, entryId: string, under: string): TaskHandl
     if (last && (c.full || c.gone.includes(key))) finish(last);
   });
 
-  return { get key() { return key; }, entryId, done };
+  return { get key() { return key; }, entryId, done, release };
 }

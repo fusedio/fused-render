@@ -1417,6 +1417,17 @@ def test_the_session_a_draft_is_going_into_round_trips(state_dir):
                 {"title": "hi again"})["session_id"] == "sess-a"
 
 
+def test_a_task_name_is_kept_apart_from_the_first_line():
+    """The card's head names the task (`name`); the words' first line stays in
+    `title`, so reopening never swaps the typed line for the name."""
+    stored = _put("draft-0001", {"title": "fix the bug", "description": "", "name": "Bug triage"})
+    assert stored["name"] == "Bug triage"
+    assert stored["title"] == "fix the bug"
+    # A save that does not mention it keeps it; an empty one clears it.
+    assert _put("draft-0001", {"title": "fix the bug!"})["name"] == "Bug triage"
+    assert _put("draft-0001", {"name": ""})["name"] == ""
+
+
 # --------------------------------------- one bound draft per session (server)
 #
 # THE OWNER'S OWN RULE, "a draft moves, never duplicates" (design.md, Round 2),

@@ -2427,7 +2427,7 @@ describe("what a task can be run with", () => {
     // four, above the alias naming the same model — the same thing twice, so
     // the menu asked a question with one answer (Akshil, 2026-09-18).
     expect(TASK_MODELS.map((o) => o.key)).toEqual([
-      "fable", "opus", "sonnet", "haiku",
+      "haiku", "sonnet", "opus", "fable",
     ]);
     expect(TASK_EFFORTS.map((o) => o.key)).toEqual([
       "low", "medium", "high", "xhigh", "max",
@@ -2454,9 +2454,8 @@ describe("what a task can be run with", () => {
     expect(TASK_EFFORTS.map((o) => o.key)).toEqual([
       "low", "medium", "high", "xhigh", "max",
     ]);
-    // The flag's word is "xhigh"; the card's word is "Extra high". The key is
-    // what goes on the wire, so the label is free to be readable.
-    expect(taskRunLabel(TASK_EFFORTS, "xhigh")).toBe("Extra high");
+    // The CLI's word, capitalised — not "Extra high" (Akshil, 2026-11-07).
+    expect(taskRunLabel(TASK_EFFORTS, "xhigh")).toBe("Xhigh");
   });
 
   it("keeps a value it has never heard of, rather than resetting the task to the default", () => {

@@ -11,7 +11,7 @@ import urllib.request
 
 import pytest
 
-from fused_render.bots import apptools, browsers, registry
+from fused_render.bots import apptools, browsers, registry, store
 from fused_render.bots import bot as botmod
 from fused_render.bots import paths as bpaths
 
@@ -21,6 +21,7 @@ def ws(tmp_path, monkeypatch):
     """A tmp fused workspace (apps root = <ws>/app), no greeting model call (as test_bots_routes)."""
     w = tmp_path / "ws"
     monkeypatch.setenv("FUSED_RENDER_DIR", str(w))
+    reset_bots_caches()  # a Bot / folder cached by id under the previous test's workspace must not answer here
     os.makedirs(bpaths.apps_root())
     monkeypatch.setattr(apptools, "ROOTS", [bpaths.apps_root()])
     monkeypatch.setattr(apptools, "REGISTRY_FILES", [])
@@ -123,13 +124,11 @@ def test_browser_ops(client, ws):
 def test_old_profile_folder_is_adopted(client, ws):
     a = make(client, name="Old")
     registry.forget(a)
-    # pretend the bot predates browsers: profile under the bot folder, no browser_id
-    meta_p = os.path.join(bpaths.bot_dir(a), "bot.json")
-    with open(meta_p) as f:
-        meta = json.load(f)
+    # pretend the bot predates browsers: profile under the bot's private folder, no browser_id (a private key:
+    # it lives in .fused/state.json, so go through the store rather than the file)
+    meta = store.read_meta(a)
     meta.pop("browser_id", None)
-    with open(meta_p, "w") as f:
-        json.dump(meta, f)
+    store.write_meta(a, meta)
     browsers.remove(a)
     os.makedirs(os.path.join(bpaths.bot_dir(a), "profile", "Default"))
     with open(os.path.join(bpaths.bot_dir(a), "profile", "Default", "Cookies"), "w") as f:

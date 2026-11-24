@@ -29,6 +29,7 @@ import {
   SWITCHABLE_MODES,
 } from "../protocol/summaries";
 import type { PermissionRow, SwitchableMode } from "../protocol/types";
+import { unansweredCardText, unansweredReasonOf } from "../protocol/unanswered";
 import { CollapsiblePre } from "./CollapsiblePre";
 import { MarkdownView } from "./MarkdownView";
 import { activateOnKey, guardedOpenOnClick } from "./planAffordance";
@@ -45,8 +46,8 @@ import { useAgent } from "./agent-context";
 export interface PlanCardProps {
   row: PermissionRow;
   /** The picker's CURRENT `permission` param. Only a member of
-   *  SWITCHABLE_MODES is offered as the landing mode; sitting on "plan first"
-   *  or "ask every time" sends no mode at all (T:14586-14595). */
+   *  SWITCHABLE_MODES is offered as the landing mode; sitting on "Plan only"
+   *  or "Ask every time" sends no mode at all (T:14586-14595). */
   pickerMode?: string;
   onDecide: ChatController["decidePlan"];
 }
@@ -102,6 +103,7 @@ export function PlanCard({ row, pickerMode, onDecide }: PlanCardProps) {
     }
   }
 
+  const unanswered = unansweredReasonOf(row);
   const status = held
     ? // FIRST, ahead of the three verdicts — the folder was busy, so the
       // decision is stored and goes in the moment that run ends. See PermCard.
@@ -109,8 +111,8 @@ export function PlanCard({ row, pickerMode, onDecide }: PlanCardProps) {
     : resolved
     ? row.decision === "allow"
       ? { cls: "allow", text: "✓ Plan approved" }
-      : row.decision === "expired"
-        ? { cls: "expired", text: "◦ Unanswered — the reply ended before you decided" }
+      : unanswered
+        ? { cls: "expired", text: unansweredCardText(unanswered, "decided") }
         : // Not a refusal — the other half of a conversation, so it does not
           // read in the deny red (see `.perm.plan .perm-status.deny`).
           { cls: "deny", text: "◦ Sent back for revision" }

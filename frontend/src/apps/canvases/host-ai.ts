@@ -15,10 +15,14 @@ export interface HostAiModel {
   backend: string;
   model: string;
   label: string;
-  /** "Claude" / "Copilot" / "Codex" / "Gemini" — for the picker's row text. */
+  /** "Claude" / "Copilot" / "Codex" / "Gemini" / "OpenCode" — for the picker's row text. */
   backendLabel: string;
   /** The effort levels this model takes; `[]` when the CLI takes none. */
   efforts: string[];
+  /** This row calls the frame's tools natively (D1460): every agent CLI
+   *  does, through the turn's MCP bridge. A frame that reads an older host
+   *  without the flag treats the row as text-only. */
+  tools: boolean;
 }
 
 export interface HostAiModels {
@@ -49,6 +53,7 @@ function rowsOf(b: AgentBackendRow): HostAiModel[] {
     efforts: (m.efforts ?? (m.reasoning === false ? [] : b.efforts)).filter((e) =>
       (AI_RELAY_EFFORTS as readonly string[]).includes(e),
     ),
+    tools: true,
   }));
 }
 
@@ -57,7 +62,12 @@ export function hostAiModels(catalog: AgentCatalog): HostAiModels {
   const models = catalog.backends.filter((b) => b.enabled).flatMap(rowsOf);
   const def = catalog.backends.find((b) => b.id === catalog.default && b.enabled);
   const wanted = def ? hostAiModelId(def.id, def.default_model) : "";
-  const fallback = models[0]?.id ?? "";
+  // Lists run lightest model first (Haiku), so "the first row" would quietly
+  // start a frame on the smallest model: fall back to the first enabled
+  // agent's OWN default model, and only then to its first row.
+  const first = catalog.backends.find((b) => b.enabled);
+  const firstDefault = first ? hostAiModelId(first.id, first.default_model) : "";
+  const fallback = models.some((m) => m.id === firstDefault) ? firstDefault : (models[0]?.id ?? "");
   return { models, default: models.some((m) => m.id === wanted) ? wanted : fallback };
 }
 

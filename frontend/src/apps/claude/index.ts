@@ -24,6 +24,7 @@ export {
   type CanvasShot,
   type CanvasShotAnswer,
   type CanvasShotBy,
+  type CanvasShotFraming,
   type CanvasShotWhat,
 } from "./shots/canvas-shot";
 

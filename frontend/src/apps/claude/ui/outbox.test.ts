@@ -87,3 +87,62 @@ test("the hint counts only lines that WILL send; not-sent rows get their own lin
   // Sendable lines win the one line there is.
   expect(outboxHint(1, 2)).toContain("waiting");
 });
+
+test("the pending journal: save, load and split round-trip per session", async () => {
+  const { savePending, loadPending, splitPending } = await import("./outbox");
+  const mem = new Map<string, string>();
+  (globalThis as any).sessionStorage = {
+    getItem: (k: string) => mem.get(k) ?? null,
+    setItem: (k: string, v: string) => void mem.set(k, v),
+    removeItem: (k: string) => void mem.delete(k),
+  };
+  savePending("s1", [{ id: "a", text: "one" }, { id: "b", text: "two" }]);
+  expect(loadPending("s1").length).toBe(2);
+  expect(loadPending("s2")).toEqual([]);
+  // Matched by id, never by text: "b" is on the server, "a" is not.
+  const { resend, drop } = splitPending(loadPending("s1"), new Set(["b"]));
+  expect(resend.map((l) => l.id)).toEqual(["a"]);
+  expect(drop.map((l) => l.id)).toEqual(["b"]);
+  savePending("s1", []);
+  expect(loadPending("s1")).toEqual([]);
+});
+
+test("a held line is skipped until the session is done, ordinary lines first, one held line at a time", () => {
+  const h1 = { ...e("h1"), hold: true as const };
+  const h2 = { ...e("h2"), hold: true as const };
+  const list = [h1, e("plain"), h2];
+  expect(shiftOldestSendable(list).entry?.id).toBe("plain");
+  expect(shiftOldestSendable([h1, h2]).entry).toBeNull();
+  expect(shiftOldestSendable(list, true).entry?.id).toBe("plain");
+  expect(shiftOldestSendable([h1, h2], true).entry?.id).toBe("h1");
+  expect(shiftOldestSendable([{ ...h1, notSent: true }, h2], true).entry?.id).toBe("h2");
+});
+
+test("the pending journal keeps a held line's bit across a reload", async () => {
+  const { loadPending, savePending } = await import("./outbox");
+  const cells = new Map<string, string>();
+  const store = {
+    getItem: (k: string) => cells.get(k) ?? null,
+    setItem: (k: string, v: string) => void cells.set(k, v),
+    removeItem: (k: string) => void cells.delete(k),
+  };
+  savePending("s", [{ id: "a", text: "x", hold: true }, { id: "b", text: "y" }], store);
+  expect(loadPending("s", store)).toEqual([{ id: "a", text: "x", hold: true }, { id: "b", text: "y" }]);
+});
+
+test("savePending says when the store refused the write, so the caller can tell the reader", async () => {
+  const { savePending } = await import("./outbox");
+  const full = {
+    getItem: () => null,
+    setItem: () => {
+      throw new Error("QuotaExceededError");
+    },
+    removeItem: () => {},
+  };
+  expect(savePending("s", [{ id: "a", text: "x" }], full)).toBe(false);
+  expect(savePending("s", [], full)).toBe(true);
+  expect(savePending("s", [{ id: "a", text: "x" }], { ...full, setItem: () => {} })).toBe(true);
+  // No store at all (blocked storage): lines cannot be kept, nothing to keep is fine.
+  expect(savePending("s", [{ id: "a", text: "x" }], null)).toBe(false);
+  expect(savePending("s", [], null)).toBe(true);
+});

@@ -1,0 +1,4853 @@
+// THE RAIL (the owner's name for it, 2026-11-05): what stands at a page's
+// right edge while its Claude pane is shut (owner, 2026-10-26: "a very min
+// width column, like we have for the fused render left sidebar, just a single
+// width column with the button") — and, with favourites on, BESIDE THE OPEN
+// PANE too (below). Born on the canvas
+// page; since 2026-11-01 the app page and the explorer's file and folder
+// views draw the same rail (owner: "replicate that same behaviour in explorer
+// and app view — exact same behaviour"). WHERE it stands is a `RailPlace`
+// (claude-rail-lib): a canvas, a folder, a file — which decides whose chats
+// ride it and what the + makes a task on; everything below is the same on
+// each. The canvas-specific parts (a node narrows the rail; the foot's canvas
+// seat and the card's node chip select in the workbench) are the `canvas`
+// place's alone and are said so.
+//
+// The same 48px column the global sidebar collapses to, in the same vocabulary
+// (sidebar.css: .sidebar-rail-btn, .sidebar-rail-items, .sidebar-rail-scroll),
+// so the two edges of the window read as one idea. Top to bottom:
+//   - the panel glyph (platform/ui/PanelIcon) — the way back IN. Its other
+//     half, the Hide, is the first seat of the chat's own top row while the
+//     pane is up (ClaudeChat `onHidePane`): exactly one of the two is on
+//     screen at any moment, the explorer sidebar's own rule (SideChrome.tsx)
+//     — so beside the open pane the rail draws no glyph (and no pull seam:
+//     the pane's own seam resizes it).
+//   - NEW TASK, at the head of the list (owner, 2026-10-28: "the + icon
+//     should be at the top of the list and it should show a new task modal
+//     when we click it, instead of opening the sidebar"). It opens the Tasks
+//     page's own card (shell/NewJobModal) over the canvas, prefilled and
+//     locked on the clone —
+//     the pane stays shut, and the task lands on the rail through the pulse
+//     like any other. (Beside the OPEN pane it is the pane's new chat
+//     instead — below.)
+//   - EVERY LIVE CHAT ON THIS CANVAS, in the List view's order (owner,
+//     2026-10-27: "show all chats we have here, and when we hover we see
+//     recap, title — whatever we show in list view"; 2026-10-28: no archived
+//     rows, the List's sort — claude-rail-lib.ts). One status ring each — the
+//     Tasks page's own (`StatusIcon`: lane colour, unread fill, "!" when it is
+//     waiting on you) — and the hover is the list row's own caption: the same
+//     `data-hint-title` / `data-hint-reply` the row's title carries
+//     (platform/lib/hints), built from the same `cardTitleLine`. A press opens
+//     that chat where the Tasks page's door would (`taskHref`): the canvas
+//     chat on its session, or the node selected with its chat on its session.
+//     Scrolls on a short window (favourites on; off, it clips to the rings
+//     that fit).
+//
+// BESIDE THE OPEN PANE (owner, 2026-11-05: "we show the rail no matter what
+// now … on every page … even if the sidebar is expanded or not. The only
+// reason we don't show the rail is if there are no tasks in favourites AND no
+// items to be shown in the rail"): every
+// page that draws this rail draws it whether its pane is shut or open
+// (`paneOpen`), at the window's right edge past the pane. Open, the rail is
+// the + and the list's rings on top, the favourites at its foot — and it is
+// HIDDEN while it has neither a chat in its list nor a favourite (claude-rail-
+// lib `railShown`; shut, it always stands: it is the way back in). A hidden
+// rail registers nothing, so the favourite's card stands only beside a rail
+// on screen. Beside the open pane, this rail's card mounts no chat the pane
+// already holds TOO (owner, 2026-11-08; the favourite's card's rule since
+// 2026-11-05): the chat stands in the pane and in the card at once. Beside the
+// open pane (owner, 2026-11-05):
+//   - NO GAP AT THE TOP: no glyph, and nothing keeps its room — the + sits
+//     on the rail's own padding.
+//   - THE + IS THE PANE'S HOME (`onNewChat`, claude-rail-lib `plusDoor`): the
+//     pane's Recent chats page, the keyboard in its new-chat composer
+//     (`paneHomeComposer`) — not the New task card, which is the shut pane's.
+//   - A LIST RING'S PRESS PINS ITS CARD, AS SHUT (claude-rail-lib
+//     `ringPress`; owner, 2026-11-08): the pane keeps its chat until the
+//     card's Open door; a hover previews the card. (Until 2026-11-08 the
+//     press opened the chat in the pane.) A favourite's ring is unchanged.
+//   - THE PANE OPENING UNDER A PINNED LIST CARD closes it; the pane stands
+//     on its home (2026-11-05 evening). The pane SHUTTING brings back no
+//     list card (2026-11-06) — only the favourite whose Open expanded it
+//     (window B, fav-peek-store `takeFavRestore`).
+//   - THE LIST SCROLLS, every ring drawn, its scrollbar hidden (`.is-scroll`;
+//     favourites on, shut pane too) — the clip of 2026-11-02 is the
+//     favourites-off rail's.
+//
+// THE RAIL'S FOOT, 2026-11-05 (owner): the LIST is at most ten rings tall
+// and scrolls, its edges fading where there is more (`listEdges`); a new
+// place starts it at the top, and the active ring is scrolled into view
+// without reordering anything. The BLOCKED chats (rail-peek-lib `favLike`,
+// claude-rail-lib `favSeats`) stand at the head of the favourites' section
+// as favourites in all but the star — temporary favourites. The starred
+// stand newest star first.
+// The PINNED BOTS (`pinnedBots`, platform/lib/botsPulse `useBotsRows`) stand
+// under them, each a door to its page. The list stands beside the open pane
+// on its HOME too (owner, 2026-11-06: the same rings whether a chat is open or
+// the pane is on Recent). While the rail stands the document carries its width
+// (`railUp`, `--claude-rail-w`) and the notification column and the shadcn
+// menus keep off it (platform/lib/rail-gutter).
+// ON A PAGE WITH NO RAIL (owner, 2026-11-05: home, Bots, Tasks, AI Models,
+// Community, Preferences…): the shell's FALLBACK (FallbackRail, App.tsx), this
+// rail with `favouritesOnly` — no place, no list, no Git, no glyph, but the +:
+// the + (New task, on the default Fused folder) and the favourites. It stands only while no page rail
+// is mounted (fav-peek-store `registerPageRail`, claude-rail-lib
+// `fallbackRailUp`): every page rail counts itself from its layout phase.
+//
+// A SELECTED NODE SORTS THE RAIL (owner, 2026-11-10; it narrowed it from
+// 2026-10-29): every chat on the canvas stays, the node's first, then a
+// hairline, then the rest faded (claude-rail-lib `railRows`, `off`) — and the
+// + makes a task ON the node — the card
+// locked on the node's file, the target the node pane's own chats carry, so
+// the new task is filed under the node (`task.canvas.file`) and shows in the
+// node's Recent list once the pane opens.
+//
+// AN OPEN FILE SORTS ITS FOLDER'S RAIL THE SAME WAY (owner, 2026-11-16: "let's
+// do the same with file explorer, when we open a file"): the explorer's file
+// page hands its folder with the file (`place.dir`), and the rail is the
+// folder page's own list — the file's chats first, the hairline, the folder's
+// and its other files' chats faded. The + still makes a task on the file.
+//
+// THE + WAITS WHERE THE PANE WAITS: the open pane has no chat to start one
+// from until the clone exists ("Loading editor…") or while the selected
+// node's file is still being written ("Saving <file>…"), so the + is held
+// for the same two waits. A task made before the node's file is on disk
+// would carry no pane record and miss the node's Recent list.
+//
+// A HOVER OPENS THE CHAT ITSELF (owner, 2026-10-30): resting on a ring — or
+// focusing it — opens
+// that chat as a live card beside the rail (RailPeek.tsx): the transcript to
+// scroll, the composer to type into, every seat the pane's chat has. The
+// timings (open after 150ms, swap between rings without closing, 250ms of
+// grace to cross to the card, never close under a card that holds the
+// keyboard) are rail-peek-lib's `PeekIntent`; this file only reports the
+// rings' pointer and focus to it and draws what it says. A HOVER-ONLY card
+// goes with the pointer (on the grace); a card a click has opened is held
+// (next paragraph). ArrowLeft on a focused ring is the keyboard's way into the
+// card. Off, the rings keep their one-line pointer caption (`data-hint`); on,
+// the card replaces it — two captions for one hover would be noise.
+//
+// A CLICK HOLDS IT (owner, 2026-10-31: "when I hover on an item we show the
+// preview; if I click, the preview stays"; 2026-11-03: "a click keeps it open
+// — remove the pin button"). A press on a ring (PeekIntent `press`) — or
+// anywhere in the card (`pressStart`) — PINS the card, and a pinned card is
+// HELD, the one thing: the pointer leaving no longer closes it, and neither
+// does a press outside (the +, the panel button and the seam included), a
+// press into the workbench frame, Escape, or the all-chats seat — only the
+// card's × and its Open do. (Until 2026-11-03 the hold was a second step, a
+// pin button in the card's head; the press does both now, `pin` below.) A
+// press on a ring never closes it. The ring's press no longer opens the pane;
+// the card's Open does, and a modified press still follows the link. THE PRESS LANDS IN THE
+// COMPOSER: a plain press puts the keyboard in the card's composer
+// (`focusComposerSoon`), ready to type. With no room for a card, the press
+// is the chat's door (`openChat`; the first such press included).
+//
+// FAVOURITES (owner, 2026-11-03): the card's STAR (RailPeek) makes a chat a
+// favourite — server-side, global, so every rail lists the same ones (api
+// `setTaskFavourite`; `starred` on the pulse); the rail's normal list leaves
+// them out; the pane's Recent lists them (with their star) (owner, 2026-11-05). Which favourite's card
+// is OPEN is per window (2026-11-04, below). The consequences here:
+//   - THE RAIL'S LAST SECTION HOLDS THEM: under the Git seats, a ring for
+//     every starred chat from ANY place (claude-rail-lib `favSeats` — not
+//     `onRail`), newest first. A starred chat on this place keeps its ring
+//     in the list above too (`onStarred`, below: a star moves nothing). The
+//     node's narrowing is the list's alone — the section holds every
+//     favourite, node or no node.
+//   - A FAVOURITE'S RING HOVERS LIKE A LIST RING (owner, 2026-11-04: "when we
+//     hover over favourites we don't show preview if there is no favourite
+//     open — why?"): resting on it previews that chat in window B (hover
+//     mode) when no favourite's card is open; with one open, every favourite
+//     ring's hover is its caption alone (owner, 2026-11-04: "only the
+//     tooltip with the title").
+//     The two windows are independent: window A (the list's card) and window
+//     B (the favourite's card, FavouritePeek). A fav ring's hover previews in
+//     B and never touches A's pin; nothing in one section opens or closes
+//     the other except star / unstar; A shrinks while B is open.
+//     Its press opens the favourite's card and lets the hover card go — and
+//     so does a press on that hover card's where-chip that leaves the page
+//     (`onChipLeave`): the chat goes with the reader, in its own card.
+//   - ONE ACTIVE RING PER SECTION (owner, 2026-11-04: "in one section at a
+//     time only one item should be active"): the favourites' is their open
+//     card's ring, else their last-pressed ring; the list's is the ring its
+//     pinned card shows, else its last-pressed ring, else the URL's session
+//     (claude-rail-lib `activeRing`). A hover's wash is a hover, not a mark.
+//   - TWO LAST MARKS (owner, 2026-11-04: "last select of fav is diff from
+//     last selected of the list, both of them should show their last
+//     selected"): the list's last press (platform/lib/last-chat
+//     `setLastChat`, which its `activeRing` reads) and the section's
+//     (`setLastFav`) are two stores; a press in one moves only its own.
+//   - ONE FAVOURITE'S CARD MAY BE OPEN AT A TIME, PER WINDOW (owner,
+//     2026-11-04: "if I have multiple windows open, the open favourite
+//     shouldn't sync; the list items (stars) do sync"): this window's open
+//     key is client-side (platform/lib/last-chat `useFavOpen`), not the
+//     server's `starred_open`. That card is the SHELL'S (FavouritePeek), not
+//     this rail's: it stands at the bottom right beside whichever rail is on
+//     the page, so a page hop never remounts it. A press on a favourite's ring
+//     opens it (`openFavourite`), the card's × closes it — nothing is written
+//     to the server; this rail only registers itself for it (fav-peek-store)
+//     and keeps its own card clear of it (`avoid`: above it, else to its left).
+//   - NO ACCENT on a favourite's ring or card — the held accent of 2026-11-02
+//     is gone for every card, held ones included.
+//
+// A PINNED CARD MOVES ONLY ON A PRESS (owner, 2026-11-02: "click only" — the
+// click-or-hover trigger pref of 2026-10-31 is gone): resting on another
+// LIST ring shows that ring's title and moves nothing; its press swaps the
+// chat. (A favourite's ring is the exception, above.)
+// A pinned card can also be RESIZED from its left corners, and keeps that
+// size for the next pin (RailPeek). The hover card and the pinned one are ONE
+// SIZE — the remembered one — and either resizes it (RailPeek `oneSize`).
+//
+// A press into the workbench frame is not seen by this document; it is heard
+// as the window's blur with the frame holding the focus — which is why the
+// page stops handing the frame focus on a mere pointer ENTER while a pinned
+// card is up (`onCardPinned`, CanvasWorkspace `focusCanvasOnEnter`):
+// otherwise crossing the canvas would read as a click on it. (A held card
+// ignores that blur too; the rule stays for the moment a hold is let go while
+// the pin is still up — a chat filed from its card.)
+//
+// A PRESS CLEARS THE DOT (owner, 2026-11-01: "if I click on the item it
+// should unread and go away"): a plain press on a ring — whether it opens
+// the card or the pane — is the reader opening that chat, and opening a
+// thread is what clears its badge everywhere else (ScheduleTaskViews
+// `openBorrowed`, task-open-read.ts). The write is the List's whole-task
+// read; the ring goes hollow at once and stays so until the pulse confirms
+// it (claude-rail-lib `readMark` / `keepMarks`: a refused write, or news
+// that lands after the press, brings the dot back). A modified press (a new
+// tab) clears nothing: the page it opens does its own reading.
+//
+// NO WAY-BACK SEAT (owner, 2026-11-10: "remove back to canvas button"): the
+// canvas glyph that deselected the node (2026-11-01) is gone — with every
+// chat on the canvas listed, there is no filter to get out of.
+import {
+  Fragment,
+  useCallback,
+  useEffect,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+  type CSSProperties,
+  type KeyboardEvent as ReactKeyboardEvent,
+  type FocusEvent as ReactFocusEvent,
+  type MouseEvent as ReactMouseEvent,
+  type PointerEvent as ReactPointerEvent,
+  type ReactNode,
+} from "react";
+import { Plus, Search } from "lucide-react";
+import PanelIcon from "@platform/ui/PanelIcon";
+import { useRailState } from "@platform/lib/hooks";
+import { resizeWidth } from "@platform/lib/panel-drag";
+import {
+  RAIL_COLLAPSED_WIDTH,
+  RAIL_MAX_WIDTH,
+  RAIL_MIN_WIDTH,
+  getRailState,
+  saveRailState,
+  setRailState,
+  toggleRailExpanded,
+  type RailState,
+} from "@platform/lib/railstate";
+import { getSchedule, markWholeTaskRead, showLauncher, type Task, type TaskPulseTask } from "@platform/lib/api";
+import { useBotsAvailable, useLauncherAvailable } from "@platform/lib/bots-available";
+import { useExpertsEnabled } from "@platform/lib/experts-flag";
+import {
+  onDraftChange,
+  readListing,
+  refreshListing,
+  subscribeListing,
+  useTasksPulse,
+  useTasksPulseRows,
+  readTasksRows,
+  tasksPulseLoaded,
+} from "@shell/tasksPulse";
+import { BOTS_ICON, GIT_ICON, TASKS_ICON } from "@shell/nav-icons";
+import { GIT_DOT_WORDS, gitBranch, gitDoorDots, gitDoorTitle, gitSyncWords } from "@shell/git-dock-lib";
+import { pulseTitle } from "@shell/tasks-lib";
+import { isBotsPath } from "@apps/bots/routes";
+import {
+  cardTitleLine,
+  draftRing,
+  isChatDraftTask,
+  isDraftTask,
+  liveJobRow,
+  relativeWhen,
+  taskColumn,
+  taskHref,
+  taskWhen,
+} from "@shell/tasks-lib";
+import { StatusIcon } from "@shell/ScheduleTaskViews";
+import NewJobModal, { chatHopSeed, reopenTime, type DraftSeed } from "@shell/NewJobModal";
+import { fetchDrafts } from "@platform/lib/drafts";
+import {
+  clearFavOpen,
+  favOpen,
+  favOpenedAtMs,
+  favPinned,
+  aPinned,
+  setAPinned,
+  botOpen,
+  lastChatId,
+  setBotOpen,
+  setFavOpen,
+  setFavPinned,
+  setLastChat,
+  setLastFav,
+  useAPinned,
+  useBotOpen,
+  useFavOpen,
+  useFavPinned,
+  useLastChat,
+} from "@platform/lib/last-chat";
+import { draftHref, preloadChat } from "@apps/claude";
+import { hideHint } from "@platform/lib/hints";
+import {
+  activeRing,
+  dotCleared,
+  dragging,
+  favSeats,
+  keepMarks,
+  LIST_ROWS_MAX,
+  nodeName,
+  pinnedBots,
+  holdBotOrder,
+  botRingRoute,
+  botStatusWords,
+  ringPress,
+  placeName,
+  placeRoot,
+  queuedEditHref,
+  railRows,
+  railScope,
+  readMark,
+  ringMarks,
+  type RailHere,
+  type RailPlace,
+  type RailRow,
+  type ReadMark,
+  windowAHovers,
+} from "./claude-rail-lib";
+import {
+  FAV_SETTLE_MS,
+  PEEK_MAX_WIDTH,
+  PEEK_MIN_HEIGHT,
+  PEEK_MIN_WIDTH,
+  PeekIntent,
+  clampAnchor,
+  railCardSize,
+  favLike,
+  keepAlive,
+  railOnChipLeave,
+  railOnStarred,
+  railOpenFav,
+  pulseFace,
+  rowOf,
+  statusWords,
+  placeClear,
+  bottomClear,
+  type Box,
+} from "./rail-peek-lib";
+import { publishWindowABox, setSnapGuides } from "./card-snap";
+import { isPopoverEdge, popoverDrag } from "@platform/ui/modal/popover-place";
+import { FLOAT_GRIPS, POPOVER_HEAD_SELECTOR, floatPlacement, floatResize, railPressWindow, snapResize, viewportOf } from "./rail-move-lib";
+import {
+  commitWindowBox,
+  freezeFromDock,
+  magnetBox,
+  noteFrontWindow,
+  publishPusher,
+  publishWindowBox,
+  windowPos,
+} from "./rail-move-store";
+import { railExtrasNow, useRailExtras, useRailExtrasAnswer } from "./rail-extras-flag";
+import { aPinTask, pinOf, placeColumn } from "./rail-slots-lib";
+import { SLOTS, focusPin, freeSlot, otherSlot, registerPinFocus, setFreeSlot, setPinTitle, useFreeSlot, type Slot } from "./rail-slots-store";
+import { PIN_A_ID, usePinHasBox } from "./use-pin-box";
+import { PANE_SLIDE_MS } from "@platform/lib/pane-presence";
+import { publishListCards, useListHosted, withdrawListCards } from "./rail-list-host-store";
+
+/** With free pins off the list's card has the one slot it always had. */
+const ONE_SLOT: readonly Slot[] = ["x"];
+/** How long a closed pinned list card stays mounted to fade (var(--dur-med)
+ *  and a frame or two). */
+const PIN_FADE_MS = 320;
+/** THE PASSING FALLBACK RAIL (ClaudeRail "A PIN GOES WITH ITS RING"): the path
+ *  a page's own rail last stood on — the path the document loaded on until
+ *  one has. The shell's fallback rail standing on that same path is the gap
+ *  between two of the page's rails (a load; the page swapping its rail as
+ *  its pane opens), not another view. */
+let pageRailPath = typeof location !== "undefined" ? location.pathname : "";
+const pinNoop = () => {};
+const pinNoRing = () => null;
+import { setRailResizing, useCardMove } from "./useCardMove";
+import { aPinWord, cardMode, doorSelector, inFullModal, inRailView, pinnedTaskLands, readAPin, ringClick, ringSelector, viewPress } from "./rail-pin-lib";
+import { PinAngle, RailPinButton, useTempOutside, type PressFlag } from "./RailPin";
+import {
+  dismissFavHover,
+  favHoverIntent,
+  favPress,
+  focusRail,
+  registerPageRail,
+  registerRail,
+  confirmFavRestore,
+  requestFavFocus,
+  setFavRestore,
+  setRailPage,
+  takeFavRestore,
+  takeQuietFocus,
+  useFavHoverKey,
+  useFavPeekState,
+} from "./fav-peek-store";
+import { FAV_PEEK_ID } from "./FavouritePeek";
+import { chatDraftKey, peekDraftSyncer } from "@platform/lib/drafts";
+import { useRailGit } from "./rail-git";
+import { publishRailGit } from "./rail-git-store";
+import { PLUS_DOOR, PlusPopIntent } from "./plus-pop-lib";
+import { publishPlusRender, usePlusCard, usePlusHosted, withdrawPlusRender } from "./plus-card-store";
+import { useLauncherOpen } from "./launcher-open";
+import { RailPeek, type RailPeekHandle } from "./RailPeek";
+import { botHasUnread, botsPulseTitle, useBotsPulse, useBotsRows } from "@platform/lib/botsPulse";
+import { navigateUrl } from "@platform/lib/router";
+import { Face } from "@apps/bots/components/Face";
+import type { FaceSubject } from "@apps/bots/lib/face";
+import { BOT_PEEK_ID, botHref } from "./BotPeek";
+import {
+  botCardHandle,
+  botCardIntent,
+  botCardState,
+  botPress,
+  botPressed,
+  botRing,
+  clearBotRing,
+  setBotCardHeld,
+  setBotCardNoRoom,
+  setBotRing,
+  useBotCardState,
+} from "./bot-card-store";
+import { getUiLayout, patchUiLayout, subscribeUiLayout } from "@platform/lib/ui-layout";
+import {
+  TASKS_CARD_KEY,
+  TASKS_PEEK_ID,
+  closeTasksCard,
+  focusTasksCard,
+  registerTasksDoor,
+  tasksCardIntent,
+  tasksCardStore,
+  tasksDoorAction,
+  useTasksCard,
+} from "./tasks-peek-store";
+import {
+  BOTS_CARD_KEY,
+  BOTS_PEEK_ID,
+  botsCardIntent,
+  botsCardStore,
+  botsDoorAction,
+  closeBotsCard,
+  focusBotsCard,
+  registerBotsDoor,
+  useBotsCard,
+} from "./bots-peek-store";
+import {
+  GIT_CARD_KEY,
+  GIT_PEEK_ID,
+  closeGitCard,
+  focusGitCard,
+  forgetGitCardRail,
+  setGitCardRail,
+  gitCardIntent,
+  gitCardStore,
+  gitDoorAction,
+  registerGitDoor,
+  useGitCard,
+} from "./git-peek-store";
+import {
+  MODE_DOOR,
+  closeModeCard,
+  closeModeCards,
+  forgetModeCardRail,
+  modeCardStore,
+  modeCards,
+  modeDoorAction,
+  modeDoorSelector,
+  modeKey,
+  modeOfKey,
+  modePeekId,
+  publishRailModes,
+  setModeCardRail,
+  useModeCards,
+  type RailModeDoor,
+} from "./mode-peek-store";
+import { watchRailWidth } from "./rail-width-watch";
+import type { DoorCardState } from "./door-card-store";
+
+/** No mode doors (a stable empty list). */
+const NO_MODE_DOORS: RailModeDoor[] = [];
+
+/** THE RAIL'S WIDTH, SAID TO THE DOCUMENT (owner, 2026-11-05: "move the
+ *  notification modal to the right a little bit so it doesn't cover the mini
+ *  sidebar … basically all menus will shift"): while a rail stands, the
+ *  document's `--claude-rail-w` is its width, and every fixed surface on the
+ *  window's right edge — the notification column (notifications.css), the
+ *  shadcn menus and popovers (platform/lib/rail-gutter `railGutter`) — keeps
+ *  off it. A hidden rail says nothing. Counted: a page's rail and the shell's
+ *  fallback never stand together, but the count makes that a fact, not a hope. */
+let railsUp = 0;
+// THE EXPANDABLE RAIL (Rail extras, `rail_extras_enabled`; owner, 2026-11-21) says its
+// live width: 48 collapsed, its own width expanded — again on every toggle
+// and every move of its resize drag (the effect re-runs on `width`).
+function railUp(width: number = RAIL_COLLAPSED_WIDTH): () => void {
+  // A test renderer's document has no root element: nothing to say it to.
+  const root = typeof document !== "undefined" ? document.documentElement : null;
+  railsUp += 1;
+  root?.style.setProperty("--claude-rail-w", `${width}px`);
+  return () => {
+    railsUp -= 1;
+    if (railsUp <= 0) {
+      railsUp = 0;
+      root?.style.removeProperty("--claude-rail-w");
+    }
+  };
+}
+
+/** The rail beside an open pane, for the pages' seam drags (rail-peek-lib
+ *  `railInset`) — re-exported here, the one rail module apps may import. */
+export { railInset } from "./rail-peek-lib";
+/** The pane's home on a page's URL, for the pages' `onNewChat` (claude-rail-
+ *  lib `paneHomeHref`) — re-exported for the same reason. */
+export { paneHomeHref } from "./claude-rail-lib";
+
+
+/** The hover card's DOM id (one rail per page; the ring's `aria-controls`). */
+const PEEK_ID = "claude-rail-peek";
+
+
+/** The rail's width (claude-rail.css `.claude-rail`): what a shut pane leaves
+ *  at the edge, and what a pull to reopen it is measured past (the `closedWidth`
+ *  of panel-drag `reopenWidth`). The global sidebar's rail is the same 48px
+ *  (platform/lib/sidebarstate SIDEBAR_RAIL_WIDTH). */
+export const RAIL_W = 48;
+
+/** How long a press's read may stay in flight before the rail gives the dot
+ *  back (CodeRabbit on #2049): a write that hangs would otherwise hold the
+ *  ring hollow — and a re-press mute — for as long as the browser waits. The
+ *  request itself is not cancelled; a write the server applies after the
+ *  deadline shows as the pulse's next zero. */
+const READ_WAIT_MS = 8000;
+
+/** How long a press waits for the card's composer to mount before it gives up
+ *  putting the keyboard there (a cold chat chunk takes ~1s). */
+const FOCUS_WAIT_MS = 2500;
+
+/** THE WAIT FOR A CARD'S COMPOSER (`focusComposerSoon`, the bot card's too):
+ *  retried by frame until the composer exists and took the keyboard, for
+ *  FOCUS_WAIT_MS at most; over the moment the card no longer shows the chat
+ *  (`still`), the reader moves the keyboard to a control outside the card
+ *  (not the body, not the pressed ring), or does anything themselves — any
+ *  later press, and any later key when `keys` (capture, document-wide).
+ *  Returns the stop. */
+function composerWaitFor(o: {
+  still: () => boolean;
+  cardId: string;
+  focus: () => boolean;
+  ring: () => HTMLElement | null;
+  keys: boolean;
+  onStop: () => void;
+}): () => void {
+  let live = true;
+  let raf = 0;
+  const stop = () => {
+    live = false;
+    cancelAnimationFrame(raf);
+    document.removeEventListener("pointerdown", stop, true);
+    document.removeEventListener("keydown", stop, true);
+    o.onStop();
+  };
+  document.addEventListener("pointerdown", stop, true);
+  if (o.keys) document.addEventListener("keydown", stop, true);
+  const until = performance.now() + FOCUS_WAIT_MS;
+  const attempt = () => {
+    if (!live) return;
+    if (!o.still()) return stop();
+    const card = document.getElementById(o.cardId);
+    const a = document.activeElement;
+    if (a && a !== document.body && !card?.contains(a) && a !== o.ring()) return stop();
+    if (o.focus() && card?.contains(document.activeElement)) return stop();
+    if (performance.now() < until) raf = requestAnimationFrame(attempt);
+    else stop();
+  };
+  raf = requestAnimationFrame(attempt);
+  return stop;
+}
+
+/** Focus into a card once it is drawn (`focusCardSoon`): the class lands a
+ *  frame after the show, and a focus on a `visibility: hidden` box does
+ *  nothing, so try for a few frames rather than guess the one. */
+function cardFocusSoon(cardId: string, focus: () => boolean): void {
+  let tries = 0;
+  const attempt = () => {
+    const card = document.getElementById(cardId);
+    if (focus() && card?.contains(document.activeElement)) return;
+    if (++tries < 12) requestAnimationFrame(attempt);
+  };
+  requestAnimationFrame(attempt);
+}
+
+/** What the New task card needs from the schedule before it can open: the
+ *  permission modes the server offers and the folders existing tasks point at
+ *  (NewJobModal `permissionModes`, `recentTargets` — what Scheduled.tsx hands
+ *  it off the schedule it already holds; the rail has no schedule, so it asks
+ *  on the press). `seq` keys the mount: every press is a fresh card. */
+interface Card {
+  seq: number;
+  /** The locked target as it was at the press: a node switched while the
+   *  schedule read is out must not move the task (Bugbot on #2015). */
+  target: string | null;
+  /** The card's WHERE pill at the same press (`NewTaskSeed.where`). */
+  where: NewTaskSeed["where"];
+  modes: string[];
+  recents: string[];
+  /** A DRAFT REOPENED IN PLACE (owner, 2026-11-02: "draft open took user to
+   *  tasks page instead of just opening the modal"): the stored record the
+   *  card mounts on — the Tasks page's own seed (`chatHopSeed` for a chat
+   *  draft, the row's `form` for a task draft). Absent on the +. */
+  draft?: DraftSeed | null;
+  /** The chat record a chat draft's card autosaves back onto (NewJobModal
+   *  `chatKey`); "" for a task draft. */
+  chatKey?: string;
+  /** The time the stored form chose, or null (Scheduled `reopenTime`). */
+  time?: Date | null;
+  /** THE +'s CARD AS A POPOVER (owner, 2026-11-07, the rail's nav doors):
+   *  floating beside the rail, no scrim, like the rail's chat card. Only the
+   *  +'s; a draft's card stays the modal. */
+  pop?: boolean;
+  /** …PINNED, or a hover's preview (owner, 2026-11-07: "hover gives you quick
+   *  preview", a click cements it; plus-pop-lib.ts). A pinned card closes by
+   *  its × only. */
+  pinned?: boolean;
+  /** Which popover door opened it (plus-pop-lib): `PLUS_DOOR`, or the draft
+   *  ring's key. */
+  door?: string;
+  /** THE TASK JUST CREATED from this card (NewJobModal `onCreatedChat`): the
+   *  remounted card opens on that entry's chat instead of closing. */
+  chatEntry?: string;
+  /** …and the settings it was created with, for that chat until its row is
+   *  listed (CodeRabbit on #2220). */
+  chatSeed?: { model?: string; effort?: string; backend?: string };
+  /** HELD BY ITS PIN (rail-pin-lib): an outside
+   *  press, a press into a frame and a page hop leave it up. `pinned` and
+   *  not `held` is TEMP. */
+  held?: boolean;
+}
+
+/** A draft's fresh record read for its New task card (`readDraftCard`):
+ *  the card to open, or the record GONE, or NO ANSWER. */
+type DraftRead = { kind: "card"; card: Omit<Card, "seq"> } | { kind: "gone" } | { kind: "unknown" };
+
+/** What the +'s New task card is about, from the page: the page knows what
+ *  the pane's own composer would make a task on, and the rail restates it. */
+export interface NewTaskSeed {
+  /** The locked target (`NewJobModal lockTarget`): the clone or the node's
+   *  file on a canvas, the folder on the app page, the folder or the file in
+   *  the explorer. Null while the page cannot say yet. */
+  target: string | null;
+  /** Why the + is held, or null: the open pane has no chat to start one from
+   *  until the clone exists ("Loading the canvas…") or while the selected
+   *  node's file is still being written ("Saving <file>…"), so the + waits
+   *  for the same two waits. */
+  waiting: string | null;
+  /** The thing the task is ON, for the +'s words ("New task on hex"); null =
+   *  the place as a whole ("New task"). */
+  on: string | null;
+  /** SAID as the canvas and the node, not as the path (Akshil, 2026-10-30):
+   *  the card's read-only WHERE pill. Canvas pages only; elsewhere the card
+   *  shows the locked path as the Tasks page's own does. */
+  where?: { canvas: string; node: string | null };
+}
+
+/** How long the + waits on the schedule before opening the card without it
+ *  (CodeRabbit on #1998): a read that hangs — not fails — would otherwise
+ *  hold the button disabled until the browser gave up on the request. */
+const SCHEDULE_WAIT_MS = 8000;
+
+/** A seat's door: a draft's New task card (`draftHref`, as the List's row
+ *  press), every other row's chat (`taskHref`, on the pulse's live status).
+ *  Null while a pulse-only draft waits for the listing to name it. */
+function seatHref({ pulse: t, row }: RailRow): string | null {
+  const merged = row ? { ...row, status: t.status } : t;
+  return (row && isDraftTask(row) ? draftHref(row) : null) ?? taskHref(merged) ?? queuedEditHref(row, t.status);
+}
+
+/** The schedule's answer for the card, or empty if the read fails or outlasts
+ *  `SCHEDULE_WAIT_MS` — either way the card opens (see `openNewTask`). */
+function cardSeed(): Promise<{ modes: string[]; recents: string[] }> {
+  const empty = { modes: [] as string[], recents: [] as string[] };
+  return new Promise((resolve) => {
+    const timer = window.setTimeout(() => resolve(empty), SCHEDULE_WAIT_MS);
+    getSchedule().then(
+      (s) => {
+        window.clearTimeout(timer);
+        resolve({ modes: s.permission_modes, recents: s.entries.map((e) => e.target) });
+      },
+      () => {
+        window.clearTimeout(timer);
+        resolve(empty);
+      },
+    );
+  });
+}
+
+/** The foot's pinned bots, in the order first drawn this page load
+ *  (claude-rail-lib `holdOrder`). */
+let heldBotOrder: string[] = [];
+
+/** IS THE +'s CARD MID-CREATE? (Modal's `data-busy`; CodeRabbit on #2220.)
+ *  Read off the card, not its ✕ — the card hides its ✕ while it shows a chat,
+ *  and an idle card must still give way to the Tasks or Bots card. True with
+ *  no card standing, as the missing ✕ used to read. */
+function popBusy(rail: HTMLElement | null): boolean {
+  const card = rail?.ownerDocument.querySelector(".modal-popover .modal-dialog");
+  return !card || card.hasAttribute("data-busy");
+}
+
+
+/** The + popover's box as window A's (card-snap.ts) — stable, so the Modal's
+ *  publish effect runs only when the box moves. */
+function publishPlusBox(box: Box | null): void {
+  publishWindowABox("plus", box);
+}
+
+/** …and its live box, docked or floating, for window B's head drag to snap
+ *  its edges to (rail-move-store `windowBox`; owner, 2026-11-17). */
+function publishPlusLiveBox(box: Box | null): void {
+  publishWindowBox("a", "plus", box);
+}
+function publishPlusBoxes(box: Box | null): void {
+  publishPlusBox(box);
+  publishPlusLiveBox(box);
+}
+/** FREE PINS (rail-slots-lib), the + card's three sayings — each a stable
+ *  function, as the ones above. PINNED, it floats: its box is the section's
+ *  pin's, and it pushes nothing. */
+function publishPlusPinBox(box: Box | null): void {
+  publishWindowBox("a", "plus", box, true);
+  publishPusher("a", "plus", null);
+}
+/** A non-pin opened by a click: beside the rail, and it pushes the pins it
+ *  would cover. */
+function publishPlusDockPush(box: Box | null): void {
+  publishPlusBoxes(box);
+  publishPusher("a", "plus", box);
+}
+/** A hover's preview: beside the rail, pushing nothing. */
+function publishPlusDockQuiet(box: Box | null): void {
+  publishPlusBoxes(box);
+  publishPusher("a", "plus", null);
+}
+
+export function ClaudeRail({
+  place,
+  newTask,
+  git,
+  fileModes,
+  activeSessionId,
+  onOpen,
+  onOpenChat,
+  onSelectNode,
+  onTagSelect,
+  onPullStart,
+  onCardPinned,
+  paneOpen = false,
+  onNewChat,
+  favouritesOnly = false,
+}: {
+  /** Where the rail stands (claude-rail-lib `RailPlace`): whose chats ride
+   *  it. On a canvas the selected node's file narrows it (header). The
+   *  caller memoises it: the seats derive from it. */
+  place: RailPlace;
+  /** What the + makes a task on (`NewTaskSeed`). */
+  newTask: NewTaskSeed;
+  /** THE GIT SECTION (owner, 2026-11-02: "we need to show git as well when
+   *  collapsed … like the collapsed left sidebar where we have sections"):
+   *  under the chats, past a separator, the way the left rail splits
+   *  Projects / Canvases / Favourites — the branch, a Check-for-updates seat,
+   *  and the last three commits that touched `path` (rail-git.ts). Drawn only
+   *  where `path` sits in a repository; absent on a canvas (a clone is not
+   *  one). `onOpenGit` is the branch's and the commits' door: the page's git
+   *  panel (the explorer's git companion, the app page's git peek).
+   *  Since 2026-11-10 (owner) the section is one Git door
+   *  under the rings whose window A card (GitPeek) holds all of it. */
+  git?: { path: string; onOpenGit?: () => void };
+  /** THE FILE'S OTHER MODES (owner, 2026-11-20: "above the Git icon add all
+   *  the mode icons except the active one, in the same order; on hover we
+   *  show preview window A"): one door per entry, above the Git door, each
+   *  with its own window A card (ModePeek, mode-peek-store) that draws the
+   *  file in that mode — an item of its own, as the Git door is. `doors` is the page's mode menu less the active
+   *  entry; `src` the frame for a mode; `onOpen` the menu's own switch.
+   *  Only with Rail extras on (`rail_extras_enabled`), and only a file page hands it. */
+  fileModes?: {
+    path: string;
+    doors: RailModeDoor[];
+    src: (mode: string) => string;
+    onOpen: (mode: string) => void;
+    /** Whatever else `src` reads (the page's git snapshot): a change of it
+     *  is said again, so a card that is up redraws its frame's address. */
+    rev?: string;
+  };
+  /** The session the page's URL names, drawn as the current row. */
+  activeSessionId: string | null;
+  /** Open the pane as it is. */
+  onOpen: () => void;
+  /** Open one of the canvas's chats: its Tasks-page door (`taskHref`). */
+  /** …answering, when it can, whether the hop went: a page door behind the
+   *  composer's leave guard resolves false when the reader stayed
+   *  (CanvasPage / AppPage `openChatHere`, `navigateUrl`). The favourite
+   *  card's Open waits for that answer before closing (FavouritePeek). */
+  onOpenChat: (href: string) => void | Promise<boolean>;
+  /** The card's node chip: select that node in the workbench (RailPeek);
+   *  canvas pages only — without it the chip is a label and the foot's
+   *  canvas seat is not drawn. Null — the rail's last seat while a node is
+   *  selected (header) — asks
+   *  it to deselect, back to the whole canvas. */
+  onSelectNode?: (udfName: string | null) => void;
+  /** The cards' place tags' press (claude-rail-lib `RailHere.tag`): the
+   *  node selected and zoomed to, or the canvas fit — the pane's chat
+   *  untouched (CanvasWorkspace `selectFromTag`). */
+  onTagSelect?: (udfName: string | null, sessionId?: string | null) => void;
+  /** A pointer down on the rail's inner edge: the start of a pull that opens
+   *  the pane at the width the pointer drags it to (CanvasWorkspace
+   *  `onRailPull`). */
+  onPullStart: (e: ReactPointerEvent<HTMLDivElement>) => void;
+  /** A card opened by a press is up (`true`) or gone (`false`): the page
+   *  holds its frame's focus-on-enter meanwhile (header). */
+  onCardPinned?: (pinned: boolean) => void;
+  /** THE PANE IS OPEN beside this rail (header, "BESIDE THE OPEN PANE"):
+   *  favourites on only — the page mounts the rail then, at the window's
+   *  right edge past the pane. No panel glyph and no pull seam (the pane's
+   *  own Hide and seam do those jobs), and the rail hides while it has
+   *  nothing to draw (claude-rail-lib `railShown`). */
+  paneOpen?: boolean;
+  /** THE PANE'S HOME (header, "BESIDE THE OPEN PANE"): open the pane on its
+   *  Recent chats page, a new chat's composer — what the + does while the
+   *  pane is open (claude-rail-lib `plusDoor`); the rail then puts the
+   *  keyboard in that composer. Absent: the + opens the New task card. */
+  onNewChat?: () => void;
+  /** THE SHELL'S FALLBACK RAIL (FallbackRail; header, "ON A PAGE WITH NO
+   *  RAIL"): no place of its own — no list, no +, no Git, no panel glyph;
+   *  only the favourites, and hidden while there are none. */
+  favouritesOnly?: boolean;
+}) {
+  const rows = useTasksPulseRows();
+  // THE GIT SECTION'S FACTS (header; rail-git.ts). Read for no path on a
+  // rail with no git — the hook is inert then.
+  const railGit = useRailGit(git?.path ?? null);
+  // THE CANVAS PLACE'S OWN FACTS (header): the selected node, as the
+  // workbench names it, and the canvas's name — what the foot's canvas seat
+  // and the +'s words read. Null / the place's own name elsewhere.
+  const node = useMemo(
+    () => (place.kind === "canvas" && place.file ? { udfName: nodeName(place.file), file: place.file } : null),
+    [place],
+  );
+  const name = place.kind === "canvas" ? place.name : placeName(place);
+  // Drafts and scheduled rows ride the rail (owner, 2026-10-30): the rail is
+  // the List's order in rings, drafts included (claude-rail-lib
+  // `sessionless`) — every page's rail, so it is set here, not by the page.
+  const seatPlace = useMemo((): RailPlace => ({ ...place, sessionless: true }), [place]);
+  const scope = placeName(place);
+  // THE CAPTION'S WORDS ARE THE LISTING'S, not the pulse's: the pulse carries
+  // status and a title, but the list row's caption is built from the full row
+  // (recap, last reply, last message, the draft) — and so is the List's ORDER
+  // (sortForList reads the full row).
+  //
+  // FOLLOWED LIVE, not read once (owner, 2026-10-30: "if I make the draft in
+  // the card it doesn't update instantly … the sidebar should get updates
+  // instantly as well"): the rail subscribes to the listing feed the Tasks
+  // page and the pane's own Recent list follow (`subscribeListing`, the
+  // `/api/tasks/changes` long-poll, refcounted to one transport per
+  // document), so a draft typed into the card's composer, a rename, a chip
+  // — anything the listing carries — reaches the rings the moment the
+  // server announces it. The read used to be a one-shot `getTasks` repeated
+  // when a row's STATUS moved, which a draft never moves: the dot waited for
+  // the next pane open. The pulse poll stands down while the feed is live,
+  // as it does for every other follower. A failed read keeps the rows on
+  // screen (the feed says `failed`; the last good rows are still the best
+  // answer).
+  const [listing, setListing] = useState<Task[] | null>(() => readListing());
+  useEffect(
+    () =>
+      subscribeListing((ev) => {
+        if (!ev.failed) setListing(ev.rows);
+      }),
+    [],
+  );
+  // A DRAFT RECORD MOVED (the feed's draft channel: a composer's unsent words
+  // saved or cleared, a New task card's form) — the rows' `draft` join is a
+  // listing fact, so re-read it now rather than on the next row movement.
+  // Collapsed to one read per tick by `refreshListing` itself.
+  useEffect(() => onDraftChange(() => refreshListing()), []);
+  const full = useMemo(() => new Map((listing ?? []).map((t) => [t.key, t])), [listing]);
+
+  // THE RAIL'S SEATS, in the List's order (claude-rail-lib). `now` is read
+  // once per derivation, as `sortForList` asks; the derivation re-runs when a
+  // row moves (the pulse) or the listing re-reads, which is when a rank can
+  // change.
+  // THE FAVOURITES (header) draw in their own section.
+  // HOVER / TEMP / PIN (rail-pin-lib; owner, 2026-11-16): a press makes a
+  // card TEMP — one press outside closes it — and only its pin icon or a
+  // double-click on its ring PINS it (held).
+  // FREE PINS (rail-slots-lib header; Rail extras, `rail_extras_enabled`): the pin is
+  // the TASK'S. A chat window is then two slots
+  // that swap roles (rail-slots-store) — its non-pin, which this rail's rings
+  // drive, and its pin, frozen where it stood; a door's card and the + pin
+  // where they are — and a ring's click never swaps what a pin shows.
+  const freePins = useRailExtras();
+  const freePinsRef = useRef(freePins);
+  freePinsRef.current = freePins;
+  /** Section A's pin, as its mark spells it (last-chat `aPinned`). */
+  const aWord = useAPinned();
+  /** Section B's pinned bot (last-chat `botOpen`; free pins: a pinned bot's
+   *  mark only). */
+  const pinnedBotId = useBotOpen();
+  const rowsRef = useRef(rows);
+  rowsRef.current = rows;
+  const favs = useMemo(() => favSeats(rows, full), [rows, full]);
+  // THE BLOCKED ARE AT THEIR HEAD (claude-rail-lib `favSeats`, rail-peek-lib
+  // `favLike`; owner, 2026-11-05): favourites in every way bar the star —
+  // window B's hover, the favourite's card, the pane hand-over — drawn with
+  // `.is-blocked` and no star. How many, for the rail's standing (`railShown`:
+  // the fallback never stands for them alone).
+  const blockedCount = useMemo(() => favs.filter((s) => !s.pulse.starred).length, [favs]);
+  // THE PINNED BOTS, UNDER THE FAVOURITES (claude-rail-lib `pinnedBots`;
+  // owner, 2026-11-05): their faces, each a door to the bot's page.
+  // Only where the server offers Bots (`botsAvailable`, the left sidebar's
+  // own gate) — no pulse poll on Windows.
+  const botsOffered = useBotsAvailable(true);
+  const botRows = useBotsRows(botsOffered);
+  // …IN AN ORDER SET ONCE PER PAGE LOAD (claude-rail-lib `holdOrder`; owner,
+  // 2026-11-09): a press on a bot no longer reshuffles the foot. Held at the
+  // module, not the mount, so a view switch (a new page rail) keeps it too;
+  // dropped while the foot is off (no Bots offered), so it seeds afresh
+  // (`holdBotOrder`).
+  const bots = useMemo(() => {
+    const sorted = pinnedBots(botRows, { footOrder: true });
+    const held = holdBotOrder(heldBotOrder, sorted, botsOffered);
+    heldBotOrder = held.held;
+    // STACKED FROM THE BOTTOM (owner, 2026-11-09: "it should be reverse —
+    // 1st pin bottom right, 2nd pin 2nd to the bottom"): the Bots page's
+    // first is the rail's last seat, nearest the window's corner.
+    return [...held.out].reverse();
+  }, [botRows, botsOffered]);
+  // THE LIST: the place's chats, starred or blocked or not (owner,
+  // 2026-11-05: a favourite's ring stands in both sections).
+  const allSeats = useMemo(
+    () => (favouritesOnly ? [] : railRows(rows, full, seatPlace)),
+    [rows, full, seatPlace, favouritesOnly],
+  );
+  // THE CARD'S STATE IS THE SHELL'S (plus-card-store): a pinned card
+  // outlives this rail's page, as the Tasks card does.
+  const [card, setCard] = usePlusCard<Card>();
+  const cardRef = useRef(card);
+  cardRef.current = card;
+  // THE PANEL GLYPH AND THE PULL SEAM: only while the pane is shut, and
+  // never on the shell's fallback (no pane to show).
+  const chrome = !paneOpen && !favouritesOnly;
+  // THE RAIL'S NAV DOORS (owner, 2026-11-07): Tasks and the + at the top, in
+  // place of the panel glyph, and Bots at the foot — the left sidebar has no
+  // Tasks or Bots rows (GlobalSidebar). They are on every rail, always: the
+  // rail stands whatever it holds and whatever the pane does (the shell's
+  // fallback stands on every page without a page rail, claude-rail-lib
+  // `fallbackRailUp`).
+  // THE EXPANDABLE RAIL (owner, 2026-11-21; Rail extras, `rail_extras_enabled`):
+  // an expand / collapse button at the rail's
+  // top, the left sidebar's own (SidebarFrame). Collapsed, the 48px rail of
+  // before plus the button. Expanded, the same rail, wider (its width
+  // dragged on its inner edge, platform/lib/railstate), each item drawn as
+  // its icon and its title (`seatBody`); every behaviour unchanged. Off,
+  // nothing of it is drawn, whatever the layout document says.
+  const expandOn = useRailExtras();
+  const railState = useRailState();
+  const expanded = expandOn && railState.expanded;
+  // THE TUCK (SidebarFrame `tucking`): a collapse keeps the expanded rows —
+  // icon left, no title — for the length of the width glide, so the icons
+  // glide back with the rail's edge instead of jumping to its middle first.
+  const [tucking, setTucking] = useState(false);
+  const wasExpanded = useRef(expanded);
+  useLayoutEffect(() => {
+    const collapsing = wasExpanded.current && !expanded;
+    wasExpanded.current = expanded;
+    if (!collapsing) {
+      setTucking(false);
+      return;
+    }
+    setTucking(true);
+    const t = window.setTimeout(() => setTucking(false), PANE_SLIDE_MS);
+    return () => window.clearTimeout(t);
+  }, [expanded]);
+  // Rows (icon + title) while expanded or tucking; titles only expanded.
+  const asRows = expanded || (tucking && expandOn);
+  // The width the rail stands at: its own expanded, 48 otherwise.
+  const railWidth = expanded ? railState.width : RAIL_COLLAPSED_WIDTH;
+  // THE GIT SECTION BECOMES A DOOR with the nav doors (owner, 2026-11-10:
+  // "move Git to a door on the rail, under the task rings"): the rail reads
+  // the page's repository, draws the Git door (below the rings, past a
+  // hairline) and hands the facts, with the page's Git panel door, to the
+  // shell's Git card (rail-git-store.ts, keyed by this rail; GitPeek).
+  const openGitRef = useRef(git?.onOpenGit);
+  openGitRef.current = git?.onOpenGit;
+  const gitOn = !!git;
+  const gitDoor = !!git?.onOpenGit;
+  const gitRepo = gitOn ? (railGit.repo ?? null) : null;
+  // ONE CHAT, ONE COMPOSER beside the open pane: a chat the pane (or the
+  // explorer's sidebar) has mounted is not mounted again in this rail's card
+  // — the card says where it is instead (`bodyNote`), as the favourite's card
+  // does (FavouritePeek). Only while the pane is open: shut, nothing is
+  // mounted there, and the rail is the rail of 2026-11-04.
+  // THE LIST SCROLLS (owner, 2026-11-05: "remove the clip-not-scroll
+  // restriction"): every ring is drawn and the list scrolls in its share of
+  // the column, its scrollbar hidden like the favourites' (claude-rail.css
+  // `.is-scroll`); the favourites keep their floor.
+  const listRef = useRef<HTMLDivElement | null>(null);
+  const anyRing = allSeats.length > 0;
+  const baseSeats = allSeats;
+  // THE LIST'S EDGES (owner, 2026-11-05: "subtle indicators showing this is
+  // not the top and this is not the bottom"): whether there is more above
+  // and below the scrolled box — read on every scroll and whenever the
+  // rings or the box change; the fades draw off it (claude-rail.css).
+  const [listEdges, setListEdges] = useState({ up: false, down: false });
+  const measureEdges = useCallback(() => {
+    const el = listRef.current;
+    if (!el) return;
+    const up = el.scrollTop > 1;
+    const down = el.scrollTop + el.clientHeight < el.scrollHeight - 1;
+    setListEdges((e) => (e.up === up && e.down === down ? e : { up, down }));
+  }, []);
+  useLayoutEffect(() => {
+    measureEdges();
+    const el = listRef.current;
+    if (!el || typeof ResizeObserver === "undefined") return;
+    const ro = new ResizeObserver(measureEdges);
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, [measureEdges, baseSeats]);
+
+  // THE DOTS A PRESS CLEARED (header; claude-rail-lib `ReadMark`): held
+  // while the pulse still reports what the press saw, spent the moment it
+  // says anything else. Pruned against the rows the rail draws from, so a
+  // stale mark never outlives its row.
+  const [marks, setMarks] = useState<ReadonlyMap<string, ReadMark>>(() => new Map());
+  const marksRef = useRef(marks);
+  marksRef.current = marks;
+  useEffect(() => {
+    setMarks((m) => keepMarks(m, rows));
+  }, [rows]);
+  const dropMark = useCallback((key: string, mark: ReadMark) => {
+    setMarks((m) => {
+      if (m.get(key) !== mark) return m;
+      const next = new Map(m);
+      next.delete(key);
+      return next;
+    });
+  }, []);
+  const clearUnread = useCallback(
+    (t: TaskPulseTask) => {
+      // Hollow already (a press while the pulse has yet to agree): nothing
+      // to clear, and no second write.
+      if (dotCleared(marksRef.current.get(t.key), t)) return;
+      const mark = readMark(t);
+      if (!mark) return;
+      setMarks((m) => new Map(m).set(t.key, mark));
+      // Not awaited: the press is opening the chat and must not wait on the
+      // write. A refusal — or a write still out past READ_WAIT_MS — puts
+      // the dot back; unless a later press replaced the mark, whose own
+      // write is the one that counts. A confirmed write leaves the mark to
+      // the rows (`keepMarks`): it ends on the row's own word (the zero),
+      // never on a clock — the listing feed can run up to its 20s floor
+      // behind the write, and a dot that came back meanwhile would be a
+      // lie. A mark cannot outlive its truth: a message is unread only
+      // once it has HAPPENED, so a real new dot always moves `happened_at`.
+      const deadline = new Promise<never>((_, reject) => {
+        window.setTimeout(() => reject(new Error("read timed out")), READ_WAIT_MS);
+      });
+      void Promise.race([markWholeTaskRead(t.key), deadline]).catch(() => dropMark(t.key, mark));
+    },
+    [dropMark],
+  );
+
+  // THE HOVER CARD (header; RailPeek.tsx). `peekKey` is what the card shows,
+  // `kept` the chats that stay mounted behind it (newest first), both written
+  // by the intent machine and nothing else. The ring elements are kept by key
+  // for the card's placement and for handing focus back on Escape.
+  const [peekKey, setPeekKey] = useState<string | null>(null);
+  const refocusOn = useRef<string | null>(null);
+  const [pinned, setPinned] = useState(false);
+  // HELD (owner, 2026-11-02; every pin since 2026-11-03): a held card ignores
+  // the outside press, the press into the workbench frame, the all-chats seat
+  // and Escape — only its × or its Open door let go. Set wherever `pinned`
+  // becomes true (`pin` below): a ring press, a press inside the card, the
+  // keyboard's way in. Dropped with the card.
+  const [held, setHeld] = useState(false);
+  const heldRef = useRef(false);
+  heldRef.current = held;
+  const [kept, setKept] = useState<readonly string[]>([]);
+  const intentRef = useRef<PeekIntent | null>(null);
+  if (!intentRef.current) {
+    intentRef.current = new PeekIntent({
+      show: (key) => {
+        // A swap while the reader is IN the card (typing in a pinned card's
+        // composer, then pressing another ring): the
+        // chat they were in is about to hide, focus and all — take the
+        // keyboard to the new chat's composer (the effect below). Let go of
+        // the old one NOW: a hidden chat is not inert, and keys typed before
+        // the new composer takes over would land — Enter would send — in the
+        // chat that just left view (Bugbot on #2040).
+        const card = document.getElementById(PEEK_ID);
+        const a = document.activeElement;
+        refocusOn.current = key && a && card?.contains(a) ? key : null;
+        if (refocusOn.current && a instanceof HTMLElement) a.blur();
+        setPeekKey(key);
+      },
+      // The intent calls `pin(false)` only as the card goes (dismiss, prune);
+      // `held` drops with it (the effect below).
+      pin: (on) => {
+        // WITH THE PIN (rail-pin-lib) a press is TEMP: only the pin holds.
+        setPinned(on);
+      },
+      warm: (key) => setKept((s) => keepAlive(s, key)),
+    });
+  }
+  const intent = intentRef.current;
+  useEffect(() => () => intent.dispose(), [intent]);
+  useEffect(() => {
+    if (!peekKey) setHeld(false);
+  }, [peekKey]);
+  // A HELD CHAT KEEPS ITS RING — OUTSIDE THE LIST (owner, 2026-11-02: "don't
+  // make it the top item; we have a separator and then a canvas button at
+  // the bottom — put it above the canvas button, after the separator, so we
+  // know it doesn't belong to the list"). The rail narrows to the node; the
+  // held chat, if it is not the node's, draws in the foot under the
+  // hairline, above the canvas glyph, so the card keeps its anchor and the
+  // reader sees what they pinned without mistaking it for one of the node's
+  // chats. Letting go (the ×, Open) drops it with the next derivation;
+  // archiving lets go first (RailPeek `onFiled`).
+  // …AND A HELD CHAT CLIPPED OUT of the list (above) draws in the foot the
+  // same way: still anchored, still seen.
+  //
+  // BUT NEVER ACROSS PLACES: the explorer keeps this rail mounted from one
+  // folder or file to the next, and a card pinned on the last place is not
+  // this place's to hold — by key alone it would ride into the foot here
+  // (Bugbot on #2069). A place change lets the card go. A NODE SELECTION IS
+  // NOT A PLACE CHANGE: the canvas `place` is remade with the node's file,
+  // but it is the same canvas — compared by `placeRoot`, which leaves the
+  // node out. (From 2026-11-03 to 2026-11-06 a held card whose chat was not
+  // the node's stayed, its ring riding into the foot above the canvas glyph
+  // — `heldExtra`. Gone: see below.)
+  //
+  // EXCEPT A FAVOURITE'S OPEN CARD (header): it was not opened on this place,
+  // it is the reader's, and it travels (owner, 2026-11-03).
+  const root = placeRoot(place);
+  const rootRef = useRef(root);
+  useEffect(() => {
+    if (rootRef.current === root) return;
+    rootRef.current = root;
+    // WITH THE PIN (rail-pin-lib `hopKeeps`): a hop in place keeps a PINNED
+    // card whose chat this place lists too — its ring is here; one whose ring
+    // is gone has moved onto the + already (the rule below). A temp + card
+    // goes with the hop.
+    const c = cardRef.current;
+    if (c?.pop && !c.held) shutPopRef.current();
+    const key = intent.current;
+    if (heldRef.current && key && baseSeatsRef.current.some((s) => s.pulse.key === key)) return;
+    setHeld(false);
+    intent.dismiss();
+  }, [root, intent]);
+  // THE HELD CARD GOES WHEN ITS RING LEAVES THE LIST (owner, 2026-11-06:
+  // "when you have a click preview open and the tasks in that list get
+  // filtered because of selection and the task is no longer in the list, we
+  // close the window"): a node selected narrows the list to its chats, and a
+  // card pinned on a chat that is not among them closes — no outsider's ring
+  // in the foot any more. In the layout phase, with the list.
+  const heldKey = held ? peekKey : null;
+  useLayoutEffect(() => {
+    if (!heldKey) return;
+    if (baseSeats.some((s) => s.pulse.key === heldKey)) return;
+    // (With the pin too — rail-pin-lib `pinnedTaskLands`; owner, 2026-11-16:
+    // a pinned window whose task this view does not list "we just close".)
+    setHeld(false);
+    intent.dismiss();
+  }, [heldKey, baseSeats, intent]);
+  const baseSeatsRef = useRef(baseSeats);
+  baseSeatsRef.current = baseSeats;
+  // Every seat this rail's card may show — the list's, plus the favourites
+  // (a hover on their rings, header) — for the card's anchors, the kept
+  // mounts and the prune; the LIST itself is `baseSeats`, the favourites
+  // draw in their own section (below). A favourite's OPEN card is the
+  // shell's (FavouritePeek), never this one.
+  const seats = useMemo(() => (favs.length > 0 ? [...baseSeats, ...favs] : baseSeats), [baseSeats, favs]);
+  const favKeys = useMemo(() => new Set(favs.map((s) => s.pulse.key)), [favs]);
+  // Read at the moment, not at the render that made the callback: the chip's
+  // hand-over runs after the hop (`onChipLeave`).
+  const favKeysRef = useRef(favKeys);
+  favKeysRef.current = favKeys;
+  const seatsRef = useRef(seats);
+  seatsRef.current = seats;
+  // THE LAST RING PRESSED (owner, 2026-11-02): "the active css to the last
+  // selected task… keep by task id so it is easier to spot; it doesn't
+  // change when we filter tasks based on the selected node, only when we
+  // click a task item". A press on a ring, either door; nothing else moves
+  // it, and it survives the rail narrowing to a node and widening again.
+  // Shared with the pane's Recent chats list (platform/lib/last-chat), so
+  // the mark holds across the pane opening and shutting. THE FAVOURITES'
+  // SECTION KEEPS ITS OWN (header, `setLastFav`).
+  const lastPressed = useLastChat();
+  const railRef = useRef<HTMLElement | null>(null);
+  const peekRef = useRef<RailPeekHandle | null>(null);
+  const ringEls = useRef(new Map<string, HTMLElement>());
+  // WINDOW A STANDS AT THE LIST'S TOP (owner, 2026-11-06: "window A should
+  // be aligned with the top of the list's first item, no matter whether the
+  // selected item is below, above or out of the list"): every list ring's
+  // card anchors on the FIRST ring of the list — RailPeek clamps that to the
+  // list's scrolled box, so the card's top is the box's top — while the safe
+  // cone still starts at the ring the pointer is on (`coneOf`).
+  const anchorOf = useCallback((key: string) => {
+    const ring = ringEls.current.get(key) ?? null;
+    if (!ring) return null;
+    // A ring OF THE LIST.
+    const list = listRef.current;
+    if (!list?.contains(ring)) return ring;
+    return list.querySelector<HTMLElement>("a[data-task-key]") ?? ring;
+  }, []);
+  const coneOf = useCallback((key: string) => ringEls.current.get(key) ?? null, []);
+  // The chat's chunk, ahead of the first hover (ChatMount `preloadChat`).
+  const anySeat = seats.length > 0;
+  useEffect(() => {
+    if (anySeat) preloadChat();
+  }, [anySeat]);
+  // The seats changing is the intent's to hear (`prune`): a ring that
+  // unmounts under the pointer never fires a leave, and a chat that left the
+  // rail (archived, the node changed) takes its card with it; the kept set
+  // drops the same keys so a stale chat never holds one of the three warm
+  // slots.
+  const peekSeat = seats.find((s) => s.pulse.key === peekKey) ?? null;
+  // THE OPEN FAVOURITE (header): this window's (platform/lib/last-chat
+  // `useFavOpen`) — instant, never another window's. That card is the
+  // shell's (FavouritePeek), not this rail's: here the key only decides which
+  // ring answers as the open favourite's (`is-open`, the caption,
+  // `aria-controls`, no hover card), and that this rail's own card lets go of
+  // the chat the favourite's card is taking (`letGo`, below). A key in the
+  // section counts — and, for FAV_SETTLE_MS after this window opened it, a
+  // key whose ring the pulse has not moved out of the LIST yet (a star
+  // pressed in this rail's card: rail-peek-lib `railOpenFav`), so that list
+  // ring never opens this rail's card on the chat the favourite's card holds.
+  // An unstarred or archived key has no ring (FavouritePeek clears it).
+  const favOpenKey = useFavOpen();
+  const favOpenAt = favOpenKey && !favKeys.has(favOpenKey) ? favOpenedAtMs(favOpenKey) : null;
+  // The settle running out re-asks (the ring goes back to an ordinary one).
+  const [, setFavSettled] = useState(0);
+  useEffect(() => {
+    if (favOpenAt === null) return;
+    const ms = favOpenAt + FAV_SETTLE_MS - Date.now();
+    if (ms <= 0) return;
+    const id = window.setTimeout(() => setFavSettled((n) => n + 1), ms + 20);
+    return () => window.clearTimeout(id);
+  }, [favOpenAt]);
+  const openFavKey = railOpenFav(favOpenKey, favKeys, favOpenAt, Date.now());
+  // THE FAVOURITE'S CARD IS THE SHELL'S (FavouritePeek, mounted once above
+  // every page): this rail only registers itself (fav-peek-store) so that
+  // card can stand at its foot, and keeps its own card clear of that one
+  // (`avoid`). A press on a favourite —
+  // its ring in the favourites section, its only one — OPENS THAT CARD (this
+  // window's open favourite, `useFavOpen`), never this rail's: "two different
+  // previews".
+  const { favBox } = useFavPeekState();
+  // WINDOW B'S HOVER (fav-peek-store): the favourite whose hover card is up.
+  const favHoverKey = useFavHoverKey();
+  // THE PAGE'S CANVAS, for both cards' where-chips (claude-rail-lib
+  // `chipDoor`): on the canvas page a chip naming this canvas selects in
+  // place. A getter over a ref: the favourite's card reads it at its press
+  // (fav-peek-store `railHere`), and the selected node moves often.
+  const hereRef = useRef<RailHere | null>(null);
+  hereRef.current =
+    place.kind === "canvas" && onSelectNode
+      ? {
+          env: place.env,
+          name: place.name,
+          file: place.file ?? null,
+          select: onSelectNode,
+          ...(onTagSelect ? { tag: onTagSelect } : {}),
+        }
+      : null;
+  const hereOf = useCallback(() => hereRef.current, []);
+  // A PAGE'S RAIL COUNTS while mounted, shown or not (fav-peek-store
+  // `registerPageRail`): the shell's fallback stands only while none does.
+  // In the layout phase, so a hop's swap lands before it paints.
+  useLayoutEffect(() => (favouritesOnly ? undefined : registerPageRail()), [favouritesOnly]);
+  // In the layout phase too: the fallback and a page's rail swap places in
+  // one commit (header), and the favourite's card must never see neither.
+  useLayoutEffect(() => {
+    const el = railRef.current;
+    // …and its chat door, for the favourite card's Open (fav-peek-store
+    // `railDoor`): the PAGE's pane door, not a bare navigation — and not
+    // this rail's `openChat`, whose last-picked mark is the list's (a
+    // favourite's door moves the favourites' mark, FavouritePeek). A
+    // favourite always has a conversation (only a started chat can be
+    // starred; a blocked one is running), so no draft card is in question.
+    return el ? registerRail(el, hereOf, (href) => onOpenChatRef.current(href)) : undefined;
+  }, [hereOf]);
+  // THE GIT DOOR'S FACTS, for the shell's Git card (rail-git-store, by this
+  // rail). In the layout phase, with the rail's own registration just above:
+  // a hop's next rail says "reading" in the same commit it stands up in, so
+  // a pinned Git card following the reader never sees a rail without git.
+  const gitReading = gitOn && railGit.repo === undefined;
+  useLayoutEffect(() => {
+    const el = railRef.current;
+    if (!el) return;
+    publishRailGit(
+      el,
+      gitRepo
+        ? {
+            repo: gitRepo,
+            checking: railGit.checking,
+            checked: railGit.checked,
+            check: railGit.check,
+            syncing: railGit.syncing,
+            syncNote: railGit.syncNote,
+            syncDone: railGit.syncDone,
+            sync: railGit.sync,
+            ...(gitDoor ? { onOpenGit: () => openGitRef.current?.() } : {}),
+          }
+        : gitReading
+          ? "reading"
+          : null,
+    );
+  }, [
+    gitRepo,
+    gitReading,
+    gitDoor,
+    railGit.checking,
+    railGit.checked,
+    railGit.check,
+    railGit.syncing,
+    railGit.syncNote,
+    railGit.syncDone,
+    railGit.sync,
+  ]);
+  // THE MODE DOORS' FACTS, for the shell's mode cards (mode-peek-store, by
+  // this rail) — in the layout phase for the Git door's reason. Said again
+  // only when the file or its list of modes changes; the page's two
+  // functions are read through a ref (they are new on every render).
+  const fileModesRef = useRef(fileModes);
+  fileModesRef.current = fileModes;
+  // Behind Rail extras (`rail_extras_enabled`, rail-extras-flag):
+  // off, no door is drawn and nothing is published, so no card stands.
+  const modeDoorsAnswer = useRailExtrasAnswer();
+  const modeDoorsOn = modeDoorsAnswer === true;
+  const modeDoors = modeDoorsOn && fileModes ? fileModes.doors : NO_MODE_DOORS;
+  const modeSig =
+    modeDoors.length > 0 ? [fileModes?.path, fileModes?.rev ?? "", ...modeDoors.map((d) => d.mode)].join("\n") : "";
+  useLayoutEffect(() => {
+    const el = railRef.current;
+    if (!el) return;
+    const now = fileModesRef.current;
+    publishRailModes(
+      el,
+      modeSig && now
+        ? {
+            path: now.path,
+            doors: now.doors,
+            src: (mode) => fileModesRef.current?.src(mode) ?? "",
+            onOpen: (mode) => fileModesRef.current?.onOpen(mode),
+          }
+        : null,
+    );
+  }, [modeSig]);
+  useLayoutEffect(() => {
+    const el = railRef.current;
+    return el
+      ? () => {
+          publishRailGit(el, null);
+          // The Git card this rail opened: a preview goes, a pinned one
+          // follows to the top rail (git-peek-store `forgetGitCardRail`).
+          forgetGitCardRail(el);
+          publishRailModes(el, null);
+          forgetModeCardRail(el);
+        }
+      : undefined;
+  }, []);
+  useLayoutEffect(() => railUp(railWidth), [railWidth]);
+  // …and WHERE THE PAGE STANDS, for the favourite card's where-chip (fav-
+  // peek-store `setRailPage`): said again on every hop this rail makes in
+  // place and every node selected. After the register above, in the same
+  // commit, so the card hears one change.
+  const pageNode = place.kind === "canvas" ? (place.file ?? null) : null;
+  useLayoutEffect(() => {
+    const el = railRef.current;
+    // The fallback stands on no page (header): no place for a chip to name.
+    if (el) setRailPage(el, favouritesOnly ? null : { root, node: pageNode });
+  }, [root, pageNode, favouritesOnly]);
+  // ONE CHAT, ONE MOUNT: this rail's card lets go of the chat the
+  // favourite's card is taking — on a favourite ring's press
+  // (`openFavourite`), when this card's own star is pressed on (`onStarred`,
+  // at once), and again when this window's open key moves (the node chat's
+  // frame, say): two live mounts of one session would be two composers on
+  // one draft. A card that held the keyboard hands it to
+  // the chat's ring, never to the body.
+  const letGo = useCallback(
+    (key: string) => {
+      // The unsent words first: the favourite's card mounts its own composer
+      // on the pulse, and the rail's mount flushes on unmount — a commit
+      // later, over what the new composer already read (RailPeek's own
+      // leave-flush, for this hand-over).
+      const seat = seatsRef.current.find((s) => s.pulse.key === key);
+      const sid = seat?.pulse.session_id;
+      if (sid) peekDraftSyncer(chatDraftKey(sid, seat.row?.target || seat.pulse.target || seat.pulse.project))?.flushNow();
+      // A hover (or the press's own focus) still waiting to open this card
+      // on the chat: dropped, or it opens a beat after the favourite's.
+      intent.forget(key);
+      if (intent.current === key) {
+        const had = !!document.getElementById(PEEK_ID)?.contains(document.activeElement);
+        setHeld(false);
+        // Muted for the ring's focus when the keyboard goes back to it.
+        intent.dismiss(had);
+        // The chat is a favourite now (starred, or its card opened): its
+        // ring is in the favourites section, not the list (Bugbot on #2100).
+        if (had) focusRail(railRef.current, key, "foot");
+      }
+      setKept((k) => (k.includes(key) ? k.filter((x) => x !== key) : k));
+    },
+    [intent],
+  );
+  // The open key moving: in the layout phase, so the draft flush (`letGo`)
+  // lands before the favourite's composer paints.
+  // A STAR PRESSED IN WINDOW A MOVES NOTHING (owner, 2026-11-05: "the item
+  // also stays in the normal tasks section and the modal also stays; only
+  // one more item is added in the fav section"): the card stays, the list
+  // ring stays, and the favourites gain a ring — nothing hands over.
+  const onStarred = useMemo(() => railOnStarred(() => false, letGo, setFavOpen), [letGo]);
+  // A FAVOURITE'S RING PRESSED (header): this window's favourite card opens
+  // on it at once — a local write, nothing to wait for — and this rail's card
+  // lets go of the chat first. A key that is not a live favourite (unstarred
+  // a moment ago elsewhere, archived) opens no card: the ring's door instead.
+  // A keyboard press asked for the favourite card's × (fav-peek-store
+  // `pendingFocus`).
+  const openFavourite = useCallback(
+    (t: TaskPulseTask, href: string) => {
+      // A favourite as the rail counts one — starred or blocked (rail-peek-
+      // lib `favLike`); anything else goes through the chat's door.
+      if (!favLike(t) || t.status === "archived" || !t.session_id) {
+        requestFavFocus(null);
+        openChatRef.current(href);
+        return;
+      }
+      // Window A keeps whatever it shows (owner, 2026-11-05: the sections
+      // do not influence each other).
+      setFavOpen(t.key);
+    },
+    [],
+  );
+  // A FAVOURITE'S CHAT LEFT BY THIS CARD'S WHERE-CHIP (owner, 2026-11-05: a
+  // press "navigates to that canvas page but does not open the favourite
+  // card; a second press opens it"): the hover card on a favourite's ring is
+  // this rail's, and goes with the page — so as the chip's hop goes (once
+  // the router's leave guard let it: RailPeek, rail-peek-lib `onHop`), the
+  // chat is handed to the favourite's card in this window (the open key is
+  // sessionStorage: it survives the hop, and the card stands on the next
+  // page's rail). The same hand-over as the ring's press (`openFavourite`),
+  // a keyboard press asking for the card's focus the same way.
+  const onChipLeave = useMemo(() => {
+    const seatOf = (key: string) => seatsRef.current.find((s) => s.pulse.key === key);
+    return railOnChipLeave(
+      // The refs, not this render's sets: the hand-over runs once the hop
+      // lands, and a chat starred in between is a favourite by then.
+      // Never a favourite as far as window A is concerned (owner,
+      // 2026-11-05): the sections do not hand over to each other.
+      (_key) => false,
+      letGo,
+      (key, keyboard) => {
+        if (keyboard) requestFavFocus(key);
+        const seat = seatOf(key);
+        if (seat) setLastFav(lastChatId(seat.pulse));
+        setFavOpen(key);
+      },
+    );
+  }, [letGo]);
+  // JSON, not a joined string: a key is free to contain any delimiter.
+  const seatKeys = JSON.stringify(seats.map((s) => s.pulse.key));
+  useEffect(() => {
+    const live = new Set(JSON.parse(seatKeys) as string[]);
+    intent.prune(live);
+    setKept((k) => (k.every((key) => live.has(key)) ? k : k.filter((key) => live.has(key))));
+  }, [seatKeys, intent]);
+  // …the pane's own chat included (owner, 2026-11-08: "why is the same task
+  // blank in window A when the sidebar shows it, while window B works? it
+  // should work in window A as well"): the chat stands in the pane and in
+  // the card at once, the favourite's card's rule of 2026-11-05. The
+  // one-chat-one-composer exclusion (`paneSids`) is retired.
+  const keptSeats = useMemo(
+    () => kept.map((k) => seats.find((s) => s.pulse.key === k)).filter((s): s is NonNullable<typeof s> => !!s),
+    [kept, seats],
+  );
+  // FREE PINS — THE LIST CARD'S TWO SLOTS (rail-slots-store): which is the
+  // non-pin now, and the pinned task the other one shows — its seat off this
+  // rail's rings, else off the pulse (for the moment a rail takes to settle:
+  // a view that does not list the chat lets the pin go, "A PIN GOES WITH ITS
+  // RING" below). The free slot
+  // never mounts the pinned chat too (one chat, one composer).
+  const aFree = useFreeSlot("a");
+  const pinKeyA = freePins ? aPinTask(aWord) : null;
+  const pinSeatA = useMemo((): RailRow | null => {
+    if (!pinKeyA) return null;
+    const seat = seats.find((x) => x.pulse.key === pinKeyA);
+    if (seat) return seat;
+    const pulse = rows.find((t) => t.key === pinKeyA);
+    return pulse && pulse.status !== "archived" ? { pulse, row: null } : null;
+  }, [pinKeyA, seats, rows]);
+  // ITS × FADES IT OUT, as every other card goes (the chassis fades a card
+  // whose seat went, and keeps the last one drawn through the fade): the seat
+  // lingers a moment past the pin, so the card is not simply unmounted.
+  const [pinLingerA, setPinLingerA] = useState<RailRow | null>(null);
+  useEffect(() => {
+    if (pinSeatA) {
+      setPinLingerA(pinSeatA);
+      return;
+    }
+    const id = window.setTimeout(() => setPinLingerA(null), PIN_FADE_MS);
+    return () => window.clearTimeout(id);
+  }, [pinSeatA]);
+  const pinViewA = pinSeatA ?? pinLingerA;
+  const pinKeptA = useMemo(() => (pinViewA ? [pinViewA] : []), [pinViewA]);
+  // Its task gone (archived, erased): the pin goes with it — once the pulse
+  // has ANSWERED, judged off the feed itself (shell/tasksPulse), so an empty
+  // list is "none left" and not "not asked yet" (CodeRabbit on #2349: the
+  // LAST task erased left the mark standing with no window, and the rail
+  // quiet for good).
+  useEffect(() => {
+    if (!pinKeyA || !tasksPulseLoaded()) return;
+    const live = readTasksRows().find((t) => t.key === pinKeyA);
+    if ((!live || live.status === "archived") && aPinned() === aPinWord({ kind: "task", key: pinKeyA })) setAPinned(null);
+  }, [pinKeyA, rows]);
+  const pinPlacedA = usePinHasBox("a", !!pinSeatA, railRef.current);
+  const pinPeekRef = useRef<RailPeekHandle | null>(null);
+  const pinUpA = !!pinSeatA && pinPlacedA;
+  useEffect(() => {
+    if (!pinUpA) return;
+    return registerPinFocus("a", () => !!pinPeekRef.current?.focusComposer() || !!pinPeekRef.current?.focusChat());
+  }, [pinUpA]);
+  const pinTitleA = pinSeatA ? cardTitleLine({ ...pinSeatA.pulse, ...(pinSeatA.row ?? {}) } as Task).text || pinSeatA.pulse.title || "Chat" : null;
+  useEffect(() => {
+    setPinTitle("a", "task", pinTitleA);
+    return () => setPinTitle("a", "task", null);
+  }, [pinTitleA]);
+  const freeSeat = pinKeyA && peekSeat?.pulse.key === pinKeyA ? null : peekSeat;
+  const freeKept = useMemo(() => (pinKeyA ? keptSeats.filter((x) => x.pulse.key !== pinKeyA) : keptSeats), [pinKeyA, keptSeats]);
+  // While the card is up: a press anywhere but the rail and the card closes
+  // it. A click INTO the workbench frame is not a press this document sees,
+  // and it needs no rule of its own: the pointer is on the canvas, off the
+  // ring and the card, so the grace close runs — and a card that was holding
+  // the keyboard loses it to the frame (`onBlurCapture` → hold(false)), which
+  // starts the same grace. There used to be a window-`blur` dismiss here; the
+  // canvas wrapper focuses its frame on pointer ENTER (`focusCanvasOnEnter`),
+  // and the 8px gap between rail and card is over that wrapper, so crossing
+  // to the card blurred the window and killed the card mid-crossing (Bugbot).
+  // A pinned card is the one exception (header): it holds the frame's
+  // focus-on-enter off, so a blur onto the frame IS a press on the canvas,
+  // and closes it (the pinned-card effect below).
+  //
+  // "INSIDE THE CARD" IS REACT'S ANSWER, NOT THE DOM'S: the chat's menus and
+  // pickers are portals — React descendants of the card, DOM children of
+  // body — so `contains` would call a press on a menu item an outside press
+  // and close the card under it. The card's own capture handler
+  // (RailPeek `onPressInside`) runs for those too; this native listener runs
+  // first, so it defers its ruling by a tick and reads the flag then.
+  const insidePress = useRef(false);
+  const onPressInside = useCallback(() => {
+    insidePress.current = true;
+    viewPress.inside = true;
+    intent.pressStart();
+  }, [intent]);
+  //
+  // A PINNED card exempts only the rings' list — a ring's own press pins or
+  // swaps the card (`onClick`); the gaps between rings and the list's
+  // scrollbar are near misses — and the bridge over the gap to the card
+  // (RailPeek), which reads as the card's edge. The rail's other seats (the
+  // +, the panel button, the seam) dismiss it like any outside press:
+  // nothing else ever closes a pinned card. An unpinned (hover) card exempts
+  // the whole rail; the pointer leaving the ring does the closing there.
+  useEffect(() => {
+    if (!peekKey) return;
+    let tick = 0;
+    const onDown = (e: PointerEvent) => {
+      const t = e.target as Node | null;
+      const el = t instanceof Element ? t : null;
+      if (el?.closest(".claude-rail-peek-bridge")) return;
+      // A held card is not closed by any press outside it (header).
+      if (heldRef.current) return;
+      if (pinned) {
+        // WITH THE PIN THE RAIL AND ITS WINDOWS ARE THE VIEW, NOT OUTSIDE
+        // (rail-pin-lib `inRailView`; owner, 2026-11-17: "rail and window
+        // a/b clicks don't count for closing the windows that are in temp
+        // pin"): a press on the rail's blank, a ring of either window, or
+        // the other window's card closes nothing.
+        if (inRailView(el)) return;
+      } else if (railRef.current?.contains(t)) return;
+      insidePress.current = false;
+      viewPress.inside = false;
+      window.clearTimeout(tick);
+      tick = window.setTimeout(() => {
+        // …nor does a press in a menu the other window opened (`viewPress`).
+        if (!insidePress.current && !viewPress.inside) intent.dismiss();
+      }, 0);
+    };
+    const onUp = () => intent.pressEnd();
+    document.addEventListener("pointerdown", onDown, true);
+    window.addEventListener("pointerup", onUp, true);
+    window.addEventListener("pointercancel", onUp, true);
+    return () => {
+      window.clearTimeout(tick);
+      document.removeEventListener("pointerdown", onDown, true);
+      window.removeEventListener("pointerup", onUp, true);
+      window.removeEventListener("pointercancel", onUp, true);
+    };
+  }, [peekKey, intent, pinned]);
+  // NO ROOM FOR A CARD (RailPeek `onNoRoom`: a window too short or narrow):
+  // the rings keep their one-line caption until a resize gives the card room
+  // again — a hover that shows nothing at all is the one outcome to avoid.
+  // A PRESS that found no room is answered the way the
+  // press answers with no room from then on: it follows the chat's door
+  // (`openChat`; `pressedHref`, set on the press, read during the commit it causes —
+  // RailPeek places in a layout effect — and dropped on the next frame, so
+  // a later resize that squeezes the card out only closes it).
+  const [noRoom, setNoRoom] = useState(false);
+  const pressedHref = useRef<string | null>(null);
+  const onNoRoom = useCallback(() => {
+    intent.dismiss();
+    setNoRoom(true);
+    const href = pressedHref.current;
+    pressedHref.current = null;
+    if (href) openChatRef.current(href);
+  }, [intent]);
+  useEffect(() => {
+    if (!noRoom) return;
+    const re = () => setNoRoom(false);
+    window.addEventListener("resize", re);
+    return () => window.removeEventListener("resize", re);
+  }, [noRoom]);
+  // …and when the favourite's card moves or goes (its `avoid` box is part
+  // of the room): a window that was short with it up is not without it.
+  useEffect(() => {
+    setNoRoom(false);
+  }, [favBox]);
+  const dismissToRing = useCallback(() => {
+    const key = intent.current;
+    intent.dismiss(true);
+    if (key) ringEls.current.get(key)?.focus({ preventScroll: true });
+  }, [intent]);
+  // Focus into the card once it is drawn: the class lands a frame after the
+  // show, and a focus on a `visibility: hidden` box does nothing, so try for
+  // a few frames rather than guess the one.
+  const focusCardSoon = useCallback(() => cardFocusSoon(PEEK_ID, () => !!peekRef.current?.focusChat()), []);
+  // A PRESS ON A RING PUTS THE KEYBOARD IN THE COMPOSER (owner, 2026-10-31:
+  // "instead of opening the sidebar we focus the composer on click, for the
+  // user ready to type"). The card is drawn a frame after the show and the
+  // chat's chunk may still be loading, so retry until the composer exists —
+  // never falling back to the card's first button (that is the ×) — and give
+  // up after FOCUS_WAIT_MS. One wait at a time (a later press supersedes it);
+  // it also ends the moment the card closes, or the reader does anything
+  // themselves: ANY later press or key (capture, document-wide) is theirs —
+  // the chat's ⋮ menu and pickers are portals, so "focus is inside the card"
+  // cannot tell them apart from the wait's own focus (Bugbot on #2037).
+  // Registered after the press that started the wait: that press, and the
+  // Enter keydown that precedes an Enter-click, are already past.
+  const composerWait = useRef<(() => void) | null>(null);
+  const focusComposerSoon = useCallback(
+    // `keys: false` — a swap carrying the keyboard over (below): the reader
+    // may be mid-word, and their keys are the reason to finish the move.
+    (key: string, keys = true) => {
+      composerWait.current?.();
+      // Focus gone to a control outside the card (not the body, not the
+      // pressed ring): the reader moved on, never pull it back (CodeRabbit
+      // on #2037) — `composerWaitFor`'s own rule.
+      const stop: () => void = composerWaitFor({
+        still: () => intent.current === key,
+        cardId: PEEK_ID,
+        focus: () => !!peekRef.current?.focusComposer(),
+        ring: () => ringEls.current.get(key) ?? null,
+        keys,
+        onStop: () => {
+          if (composerWait.current === stop) composerWait.current = null;
+        },
+      });
+      composerWait.current = stop;
+    },
+    [intent],
+  );
+  useEffect(() => () => composerWait.current?.(), []);
+  // …and after a swap that left the keyboard in the chat going out of view
+  // (`refocusOn`, set in the intent's sink).
+  useEffect(() => {
+    const key = refocusOn.current;
+    refocusOn.current = null;
+    if (!key || key !== peekKey) return;
+    if (seats.find((s) => s.pulse.key === key)?.pulse.session_id) focusComposerSoon(key, false);
+    else focusCardSoon();
+    // The ref is spent on the first run, so a later `seats` change is a no-op.
+  }, [peekKey, seats, focusComposerSoon, focusCardSoon]);
+  // THE BOT CARD (BotPeek.tsx; owner, 2026-11-05: "a small overlay that
+  // just displays the chat exchange of the bot — the same exact behavior as
+  // the task floating box"): the pinned bots' rings (the rail's last section,
+  // `bots`) open a card of their own, on their own intent machine
+  // (`botIntent`, the list card's PeekIntent): a hover previews the bot's
+  // chat, a press pins it (held, favourites on — the only way the bots are
+  // drawn), the × / Escape / an outside press close it, Open is the door to
+  // the bot's page. ON THE BOTS PAGE the ring is that door again
+  // (claude-rail-lib `botRingRoute`): the page shows the bot itself, and a
+  // card up when the reader lands there closes. The rules below are the
+  // list card's, one each (the outside press, Escape with the focus nowhere,
+  // the press into the workbench frame), on the bot card's own state.
+  // THE CARD IS THE SHELL'S (bot-card-store, BotCardHost; owner, 2026-11-08:
+  // a view switch remounts this rail, and a card that lived here flickered
+  // out and back): the state and the intent machine are the store's, the
+  // rings this rail's own (registered by id for the card to stand level with).
+  const botCard = useBotCardState();
+  const botKey = botCard.key;
+  const botPinned = botCard.pinned;
+  const botHeld = botCard.held;
+  const setBotHeld = setBotCardHeld;
+  const botHeldRef = useRef(false);
+  botHeldRef.current = botHeld;
+  // THE PIN IS THE WINDOW'S (rail-pin-lib header): is window B — a
+  // favourite's card or a bot's — pinned right now? Read at a click.
+  // FREE PINS: never — the pin is the task's, and a click opens the non-pin.
+  const windowBPinned = (): boolean =>
+    !freePinsRef.current && (botHeldRef.current || (favOpen() !== null && favPinned() === favOpen()));
+  const botIntent = botCardIntent();
+  // This rail's own rings, for the keyboard's way back; the store has them
+  // too, by id, for whichever rail drew them last.
+  const botEls = useRef(new Map<string, HTMLElement>());
+  // A bot unpinned or hidden under the pointer takes its card with it.
+  const botIds = JSON.stringify(bots.map((b) => b.id));
+  // THE OUTGOING RAIL LETS GO (CodeRabbit on #2201): a page switch unmounts
+  // this rail's rings with no leave event, so the shared machine would still
+  // think the pointer or the focus rests on one — a preview stuck up, or a
+  // pending one opening after the hop. A pinned card is left alone (the
+  // leave only ever starts a preview's close).
+  useEffect(
+    () => () => {
+      if (botCardState().pinned) return;
+      botIntent.leaveRing("pointer");
+      botIntent.leaveRing("focus");
+    },
+    [botIntent],
+  );
+  // Only once this rail has the bots to read (a rail mounting before the
+  // config answered draws none, and must not prune a card the shell holds).
+  const botsKnown = botsOffered;
+  useEffect(() => {
+    if (!botsKnown) return;
+    botIntent.prune(new Set(JSON.parse(botIds) as string[]));
+  }, [botsKnown, botIds, botIntent]);
+  // ONE WINDOW B (owner, 2026-11-06: "treat fav bots and fav tasks as one
+  // window — no resize, no jitter, no overlap"): the bot's card and the
+  // favourite's (FavouritePeek) stand in the same place at the same size,
+  // and one is up at a time. A pinned bot's card says so to the shell
+  // (fav-peek-store `setBotCard`: the favourite's card shows no hover, the
+  // favourites' rings hover nothing); a favourite OPENING — a ring's press,
+  // a star, a chip hand-over, the pane's collapse — closes the bot's card;
+  // and the two HOVERS close each other (a favourite's hover up while a
+  // bot's is, or the other way round, would be two cards in one spot).
+  const botUp = botKey !== null && botPinned ? botKey : null;
+  // The favourite as THIS RAIL counts it open (`openFavKey`, rail-peek-lib
+  // `railOpenFav`), not the raw window key: a key with no card standing
+  // (unstarred elsewhere, its verdict pending) must not touch the bot's.
+  useEffect(() => {
+    if (openFavKey && botKey) {
+      setBotHeld(false);
+      botIntent.dismiss();
+    }
+  }, [openFavKey, botKey, botIntent]);
+  useEffect(() => {
+    if (!favHoverKey) return;
+    if (botKey && !botPinned) botIntent.dismiss();
+  }, [favHoverKey, botKey, botPinned, botIntent]);
+  useEffect(() => {
+    if (botKey) dismissFavHover();
+  }, [botKey]);
+  // THE OUTSIDE PRESS (the list card's rule above, on this card): a pinned
+  // card exempts the bots' own rings and the bridge; a hover card the whole
+  // rail; a held card nothing closes but its × and Open.
+  useEffect(() => {
+    if (!botKey) return;
+    let tick = 0;
+    const onDown = (e: PointerEvent) => {
+      const t = e.target as Node | null;
+      const el = t instanceof Element ? t : null;
+      if (el?.closest(".claude-rail-peek-bridge")) return;
+      if (botHeldRef.current) return;
+      if (botPinned) {
+        // With the pin, the rail and its windows are the view (the list
+        // card's rule): nothing there closes a temp card.
+        if (inRailView(el)) return;
+      } else if (railRef.current?.contains(t)) return;
+      botPress.inside = false;
+      viewPress.inside = false;
+      window.clearTimeout(tick);
+      tick = window.setTimeout(() => {
+        if (!botPress.inside && !viewPress.inside) botIntent.dismiss();
+      }, 0);
+    };
+    const onUp = () => botIntent.pressEnd();
+    document.addEventListener("pointerdown", onDown, true);
+    window.addEventListener("pointerup", onUp, true);
+    window.addEventListener("pointercancel", onUp, true);
+    return () => {
+      window.clearTimeout(tick);
+      document.removeEventListener("pointerdown", onDown, true);
+      window.removeEventListener("pointerup", onUp, true);
+      window.removeEventListener("pointercancel", onUp, true);
+    };
+  }, [botKey, botIntent, botPinned]);
+  // NO ROOM (the list card's `onNoRoom`): the ring is a door until a resize,
+  // and a press that found no room opens the bot's page.
+  const botNoRoom = botCard.noRoom;
+  const setBotNoRoom = setBotCardNoRoom;
+  // …until the window resizes, OR THE ROW GROWS (CodeRabbit on #2143): the
+  // sidebar folding widens the row with no window resize, and the card may
+  // fit then. The observer fires once as it starts (the width as it is), so
+  // only a width PAST that one clears the flag.
+  useEffect(() => {
+    if (!botNoRoom) return;
+    const re = () => setBotNoRoom(false);
+    window.addEventListener("resize", re);
+    const row = rowOf(railRef.current);
+    let was = row?.getBoundingClientRect().width ?? 0;
+    const ro =
+      row && typeof ResizeObserver !== "undefined"
+        ? new ResizeObserver(() => {
+            const w = row.getBoundingClientRect().width;
+            if (w > was + 1) re();
+            was = Math.max(was, w);
+          })
+        : null;
+    if (row && ro) ro.observe(row);
+    return () => {
+      window.removeEventListener("resize", re);
+      ro?.disconnect();
+    };
+  }, [botNoRoom]);
+  useEffect(() => {
+    setBotNoRoom(false);
+  }, [favBox]);
+
+  // THE RAIL CHANGED WIDTH (the expandable rail; rail-width-watch): every
+  // frame of the glide and every move of the drag. Its cards follow on their
+  // own; here the +'s popover re-places (`popPlaceKey`), and the two "no
+  // room" answers are asked again, as a window resize asks them — the room
+  // beside the rail is what changed.
+  const [railBoxW, setRailBoxW] = useState(0);
+  useLayoutEffect(() => (expandOn ? watchRailWidth(railRef.current, setRailBoxW) : undefined), [expandOn]);
+  useEffect(() => {
+    if (railBoxW === 0) return;
+    setNoRoom(false);
+    setBotNoRoom(false);
+  }, [railBoxW, setBotNoRoom]);
+  // THE RESIZE (expanded only; SidebarFrame's seam, mirrored for a right-
+  // hand panel): the rail's inner edge drags its width between the floor and
+  // the ceiling, live and unsaved per move, saved on release; past the floor
+  // by half of it the rail collapses (platform/lib/panel-drag `resizeWidth`),
+  // and a double press collapses it. Collapsed, the same seam is the pull
+  // that opens the pane (`onPullStart`), untouched.
+  const [edgeDrag, setEdgeDrag] = useState(false);
+  const edgeDragRef = useRef<{ pointerId: number; startX: number; startEdge: number; restoreWidth: number } | null>(null);
+  // Double press detected by hand (SidebarFrame `lastHandlePressRef`): the
+  // pointerdown's preventDefault swallows the engines' dblclick.
+  const lastEdgePress = useRef<{ time: number; x: number } | null>(null);
+  const onEdgeDown = (e: ReactPointerEvent<HTMLDivElement>) => {
+    if (e.button !== 0) return;
+    e.preventDefault();
+    const last = lastEdgePress.current;
+    if (last && e.timeStamp - last.time < 350 && Math.abs(e.clientX - last.x) < 5) {
+      lastEdgePress.current = null;
+      toggleRailExpanded();
+      return;
+    }
+    lastEdgePress.current = { time: e.timeStamp, x: e.clientX };
+    const width = getRailState().width;
+    edgeDragRef.current = { pointerId: e.pointerId, startX: e.clientX, startEdge: width, restoreWidth: width };
+    e.currentTarget.setPointerCapture(e.pointerId);
+    setEdgeDrag(true);
+  };
+  const onEdgeMove = (e: ReactPointerEvent<HTMLDivElement>) => {
+    const drag = edgeDragRef.current;
+    if (!drag || e.pointerId !== drag.pointerId) return;
+    if (Math.abs(e.clientX - drag.startX) >= 5) lastEdgePress.current = null;
+    // IMPLIED WIDTH (panel-drag): a RIGHT-hand panel grows as the pointer
+    // goes left, measured from where its edge stood at the press.
+    const next = resizeWidth(drag.startEdge - (e.clientX - drag.startX), RAIL_MIN_WIDTH, RAIL_MAX_WIDTH);
+    // Shut by the drag: it keeps the width it had at the press.
+    const value: RailState = next === null ? { width: drag.restoreWidth, expanded: false } : { width: next, expanded: true };
+    setRailState((s) => (s.width === value.width && s.expanded === value.expanded ? s : value), false);
+  };
+  const onEdgeUp = (e: ReactPointerEvent<HTMLDivElement>) => {
+    const drag = edgeDragRef.current;
+    if (!drag || e.pointerId !== drag.pointerId) return;
+    edgeDragRef.current = null;
+    setEdgeDrag(false);
+    saveRailState(getRailState());
+  };
+  // While the drag is held: the cursor, no selection, and the windows
+  // against the rail following its edge without their glide (claude-rail.css
+  // `html.claude-rail-resizing`). On <html>: never a `:has()` on the root.
+  useLayoutEffect(() => {
+    if (!edgeDrag) return;
+    const root = document.documentElement;
+    root.classList.add("claude-rail-resizing");
+    return () => root.classList.remove("claude-rail-resizing");
+  }, [edgeDrag]);
+  const dismissBotToRing = useCallback(() => {
+    const key = botIntent.current;
+    botIntent.dismiss(true);
+    if (key) (botEls.current.get(key) ?? botRing(key))?.focus({ preventScroll: true });
+  }, [botIntent]);
+  const botComposerWait = useRef<(() => void) | null>(null);
+  const focusBotComposerSoon = useCallback(
+    (id: string) => {
+      botComposerWait.current?.();
+      const stop: () => void = composerWaitFor({
+        still: () => botIntent.current === id,
+        cardId: BOT_PEEK_ID,
+        focus: () => !!botCardHandle()?.focusComposer(),
+        ring: () => botEls.current.get(id) ?? botRing(id),
+        keys: true,
+        onStop: () => {
+          if (botComposerWait.current === stop) botComposerWait.current = null;
+        },
+      });
+      botComposerWait.current = stop;
+    },
+    [botIntent],
+  );
+  useEffect(() => () => botComposerWait.current?.(), []);
+  // A ring's press: the card, shown now and pinned, the keyboard on its way
+  // to the composer (the list card's `pressRing`, the card route alone).
+  // ONE WINDOW B (header): a bot's card taking it — the open favourite
+  // closes, its hover goes, and a restore a door left is forgotten. The
+  // press and the keyboard's ArrowLeft alike (reviewer: the open-favourite
+  // effect above would dismiss a card that took nothing first).
+  const takeWindowB = () => {
+    setFavOpen(null);
+    dismissFavHover();
+    setFavRestore(null);
+  };
+  const pressBotRing = (id: string, href: string) => {
+    // FREE PINS (rail-slots-lib `slotClick` "raise"): the pinned bot's ring
+    // brings its pinned window to the front, the keyboard into it.
+    if (freePinsRef.current && botOpen() === id) {
+      hideHint();
+      noteFrontWindow("b");
+      focusPin("b");
+      return;
+    }
+    // WITH THE PIN (rail-pin-lib `ringClick`): the ring of the bot whose
+    // card is open does nothing — a ring opens, it is not a toggle (owner,
+    // 2026-11-17); anything else opens the card temp.
+    const own = botKey === id;
+    const act = ringClick({ mode: cardMode({ up: own, pinned: botPinned, held: botHeld }), own, windowPinned: windowBPinned() });
+    if (act === "keep" || act === "close") {
+      hideHint();
+      if (act === "close") {
+        setBotHeld(false);
+        botIntent.dismiss();
+      }
+      return;
+    }
+    botPressed.href = href;
+    requestAnimationFrame(() => {
+      botPressed.href = null;
+    });
+    takeWindowB();
+    botIntent.press(id);
+    if (act === "pin") setBotHeld(true);
+    hideHint();
+    focusBotComposerSoon(id);
+  };
+  // ESCAPE WITH THE FOCUS NOWHERE closes a pinned bot card (the list card's
+  // rule).
+  useEffect(() => {
+    if (!botPinned || !botKey) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key !== "Escape" || e.defaultPrevented) return;
+      if (e.target !== document.body && e.target !== document.documentElement) return;
+      // ESCAPE, ONE RULE (owner, 2026-11-16: "a consistent behaviour"): a
+      // hover and a temp card close on it, a pinned (held) one ignores it.
+      if (botHeldRef.current) return;
+      e.preventDefault();
+      dismissBotToRing();
+    };
+    document.addEventListener("keydown", onKey);
+    return () => document.removeEventListener("keydown", onKey);
+  }, [botPinned, botKey, dismissBotToRing]);
+  const onBotRingKey = (id: string) => (e: ReactKeyboardEvent<HTMLAnchorElement>) => {
+    if (e.key === "ArrowLeft") {
+      e.preventDefault();
+      // FREE PINS: the pinned bot's ring raises its pinned window (the
+      // press's rule, `pressBotRing`) — never a second card on the same chat.
+      if (freePinsRef.current && botOpen() === id) {
+        noteFrontWindow("b");
+        focusPin("b");
+        return;
+      }
+      // The pin is the window's: the keyboard's swap keeps a pinned window B.
+      const keep = windowBPinned();
+      takeWindowB();
+      botIntent.showNow(id, true);
+      if (keep) setBotHeld(true);
+      cardFocusSoon(BOT_PEEK_ID, () => !!botCardHandle()?.focusChat());
+    } else if (e.key === "Escape" && botIntent.current && !botHeldRef.current) {
+      e.preventDefault();
+      botIntent.dismiss();
+    }
+  };
+  // ESCAPE WITH THE FOCUS NOWHERE closes a pinned card. The ring (below),
+  // the card's head and its chat each take their own Escape; a press that
+  // opened the card in an engine that does not focus a link on click (WebKit)
+  // leaves the focus on the body, where none of those hears it — and no
+  // pointer move will ever close a pinned card for them.
+  useEffect(() => {
+    if (!pinned || !peekKey) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key !== "Escape" || e.defaultPrevented) return;
+      if (e.target !== document.body && e.target !== document.documentElement) return;
+      // Escape's one rule (the bot card's, above): temp closes, pinned stays.
+      if (heldRef.current) return;
+      e.preventDefault();
+      dismissToRing();
+    };
+    document.addEventListener("keydown", onKey);
+    return () => document.removeEventListener("keydown", onKey);
+  }, [pinned, peekKey, dismissToRing]);
+  // A PRESS INTO THE WORKBENCH FRAME closes a pinned card (header): the page
+  // hears it only as this window's blur with the frame left holding the
+  // focus. A blur with the focus anywhere else — another app, another
+  // window — keeps the card. Read a tick later: the engines disagree on
+  // whether `activeElement` has moved yet when the blur fires.
+  // …AND THE BOT CARD'S (below): one word to the page for either pinned card
+  // (`anyPinned`), and the blur onto the frame closes whichever is pinned
+  // and not held.
+  // …AND THE + POPOVER'S AND THE TASKS CARD'S (owner, 2026-11-08: the gaps
+  // between window A's cards closed — a press into the frame closes any
+  // pinned card, and the page stops handing the frame the focus on a mere
+  // pointer enter while any is up). The popover goes the chassis' way
+  // (`shutPop`, declared with its close signal below; a card mid-Create
+  // keeps its place).
+  const tasksCard = useTasksCard();
+  // …AND THE BOTS CARD'S (2026-11-09): the Bots door's own window A card
+  // (BotsPeek, bots-peek-store), the Tasks card's twin in every rule below.
+  const botsCard = useBotsCard();
+  // …AND THE GIT CARD'S (2026-11-10): the Git door's window A card (GitPeek,
+  // git-peek-store), the Bots card's twin in every rule below.
+  const gitCard = useGitCard();
+  // …AND THE MODE CARDS' (2026-11-20): each mode door's own window A card
+  // (ModePeek, mode-peek-store) is the Git card's twin in every rule below —
+  // read together, since the doors come and go with the file.
+  const modeCardsNow = useModeCards();
+  const anyModeCard = (f: (c: DoorCardState) => boolean): boolean => modeCardsNow.modes.some((m) => f(modeCardsNow.of(m)));
+  const modeUpAny = anyModeCard((c) => c.up);
+  const modePinnedAny = anyModeCard((c) => c.up && c.pinned);
+  // …one that a hover's preview would stand over (FREE PINS: a held card is
+  // the section's pin, and silences nothing).
+  const modeNonPinPinned = anyModeCard((c) => c.up && c.pinned && !(freePins && c.held));
+  const pinnedUp = pinned && peekKey !== null;
+  const botPinnedUp = botPinned && botKey !== null;
+  const popPinnedUp = !!card?.pop && !!card.pinned;
+  const tasksHeldUp = tasksCard.up && tasksCard.pinned;
+  const botsHeldUp = botsCard.up && botsCard.pinned;
+  const gitHeldUp = gitCard.up && gitCard.pinned;
+  const modeHeldUp = modePinnedAny;
+  // …AND, WITH THE PIN (rail-pin-lib `frameBlurCloses`), A TEMP FAVOURITE'S
+  // CARD: a press into the frame is outside it; a pinned one ignores it.
+  const favPinnedKey = useFavPinned();
+  const favTempKey = openFavKey !== null && favPinnedKey !== openFavKey ? openFavKey : null;
+  const anyPinned = pinnedUp || botPinnedUp || popPinnedUp || tasksHeldUp || botsHeldUp || gitHeldUp || modeHeldUp || favTempKey !== null;
+  const pinnedNow = useRef({ task: pinnedUp, bot: botPinnedUp, pop: popPinnedUp, tasks: tasksHeldUp, bots: botsHeldUp, git: gitHeldUp, mode: modeHeldUp, fav: favTempKey });
+  pinnedNow.current = { task: pinnedUp, bot: botPinnedUp, pop: popPinnedUp, tasks: tasksHeldUp, bots: botsHeldUp, git: gitHeldUp, mode: modeHeldUp, fav: favTempKey };
+  const shutPopRef = useRef<() => boolean>(() => false);
+  const pinnedRef = useRef(onCardPinned);
+  pinnedRef.current = onCardPinned;
+  useEffect(() => {
+    if (!anyPinned) return;
+    pinnedRef.current?.(true);
+    let tick = 0;
+    const onBlur = () => {
+      window.clearTimeout(tick);
+      tick = window.setTimeout(() => {
+        const a = document.activeElement;
+        if (!(a instanceof HTMLIFrameElement)) return;
+        // A frame inside a full modal (a chat's file preview — a zip, a PDF —
+        // portals to the body over everything) is that modal's content, not
+        // the page's workbench frame: closing the card here unmounted the chat
+        // and the preview with it on the first click inside the preview.
+        if (inFullModal(a)) return;
+        if (pinnedNow.current.task && !heldRef.current && !document.getElementById(PEEK_ID)?.contains(a)) intent.dismiss();
+        if (pinnedNow.current.bot && !botHeldRef.current && !document.getElementById(BOT_PEEK_ID)?.contains(a)) botIntent.dismiss();
+        // WITH THE PIN (rail-pin-lib `frameBlurCloses`): only a TEMP card
+        // goes; a pinned one ignores the frame.
+        if (pinnedNow.current.tasks && !tasksCardStore.state().held && !document.getElementById(TASKS_PEEK_ID)?.contains(a)) closeTasksCard();
+        if (pinnedNow.current.bots && !botsCardStore.state().held && !document.getElementById(BOTS_PEEK_ID)?.contains(a)) closeBotsCard();
+        if (pinnedNow.current.git && !gitCardStore.state().held && !document.getElementById(GIT_PEEK_ID)?.contains(a)) closeGitCard();
+        if (pinnedNow.current.mode)
+          closeModeCards((m, c) => !c.pinned || c.held || !!document.getElementById(modePeekId(m))?.contains(a));
+        if (pinnedNow.current.pop && !cardRef.current?.held && !document.querySelector(".modal-popover")?.contains(a)) shutPopRef.current();
+        const fav = pinnedNow.current.fav;
+        if (fav && favOpen() === fav && favPinned() !== fav && !document.getElementById(FAV_PEEK_ID)?.contains(a)) clearFavOpen(fav);
+      }, 0);
+    };
+    window.addEventListener("blur", onBlur);
+    return () => {
+      window.clearTimeout(tick);
+      window.removeEventListener("blur", onBlur);
+      pinnedRef.current?.(false);
+    };
+  }, [anyPinned, intent, botIntent]);
+  const onRingKey = (key: string) => (e: ReactKeyboardEvent<HTMLAnchorElement>) => {
+    if (e.key === "ArrowLeft") {
+      e.preventDefault();
+      // FREE PINS: a pinned task's ring raises its pinned window.
+      if (raisePinOf(key)) return;
+      // A deliberate way in, like a press: pinned (with the pin: temp — or
+      // pinned still, in a pinned window: the pin is the window's).
+      intent.showNow(key, true);
+      focusCardSoon();
+    } else if (e.key === "Escape" && intent.current && !heldRef.current) {
+      // A held card ignores Escape here as everywhere (header).
+      e.preventDefault();
+      intent.dismiss();
+    }
+  };
+
+  // ArrowLeft on a favourite's ring: the keyboard's way into ITS card (window
+  // B), the same open the press makes; Escape lets the hover go.
+  const onFavRingKey = (t: TaskPulseTask, href: string) => (e: ReactKeyboardEvent<HTMLAnchorElement>) => {
+    if (e.key === "ArrowLeft") {
+      e.preventDefault();
+      // FREE PINS: a pinned task's ring raises its pinned window.
+      if (raisePinOf(t.key)) return;
+      const keep = windowBPinned();
+      dismissFavHover();
+      requestFavFocus(t.key);
+      openFavourite(t, href);
+      // The pin is the window's: the keyboard's swap keeps a pinned window B.
+      if (keep) setFavPinned(t.key);
+    } else if (e.key === "Escape") {
+      dismissFavHover();
+      // With the pin, a TEMP favourite's card goes on Escape too (one rule:
+      // hover and temp close, pinned stays).
+      if (favOpen() === t.key && favPinned() !== t.key) clearFavOpen(t.key);
+    }
+  };
+
+  // THE NEW TASK CARD. Opened on the press, once the schedule has answered
+  // what the card needs (`Card`, `cardSeed`); the press is inert while that
+  // read is out, so a double-click cannot stack two cards. A schedule read
+  // that fails or hangs still opens the card — the modal falls back to "auto" on an empty modes
+  // list, and an empty recents list only means fewer suggestions — because a
+  // + that does nothing is worse than a card with one fewer dropdown option.
+  const alive = useRef(true);
+  useEffect(() => {
+    alive.current = true;
+    return () => {
+      alive.current = false;
+    };
+  }, []);
+  const plusRef = useRef<HTMLButtonElement | null>(null);
+  // THE POINTER'S RESTING PLACE AT THE SEAT'S PRESS. The press reshapes the
+  // rail (the seat goes, the list grows), and the engine then reports a
+  // pointer ENTER on whichever ring slid under the unmoved pointer — which
+  // would open that chat's hover card over a press that asked for no chat.
+  // A ring entered at this very spot is ignored until the pointer has
+  // moved; the first real move clears it (`enterRing` below).
+  const stillAt = useRef<{ x: number; y: number } | null>(null);
+  const lastPointer = useRef<{ x: number; y: number } | null>(null);
+  // …AND ANY RESHAPE OF THE RINGS under a pointer resting on the rail: a
+  // favourite unstarred (its foot ring goes, the one above slides down into
+  // its place), a chat starred, a pulse's new row. The ring that slid under
+  // the unmoved pointer is not a hover (owner, 2026-11-04: "when I
+  // unfavourite, a random task from above opens"). In the layout phase: the
+  // engine's enter comes after the paint.
+  const ringOrder = JSON.stringify([seats.map((x) => x.pulse.key), favs.map((x) => x.pulse.key), bots.map((b) => b.id)]);
+  const ringsWere = useRef(ringOrder);
+  useLayoutEffect(() => {
+    if (ringsWere.current === ringOrder) return;
+    ringsWere.current = ringOrder;
+    if (lastPointer.current) stillAt.current = lastPointer.current;
+  }, [ringOrder]);
+  // `to`: the section's window — the list's card (A) or the favourites' (B).
+  const enterRing = (key: string, e: ReactPointerEvent<HTMLAnchorElement>, to: PeekIntent) => {
+    if (dragging(e)) return;
+    const at = stillAt.current;
+    if (at && Math.abs(e.clientX - at.x) < 2 && Math.abs(e.clientY - at.y) < 2) return;
+    stillAt.current = null;
+    // Window A's ring, with another of window A's cards pinned (the +
+    // popover, the Tasks card): no hover (`aHovers` below).
+    if (to === intent && !aHovers()) return;
+    to.enterRing(key, "pointer");
+  };
+  const waiting = newTask.waiting;
+  // THE POPOVER'S HOVER PREVIEW AND PIN (owner, 2026-11-07; plus-pop-lib.ts),
+  // with the nav doors: the pointer resting on the + — or on a DRAFT's ring,
+  // "exactly like the +", on that draft's record — shows the card unpinned,
+  // a press on the door (or inside the card) pins it, and a pinned card
+  // closes by its × only. The preview's own close is the chassis' way (Modal
+  // `popover.closeSignal`), so it fades like any other.
+  const [cardCloseSignal, setCardCloseSignal] = useState(0);
+  const newTaskRef = useRef(newTask);
+  newTaskRef.current = newTask;
+  const plusSeedSeq = useRef(0);
+  const plusSeed = useRef<{ door: string; card: Omit<Card, "seq"> } | null>(null);
+  // The draft rings' doors, by key: the row and its href as the ring last
+  // handed them over (hover or press), for the read and its fallbacks.
+  const draftDoors = useRef(new Map<string, { row: Task; href: string }>());
+  // What the popover stands beside: the + or the draft's ring (Modal
+  // `popover.anchor`), set as its card opens.
+  const popAnchor = useRef<HTMLElement | null>(null);
+  const readDraftRef = useRef<(row: Task) => Promise<DraftRead>>(null!);
+  // WITH THE PIN (rail-pin-lib): the door whose card a double-click asked to
+  // PIN as it opens (its read may still be out) — `held` lands with the open.
+  const pendingHeld = useRef<string | null>(null);
+  const plusIntentRef = useRef<PlusPopIntent | null>(null);
+  if (!plusIntentRef.current) {
+    plusIntentRef.current = new PlusPopIntent({
+      seed: (door) => {
+        const seq = ++plusSeedSeq.current;
+        plusSeed.current = null;
+        const live = () => alive.current && seq === plusSeedSeq.current;
+        if (door === PLUS_DOOR) {
+          // As they were at the hover's start (header of `Card`).
+          const target = newTaskRef.current.target;
+          const where = newTaskRef.current.where;
+          void cardSeed().then((got) => {
+            if (!live()) return;
+            plusSeed.current = { door, card: { target, where, ...got } };
+            plusIntentRef.current?.seeded(door);
+          });
+          return;
+        }
+        const at = draftDoors.current.get(door);
+        void (at ? readDraftRef.current(at.row) : Promise.resolve<DraftRead>({ kind: "gone" })).then((read) => {
+          if (!live()) return;
+          if (read.kind === "card") {
+            plusSeed.current = { door, card: read.card };
+            plusIntentRef.current?.seeded(door);
+            return;
+          }
+          // Nothing to show: a hover shows nothing; a press takes the
+          // draft door's own fallbacks (`openDraftCard`'s header).
+          const pressed = plusIntentRef.current?.failed(door) ?? false;
+          if (read.kind === "gone") refreshListing();
+          else if (pressed && at) onOpenChatRef.current(at.href);
+        });
+      },
+      cancelSeed: () => {
+        plusSeedSeq.current++;
+        plusSeed.current = null;
+      },
+      open: (door, pinned) => {
+        const seed = plusSeed.current;
+        if (!seed || seed.door !== door) return;
+        // A draft's card stands where window A does — level with the list's
+        // first ring (`draftCardBox`) — whichever draft's ring opened it; its
+        // anchor is the whole list, so a press on another draft's ring is
+        // that door's press, not a press outside the card.
+        popAnchor.current =
+          door === PLUS_DOOR ? plusRef.current : (listRef.current ?? ringEls.current.get(door) ?? plusRef.current);
+        // A popover it replaces flushes its own draft as it unmounts
+        // (NewJobModal's autosave): re-read so that ring shows.
+        if (cardRef.current?.pop) refreshListing();
+        const held = pinned && pendingHeld.current === door;
+        if (held) pendingHeld.current = null;
+        setCard({ seq: Date.now(), ...seed.card, pop: true, pinned, door, ...(held ? { held: true } : {}) });
+      },
+      pin: () => {
+        const want = pendingHeld.current;
+        pendingHeld.current = null;
+        setCard((c) =>
+          c?.pop ? { ...c, pinned: true, ...(want !== null && want === (c.door || PLUS_DOOR) ? { held: true } : {}) } : c,
+        );
+      },
+      close: () => setCardCloseSignal((n) => n + 1),
+    });
+  }
+  const plusIntent = plusIntentRef.current;
+  useEffect(() => () => plusIntent.dispose(), [plusIntent]);
+  // A CARD THAT CAME ACROSS A PAGE HOP (plus-card-store): a pinned one is
+  // this rail's now — beside this rail's + (or list), and this rail's intent
+  // knows it is up, so a press on the + closes it the way it would have on
+  // the page it was opened on. A hover's preview does not travel. A LAYOUT
+  // effect, declared before the publish below: the anchor must be set before
+  // the host re-renders the card with this rail's `placeKey`, or Modal
+  // measures off a null anchor and keeps the last page's box (Bugbot #2220).
+  useLayoutEffect(() => {
+    const c = cardRef.current;
+    if (!c?.pop) return;
+    // …and, with the pin (rail-pin-lib `hopKeeps`), nor does a temp one.
+    if (!c.pinned || !c.held) {
+      setCard(null);
+      return;
+    }
+    popAnchor.current = !c.door || c.door === PLUS_DOOR ? plusRef.current : (listRef.current ?? plusRef.current);
+    plusIntent.adopt(c.door || PLUS_DOOR, true);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+  // THE + NEW TASK CARD, OPENED PINNED — the pinned window A coming back on
+  // a rail whose mark says `plus` (the restore below).
+  const openPlusPinned = () => {
+    const c = cardRef.current;
+    if (c && !c.pop) return;
+    if (c?.pop) {
+      setCard((x) => (x?.pop ? { ...x, pinned: true, held: true } : x));
+      return;
+    }
+    pendingHeld.current = PLUS_DOOR;
+    plusIntent.press(PLUS_DOOR);
+  };
+  const openPlusPinnedRef = useRef(openPlusPinned);
+  openPlusPinnedRef.current = openPlusPinned;
+  // WINDOW A'S MARK (last-chat `aPinned`): what the pinned window shows, kept
+  // past this rail — a page hop, a page with no rail, a reload. The Tasks,
+  // Bots and Git cards write theirs where their hold is (door-card-store);
+  // here, the list's card and the +'s. A card letting go (the unpin, the
+  // pane, its task gone) clears only a mark that still names it — a swap has
+  // rewritten it already. This rail going clears nothing.
+  const listWord = held && peekKey ? aPinWord({ kind: "task", key: peekKey }) : null;
+  const listWordSeen = useRef<string | null>(null);
+  useEffect(() => {
+    const was = listWordSeen.current;
+    listWordSeen.current = listWord;
+    if (listWord) setAPinned(listWord);
+    // FREE PINS: this card never holds the mark — a mark it wrote before the
+    // switch came on is the shell's pinned window's now (below), and stays.
+    else if (was && !freePinsRef.current && aPinned() === was) setAPinned(null);
+  }, [listWord]);
+  const popUp = !!card?.pop;
+  // THE + CARD'S RESIZE GUIDES GO WITH THE CARD (reviewer, 2026-11-18): the
+  // chassis clears them on the grip's release (`onDragEnd`), and a card that
+  // closes or leaves the page under the drag gets no release.
+  const popGuides = useRef(false);
+  const clearPopGuides = useCallback(() => {
+    if (!popGuides.current) return;
+    popGuides.current = false;
+    // The + card's grip came up (useCardMove `setRailResizing`): pins it
+    // pushed glide again.
+    setRailResizing(false);
+    setSnapGuides([], []);
+  }, []);
+  useEffect(() => {
+    if (!popUp) clearPopGuides();
+  }, [popUp, clearPopGuides]);
+  useEffect(() => clearPopGuides, [clearPopGuides]);
+  const popHeld = popUp && !!card?.held;
+  // LET GO: this + card was held and no longer is (its unpin). It stands
+  // beside the rail again at once — `popPlace` must not read it as a card
+  // that is about to be held (Bugbot on #2329: the unpinned + card stayed
+  // where it floated, the window's mark and position going a tick after the
+  // placement had been asked).
+  const popHeldOnce = useRef<{ seq: number | null; held: boolean }>({ seq: null, held: false });
+  const popSeqNow = card?.pop ? card.seq : null;
+  if (popHeldOnce.current.seq !== popSeqNow) popHeldOnce.current = { seq: popSeqNow, held: false };
+  if (popHeld) popHeldOnce.current.held = true;
+  const popLetGo = popHeldOnce.current.held && !popHeld;
+  // THE + CARD MOVES WHEN PINNED (rail-move-lib; owner, 2026-11-17): it is
+  // window A's, and floats at window A's position — the one the list's card
+  // and the door cards read too, so a swap between them keeps it. The drag
+  // is the chassis' (Modal `popover.move`); where it then stands, `popPlace`.
+  const popMove = useCardMove({
+    win: "a",
+    movable: popHeld,
+    headSelector: POPOVER_HEAD_SELECTOR,
+    shown: card?.pop ? String(card.seq) : null,
+  });
+  // A PRESS ON A RING OR DOOR BRINGS ITS WINDOW TO THE FRONT (rail-move-lib
+  // `railPressWindow`; owner, 2026-11-17): the pinned window's own ring does
+  // nothing else (rail-pin-lib `ringClick` "keep"), and with two windows
+  // floating one can lie under the other — its ring is how it is found again.
+  useEffect(() => {
+    const rail = railRef.current;
+    if (!rail) return;
+    const onDown = (e: PointerEvent) => {
+      const win = railPressWindow(e.target instanceof Element ? e.target : null);
+      if (win) noteFrontWindow(win);
+    };
+    rail.addEventListener("pointerdown", onDown, true);
+    return () => rail.removeEventListener("pointerdown", onDown, true);
+  }, []);
+  const popHeldSeen = useRef(false);
+  useEffect(() => {
+    const was = popHeldSeen.current;
+    popHeldSeen.current = popHeld;
+    if (popHeld) setAPinned(aPinWord({ kind: "plus" }));
+    // Unpinned with the card still up; its close says so itself (`onClose`).
+    else if (was && popUp && aPinned() === aPinWord({ kind: "plus" })) setAPinned(null);
+  }, [popHeld, popUp]);
+  // …AND THE PINNED WINDOW COMES BACK (owner, 2026-11-16): on a rail that
+  // mounts with the mark set and nothing of window A up — the next page's
+  // rail, the first rail after a page with none, the rail after a reload.
+  // Its task's card on its ring when this view lists the chat — else the
+  // window is gone, the pin with it ("we just close the window if it is not
+  // in the next view"); the + card, the Tasks / Bots / Git card on its door. Once per
+  // mount, after the pulse's first answer (an empty list before it says
+  // nothing about which chats this view has). Not the shell's fallback rail
+  // standing in for a beat on the path a page rail last stood on
+  // (`bootFallback`, below): it has no list, and the page rail that follows
+  // owns the restore.
+  useLayoutEffect(() => {
+    if (!favouritesOnly && typeof location !== "undefined") pageRailPath = location.pathname;
+  });
+  const bootFallback = favouritesOnly && typeof location !== "undefined" && location.pathname === pageRailPath;
+  const aRestored = useRef(false);
+  useEffect(() => {
+    if (aRestored.current || bootFallback) return;
+    const pin = readAPin(aPinned());
+    if (!pin || intent.current !== null || cardRef.current || tasksCard.up || botsCard.up || gitCard.up || modeUpAny) {
+      aRestored.current = true;
+      return;
+    }
+    if (pin.kind === "task") {
+      // FREE PINS: a pinned task's window is the pinned slot's (below).
+      if (freePinsRef.current) {
+        aRestored.current = true;
+        return;
+      }
+      if (!tasksPulseLoaded() && rows.length === 0) return;
+      aRestored.current = true;
+      if (pinnedTaskLands({ inList: baseSeats.some((x) => x.pulse.key === pin.key) }) === "ring") {
+        intent.press(pin.key);
+        setHeld(true);
+      } else setAPinned(null);
+    } else if (pin.kind === "plus") {
+      aRestored.current = true;
+      openPlusPinnedRef.current();
+    } else if (pin.kind === "mode") {
+      // A mode's card comes back where this page has that mode's door; no
+      // such door, and the orphan rule below lets the mark go.
+      if (!modeDoors.some((d) => d.mode === pin.mode) || !modeCardsNow.of(pin.mode).ready) return;
+      aRestored.current = true;
+      const store = modeCardStore(pin.mode);
+      setModeCardRail(pin.mode, railRef.current);
+      store.intent().press(store.key);
+      store.setHeld(true);
+    } else {
+      const door =
+        pin.kind === "tasks"
+          ? { card: tasksCard, intent: tasksCardIntent, store: tasksCardStore, key: TASKS_CARD_KEY }
+          : pin.kind === "bots"
+            ? { card: botsCard, intent: botsCardIntent, store: botsCardStore, key: BOTS_CARD_KEY }
+            : { card: gitCard, intent: gitCardIntent, store: gitCardStore, key: GIT_CARD_KEY };
+      // Its card is not mounted yet (or has no room): wait for it.
+      if (!door.card.ready) return;
+      aRestored.current = true;
+      if (pin.kind === "git") setGitCardRail(railRef.current);
+      door.intent().press(door.key);
+      door.store.setHeld(true);
+    }
+  }, [rows, baseSeats, intent, tasksCard, botsCard, gitCard, modeCardsNow, modeDoors, bootFallback]);
+  // FREE PINS — A PIN GOES WITH ITS RING (owner, 2026-11-19: "when we have a
+  // task ring item or git that isn't in next view in rail we should close it
+  // even if pinned" — the rule above, "we just close the window if it is not
+  // in the next view", for the free pin too. A build of 2026-11-18 let a
+  // pinned task float on through views that did not list it; it does not.)
+  // Window A's pin answers to THIS rail: a pinned task whose chat has no ring
+  // here — in the list or among the favourites — and a pinned Tasks / Bots /
+  // Git / + card whose door this rail does not draw, go. Window B's pins are
+  // never asked: a favourite's ring and a bot's face stand in every rail.
+  //
+  // AT ONCE, with no wait (owner, 2026-11-19, of a build that held the
+  // verdict for a moment: "don't add deliberate wait because you think we need
+  // it"). What a wait stood in for is said outright instead: the shell's
+  // fallback rail (FallbackRail — favourites only, no list) stands in for a
+  // beat whenever the page has no rail of its own up — on every document
+  // load, and while the page swaps its rail as its pane opens — and THAT
+  // passing rail has no say (`bootFallback`: the fallback, on the very path a
+  // page rail last stood on). On another path it is the view's own rail, and
+  // it has. The list is judged once the pulse answered, the Git door once
+  // its repo did.
+  const pinDoorA = freePins && aWord !== null && aPinTask(aWord) === null ? aWord : null;
+  const pinRingGone = pinKeyA !== null && !seats.some((x) => x.pulse.key === pinKeyA);
+  // The Git door is there once the repo answered (`undefined`: not yet).
+  const gitDoorKnown = !gitOn || !git?.path || railGit.repo !== undefined;
+  const pinModeA = modeOfKey(pinDoorA);
+  const pinDoorGone =
+    pinDoorA === "git"
+      ? gitDoorKnown && gitRepo === null
+      : pinModeA !== null
+        ? // A mode's card: its door is that mode's, on a file page that has
+          // it — judged once the doors' own switch has answered (a first
+          // load reads it as off until then, and a saved pin must not go
+          // for that; CodeRabbit on #2396).
+          modeDoorsAnswer !== null && !modeDoors.some((d) => d.mode === pinModeA)
+        : pinDoorA === "bots"
+          ? !botsOffered
+          : false;
+  const pinOrphanA =
+    freePins && !bootFallback && (tasksPulseLoaded() || rows.length > 0) && (pinRingGone || pinDoorGone);
+  useEffect(() => {
+    if (!pinOrphanA) return;
+    if (pinKeyA) {
+      if (aPinned() === aPinWord({ kind: "task", key: pinKeyA })) setAPinned(null);
+      return;
+    }
+    const door = pinDoorA;
+    if (!door || aPinned() !== door) return;
+    if (door === "tasks") closeTasksCard();
+    else if (door === "bots") closeBotsCard();
+    else if (door === "git") closeGitCard();
+    else if (modeOfKey(door) !== null) closeModeCard(modeOfKey(door) as string);
+    else if (door === aPinWord({ kind: "plus" })) setCardCloseSignal((n) => n + 1);
+    // A card that is not mounted on this page has no hold to drop: the mark
+    // goes by hand.
+    if (aPinned() === door) setAPinned(null);
+  }, [pinOrphanA, pinKeyA, pinDoorA]);
+  // ONE CARD BESIDE THE RAIL (owner, 2026-11-07: "either new task thing
+  // should be open or window A — new task thing is like window A but diff
+  // UI"): the New task popover and the rail's other cards — window A (the
+  // list's chat card), window B (a favourite's hover or open card, a bot's
+  // card) — never stand together, hover or pinned. Whichever opened last
+  // wins: the popover opening (a + hover, a + press, a draft's ring) puts
+  // the others down; one of them opening closes the popover the chassis'
+  // way (its draft autosave keeps the words) — unless the card is mid-Create
+  // (its × held, `busy`), when the other one goes instead.
+  // …WINDOW A ONLY (owner, 2026-11-08: "why is my hovering in window A's
+  // section affecting something in window B, and why does hovering close
+  // my clicked window"): the popover IS window A, so it trades places with
+  // the list's card and the Tasks card alone. Window B — a favourite's hover
+  // or open card, a bot's card — is the other section's: the popover neither
+  // closes it nor is closed by it (the Tasks card's rule, below); it keeps
+  // CLEAR of it instead (`popPlace`, rail-peek-lib `placeClear`). Until
+  // 2026-11-08 a + hover put window B's clicked card down, and a favourite's
+  // hover put the pinned popover down.
+  // FREE PINS — THE ONE-CARD RULE IS THE NON-PINS' (rail-slots-lib): a card
+  // HELD by its pin is the section's pinned window, and no other card coming
+  // puts it down — a ring's click, a door's, the + open the non-pin beside
+  // it. These are the rule's closes, a held card left out.
+  const popIsPin = (): boolean => freePinsRef.current && !!cardRef.current?.pop && !!cardRef.current.held;
+  const yieldTasks = (): void => {
+    if (!(freePinsRef.current && tasksCardStore.state().held)) closeTasksCard();
+  };
+  const yieldBots = (): void => {
+    if (!(freePinsRef.current && botsCardStore.state().held)) closeBotsCard();
+  };
+  const yieldGit = (): void => {
+    if (!(freePinsRef.current && gitCardStore.state().held)) closeGitCard();
+  };
+  // …every mode card but `except` (the one that just came).
+  const yieldMode = (except?: string): void => {
+    closeModeCards((m, c) => m === except || (freePinsRef.current && c.held));
+  };
+  const popSeq = card?.pop ? card.seq : null;
+  useEffect(() => {
+    if (popSeq === null) return;
+    setHeld(false);
+    intent.dismiss();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [popSeq]);
+  useEffect(() => {
+    if (peekKey === null || popSeq === null) return;
+    if (popIsPin()) return;
+    // No × at all while Create is pending (Modal draws none when busy): as
+    // blocked as a disabled one (CodeRabbit on #2189).
+    const busyPop = popBusy(railRef.current);
+    if (busyPop) {
+      setHeld(false);
+      intent.dismiss();
+      return;
+    }
+    setCardCloseSignal((n) => n + 1);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [peekKey]);
+  // CLOSE THE POPOVER THE CHASSIS' WAY (its fade, its draft autosave) — unless
+  // it is mid-Create (its × held). True when it went.
+  const shutPop = useCallback((): boolean => {
+    if (!cardRef.current?.pop) return false;
+    const busyPop = popBusy(railRef.current);
+    if (busyPop) return false;
+    setCardCloseSignal((n) => n + 1);
+    return true;
+  }, []);
+  shutPopRef.current = shutPop;
+  // …AND THE TASKS CARD (TasksPeek; owner, 2026-11-07) IS WINDOW A'S: it
+  // stands where the list's card and the + popover stand, and takes their
+  // turns with them — its opening (a hover's preview or a press) puts down
+  // the list's card and the + popover (unless that one is mid-Create, when
+  // the Tasks card goes instead), and either of those opening closes it.
+  // NEVER WINDOW B (owner, 2026-11-08: "why does window B close when the
+  // Tasks window is open — that is a regression; the Tasks window is like
+  // window A, it shouldn't affect anything else"): the favourite's card, its
+  // hover and the bot's card are the other section's, untouched both ways;
+  // the Tasks card keeps clear of them instead (TasksPeek `avoid`).
+  // (`tasksCard` is read above, with the pinned cards' frame rule.)
+  const tasksSeq = tasksCard.up ? tasksCard.seq : null;
+  const tasksUpRef = useRef(false);
+  tasksUpRef.current = tasksSeq !== null;
+  // …AND THE BOTS CARD (2026-11-09), window A's too: the two door cards put
+  // each other down, and the list's card and the + popover put both down.
+  const botsSeq = botsCard.up ? botsCard.seq : null;
+  const botsUpRef = useRef(false);
+  botsUpRef.current = botsSeq !== null;
+  // …AND THE GIT CARD (2026-11-10), the third door card: the three put each
+  // other down, and the list's card and the + popover put all three down.
+  const gitSeq = gitCard.up ? gitCard.seq : null;
+  const gitUpRef = useRef(false);
+  gitUpRef.current = gitSeq !== null;
+  // …AND THE MODE CARDS (2026-11-20), door cards like the three: each puts
+  // the others down — another mode's card included — and the list's card
+  // and the + popover put them all down.
+  const modeSeqKey = modeCardsNow.modes
+    .filter((m) => modeCardsNow.of(m).up)
+    .map((m) => m + ":" + modeCardsNow.of(m).seq)
+    .join("|");
+  const modeSeqSeen = useRef(new Map<string, number>()).current;
+  useEffect(() => {
+    if (tasksSeq === null) return;
+    yieldBots();
+    yieldGit();
+    yieldMode();
+    if (cardRef.current?.pop && !popIsPin()) {
+      const busyPop = popBusy(railRef.current);
+      if (busyPop) {
+        closeTasksCard();
+        return;
+      }
+      setCardCloseSignal((n) => n + 1);
+    }
+    setHeld(false);
+    intent.dismiss();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [tasksSeq]);
+  useEffect(() => {
+    if (botsSeq === null) return;
+    yieldTasks();
+    yieldGit();
+    yieldMode();
+    if (cardRef.current?.pop && !popIsPin()) {
+      const busyPop = popBusy(railRef.current);
+      if (busyPop) {
+        closeBotsCard();
+        return;
+      }
+      setCardCloseSignal((n) => n + 1);
+    }
+    setHeld(false);
+    intent.dismiss();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [botsSeq]);
+  useEffect(() => {
+    if (gitSeq === null) return;
+    yieldTasks();
+    yieldBots();
+    yieldMode();
+    if (cardRef.current?.pop && !popIsPin()) {
+      const busyPop = popBusy(railRef.current);
+      if (busyPop) {
+        closeGitCard();
+        return;
+      }
+      setCardCloseSignal((n) => n + 1);
+    }
+    setHeld(false);
+    intent.dismiss();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [gitSeq]);
+  useEffect(() => {
+    // WHICH CAME: a card up on an opening this rail has not seen yet.
+    const came: string[] = [];
+    const cards = modeCards();
+    for (const m of cards.modes) {
+      const c = cards.of(m);
+      if (c.up) {
+        if (modeSeqSeen.get(m) !== c.seq) came.push(m);
+        modeSeqSeen.set(m, c.seq);
+      } else modeSeqSeen.delete(m);
+    }
+    for (const m of came) {
+      yieldTasks();
+      yieldBots();
+      yieldGit();
+      yieldMode(m);
+      if (cardRef.current?.pop && !popIsPin()) {
+        const busyPop = popBusy(railRef.current);
+        if (busyPop) {
+          closeModeCard(m);
+          continue;
+        }
+        setCardCloseSignal((n) => n + 1);
+      }
+      setHeld(false);
+      intent.dismiss();
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [modeSeqKey]);
+  // …up OR still a hover's pending read (CodeRabbit on #2189: the pointer
+  // resting on the Tasks door while the + pins by keyboard): `dismiss` is a
+  // no-op on a card that is not up, and cancels the open that was coming.
+  // …ON ITS ARRIVAL ONLY (owner, 2026-11-17: "sometimes when i switch between
+  // bots, task, + etc window jumps"): the list's card or the + COMING puts the
+  // door cards down, never one of them GOING. Until then this ran on any
+  // change with either still up, so a quick + → ring → Bots closed the Bots
+  // card it had just opened: the ring's card going (the Bots card's own rule)
+  // re-ran this while the + was still fading out, and window A was left with
+  // nothing up and its pin gone.
+  const aCameSeen = useRef<{ peekKey: string | null; popSeq: number | null }>({ peekKey: null, popSeq: null });
+  useEffect(() => {
+    const was = aCameSeen.current;
+    aCameSeen.current = { peekKey, popSeq };
+    const listCame = peekKey !== null && peekKey !== was.peekKey;
+    const popCame = popSeq !== null && popSeq !== was.popSeq;
+    if (listCame || popCame) {
+      yieldTasks();
+      yieldBots();
+      yieldGit();
+      yieldMode();
+    }
+  }, [peekKey, popSeq]);
+  // FREE PINS — ONE PIN PER SECTION (rail-slots-lib "PINNING A NON-PIN
+  // REPLACES ITS SECTION'S PIN"): window A's mark names the one pinned card;
+  // a card still held that the mark no longer names was replaced, and goes.
+  // Read off the mark itself, not this render's copy: a card pinned in this
+  // very commit has written it by now (its store, or the effect above).
+  const tasksHeldNow = tasksCard.up && tasksCard.held;
+  const botsHeldNow = botsCard.up && botsCard.held;
+  const gitHeldNow = gitCard.up && gitCard.held;
+  const modeHeldKey = modeCardsNow.modes.filter((m) => modeCardsNow.of(m).up && modeCardsNow.of(m).held).join("|");
+  useEffect(() => {
+    if (!freePins) return;
+    const word = aPinned();
+    if (tasksHeldNow && word !== "tasks") closeTasksCard();
+    if (botsHeldNow && word !== "bots") closeBotsCard();
+    if (gitHeldNow && word !== "git") closeGitCard();
+    closeModeCards((m, c) => !c.held || word === modeKey(m));
+    if (popHeld && word !== aPinWord({ kind: "plus" })) setCardCloseSignal((n) => n + 1);
+  }, [freePins, aWord, tasksHeldNow, botsHeldNow, gitHeldNow, modeHeldKey, popHeld]);
+  // …AND THE SWITCH TURNED ON OVER A CARD HELD THE OLD WAY (the list's, the
+  // bot's): its mark is a pinned task's or bot's now, and the shell's pinned
+  // window draws it — this rail's card, the non-pin, lets go, or the chat
+  // would stand twice.
+  // A card held where it DOCKED has no position of its own yet: frozen where
+  // it stands first, so the pinned window has a box to draw at.
+  // …AND TURNED OFF OVER A FREE PIN: the shell's pinned windows are gone, and
+  // a mark that names a task or a bot with no held card of this rail behind it
+  // would say "window pinned" to the rules of rail-pin-lib with nothing up
+  // (the + card floated at the old pin's spot). The marks go.
+  const freeWas = useRef(freePins);
+  useEffect(() => {
+    const was = freeWas.current;
+    freeWas.current = freePins;
+    if (!freePins) {
+      if (!was) return;
+      if (readAPin(aPinned())?.kind === "task" && !heldRef.current) setAPinned(null);
+      if (botOpen() !== null && !botHeldRef.current) setBotOpen(null);
+      return;
+    }
+    // The card on screen KEEPS its place and its chat: its slot takes the
+    // pin's role (rail-slots-store), and the machine's card — the non-pin,
+    // the other slot's now — is put down.
+    if (heldRef.current) {
+      if (windowPos("a") === null) freezeFromDock("a");
+      setFreeSlot("a", otherSlot(freeSlot("a")));
+      setHeld(false);
+      intent.dismiss();
+    }
+    if (botHeldRef.current) {
+      if (windowPos("b") === null) freezeFromDock("b");
+      setFreeSlot("bot", otherSlot(freeSlot("bot")));
+      setBotHeld(false);
+      botIntent.dismiss();
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [freePins]);
+  // ANOTHER WINDOW A CARD PINNED (the Tasks card by its door, the list card
+  // by a ring) while a + or draft hover's read is still out: that preview
+  // must not open over it when its delay runs out (plus-pop-lib
+  // `cancelPreview`; CodeRabbit on #2189). `plusIntent` is declared below;
+  // the effect runs after the render that declared it.
+  const tasksPinnedUp = tasksCard.up && tasksCard.pinned;
+  const botsPinnedUp = botsCard.up && botsCard.pinned;
+  const gitPinnedUp = gitCard.up && gitCard.pinned;
+  const modePinnedUp = modePinnedAny;
+  const listPinnedUp = pinned && peekKey !== null;
+  useEffect(() => {
+    if (tasksPinnedUp || botsPinnedUp || gitPinnedUp || modePinnedUp || listPinnedUp) plusIntentRef.current?.cancelPreview();
+  }, [tasksPinnedUp, botsPinnedUp, gitPinnedUp, modePinnedUp, listPinnedUp]);
+  // ESCAPE WITH THE FOCUS NOWHERE: with the pin, Escape has one rule and
+  // each card rules it itself — a temp door card closes by DoorCard's own
+  // handlers, a temp popover by the chassis (`popover.tempEscape`), and a
+  // pinned one of either stays.
+  // A TEMP CARD'S OUTSIDE PRESS (rail-pin-lib `pressVerdict`, RailPin
+  // `useTempOutside`; owner, 2026-11-16): one press outside closes it. The
+  // card, its bridge, what it opened and its own door are not outside — and
+  // nor are the rail and the other window's card (2026-11-17: "rail and
+  // window a/b clicks don't count"). A pinned card (held) ignores it. The list's card
+  // and the bot's keep their own watchers above, which already rule so.
+  const doorTemp = (c: { up: boolean; pinned: boolean; held: boolean }) => c.up && c.pinned && !c.held;
+  useTempOutside({
+    active: doorTemp(tasksCard),
+    flag: tasksCardStore.press,
+    cardSelectors: ["#" + TASKS_PEEK_ID],
+    ownSelectors: [doorSelector("tasks")],
+    close: () => closeTasksCard(),
+  });
+  useTempOutside({
+    active: doorTemp(botsCard),
+    flag: botsCardStore.press,
+    cardSelectors: ["#" + BOTS_PEEK_ID],
+    ownSelectors: [doorSelector("bots")],
+    close: () => closeBotsCard(),
+  });
+  useTempOutside({
+    active: doorTemp(gitCard),
+    flag: gitCardStore.press,
+    cardSelectors: ["#" + GIT_PEEK_ID],
+    ownSelectors: [doorSelector("git")],
+    close: () => closeGitCard(),
+  });
+  // …the one mode card a click made (at most one non-pinned card is up).
+  const tempMode = modeCardsNow.modes.find((m) => doorTemp(modeCardsNow.of(m))) ?? null;
+  const noPress = useRef<PressFlag>({ inside: false }).current;
+  useTempOutside({
+    active: tempMode !== null,
+    flag: tempMode !== null ? modeCardStore(tempMode).press : noPress,
+    cardSelectors: tempMode !== null ? ["#" + modePeekId(tempMode)] : [],
+    ownSelectors: tempMode !== null ? [modeDoorSelector(tempMode)] : [],
+    close: () => {
+      if (tempMode !== null) closeModeCard(tempMode);
+    },
+  });
+  // The + popover (the + or a draft's ring): the chassis' own outside press
+  // stands down for any card a click made (Modal `popover.pinned`); this one
+  // closes a temp card the chassis' way (its fade, its draft autosave).
+  const plusPress = useRef<PressFlag>({ inside: false }).current;
+  const popDoor = card?.pop ? card.door || PLUS_DOOR : null;
+  useTempOutside({
+    active: !!card?.pop && !!card.pinned && !card.held,
+    flag: plusPress,
+    cardSelectors: [".modal-popover"],
+    ownSelectors: popDoor === null ? [] : popDoor === PLUS_DOOR ? [doorSelector("plus")] : [ringSelector(".claude-rail-chats", popDoor)],
+    close: () => {
+      shutPop();
+    },
+  });
+  // A favourite's card (window B): its own ring in the favourites' section.
+  useTempOutside({
+    active: favTempKey !== null,
+    flag: favPress,
+    cardSelectors: ["#" + FAV_PEEK_ID],
+    ownSelectors: favTempKey ? [ringSelector(".claude-rail-favs", favTempKey)] : [],
+    close: () => {
+      const k = pinnedNow.current.fav;
+      if (k && favPinned() !== k) clearFavOpen(k);
+    },
+  });
+  // …and ESCAPE WITH THE FOCUS NOWHERE closes a temp favourite's card, as it
+  // closes every temp card (one rule; inside the card RailPeek's own Escape
+  // does it, on its ring `onFavRingKey`).
+  useEffect(() => {
+    if (favTempKey === null) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key !== "Escape" || e.defaultPrevented) return;
+      if (e.target !== document.body && e.target !== document.documentElement) return;
+      const k = pinnedNow.current.fav;
+      if (!k || favPinned() === k) return;
+      e.preventDefault();
+      clearFavOpen(k);
+    };
+    document.addEventListener("keydown", onKey);
+    return () => document.removeEventListener("keydown", onKey);
+  }, [favTempKey]);
+  // BESIDE THE OPEN PANE IT GOES THE WAY WINDOW A GOES (owner, 2026-11-08:
+  // "if the sidebar is open, a press opens in the sidebar and closes window
+  // A; in the expanded sidebar, when the sidebar's chat changes, close window
+  // A"): the pane opening under it, and the pane's chat changing while the
+  // pane is open, both put the Tasks card down — the list card's own two
+  // rules (`paneWasOpen` below, and a ring's pane press). On the turns only,
+  // read off refs.
+  const tasksPaneWasOpen = useRef(paneOpen);
+  const paneChatWas = useRef(activeSessionId);
+  useLayoutEffect(() => {
+    const wasOpen = tasksPaneWasOpen.current;
+    tasksPaneWasOpen.current = paneOpen;
+    const chatWas = paneChatWas.current;
+    paneChatWas.current = activeSessionId;
+    if (!paneOpen || (wasOpen && chatWas === activeSessionId)) return;
+    if (tasksUpRef.current) closeTasksCard();
+    if (botsUpRef.current) closeBotsCard();
+    if (gitUpRef.current) closeGitCard();
+    // …and the + popover, the same way (owner, 2026-11-08: the gaps between
+    // window A's cards closed).
+    shutPop();
+  }, [paneOpen, activeSessionId, shutPop]);
+  // AFTER A CLICK, ONLY A CLICK CHANGES WINDOW A (owner, 2026-11-08;
+  // claude-rail-lib `windowAHovers`): while any window A card is pinned —
+  // the list's chat card, the + popover, the Tasks card — or a draft's modal
+  // card is up, none of window A's doors previews on a hover: not the list's
+  // rings, not the +, not a draft's ring, not the Tasks door. Each door's own
+  // machine already sits still for its own pinned card; this is the rule
+  // across them. Read at the hover, off this render's state.
+  // FREE PINS — WITH ANY WINDOW OPEN, A HOVER SAYS THE TITLE ONLY (owner,
+  // 2026-11-19: "when we have a window already open pinned/non-pinned let's
+  // not show the full overlay hover effect. rather … darker scrim and showing
+  // title tooltip thing"): a pinned window, or a non-pin a click opened, in
+  // either section — and no ring, face or door previews its card on a hover
+  // any more. A ring shows its row (title, count, time) instead, and the row
+  // dims the one window its click would replace: its section's non-pin, if
+  // one is open — never a pin (tasks.css). A hover's own preview is not a
+  // window "open": with nothing pinned or clicked, hovers preview as before.
+  const railQuiet =
+    freePins &&
+    (aWord !== null ||
+      favPinnedKey !== null ||
+      pinnedBotId !== null ||
+      (pinned && peekKey !== null) ||
+      (!!card?.pop && !!card.pinned) ||
+      (tasksCard.up && tasksCard.pinned) ||
+      (botsCard.up && botsCard.pinned) ||
+      (gitCard.up && gitCard.pinned) ||
+      modePinnedAny ||
+      openFavKey !== null ||
+      (botPinned && botKey !== null));
+  const aHovers = () =>
+    !railQuiet &&
+    windowAHovers({
+      listPinned: pinned && peekKey !== null,
+      // FREE PINS: a HELD card is the section's pin, not the non-pin a
+      // hover's preview would stand over — it silences nothing.
+      popPinned: !!card?.pop && !!card.pinned && !(freePins && !!card.held),
+      tasksPinned: tasksCard.up && tasksCard.pinned && !(freePins && tasksCard.held),
+      botsPinned: botsCard.up && botsCard.pinned && !(freePins && botsCard.held),
+      gitPinned: gitCard.up && gitCard.pinned && !(freePins && gitCard.held),
+      modePinned: modeNonPinPinned,
+      modalCard: !!card && !card.pop,
+    });
+  // A hover on the + previews only where its press opens the popover card,
+  // and never over a draft's (modal) card or another pinned window A card.
+  const plusHovers = () => !waiting && aHovers();
+  // WINDOW A'S SIZE, DRAGGED ON THE + POPOVER (owner, 2026-11-08: "that modal
+  // is supposed to be window A, but resize is not working for that modal"):
+  // the chassis' grips (Modal `popover.resize`) report the size let go at,
+  // remembered as the list card's own (`canvasRailPeek`, RailPeek and
+  // TasksPeek's key) — and read back on the next render (the layout tick),
+  // which re-places the card level with its door.
+  const [, setLayoutTick] = useState(0);
+  const savePopSize = useCallback((size: { width: number; height: number }, changed: { width: boolean; height: boolean }) => {
+    // Only a dimension the drag moved, past the grips' minimums (TasksPeek
+    // `endDrag`): the other keeps what was remembered — a width the window
+    // clamped is not saved over it by a height-only drag, nor a height a
+    // short window pressed under the floor. Read off the updater's own doc,
+    // so a replay onto the server's copy (ui-layout, before hydrate) keeps
+    // that copy's value, not this document's default (CodeRabbit on #2189).
+    patchUiLayout((d) => {
+      const prev = railCardSize(d.canvasRailPeek ?? null);
+      const width = changed.width && size.width >= PEEK_MIN_WIDTH ? size.width : prev.width;
+      const height = changed.height && size.height >= PEEK_MIN_HEIGHT ? size.height : prev.height;
+      return d.canvasRailPeek?.width === width && d.canvasRailPeek?.height === height ? d : { ...d, canvasRailPeek: { width, height } };
+    });
+    // A patch tells no subscriber (ui-layout `subscribeUiLayout`: hydrates
+    // only) — this render re-reads it itself (Bugbot on #2189).
+    setLayoutTick((n) => n + 1);
+  }, []);
+  // …and a hydrate landing after the first render (another window's drag).
+  useEffect(() => subscribeUiLayout(() => setLayoutTick((n) => n + 1)), []);
+  // WHERE A DRAFT'S POPOVER STANDS (owner, 2026-11-07: it "jumps" from ring
+  // to ring; "it must stand like window A does"): its top level with the
+  // list's FIRST ring, clamped to the list's scrolled box (rail-peek-lib
+  // `clampAnchor`, RailPeek's own) — so moving between draft rings changes
+  // the card's words, never its place. Null off the list (the + then).
+  const draftCardBox = useCallback(() => {
+    const first = listRef.current?.querySelector<HTMLElement>("a[data-task-key]");
+    if (!first) return null;
+    const scroller = first.closest(".claude-rail-chats");
+    return clampAnchor(first.getBoundingClientRect(), scroller ? scroller.getBoundingClientRect() : null);
+  }, []);
+  // WHERE THE POPOVER STANDS (Modal `popover.place`): as the Tasks card does
+  // — level with its door (the +, or the list's first ring for a draft's),
+  // beside the rail, inside the workspace row, and clear of window B's card
+  // (`favBox`): above it when there is room, beside it otherwise.
+  const popPlace = useCallback(
+    (want: { width: number; height: number }) => {
+      // FLOATING (rail-move-lib): at window A's position, inside the viewport.
+      // …from its FIRST placement: opened by a swap inside the pinned window,
+      // the card is up a render before it is held, and placed beside the rail
+      // for that render it slid across the page to where the window floats
+      // (owner, 2026-11-17: "window jumps"). The window is pinned while its
+      // mark stands, whichever card the mark still names.
+      // …but not a card that was held and LET GO (its unpin): docked.
+      // FREE PINS: only its OWN pin floats it — the mark may name another
+      // card, the section's pin, beside which this one is the non-pin — and
+      // at the size its pin froze.
+      const floatAt =
+        popMove.floating || (!freePins && !popLetGo && aPinned() !== null) ? popMove.at() : null;
+      if (floatAt) return floatPlacement(floatAt, (freePins ? popMove.size() : null) ?? want, viewportOf(window));
+      const rail = railRef.current;
+      const row = rail && rowOf(rail);
+      const door = cardRef.current?.door;
+      const anchor = door && door !== PLUS_DOOR ? draftCardBox() : plusRef.current?.getBoundingClientRect();
+      if (!rail || !row || !anchor) return null;
+      return (freePins ? placeColumn : placeClear)(anchor, rail.getBoundingClientRect(), row.getBoundingClientRect(), favBox, {
+        width: want.width,
+        maxHeight: want.height,
+      });
+    },
+    [favBox, draftCardBox, popMove.floating, popLetGo, freePins],
+  );
+  // A DRAFT'S RING IS A POPOVER DOOR (owner, 2026-11-07: a draft "behaves
+  // exactly like the +"): its hover previews the New task popover on its
+  // record — window A's draft summary is gone — and its press pins it
+  // (`pressRing` → `openDraftCard`). The ring's own reshape guard
+  // (`stillAt`, `enterRing`) applies.
+  const enterDraftDoor = (row: Task, href: string, e: ReactPointerEvent<HTMLAnchorElement>) => {
+    if (dragging(e)) return;
+    const at = stillAt.current;
+    if (at && Math.abs(e.clientX - at.x) < 2 && Math.abs(e.clientY - at.y) < 2) return;
+    stillAt.current = null;
+    if (e.pointerType === "touch" || !aHovers()) return;
+    if (!isChatDraftTask(row) && !row.draft_id) return;
+    draftDoors.current.set(row.key, { row, href });
+    plusIntent.enterPlus(row.key);
+  };
+  // THE PIN IS THE WINDOW'S (rail-pin-lib header; owner, 2026-11-16): is
+  // window A — whichever card it shows — pinned right now? Read at a click:
+  // a door of a pinned window swaps what it shows and the window stays
+  // pinned (`ringClick`'s `windowPinned`).
+  // FREE PINS: never — the pin is the task's, and a click opens the non-pin.
+  const windowAPinned = (): boolean =>
+    !freePinsRef.current &&
+    (heldRef.current ||
+      !!cardRef.current?.held ||
+      tasksCardStore.state().held ||
+      botsCardStore.state().held ||
+      gitCardStore.state().held ||
+      modeCards().modes.some((m) => modeCards().of(m).held));
+  // A POPOVER DOOR'S CLICK WITH THE PIN (rail-pin-lib `ringClick`; the + and a
+  // draft's ring): the door of an open card does nothing — a door opens, it
+  // is not a toggle, and no double-click pins (owner, 2026-11-17) —, anything
+  // else opens (or keeps) it temp, or pinned in a pinned window.
+  const pressPopDoor = (door: string) => {
+    const c = cardRef.current;
+    const own = !!c?.pop && (c.door || PLUS_DOOR) === door;
+    const act = ringClick({
+      mode: cardMode({ up: own, pinned: !!c?.pinned, held: !!c?.held }),
+      own,
+      // FREE PINS: the + card is ONE card — it has no second slot for a
+      // non-pin (rail-slots-store) — so while it is pinned, another draft's
+      // door swaps what the pinned card shows and it STAYS pinned, where it
+      // is (CodeRabbit on #2349: the swap came up temp, and the pin was
+      // silently let go). The one place the window's old rule still holds.
+      windowPinned: windowAPinned() || (freePinsRef.current && !!c?.pop && !!c.held),
+    });
+    if (act === "keep") return;
+    if (act === "close") {
+      setCardCloseSignal((n) => n + 1);
+      return;
+    }
+    pendingHeld.current = act === "pin" ? door : null;
+    plusIntent.press(door);
+  };
+  const openNewTask = () => {
+    if (waiting || (card && !card.pop)) return;
+    pressPopDoor(PLUS_DOOR);
+  };
+  // A DRAFT'S DOOR, IN PLACE (header of `Card.draft`): the same New task card
+  // the + opens, on the draft's own record — what the Tasks page's row press
+  // does (Scheduled `openDraft`), without leaving the canvas. Read FRESH, both
+  // kinds: the listing row's `form` can trail an edit made a moment ago, and a
+  // card seeded on it would autosave the older words back over the newer.
+  // Nothing is minted, and the card's autosave goes on writing the same
+  // record. Needs no clone: the row names its own target and node.
+  //
+  // THREE ANSWERS from the read (capped at SCHEDULE_WAIT_MS, the +'s cap, so
+  // a hung read never holds the rail's doors shut):
+  //   * the record — the card opens on it (a chat draft with no record yet
+  //     opens on its key, as the Tasks page's hop does);
+  //   * the record is GONE (a task draft deleted elsewhere, the row not yet
+  //     re-read) — no card, which would mint it again; the listing is re-read
+  //     so the ring goes;
+  //   * NO ANSWER (failed or timed out) — no card on a guess, which could
+  //     autosave a blank form over the stored one: the press takes the
+  //     Tasks page's door instead (`href`), which reads the record itself.
+  const readDraftCard = (row: Task): Promise<DraftRead> => {
+    const chat = isChatDraftTask(row);
+    // Where the row lives (claude-rail-lib `railScope`): on a canvas the
+    // card's WHERE pill says the canvas and the node; elsewhere the locked
+    // path says it (`NewTaskSeed.where`).
+    const scopeOf = railScope(row, place);
+    const base = {
+      target: row.target || newTask.target,
+      where:
+        place.kind === "canvas"
+          ? { canvas: name, node: scopeOf.kind === "node" ? scopeOf.name : null }
+          : undefined,
+    };
+    type Read = { kind: "seed"; seed: DraftSeed | null } | { kind: "gone" } | { kind: "unknown" };
+    const stored = new Promise<Read>((resolve) => {
+      if (!chat && !row.draft_id) return resolve({ kind: "gone" });
+      const timer = window.setTimeout(() => resolve({ kind: "unknown" }), SCHEDULE_WAIT_MS);
+      fetchDrafts().then(
+        (all) => {
+          window.clearTimeout(timer);
+          if (!all) return resolve({ kind: "unknown" });
+          if (chat) {
+            const seed = chatHopSeed(row.key, all.chat[row.key] ?? null, row.project || row.file || "");
+            return resolve({ kind: "seed", seed });
+          }
+          const form = all.task[row.draft_id!];
+          resolve(form ? { kind: "seed", seed: { id: row.draft_id!, form: { ...form } } } : { kind: "gone" });
+        },
+        () => {
+          window.clearTimeout(timer);
+          resolve({ kind: "unknown" });
+        },
+      );
+    });
+    return Promise.all([cardSeed(), stored]).then(([got, read]): DraftRead =>
+      read.kind !== "seed"
+        ? read
+        : {
+            kind: "card",
+            card: {
+              ...base,
+              ...got,
+              draft: read.seed,
+              chatKey: chat ? row.key : "",
+              time: reopenTime(read.seed),
+            },
+          },
+    );
+  };
+  readDraftRef.current = readDraftCard;
+  const openDraftCard = (row: Task, href: string) => {
+    if (!isChatDraftTask(row) && !row.draft_id) return;
+    // With the nav doors (owner, 2026-11-07: "drafts open should open in the
+    // new thing we added"): the popover's door for this draft — pinned, a
+    // press — over whatever popover is up; a draft's modal card, or a
+    // popover mid-Create, keeps its place.
+    if (card && !card.pop) return;
+    if (card && popBusy(railRef.current)) return;
+    draftDoors.current.set(row.key, { row, href });
+    plusIntent.press(row.key);
+  };
+  // THE RAIL'S ONE DOOR: a draft's href opens its card here; every other
+  // href is the page's (`onOpenChat`). By href, because that is what the
+  // ring, the hover card's Open and the no-room press all hand over — and
+  // every one of them moves the last-picked mark to that chat (header).
+  const seatByHref = useMemo(() => {
+    const map = new Map<string, RailRow>();
+    for (const seat of seats) {
+      const href = seatHref(seat);
+      if (href) map.set(href, seat);
+    }
+    return map;
+  }, [seats]);
+  const openChat = (href: string): void | Promise<boolean> => {
+    const seat = seatByHref.get(href);
+    // A favourite's door (its hover card's Open) moves the favourites' mark.
+    // Window A's doors are the LIST's (2026-11-05: a favourite's ring opens
+    // window B, never this card): the list's mark, whatever the chat's star.
+    if (seat) setLastChat(lastChatId(seat.pulse));
+    if (seat?.row && isDraftTask(seat.row)) openDraftCard(seat.row, href);
+    else return onOpenChat(href);
+  };
+  const openChatRef = useRef(openChat);
+  openChatRef.current = openChat;
+  const onOpenChatRef = useRef(onOpenChat);
+  onOpenChatRef.current = onOpenChat;
+  // A RING'S ORDINARY PRESS (header): the card, shown now and pinned, with
+  // the keyboard on its way to the composer — or, with no room for a card,
+  // the chat in the pane. Also a favourite's press that the server refused
+  // (`openFavourite`), which lands a round trip later: hence the ref.
+  /** FREE PINS: `key` is pinned — its window comes to the front and takes
+   *  the keyboard. False when it is not pinned (or free pins are off). */
+  const raisePinOf = (key: string): boolean => {
+    const win = freePinsRef.current ? pinOf(key, { aWord: aPinned(), favKey: favPinned() }) : null;
+    if (!win) return false;
+    hideHint();
+    noteFrontWindow(win);
+    focusPin(win);
+    return true;
+  };
+  const pressRing = (t: TaskPulseTask, href: string, detail: number) => {
+    const keyboard = detail === 0;
+    // FREE PINS (rail-slots-lib `pinOf`): the ring of a PINNED task raises
+    // its pinned window — in whichever section it was pinned — and opens no
+    // second window on the same chat. Before the card-or-door question
+    // (CodeRabbit on #2349): a pinned window floats and needs no room beside
+    // the rail, so "no room for a card" must not send its ring to the door.
+    if (raisePinOf(t.key)) return;
+    const how = ringPress({ noRoom });
+    // BESIDE THE OPEN PANE the press is the same press (owner, 2026-11-08:
+    // "if the sidebar is expanded we don't show window A — we will instead
+    // show window A, and not change the expanded sidebar unless the user
+    // clicks Open from window A"): the card pins; the pane keeps its chat —
+    // the pane's own chat included, mounted again in the card.
+    if (how === "card") {
+      // A DRAFT'S RING, with the nav doors (owner, 2026-11-07: "drafts open
+      // should open in the new thing we added"): the New task popover on
+      // the draft, pinned — not window A. A hover's card coming on this ring
+      // is called off first.
+      const seat = seatByHref.get(href);
+      if (seat?.row && isDraftTask(seat.row)) {
+        hideHint();
+        setHeld(false);
+        intent.dismiss();
+        // WITH THE PIN: the popover door's own click (`pressPopDoor`).
+        const row = seat.row;
+        if (!isChatDraftTask(row) && !row.draft_id) return;
+        const c = cardRef.current;
+        if (c && !c.pop) return;
+        if (c && c.door !== row.key && popBusy(railRef.current)) return;
+        draftDoors.current.set(row.key, { row, href });
+        pressPopDoor(row.key);
+        return;
+      }
+      // WITH THE PIN (rail-pin-lib `ringClick`): the ring of a TEMP card
+      // closes it (owner, 2026-11-19); the ring of a pinned card does
+      // nothing; anything else opens the card temp — or pinned, in a pinned
+      // window (the pin is the window's). No double-click pins.
+      const own = pinNow.current.peekKey === t.key;
+      const act = ringClick({
+        mode: cardMode({ up: own, pinned: pinNow.current.pinned, held: heldRef.current }),
+        own,
+        windowPinned: windowAPinned(),
+      });
+      if (act === "keep" || act === "close") {
+        hideHint();
+        if (act === "close") {
+          setHeld(false);
+          intent.dismiss();
+        }
+        return;
+      }
+      setHeld(act === "pin");
+      pressedHref.current = href;
+      requestAnimationFrame(() => {
+        pressedHref.current = null;
+      });
+      // Shown now and pinned (header) — over a hover card of this ring it
+      // only pins; over another's, it swaps.
+      intent.press(t.key);
+      hideHint();
+      // Ready to type, whether it was a click or an Enter on a focused ring.
+      if (t.session_id) focusComposerSoon(t.key);
+      // A draft or scheduled row has no composer: an Enter still takes the
+      // keyboard into the card.
+      else if (keyboard) focusCardSoon();
+      return;
+    }
+    openChat(href);
+  };
+  const pressRingRef = useRef(pressRing);
+  pressRingRef.current = pressRing;
+  // THE PANE OPENING UNDER A PINNED LIST CARD (header): the card goes. On
+  // the turn from shut to open only; read off refs, the turn is what decides.
+  const pinNow = useRef({ pinned, peekKey });
+  pinNow.current = { pinned, peekKey };
+  const paneWasOpen = useRef(paneOpen);
+  // THE PANE OPENING UNDER A PINNED LIST CARD (owner, 2026-11-05 evening:
+  // "the expand button should only open the Recent chats sidebar, not an
+  // item active — for that it has the Open button in the popover already"):
+  // the card goes, and NOTHING is opened in the pane — the pane stands on
+  // its home, whose Recent list marks the chat the card was on (the list's
+  // last press, apps/claude Lists `selected`). The hand-over of that
+  // morning (the pane taking the pinned chat) is retired.
+  useLayoutEffect(() => {
+    const wasOpen = paneWasOpen.current;
+    paneWasOpen.current = paneOpen;
+    if (wasOpen || !paneOpen || !pinNow.current.pinned) return;
+    setHeld(false);
+    intent.dismiss();
+  }, [paneOpen, intent]);
+  // THE PANE COLLAPSING GIVES WINDOW B BACK — AND NOTHING OF WINDOW A
+  // (owner, 2026-11-06: "if I click Open from a normal task and close the
+  // sidebar it pops the window up again — we remove this; we already show
+  // the highlight by last selected, that should be enough"; and "if I have
+  // a fav window which expanded the sidebar and opened the chat, when I
+  // close that sidebar it should open the fav popup window again"): on the
+  // turn from open to shut, the favourite whose Open door expanded the pane
+  // (FavouritePeek, fav-peek-store `takeFavRestore`) opens again in this
+  // window; the list's card stays down, its `.is-last` ring the mark. The
+  // restore of 2026-11-05 (`collapseRestore`) is gone.
+  const restoreWasOpen = useRef(paneOpen);
+  useLayoutEffect(() => {
+    const wasOpen = restoreWasOpen.current;
+    restoreWasOpen.current = paneOpen;
+    if (!wasOpen || paneOpen) return;
+    const key = takeFavRestore();
+    if (key) setFavOpen(key);
+  }, [paneOpen]);
+  // …and a rail beside an OPEN pane confirms an armed restore (fav-peek-
+  // store `confirmFavRestore`): the door did open the pane. Every render:
+  // the door arms it between renders, pane open or not yet.
+  useEffect(() => {
+    if (paneOpen) confirmFavRestore();
+  });
+  // THE + BESIDE THE OPEN PANE (header; claude-rail-lib `plusDoor`): the
+  // pane's home, and the keyboard into its composer — retried until it
+  // stands (the page may remount its chat, the leave guard may ask), and
+  // given up the moment the reader presses or types anything themselves.
+  // THE + IS THE NEW TASK CARD, EVERYWHERE (claude-rail-lib `plusDoor`;
+  // owner, 2026-11-08: "any time you click the + we show the task modal only
+  // and not focus the expanded sidebar"): beside the open pane as shut. The
+  // pane-home door and its composer focus (2026-11-05) are gone.
+  const plusLabel = waiting ?? (newTask.on ? `New task on ${newTask.on}` : "New task");
+  // THE NAV DOORS' DOTS: what the left sidebar's Tasks and Bots rows wore,
+  // read from the same pulses —
+  // red waits on the reader, yellow runs, green is news not yet seen (the
+  // Tasks one suppressed while the Tasks page is the one on screen).
+  const tasksPulse = useTasksPulse();
+  // The Bots door where the server offers Bots (`botsOffered`, above) — and
+  // where the experts are on without them (Windows: the Bots page still
+  // opens there, for the experts alone; docs/experts.md). The pulse
+  // reads `/api/bots*`, so it follows the bots themselves.
+  const expertsOn = useExpertsEnabled();
+  const botsDoor = botsOffered || expertsOn;
+  const botsPulse = useBotsPulse(botsOffered);
+  // The Search door only where the app has a launcher panel to show (the
+  // Mac desktop app; `useLauncherAvailable`).
+  const searchDoor = useLauncherAvailable(true);
+  // THE DOORS WEAR THEIR WINDOW'S OPEN STATE (owner, 2026-11-09: "show
+  // highlight only when the window is open, so we know this one made it
+  // open — for +, Tasks, Bots and Search as well"): `.is-open` while the
+  // door's window stands (a hover's preview), `.is-pinned` beside it once a
+  // press holds it — the list rings' own two steps (claude-rail.css). The
+  // Search door's window is the launcher panel (`useLauncherOpen`); the Bots
+  // door's is its card (BotsPeek), as the Tasks door's.
+  const launcher = useLauncherOpen();
+  const doorOpen = (up: boolean, pinnedUp: boolean) => (up ? " is-open" + (pinnedUp ? " is-pinned" : "") : "");
+  const here = typeof location === "undefined" ? "" : location.pathname;
+  const tasksHere = here === "/tasks";
+  const botsHere = isBotsPath(here);
+  // THE BOT CARD COMES BACK WITH THE RAIL (owner, 2026-11-08: "bots open in
+  // window B close when I switch view, which is wrong — tasks open in window
+  // B don't; a bot's card should only close on a switch to a task or another
+  // bot, or its ×"): the favourite's card is the shell's and stands through
+  // a page's view switch; this rail is the page's and remounts with it. The
+  // window's mark (last-chat `botOpen`) names the pinned bot; once the pulse
+  // lists it, the card is pinned again — unless a favourite's card holds
+  // window B, or the reader landed on the Bots page (the ring is the door
+  // there): then the mark goes. Once per mount, after the pulse's first
+  // answer.
+  const botRestored = useRef(false);
+  useEffect(() => {
+    if (botRestored.current || botNoRoom) return;
+    // FREE PINS: the mark is a PINNED bot's, and the bot window's pinned
+    // slot draws it (BotCardHost) — nothing for this rail to restore.
+    if (freePinsRef.current) {
+      botRestored.current = true;
+      return;
+    }
+    // The shell's card is up already (a view switch, not a reload): nothing
+    // to restore.
+    if (botIntent.current !== null) {
+      botRestored.current = true;
+      return;
+    }
+    const id = botOpen();
+    if (!id) {
+      botRestored.current = true;
+      return;
+    }
+    if (!bots.some((b) => b.id === id)) return;
+    botRestored.current = true;
+    // A favourite's card holds window B: the mark goes. (The Bots page is
+    // no reason — its rings open the card too; CodeRabbit on #2201.)
+    if (openFavKey) {
+      setBotOpen(null);
+      return;
+    }
+    botIntent.press(id);
+    // WITH THE PIN the mark is a pinned card's only (bot-card-store): it
+    // comes back pinned.
+    setBotHeld(true);
+  }, [botNoRoom, bots, openFavKey, botIntent]);
+  const tasksDot =
+    tasksPulse.attention + tasksPulse.blocked > 0
+      ? "is-attention"
+      : tasksPulse.running > 0
+        ? "is-running"
+        : !tasksHere && tasksPulse.unseen > 0
+          ? "is-unread"
+          : null;
+  const botsDot =
+    botsPulse.waiting > 0 ? "is-attention" : botsPulse.running > 0 ? "is-running" : botsPulse.unread > 0 ? "is-unread" : null;
+  const tasksTip = pulseTitle(tasksPulse);
+  const botsTip = botsPulseTitle(botsPulse);
+  // THE TASKS DOOR OPENS THE TASKS CARD (TasksPeek; owner, 2026-11-07):
+  // resting on it previews the card (window A's timings, tasks-peek-store's
+  // intent), a press pins it, a press while pinned closes it; a modified press
+  // is still the link's, and with no card to show (none mounted, no room) the
+  // door is the plain link to /tasks it was (tasks-peek-store
+  // `tasksDoorAction`). The rail registers the door so the card stands level
+  // with it.
+  const tasksDoorRef = useRef<HTMLAnchorElement | null>(null);
+  useLayoutEffect(() => {
+    const el = railRef.current;
+    const door = tasksDoorRef.current;
+    return el && door ? registerTasksDoor(el, door) : undefined;
+  }, []);
+  const tasksUp = tasksCard.up;
+  const pressTasksDoor = (e: ReactMouseEvent<HTMLAnchorElement>) => {
+    const act = tasksDoorAction({
+      modified: e.metaKey || e.ctrlKey || e.shiftKey || e.altKey || e.button !== 0,
+      ready: tasksCard.ready,
+      pinned: tasksCard.up && tasksCard.pinned,
+    });
+    if (act === "native") return;
+    e.preventDefault();
+    hideHint();
+    if (act === "navigate") void navigateUrl("/tasks");
+    // WITH THE PIN (rail-pin-lib header; owner, 2026-11-19): the door of a
+    // TEMP card closes it; the door of a pinned (held) card does nothing —
+    // only the unpin closes that — and no double-click pins.
+    else if (act === "close" && tasksCard.held) return;
+    else if (act === "pin" && windowAPinned()) {
+      // A click that opens it in a pinned window A: the pin is the window's.
+      tasksCardIntent().press(TASKS_CARD_KEY);
+      tasksCardStore.setHeld(true);
+    } else if (act === "close") closeTasksCard();
+    else {
+      tasksCardIntent().press(TASKS_CARD_KEY);
+      // An Enter on the door (`detail` 0: no pointer) takes the keyboard into
+      // the card, as a ring's does into the list card (CodeRabbit,
+      // 2026-11-08: left on the door, the next Tab reached the + instead).
+      if (e.detail === 0) cardFocusSoon(TASKS_PEEK_ID, focusTasksCard);
+    }
+  };
+  // THE BOTS DOOR OPENS THE BOTS CARD (BotsPeek; owner, 2026-11-09), the
+  // Tasks door's rules to the letter: a hover previews, a press pins, a
+  // press while pinned closes; a modified press is the link's, and with no
+  // card to show the door is the plain link to /bots (bots-peek-store
+  // `botsDoorAction`). Registered so the card stands level with it.
+  const botsDoorRef = useRef<HTMLAnchorElement | null>(null);
+  useLayoutEffect(() => {
+    const el = railRef.current;
+    const door = botsDoorRef.current;
+    return el && door ? registerBotsDoor(el, door) : undefined;
+  }, [botsDoor]);
+  const botsUp = botsCard.up;
+  const pressBotsDoor = (e: ReactMouseEvent<HTMLAnchorElement>) => {
+    const act = botsDoorAction({
+      modified: e.metaKey || e.ctrlKey || e.shiftKey || e.altKey || e.button !== 0,
+      ready: botsCard.ready,
+      pinned: botsCard.up && botsCard.pinned,
+    });
+    if (act === "native") return;
+    e.preventDefault();
+    hideHint();
+    if (act === "navigate") void navigateUrl("/bots");
+    // With the pin the door toggles a temp card, ignores a held one (the Tasks door).
+    else if (act === "close" && botsCard.held) return;
+    else if (act === "pin" && windowAPinned()) {
+      // A click that opens it in a pinned window A: the pin is the window's.
+      botsCardIntent().press(BOTS_CARD_KEY);
+      botsCardStore.setHeld(true);
+    } else if (act === "close") closeBotsCard();
+    else {
+      botsCardIntent().press(BOTS_CARD_KEY);
+      if (e.detail === 0) cardFocusSoon(BOTS_PEEK_ID, focusBotsCard);
+    }
+  };
+  // THE GIT DOOR OPENS THE GIT CARD (GitPeek; owner, 2026-11-10), the Bots
+  // door's rules to the letter: a hover previews, a press pins, a press
+  // while pinned closes. A button, not a link — no page of its own: with no
+  // card to show (none mounted, no room) the press opens the page's Git
+  // panel (git-peek-store `gitDoorAction`). Under the rings, past a hairline,
+  // only while the page's path sits in a repository (`gitRepo`).
+  const gitDoorRef = useRef<HTMLButtonElement | null>(null);
+  const gitDoorShown = gitRepo !== null;
+  useLayoutEffect(() => {
+    const el = railRef.current;
+    const door = gitDoorRef.current;
+    return el && door ? registerGitDoor(el, door) : undefined;
+  }, [gitDoorShown]);
+  const gitUp = gitCard.up;
+  const pressGitDoor = (e: ReactMouseEvent<HTMLButtonElement>) => {
+    const act = gitDoorAction({ ready: gitCard.ready, pinned: gitCard.up && gitCard.pinned });
+    hideHint();
+    if (act === "open") openGitRef.current?.();
+    // With the pin the door toggles a temp card, ignores a held one (the Tasks door).
+    else if (act === "close" && gitCard.held) return;
+    else if (act === "pin" && windowAPinned()) {
+      setGitCardRail(railRef.current);
+      gitCardIntent().press(GIT_CARD_KEY);
+      gitCardStore.setHeld(true);
+    } else if (act === "close") closeGitCard();
+    else {
+      // This rail opens it (an explorer split's two rails, two repositories).
+      setGitCardRail(railRef.current);
+      gitCardIntent().press(GIT_CARD_KEY);
+      if (e.detail === 0) cardFocusSoon(GIT_PEEK_ID, focusGitCard);
+    }
+  };
+  // THE MODE DOORS OPEN THEIR MODE'S CARD (ModePeek; owner, 2026-11-20), the
+  // Git door's rules to the letter, a door and a card per mode: a hover
+  // previews, a press pins, a press while pinned closes. A button, not a
+  // link: with no card to show (none mounted, no room) the press is the
+  // page's own switch to that mode (mode-peek-store `modeDoorAction`).
+  const modeDoorEls = useRef(new Map<string, HTMLButtonElement>()).current;
+  useLayoutEffect(() => {
+    const el = railRef.current;
+    if (!(el)) return;
+    const offs = modeDoors.flatMap((d) => {
+      const door = modeDoorEls.get(d.mode);
+      return door ? [modeCardStore(d.mode).registerDoor(el, door)] : [];
+    });
+    return () => {
+      for (const off of offs) off();
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [modeSig]);
+  const pressModeDoor = (e: ReactMouseEvent<HTMLButtonElement>, mode: string) => {
+    const store = modeCardStore(mode);
+    const c = store.state();
+    const act = modeDoorAction({ ready: c.ready, pinned: c.up && c.pinned });
+    hideHint();
+    if (act === "open") fileModesRef.current?.onOpen(mode);
+    // With the pin the door toggles a temp card, ignores a held one (the Tasks door).
+    else if (act === "close" && c.held) return;
+    else if (act === "pin" && windowAPinned()) {
+      // A click that opens it in a pinned window A: the pin is the window's.
+      setModeCardRail(mode, railRef.current);
+      store.intent().press(store.key);
+      store.setHeld(true);
+    } else if (act === "close") store.close();
+    else {
+      // This rail opens it (an explorer split's two rails, two files).
+      setModeCardRail(mode, railRef.current);
+      store.intent().press(store.key);
+      if (e.detail === 0) cardFocusSoon(store.id, () => store.focusCard());
+    }
+  };
+  const gitDots = gitRepo ? gitDoorDots({ checking: railGit.checking, checked: railGit.checked, repo: gitRepo }) : null;
+  const gitLabel = gitRepo
+    ? [
+        `Git, on ${gitBranch(gitRepo)}`,
+        ...gitSyncWords(gitRepo),
+        ...(gitDots?.top && gitDots.top !== "push" ? [GIT_DOT_WORDS[gitDots.top]] : []),
+      ].join(", ")
+    : "Git";
+
+  // ONE ACTIVE RING PER SECTION (header; rail-peek-lib `activeRing`). The
+  // list's section is its rings (no outsider in the foot since 2026-11-06).
+  // The list's active ring is the one scrolled into view (below).
+  const listSection = baseSeats;
+  const activeList = activeRing(
+    listSection.map((s) => s.pulse.key),
+    [
+      pinned ? peekKey : null,
+      lastPressed !== null ? listSection.find((s) => lastChatId(s.pulse) === lastPressed)?.pulse.key : null,
+      activeSessionId ? listSection.find((s) => s.pulse.session_id === activeSessionId)?.pulse.key : null,
+    ],
+  );
+  // SCROLL, NEVER POSITIONS (owner, 2026-11-05: "it is just moving scroll,
+  // not moving positions"): a new place starts the list at its top; the
+  // list's active ring — the last selected, the chat the pane gave back on
+  // collapsing — is scrolled into the box when it stands outside it, to the
+  // bottom edge when it is below (the 14th ring as the 10th row), the top
+  // when above. Rings in view are left where they are.
+  const placeWas = useRef(place);
+  useLayoutEffect(() => {
+    const el = listRef.current;
+    if (!el) return;
+    if (placeWas.current !== place) {
+      placeWas.current = place;
+      el.scrollTop = 0;
+    }
+    const ring = activeList ? ringEls.current.get(activeList) : null;
+    if (ring && el.contains(ring)) {
+      const r = ring.getBoundingClientRect();
+      const b = el.getBoundingClientRect();
+      if (r.bottom > b.bottom) el.scrollTop += r.bottom - b.bottom + 2;
+      else if (r.top < b.top) el.scrollTop -= b.top - r.top + 2;
+    }
+    measureEdges();
+  }, [place, activeList, measureEdges]);
+
+  // THE PIN ON THE DOOR OF A PINNED WINDOW (owner, 2026-11-18: "when we pin
+  // we should show a pin icon topleft of the task ring in rail, smaller
+  // version, also invert the pin on x axis so it faces right side"): the
+  // head's own filled pin, small and mirrored (claude-rail.css
+  // `.claude-rail-pinmark`), on the ring, face or door whose window the
+  // reader PINNED — never a hover's or a temp card's.
+  const pinMark = (on: boolean) =>
+    on ? (
+      <span className="claude-rail-pinmark" aria-hidden="true">
+        <PinAngle size={9} filled />
+      </span>
+    ) : null;
+  // A DOOR'S CAPTION (owner, 2026-11-18: the rail's tooltips "consistent and
+  // shown instantly like we have in tasks"): the app's instant hint beside
+  // the door (platform/lib/hints, `data-hint-side`), as the rings have it —
+  // not the browser's `title`, which came a second later in another style.
+  // The rings' own rule for WHEN: a door whose hover brings its card up (or
+  // whose card stands) says nothing — the card is the caption (an empty
+  // hint is the opt-out).
+  // …AND WITH A WINDOW OPEN, THE RINGS' OWN ROW (Akshil, 2026-11-23: "make
+  // tooltip type in rail consistent to the task ring, when a window is
+  // open"): where a ring says its row (`railQuiet`, hints.ts
+  // `renderRowHint`), a door says its name in that same panel — and dims the
+  // window its press would replace (`win`), or none for a door that replaces
+  // no window (Search, the expand button).
+  const doorHint = (words: string, cardIsCaption: boolean, win: "a" | "b" | "none" = "a") => ({
+    "data-hint": cardIsCaption ? "" : words,
+    "data-hint-side": "left",
+    ...(railQuiet && !cardIsCaption ? { "data-hint-row": "", "data-hint-title": words, "data-hint-window": win } : {}),
+  });
+  // A SEAT'S INSIDE (the expandable rail, `asRows`): collapsed, what it always
+  // held — the glyph, its dots, its pin mark. Expanded, the same in a 28px
+  // box of its own at the row's left (the dots and the pin mark are placed
+  // against that box, as against the 28px seat before), then the title. The
+  // title is for the eye: every seat's name already says it (aria-hidden).
+  const seatBody = (icon: ReactNode, title: string): ReactNode =>
+    asRows ? (
+      <>
+        <span className="claude-rail-icon">{icon}</span>
+        {expanded && (
+          <span className="claude-rail-title" aria-hidden="true">
+            {title}
+          </span>
+        )}
+      </>
+    ) : (
+      icon
+    );
+
+  // ONE RING, as the list draws it (and as the favourites' section does).
+  const ringOf = ({ pulse: t, row, off }: RailRow, foot = false) => {
+              // The live status is the pulse's (fresher than the listing).
+              // …and the face too (`pulseFace`: the listing lags it).
+              const merged = row ? { ...row, status: t.status, ...pulseFace(t) } : t;
+              // The face was given BY HAND (`icon_picked`): worn whatever the
+              // star says (the ring below).
+              const picked = !!merged.icon_picked;
+              // Hollow since the press, until the pulse agrees (header).
+              const unread = t.unread > 0 && !dotCleared(marks.get(t.key), t);
+              const line = cardTitleLine(merged);
+              const reply = row ? row.last_reply || "" : "";
+              const label = line.text || t.title || "Chat";
+              // A DRAFT'S DOOR is the New task card (`draftHref`, as the List's
+              // row press); every other row's is the chat's (`taskHref`). A
+              // pulse-only draft (the listing not held yet) has neither for a
+              // moment: it still gets its ring, the press waits for the
+              // listing.
+              const draft = !!row && isDraftTask(row);
+              // A list draft's ring, with the nav doors: the popover's door
+              // (`enterDraftDoor`), not window A's.
+              const popDoor = !foot && draft && !!row;
+              const href = seatHref({ pulse: t, row });
+              // No door, no ring (as before): a form-scheduled row with no
+              // session, or a pulse-only draft the listing has not named yet.
+              if (!href) return null;
+              const words = draft ? "draft" : statusWords(unread ? t : { ...t, unread: 0 }, !!row?.failed);
+              const peeked = foot ? favHoverKey === t.key : peekKey === t.key;
+              // ONE ACTIVE RING PER SECTION, no persistent wash on a
+              // favourite, no hover card on the open favourite's ring in
+              // either section (claude-rail-lib `ringMarks`).
+              const wears = ringMarks({
+                key: t.key,
+                foot,
+                peekKey,
+                pinned,
+                openFavKey,
+                favHoverKey,
+                botHeld: botUp !== null,
+                // Window A held by the + popover or the Tasks card: the list's
+                // rings say their title (`aHovers` shows them no card).
+                windowAHeld:
+                  (!!card?.pop && !!card.pinned && !(freePins && !!card.held)) ||
+                  (tasksCard.up && tasksCard.pinned && !(freePins && tasksCard.held)) ||
+                  (botsCard.up && botsCard.pinned && !(freePins && botsCard.held)) ||
+                  (gitCard.up && gitCard.pinned && !(freePins && gitCard.held)) ||
+                  modeNonPinPinned,
+              });
+              // The rings' own captions step aside for the card: a hover
+              // shows the card, and the card IS the caption. The exception
+              // is a hover that shows nothing — another ring while a card is
+              // pinned (owner, 2026-10-31: "show me the tooltip title so I
+              // know what other chat it is at least"): that ring gets its
+              // title back, the title alone.
+              // …and the ring of the FAVOURITE whose own card is open in this
+              // window (header) — in the foot, or still in the list a moment
+              // after its star was pressed (`railOpenFav`): the hover is its
+              // caption; so is every other favourite's ring while any favourite card is open.
+              const favRing = wears.favRing;
+              // FREE PINS: the ring of a PINNED task opens nothing on a hover
+              // — its chat stands in its pinned window already (one chat, one
+              // composer) — and says its title, the plain caption: its click
+              // replaces no window, so no row and nothing dimmed.
+              const pinnedRing = freePins && pinOf(t.key, { aWord, favKey: favPinnedKey }) !== null;
+              // …AND WITH ANY WINDOW OPEN (`railQuiet`) no other ring previews:
+              // it says its row, the title alone. Not the ring of the non-pin
+              // that is open — its window is its caption, as ever.
+              const ownOpen = foot ? favRing : pinned && peekKey === t.key;
+              const quietRing = railQuiet && !ownOpen && !pinnedRing;
+              const titleOnly = wears.titleOnly || quietRing;
+              const ringHovers = wears.hovers && !pinnedRing && !quietRing;
+              // …BUT NOT THE RING OF THE WINDOW'S OWN OPEN TASK (Akshil,
+              // 2026-11-17: "for window A, if we hover on the task that is
+              // open we don't show this new header; for window B we show —
+              // wrong, follow window A"): under the unified head the open
+              // favourite's ring says nothing, like the list ring whose card
+              // stands — its window is the caption. The other favourites'
+              // rings keep their row.
+              const captionless = !pinnedRing && (!titleOnly || (favRing));
+              // THE RING'S WINDOW (owner, 2026-11-05: two sections, two
+              // windows): a favourite's ring talks to window B's hover
+              // (fav-peek-store `favHoverIntent`), a list ring to this
+              // rail's card — neither ever moves the other.
+              const win = foot ? favHoverIntent() : intent;
+              // The list's item is a wrapper, the link is a link: `aria-haspopup`
+              // and `aria-expanded` are not allowed on `listitem`, and a link
+              // that opens a dialog is the shape they describe.
+              return (
+                <div key={t.key} role="listitem" className={`claude-rail-seat${off ? " is-off" : ""}`}>
+                <a
+                  ref={(el) => {
+                    // THE LIST'S RINGS ANCHOR WINDOW A (header): a
+                    // favourite's ring is window B's (FavouritePeek, on the
+                    // rail's bottom edge) and must not claim the chat's
+                    // anchor — the same chat stands in both sections
+                    // (2026-11-05), and a star pressed in window A moved the
+                    // card onto the new foot ring.
+                    if (foot) return;
+                    if (el) ringEls.current.set(t.key, el);
+                    else ringEls.current.delete(t.key);
+                  }}
+                  href={href}
+                  // Found again by key when a card shuts under the keyboard
+                  // (fav-peek-store `focusRail`).
+                  data-task-key={t.key}
+                  // A blocked, unstarred favourite wears `.is-blocked`
+                  // (rail-peek-lib `favLike`): the section's ring, no star.
+                  className={[
+                    "sidebar-rail-btn",
+                    "claude-rail-chat",
+                    ...wears.classes,
+                    // A draft's ring whose New task popover stands: its window
+                    // is open (2026-11-09), the list rings' own marks.
+                    ...(popDoor && card?.pop && card.door === t.key
+                      ? ["peeked", ...(card.pinned ? ["is-pinned"] : [])].filter((c) => !wears.classes.includes(c))
+                      : []),
+                    ...(foot && !t.starred ? ["is-blocked"] : []),
+                  ].join(" ")}
+                  aria-label={`${label} — ${words}`}
+                  // The list row's own caption (platform/lib/hints): the
+                  // title's line, then the reply's — what the row clamps.
+                  // While the card stands in for it, an EMPTY hint is the
+                  // opt-out (hints.ts `hintOf`): the card is the caption.
+                  data-hint={captionless && !noRoom ? "" : line.hint || label}
+                  data-hint-title={line.hint || label}
+                  data-hint-reply={titleOnly ? "" : reply}
+                  // Beside the ring, not at the pointer (platform/lib/hints
+                  // `placeBeside`): a 48px column at the window's edge.
+                  data-hint-side="left"
+                  // THE TASK'S NAME AND FACTS, NOT A TITLE TOOLTIP (Akshil,
+                  // 2026-11-16: "when we hover we show a tooltip with the
+                  // title of the task — instead show this as is"; hints.ts
+                  // `renderRowHint`): a panel as wide as its own words
+                  // (2026-11-18: "make it not the same width as the window"),
+                  // holding the title whole, then the count and the time
+                  // (2026-11-17:
+                  // "strip the left part, that is status and task id, keep
+                  // the time and count as is. And don't truncate it") —
+                  // the title is `data-hint-title` above.
+                  {...(!pinnedRing
+                    ? {
+                        "data-hint-row": "",
+                        "data-hint-count": row && !draft && (row.message_count ?? 0) > 0 ? String(row.message_count) : "",
+                        "data-hint-when": draft
+                          ? ""
+                          : row
+                            ? taskWhen(merged as Task).text
+                            : relativeWhen(t.happened_at || t.last_active || 0),
+                        // The window this ring opens: the one the scrim dims
+                        // while the row is up (tasks.css), never the other.
+                        "data-hint-window": foot ? "b" : "a",
+                      }
+                    : {})}
+                  {...(popDoor
+                    ? {
+                        "aria-haspopup": "dialog" as const,
+                        "aria-expanded": !!card?.pop && card.door === t.key,
+                      }
+                    : ringHovers
+                    ? {
+                        "aria-haspopup": "dialog" as const,
+                        "aria-expanded": peeked,
+                        "aria-keyshortcuts": "ArrowLeft",
+                        ...(peeked ? { "aria-controls": foot ? FAV_PEEK_ID : PEEK_ID } : {}),
+                        onKeyDown: foot ? onFavRingKey(t, href) : onRingKey(t.key),
+                      }
+                    : freePins && !foot && wears.hovers
+                      ? {
+                          // FREE PINS: a list ring that previews nothing — a
+                          // window is open (`railQuiet`), or its own task is
+                          // pinned — keeps the keyboard's way in (CodeRabbit
+                          // on #2349): ArrowLeft opens it as a press would,
+                          // or raises its pinned window (`onRingKey`).
+                          "aria-keyshortcuts": "ArrowLeft",
+                          onKeyDown: onRingKey(t.key),
+                        }
+                    : favRing
+                      ? {
+                          // The open favourite's ring: its card is the
+                          // shell's (FavouritePeek), a dialog of its own.
+                          "aria-haspopup": "dialog" as const,
+                          "aria-expanded": true,
+                          "aria-controls": FAV_PEEK_ID,
+                        }
+                      : foot
+                        ? {
+                            // A SILENCED favourite's ring — another favourite's
+                            // card, or a bot's, holds window B — hovers nothing,
+                            // but the keyboard still takes the window
+                            // (CodeRabbit on #2154): ArrowLeft opens this
+                            // favourite there, as a press would.
+                            "aria-keyshortcuts": "ArrowLeft",
+                            onKeyDown: onFavRingKey(t, href),
+                          }
+                        : {})}
+                  {...(popDoor && row && href
+                    ? {
+                        onPointerEnter: (e: ReactPointerEvent<HTMLAnchorElement>) => enterDraftDoor(row, href, e),
+                        onPointerLeave: () => {
+                          plusIntent.leavePlus();
+                          win.leaveRing("pointer");
+                        },
+                        onBlur: () => win.leaveRing("focus"),
+                      }
+                    : {
+                        // The open favourite's ring opens no hover card, but
+                        // a leave is always heard: the intent must not think
+                        // the pointer still rests on a ring it left.
+                        ...(!ringHovers
+                          ? {}
+                          : {
+                              onPointerEnter: (e: ReactPointerEvent<HTMLAnchorElement>) =>
+                                enterRing(t.key, e, win),
+                              // A focus HANDED here (a card shutting
+                              // under the keyboard, fav-peek-store
+                              // `focusRail`) opens no card.
+                              onFocus: (e: ReactFocusEvent<HTMLAnchorElement>) => {
+                                if (takeQuietFocus(e.currentTarget)) win.quietFocus(t.key);
+                                // A Tab onto window A's ring is its hover
+                                // (`aHovers`): nothing over another pinned
+                                // window A card.
+                                else if (win !== intent || aHovers()) win.enterRing(t.key, "focus");
+                              },
+                            }),
+                        onPointerLeave: () => win.leaveRing("pointer"),
+                        onBlur: () => win.leaveRing("focus"),
+                      })}
+                  onClick={(e) => {
+                    if (e.metaKey || e.ctrlKey || e.shiftKey || e.altKey || e.button !== 0) return;
+                    e.preventDefault();
+                    // Opened, by either door below: read (header), and the
+                    // last ring pressed (header) — the favourites' own mark
+                    // for a ring in their section, the list's otherwise.
+                    clearUnread(t);
+                    if (foot || favRing) setLastFav(lastChatId(t));
+                    else setLastChat(lastChatId(t));
+                    // A FAVOURITE'S PRESS — its ring in the section, the
+                    // only ring it has — opens the shell's favourite card in
+                    // this window (header), not this rail's, and lets this
+                    // rail's hover card go. NEVER `pressRing` for it: a
+                    // favourite's press never pins this rail's card (claude-
+                    // rail-lib `ringMarks`). The open favourite's ring — the
+                    // foot's, or the list's a moment after its star — has its
+                    // card up already: nothing more to open.
+                    // WHATEVER THE PANE SHOWS (owner, 2026-11-05: "if the
+                    // expanded sidebar is open with a fav task, we don't
+                    // open and focus the expanded sidebar"): the press
+                    // opens window B, the chat in both if need be.
+                    if (foot) {
+                      hideHint();
+                      // The hover (window B) becomes the open card, or goes.
+                      dismissFavHover();
+                      // ANY press — pointer or keyboard — lands in the
+                      // favourite card's composer once it stands (fav-peek-
+                      // store; Akshil, 2026-11-07: "when I click to open the
+                      // window in normal tasks it focuses the input, but for
+                      // fav tasks it doesn't"), the list card's own rule.
+                      // A TOGGLE (owner, 2026-11-06): the open favourite's
+                      // own ring closes its card; any other opens it (asking
+                      // for the card's keyboard then — never for a close, or
+                      // the wish would outlive it).
+                      // WITH THE PIN (rail-pin-lib `ringClick`): the ring of
+                      // a TEMP favourite card closes it (owner, 2026-11-19),
+                      // a pinned one does nothing, anything else opens it
+                      // temp.
+                      // FREE PINS: a pinned task's ring raises its pinned
+                      // window, first.
+                      if (raisePinOf(t.key)) return;
+                      const act = ringClick({
+                        mode: favRing ? (favPinned() === t.key ? "pinned" : "temp") : "closed",
+                        own: favRing,
+                        windowPinned: windowBPinned(),
+                      });
+                      if (act === "close") {
+                        clearFavOpen(t.key);
+                        return;
+                      }
+                      if (act === "keep") return;
+                      requestFavFocus(t.key);
+                      openFavourite(t, href);
+                      if (act === "pin") setFavPinned(t.key);
+                      return;
+                    }
+                    pressRing(t, href, e.detail);
+                  }}
+                >
+                  {seatBody(
+                  <>
+                  <StatusIcon
+                    // The full row's column where it is held: a draft row is
+                    // `draft` only once `kind` is known (the pulse has no kind).
+                    status={taskColumn(merged)}
+                    // With the card on, the ring's own native `title` tooltip
+                    // ("Done", "Draft") would float over the card a second
+                    // later; "" is no tooltip. The link's aria-label still
+                    // names the chat and its state. …and over the link's
+                    // instant caption, where the hover shows that instead
+                    // (owner, 2026-11-18: one tooltip, instant): `quiet`.
+                    {...(captionless ? { label: "" } : { quiet: true })}
+                    unread={unread}
+                    background={liveJobRow(t)}
+                    // The red centre dot the List gives a draft row and a
+                    // settled row holding unsent words (tasks-lib.draftRing).
+                    draftHeld={!!row && draftRing(merged as Task)}
+                    {...(row?.failed ? { failed: true } : {})}
+                    // A face PICKED by hand whatever the star (2026-11-16);
+                    // one that came with the star only while starred, by the
+                    // PULSE's word — the row the star itself is read from:
+                    // the listing row lags it, and its old slot would keep
+                    // the glyph on an unstarred ring.
+                    icon={picked || t.starred ? (merged.icon_slot ?? null) : null}
+                  />
+                  {pinMark(
+                    // FREE PINS: the pin is the task's — every ring of a
+                    // pinned task wears it, in the list and in the favourites
+                    // ("pin shown in task ring for pin tasks").
+                    freePins && !popDoor
+                      ? pinOf(t.key, { aWord, favKey: favPinnedKey }) !== null
+                      : foot
+                        ? favRing && favPinnedKey === t.key
+                        : popDoor
+                          ? popHeld && card?.door === t.key
+                          : peeked && held,
+                  )}
+                  </>,
+                  label,
+                  )}
+                </a>
+                </div>
+              );
+  };
+
+  // THE CARD, DRAWN BY THE SHELL'S HOST when one stands (plus-card-store):
+  // this rail publishes how — its anchor, placement and doors — on every
+  // render, and draws it itself only with no host (a rail rendered alone).
+  const hosted = usePlusHosted();
+  // …and where window A floats: a drag or a dock re-places the card.
+  // …and the rail changing width (`railBoxW`; the expandable rail): the card
+  // stands against its new edge.
+  const popPlaceKey = useMemo(() => ({ favBox, at: popMove.pos, railBoxW }), [favBox, popMove.pos, railBoxW]);
+  const renderCard = (card: Card) => (
+        <NewJobModal
+        // Keyed on the press: the card reads its props in `useState`
+        // initialisers, so every opening must be a fresh mount
+        // (Scheduled.tsx `openSeq`).
+        key={card.seq}
+        initialTime={card.time ?? null}
+        // The draft's own record, when a draft row opened it (`Card.draft`).
+        initialDraft={card.draft ?? null}
+        chatKey={card.chatKey ?? ""}
+        // SCOPED TO THE PLACE — the clone or the selected node's file in
+        // it, the app folder, the explorer's folder or file — the app
+        // page's Tasks tab's way (Scheduled.tsx `lockTarget`): a task
+        // made from a page is a task about that page, so the path is
+        // stated, not asked (the + is held until the page can say it).
+        initialTarget={card.target}
+        lockTarget={card.target !== null}
+        // …and on a canvas SAID as the canvas and the node, not as that
+        // path (Akshil, 2026-10-30): the card's read-only WHERE pill. The
+        // canvas and node as they were at the press, the same snapshot as
+        // the target.
+        {...(card.where ? { lockedWhere: card.where } : {})}
+        // From the List, not the calendar: a task typed here is one to run
+        // now, and the when-row folds into More options.
+        planning={!!card.time}
+        permissionModes={card.modes}
+        recentTargets={card.recents}
+        // Closed without creating: the card may have left a DRAFT behind,
+        // which the pulse never carries — re-read so its ring shows now.
+        onClose={() => {
+          setCard(null);
+          // The card's own close (not a rail going under it): a pinned +
+          // lets the window's mark go.
+          if (card.pop && card.held && aPinned() === aPinWord({ kind: "plus" })) setAPinned(null);
+          if (card.pop) plusIntent.closed();
+          // A preview nobody touched left nothing behind: the reader's
+          // first act inside it pins it (plus-pop-lib.ts).
+          if (!card.pop || card.pinned) refreshListing();
+        }}
+        // "Something changed, re-read": the pulse will move the new row
+        // onto the rail; the listing is re-read now so its caption and
+        // rank are not 600ms behind its ring.
+        onCreated={() => refreshListing()}
+        // The landing card's chat lists (Recent chats, Pages, Snapshots):
+        // a row goes through the rail's one door, as a ring's press does.
+        onOpenChat={(href) => openChatRef.current(href)}
+        // A draft row in its lists: the draft's own popover door, the
+        // ring's press (`openDraftCard`) — the pressed draft fills this
+        // window, as it fills the chat landing's box.
+        onOpenDraft={(row) => {
+          const href = draftHref(row) ?? taskHref(row);
+          if (href) openDraftCard(row, href);
+        }}
+        // CREATE KEEPS THE CARD: a fresh mount (new `seq`, no draft) opening
+        // on the new task's chat, so Back is an empty landing.
+        initialChatEntry={card.chatEntry ?? null}
+        initialChatSeed={card.chatSeed ?? null}
+        // THE PIN (rail-pin-lib): the popover's heads, landing and chat
+        // alike. A press on it is a press inside
+        // first (a preview pins, Modal `onPin`), then the toggle.
+        {...(card.pop
+          ? {
+              pinNode: (
+                <RailPinButton
+                  pinned={!!card.held}
+                  onToggle={() => {
+                    // FREE PINS: a pinned card's seat is its × — it closes
+                    // (the chassis' way: its draft autosave, its fade).
+                    if (freePinsRef.current && cardRef.current?.pop && cardRef.current.held) {
+                      setCardCloseSignal((n) => n + 1);
+                      return;
+                    }
+                    plusIntent.pinInside();
+                    // FREE PINS: the pin's press freezes the window where it
+                    // stands, and takes the section's pin (the mark) at once
+                    // — the pin it replaces goes with this press.
+                    if (freePinsRef.current && cardRef.current?.pop && !cardRef.current.held) {
+                      freezeFromDock("a");
+                      setAPinned(aPinWord({ kind: "plus" }));
+                    }
+                    setCard((c) => (c?.pop ? { ...c, held: !c.held } : c));
+                  }}
+                />
+              ),
+            }
+          : {})}
+        onCreatedChat={(entryId, seed) =>
+          setCard((c) => (c ? { ...c, seq: Date.now(), draft: null, chatKey: "", time: null, chatEntry: entryId, chatSeed: seed } : c))}
+        // The +'s card: the same card as a popover
+        // beside the rail (`Card.pop`), top-level with the +, left of the
+        // rail's edge; a hover's preview until a press pins it (`pinned`).
+        {...(card.pop
+          ? {
+              popover: {
+                anchor: popAnchor,
+                // WINDOW A'S SIZE (owner, 2026-11-07): the remembered
+                // `canvasRailPeek`, else 420×640 — clamped inside the window
+                // by the chassis, the form scrolling inside it.
+                size: (freePins && popMove.floating ? popMove.size() : null) ?? railCardSize(getUiLayout().canvasRailPeek ?? null),
+                // …AND RESIZED LIKE IT (`savePopSize`): the grips on a
+                // pinned card only — a hover's preview is not a thing to
+                // drag. WITH THE PIN (design.md row 21): hover, temp and
+                // pinned alike, a grip's press a press inside.
+                resize: popMove.floating
+                  ? {
+                      // FLOATING (rail-move-lib `floatResize`): inside
+                      // the viewport, the right edge and corners too,
+                      // with the held edge's magnet to window B's card
+                      // and the app window (`snapResize`; owner,
+                      // 2026-11-18); a left or top grip moves window
+                      // A's position.
+                      minWidth: PEEK_MIN_WIDTH,
+                      minHeight: PEEK_MIN_HEIGHT,
+                      maxWidth: PEEK_MAX_WIDTH,
+                      grips: FLOAT_GRIPS,
+                      drag: (edge, start, dx, dy) => {
+                        const view = viewportOf(window);
+                        const lim = { minWidth: PEEK_MIN_WIDTH, minHeight: PEEK_MIN_HEIGHT, maxWidth: PEEK_MAX_WIDTH };
+                        const pulled = snapResize(edge, dx, dy, (x, y) => floatResize(edge, start, x, y, view, lim), magnetBox("b", true), view);
+                        if (!popGuides.current) setRailResizing(true);
+                        popGuides.current = true;
+                        setSnapGuides(pulled.x, pulled.y);
+                        return pulled.box;
+                      },
+                      onDragEnd: clearPopGuides,
+                      onResize: (size, changed, box) => {
+                        // A FREE PIN'S RESIZE IS THE PIN'S ALONE: the
+                        // window's frozen box, never the shared size.
+                        if (railExtrasNow()) {
+                          commitWindowBox("a", { left: box.left, top: box.top, width: size.width, height: size.height });
+                          return;
+                        }
+                        popMove.setPos({ left: box.left, top: box.top });
+                        savePopSize(size, changed);
+                      },
+                    }
+                  : {
+                  minWidth: PEEK_MIN_WIDTH,
+                  minHeight: PEEK_MIN_HEIGHT,
+                  maxWidth: PEEK_MAX_WIDTH,
+                  // Never over window B's card under it (RailPeek's
+                  // floor, rail-peek-lib `bottomClear`).
+                  maxBottom: (box) => bottomClear(box, favBox),
+                  // …and inside the workspace row (RailPeek's own
+                  // bounds), never over the sidebar or the header.
+                  bounds: () => rowOf(railRef.current)?.getBoundingClientRect() ?? null,
+                  onResize: savePopSize,
+                  // WITH THE PIN (window B's card may float): the
+                  // chassis' own drag (`popoverDrag`, the floor and
+                  // the row as above) with the held edge's magnet
+                  // on either axis (rail-move-lib `snapResize`) —
+                  // the width magnet is its left↔left case. Window
+                  // B never moves for window A's card, so its box
+                  // is read as it stands.
+                  drag: (edge, start, dx, dy) => {
+                    if (!isPopoverEdge(edge)) return start;
+                    const view = viewportOf(window);
+                    const lim = { minWidth: PEEK_MIN_WIDTH, minHeight: PEEK_MIN_HEIGHT, maxWidth: PEEK_MAX_WIDTH };
+                    const row = rowOf(railRef.current)?.getBoundingClientRect();
+                    const floor = bottomClear(start, favBox);
+                    const pulled = snapResize(
+                      edge,
+                      dx,
+                      dy,
+                      (x, y) => popoverDrag(edge, start, x, y, view, lim, floor, row ?? undefined),
+                      magnetBox("b", false),
+                      view,
+                    );
+                    if (!popGuides.current) setRailResizing(true);
+                  popGuides.current = true;
+                    setSnapGuides(pulled.x, pulled.y);
+                    return pulled.box;
+                  },
+                  onDragEnd: clearPopGuides,
+                },
+                // The head moves the card while pinned (`popMove`).
+                move: {
+                  className: popMove.className,
+                  onPointerDown: popMove.onPointerDown,
+                  onDoubleClick: popMove.onDoubleClick,
+                },
+                ...(card.door && card.door !== PLUS_DOOR ? { anchorBox: draftCardBox } : {}),
+                place: popPlace,
+                // Window A's box, for window B's grips to snap to — not
+                // while it floats (window B then places itself alone) —
+                // and its live box for window B's head drag, docked or
+                // floating (rail-move-store).
+                onBox: freePins
+                  ? popMove.floating
+                    ? publishPlusPinBox
+                    : card.pinned
+                      ? publishPlusDockPush
+                      : publishPlusDockQuiet
+                  : popMove.floating
+                    ? publishPlusLiveBox
+                    : publishPlusBoxes,
+                // Per rail (a hop re-places the card beside the new rail).
+                placeKey: popPlaceKey,
+                // The row reshaping (the sidebar collapsing) re-places it.
+                watch: () => rowOf(railRef.current),
+                beside: railRef,
+                closeSignal: cardCloseSignal,
+                pinned: !!card.pinned,
+                // Escape's one rule: a temp card closes on it, a pinned
+                // (held) one stays.
+                ...(!card.held ? { tempEscape: true } : {}),
+                onPin: () => plusIntent.pinInside(),
+                onPressInside: () => {
+                  plusPress.inside = true;
+                  viewPress.inside = true;
+                  popMove.notePress();
+                },
+                onPointerEnter: () => plusIntent.enterCard(),
+                onPointerLeave: () => plusIntent.leaveCard(),
+              },
+            }
+          : {})}
+      />
+  );
+  const railToken = useRef({});
+  useLayoutEffect(() => {
+    if (hosted) publishPlusRender(railToken.current, renderCard as (c: unknown) => ReactNode);
+  });
+  const hostedRef = useRef(hosted);
+  hostedRef.current = hosted;
+  useEffect(() => {
+    const id = railToken.current;
+    return () => {
+      withdrawPlusRender(id);
+      // NO HOST (an embedded view): the card was this rail's to draw, and
+      // goes with it — the next rail would remount it from its first seed and
+      // a second draft would follow (CodeRabbit on #2220). Its own unmount
+      // flushes the words to its draft, as any close does.
+      if (!hostedRef.current) setCard(null);
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  /* THE LIST'S CHAT CARD — AND, WITH FREE PINS, ITS TWO SLOTS
+          (rail-slots-store "THE TWO SLOTS OF A CHAT WINDOW"): the free slot is
+          the card as it always was, on the machine's seat; the other shows the
+          section's pinned task (`aPinned`), frozen where its pin left it. The
+          pin's press swaps the two roles — same card, same chat, no remount.
+     WITH FREE PINS THE SHELL DRAWS THEM (rail-list-host-store, ListCardHost):
+     this rail builds the elements and hands them over, so a page hop — this
+     rail going, the next one coming — never remounts a pinned list task. */
+  const listCards = (freePins ? SLOTS : ONE_SLOT).map((slot) =>
+          freePins && slot !== aFree ? (
+            (pinSeatA ? pinPlacedA : !!pinViewA) ? (
+              <RailPeek
+                key={slot}
+                ref={pinPeekRef}
+                id={PIN_A_ID}
+                win="a"
+                shown={pinSeatA}
+                kept={pinKeptA}
+                anchorOf={pinNoRing}
+                railEl={railRef.current}
+                place={place}
+                onReload={refreshListing}
+                onPointerEnter={pinNoop}
+                onPointerLeave={pinNoop}
+                onCone={pinNoop}
+                // A press inside the pinned window is a press in the rail's
+                // view: it closes no non-pin (rail-pin-lib `viewPress`).
+                onPressInside={() => {
+                  viewPress.inside = true;
+                }}
+                onHold={pinNoop}
+                // It answers only to its unpin and its Open door (below).
+                onDismiss={pinNoop}
+                onNoRoom={pinNoop}
+                // The Open door is a hand-off: the pin goes once the hop went.
+                onOpenChat={(href) => {
+                  const word = aPinned();
+                  const went = openChat(href);
+                  void Promise.resolve(went).then((ok) => {
+                    if (ok !== false && word && aPinned() === word) setAPinned(null);
+                  });
+                  return went;
+                }}
+                here={hereOf}
+                pageRoot={favouritesOnly ? null : root}
+                held
+                onHeld={pinNoop}
+                oneSize
+                pinned
+                onPin={pinNoop}
+                pinCtl={{
+                  pinned: true,
+                  // ITS × (rail-slots-lib "A PINNED WINDOW CLOSES BY ITS ×"):
+                  // the pin goes and the window with it.
+                  onToggle: () => {
+                    if (pinSeatA && aPinned() === aPinWord({ kind: "task", key: pinSeatA.pulse.key })) setAPinned(null);
+                  },
+                }}
+              />
+            ) : null
+          ) : freeKept.length > 0 ? (
+        <RailPeek
+          key={slot}
+          ref={peekRef}
+          id={PEEK_ID}
+          shown={freeSeat}
+          kept={freeKept}
+          anchorOf={anchorOf}
+          coneOf={coneOf}
+          railEl={railRef.current}
+          place={place}
+          onReload={refreshListing}
+          onPointerEnter={() => intent.enterCard()}
+          onPointerLeave={() => intent.leaveCard()}
+          onCone={(inside) => (inside ? intent.enterCone() : intent.leaveCone())}
+          onPressInside={onPressInside}
+          onHold={(on) => intent.hold(on)}
+          onDismiss={() => {
+            // Let go by its own Open (a hand-off): the window's mark goes
+            // now — the hop may unmount this rail before it renders again.
+            // FREE PINS: this card is the non-pin — a task the mark names is
+            // the pinned window's, and this card's door lets nothing of it go.
+            if (!freePinsRef.current && readAPin(aPinned())?.kind === "task") setAPinned(null);
+            dismissToRing();
+          }}
+          onNoRoom={onNoRoom}
+          onOpenChat={openChat}
+          here={hereOf}
+          pageRoot={favouritesOnly ? null : root}
+          onChipLeave={onChipLeave}
+          held={held}
+          onHeld={setHeld}
+          onStarred={onStarred}
+          avoid={favBox}
+          oneSize
+          pinned={pinned}
+          onPin={() => {
+            const key = intent.current;
+            if (!key) return;
+            intent.press(key);
+            if (seats.find((s) => s.pulse.key === key)?.pulse.session_id) focusComposerSoon(key);
+          }}
+          pinCtl={{
+            pinned: held,
+            onToggle: () => {
+              const key = intent.current;
+              if (!key) return;
+              // FREE PINS (rail-slots-lib): the pin's press freezes the
+              // window where it stands, and the two slots SWAP ROLES
+              // (rail-slots-store) — this card, as it is, becomes the
+              // section's pinned window, replacing whatever was pinned
+              // there; the machine's card, the non-pin, is the other
+              // slot's from here on and is put down.
+              if (freePinsRef.current) {
+                freezeFromDock("a");
+                setAPinned(aPinWord({ kind: "task", key }));
+                setFreeSlot("a", otherSlot(slot));
+                setHeld(false);
+                intent.dismiss();
+                return;
+              }
+              if (heldRef.current) {
+                setHeld(false);
+                return;
+              }
+              if (!intent.isPinned) intent.press(key);
+              setHeld(true);
+            },
+          }}
+        />
+          ) : null,
+        );
+  const listHosted = useListHosted() && freePins;
+  useLayoutEffect(() => {
+    if (!listHosted) return;
+    publishListCards(railToken.current, { x: listCards[0] ?? null, y: listCards[1] ?? null });
+  });
+  useLayoutEffect(() => {
+    if (!listHosted) return;
+    const token = railToken.current;
+    return () => withdrawListCards(token);
+  }, [listHosted]);
+
+  return (
+    <aside
+      ref={railRef}
+      // The row hint stands against the rail's edge, where its windows do
+      // (platform/lib/hints `rowEdge`).
+      data-hint-edge=""
+      className={
+        "claude-rail" +
+        (favs.length + bots.length > 0 ? " has-favs" : "") +
+        " is-scroll has-nav" +
+        (favouritesOnly ? " is-fallback" : "") +
+        // THE EXPANDABLE RAIL: its rows, and its own drag (no glide under it).
+        (asRows ? " is-expanded" : "") +
+        (edgeDrag ? " is-resizing" : "")
+      }
+      {...(asRows ? { style: { flexBasis: railWidth, width: railWidth } } : {})}
+      aria-label="Claude"
+      onPointerMove={(e) => {
+        lastPointer.current = { x: e.clientX, y: e.clientY };
+      }}
+      // Off the rail, no resting place on it (`ringsMoved`).
+      onPointerLeave={() => {
+        lastPointer.current = null;
+      }}
+    >
+      {/* THE RAIL'S INNER EDGE IS A SEAM: pulled left it opens the pane at the
+          width the pointer takes it to — the explorer sidebar's reopen edge
+          (SideReopenEdge) and the global sidebar's rail, the same gesture on
+          the same kind of edge. Focused, it is the keyboard's way in too
+          (the Show button's, gone with the nav doors): Enter or Space opens
+          the pane on its home, as that button did. */}
+      {/* EXPANDED (the expandable rail) the seam is the rail's own resize,
+          wherever the rail stands — and it stays mounted for the whole of a
+          drag that collapses the rail, which would otherwise lose its
+          pointer capture with the element (SidebarFrame's one handle). */}
+      {(chrome || expanded || edgeDrag) && (
+        <div
+          className="claude-rail-seam"
+          role="separator"
+          aria-orientation="vertical"
+          aria-label={expanded || edgeDrag ? "Drag to resize the rail" : "Drag to show the Claude panel"}
+          onPointerDown={expanded ? onEdgeDown : onPullStart}
+          {...(!expanded && !edgeDrag
+            ? {
+                tabIndex: 0,
+                onKeyDown: (e: ReactKeyboardEvent<HTMLDivElement>) => {
+                  if (e.key !== "Enter" && e.key !== " ") return;
+                  e.preventDefault();
+                  onOpen();
+                  onNewChat?.();
+                },
+              }
+            : {})}
+          {...(expandOn ? { onPointerMove: onEdgeMove, onPointerUp: onEdgeUp, onPointerCancel: onEdgeUp } : {})}
+        />
+      )}
+      {/* THE EXPAND / COLLAPSE BUTTON (the expandable rail): the left
+          sidebar's own (SidebarFrame), mirrored — first on the rail, then the
+          hairline the left sidebar draws under its button, then the nav
+          doors. Expanded it moves to the rail's top-left, into the rows' icon
+          column above Search (claude-rail.css; owner, 2026-11-21). */}
+      {expandOn && (
+        <>
+          <button
+            type="button"
+            className="sidebar-rail-btn claude-rail-expand"
+            {...doorHint(expanded ? "Collapse rail" : "Expand rail", false, "none")}
+            aria-label={expanded ? "Collapse rail" : "Expand rail"}
+            aria-expanded={expanded}
+            onClick={() => {
+              hideHint();
+              toggleRailExpanded();
+            }}
+          >
+            <PanelIcon side="right" />
+          </button>
+          <span className="sidebar-rail-sep is-tight claude-rail-expand-sep" aria-hidden="true" />
+        </>
+      )}
+      {/* THE NAV DOORS' TOP: Search, Bots, Tasks and the +, in
+          that order, where the panel glyph stood — on every rail, always; no
+          hairline between them (owner, 2026-11-08). */}
+      <div className="claude-rail-nav">
+        {/* THE SEARCH DOOR (owner, 2026-11-08): the app's launcher — the
+            ⌥Space search panel over the apps and bots — summoned from the
+            rail's top. Only where the app has one (`searchDoor`). */}
+        {searchDoor && (
+          <button
+            type="button"
+            className={"sidebar-rail-btn claude-rail-item" + doorOpen(launcher.open, true)}
+            {...doorHint("Search", false, "none")}
+            aria-label="Search"
+            onClick={() => {
+              hideHint();
+              launcher.opened();
+              // Where the shortcut opens it, for now (owner, 2026-11-08: "just
+              // open it where we default open it"); the beside-the-rail place
+              // (`showLauncher({left, top})`, launcher.beside_frame) is a
+              // follow-up. A miss (the panel went with the preference) is
+              // nothing to show: the door stands only while the config says
+              // it is there.
+              showLauncher().catch(() => launcher.failed());
+            }}
+          >
+            {seatBody(<Search size={16} aria-hidden="true" />, "Search")}
+          </button>
+        )}
+        {/* THE BOTS DOOR (owner, 2026-11-08: "search, bots, tasks, +"): the
+            Bots page, the left sidebar's row moved here; its pinned bots
+            stay at the rail's foot (window B's). */}
+        {botsDoor && (
+          <a
+            ref={botsDoorRef}
+            data-rail-door="bots"
+            href="/bots"
+            className={"sidebar-rail-btn claude-rail-item" + doorOpen(botsUp, botsCard.pinned)}
+            {...doorHint(botsTip ? `Bots — ${botsTip}` : "Bots", botsCard.ready && (botsUp || aHovers()))}
+            aria-label="Bots"
+            {...(botsHere ? { "aria-current": "page" as const } : {})}
+            {...(botsCard.ready
+              ? { "aria-haspopup": "dialog" as const, "aria-expanded": botsUp, "aria-controls": BOTS_PEEK_ID }
+              : {})}
+            onClick={pressBotsDoor}
+            onPointerEnter={(e) => {
+              if (e.pointerType !== "touch" && !dragging(e) && botsCard.ready && aHovers()) botsCardIntent().enterRing(BOTS_CARD_KEY, "pointer");
+            }}
+            onPointerLeave={() => botsCardIntent().leaveRing("pointer")}
+            onKeyDown={(e) => {
+              // Escape lets a PREVIEW go (a pinned card closes by its ×, or
+              // this door's press).
+              if (e.key === "Escape" && botsUp && !botsCard.held) {
+                e.preventDefault();
+                closeBotsCard(true);
+              }
+            }}
+          >
+            {seatBody(
+              <>
+                {BOTS_ICON}
+                {botsDot && <span className={`sidebar-rail-dot ${botsDot}`} aria-hidden="true" />}
+                {pinMark(botsUp && botsCard.held)}
+              </>,
+              "Bots",
+            )}
+          </a>
+        )}
+        <a
+          ref={tasksDoorRef}
+          data-rail-door="tasks"
+          href="/tasks"
+          className={"sidebar-rail-btn claude-rail-item" + doorOpen(tasksUp, tasksCard.pinned)}
+          {...doorHint(tasksTip ? `Tasks — ${tasksTip}` : "Tasks", tasksCard.ready && (tasksUp || aHovers()))}
+          aria-label="Tasks"
+          {...(tasksHere ? { "aria-current": "page" as const } : {})}
+          {...(tasksCard.ready
+            ? { "aria-haspopup": "dialog" as const, "aria-expanded": tasksUp, "aria-controls": TASKS_PEEK_ID }
+            : {})}
+          onClick={pressTasksDoor}
+          onPointerEnter={(e) => {
+            if (e.pointerType !== "touch" && !dragging(e) && tasksCard.ready && aHovers()) tasksCardIntent().enterRing(TASKS_CARD_KEY, "pointer");
+          }}
+          onPointerLeave={() => tasksCardIntent().leaveRing("pointer")}
+          onKeyDown={(e) => {
+            // Escape lets a PREVIEW go (a pinned card closes by its ×, or
+            // this door's press).
+            if (e.key === "Escape" && tasksUp && !tasksCard.held) {
+              e.preventDefault();
+              closeTasksCard(true);
+            }
+          }}
+        >
+          {seatBody(
+            <>
+              {TASKS_ICON}
+              {tasksDot && <span className={`sidebar-rail-dot ${tasksDot}`} aria-hidden="true" />}
+              {pinMark(tasksUp && tasksCard.held)}
+            </>,
+            "Tasks",
+          )}
+        </a>
+        <button
+          ref={plusRef}
+          type="button"
+          data-rail-door="plus"
+          className={
+            "sidebar-rail-btn claude-rail-item" + doorOpen(!!card?.pop && card.door === PLUS_DOOR, !!card?.pinned)
+          }
+          {...doorHint(plusLabel, (!!card?.pop && card.door === PLUS_DOOR) || plusHovers())}
+          aria-label={plusLabel}
+          aria-haspopup="dialog"
+          aria-expanded={!!card?.pop && card.door === PLUS_DOOR}
+          aria-busy={waiting !== null || undefined}
+          // Never held while the card's read is out: a press during a
+          // hover's read is the pin (plus-pop-lib.ts), and a disabled
+          // button would swallow it.
+          disabled={waiting !== null}
+          onClick={openNewTask}
+          onPointerEnter={(e) => {
+            if (e.pointerType !== "touch" && !dragging(e) && plusHovers()) plusIntent.enterPlus();
+          }}
+          onPointerLeave={() => plusIntent.leavePlus()}
+        >
+          {seatBody(
+            <>
+              <Plus size={16} aria-hidden="true" />
+              {pinMark(popHeld && card?.door === PLUS_DOOR)}
+            </>,
+            plusLabel,
+          )}
+        </button>
+      </div>
+      <div className="sidebar-rail-items">
+        {anyRing && (
+          <div
+            ref={listRef}
+            className="claude-rail-chats"
+            role="list"
+            aria-label={`Chats on ${node ? name : scope}`}
+            // AT MOST TEN RINGS TALL, then it scrolls (claude-rail-lib
+            // `LIST_ROWS_MAX`, claude-rail.css `.is-scroll`); the fades at
+            // its edges say there is more above / below (`listEdges`).
+            style={
+              {
+                "--list-rows": LIST_ROWS_MAX,
+                "--fade-top": listEdges.up ? "12px" : "0px",
+                "--fade-bottom": listEdges.down ? "12px" : "0px",
+              } as CSSProperties
+            }
+            onScroll={measureEdges}
+          >
+            {baseSeats.map((seat, i) => (
+              <Fragment key={seat.pulse.key}>
+                {/* THE NODE'S CHATS, THEN A HAIRLINE, THEN THE REST faded
+                    (claude-rail-lib `railRows`; owner, 2026-11-10). */}
+                {seat.off && i > 0 && !baseSeats[i - 1].off && (
+                  <span className="claude-rail-node-sep" aria-hidden="true" />
+                )}
+                {ringOf(seat)}
+              </Fragment>
+            ))}
+          </div>
+        )}
+        {modeDoors.length > 0 && (
+          // THE MODE DOORS (owner, 2026-11-20): the file's other modes, in
+          // the mode menu's order, above the Git door and in its group —
+          // past the one hairline that parts the page's doors from the
+          // rings (drawn here; the Git door below then draws none).
+          <>
+            <span className="sidebar-rail-sep is-tight" aria-hidden="true" />
+            <div className="claude-rail-nav claude-rail-mode-doors">
+              {modeDoors.map((d) => {
+                const c = modeCardsNow.of(d.mode);
+                const up = c.up;
+                const store = modeCardStore(d.mode);
+                return (
+                  <button
+                    key={d.mode}
+                    ref={(el) => {
+                      if (el) modeDoorEls.set(d.mode, el);
+                      else modeDoorEls.delete(d.mode);
+                    }}
+                    type="button"
+                    data-rail-door={MODE_DOOR}
+                    data-rail-mode={d.mode}
+                    className={"sidebar-rail-btn claude-rail-item" + doorOpen(up, c.pinned)}
+                    {...doorHint(d.title, c.ready && (up || aHovers()))}
+                    aria-label={d.title}
+                    {...(c.ready ? { "aria-haspopup": "dialog" as const, "aria-expanded": up, "aria-controls": store.id } : {})}
+                    onClick={(e) => pressModeDoor(e, d.mode)}
+                    onPointerEnter={(e) => {
+                      if (e.pointerType !== "touch" && !dragging(e) && c.ready && aHovers()) {
+                        setModeCardRail(d.mode, railRef.current);
+                        store.intent().enterRing(store.key, "pointer");
+                      }
+                    }}
+                    onPointerLeave={() => store.intent().leaveRing("pointer")}
+                    onKeyDown={(e) => {
+                      // Escape lets a PREVIEW go (the Git door's rule).
+                      if (e.key === "Escape" && up && !c.held) {
+                        e.preventDefault();
+                        store.close(true);
+                      }
+                    }}
+                  >
+                    {seatBody(
+                      <>
+                        <span className="claude-rail-mode-glyph" aria-hidden="true">
+                          {d.icon}
+                        </span>
+                        {pinMark(up && c.held)}
+                      </>,
+                      d.title,
+                    )}
+                  </button>
+                );
+              })}
+            </div>
+          </>
+        )}
+        {gitRepo && (
+          // THE GIT DOOR (owner, 2026-11-10): under the rings, past a hairline
+          // always drawn while it stands (it parts Git from the nav doors when
+          // there are no rings), one seat — the Git card's door (GitPeek),
+          // wearing the push / pull dots (git-dock-lib `gitDoorDots`).
+          // Under the mode doors it is in their group: their hairline is the
+          // group's, and it draws none of its own.
+          <>
+            {modeDoors.length === 0 && <span className="sidebar-rail-sep is-tight" aria-hidden="true" />}
+            <div className="claude-rail-nav claude-rail-git-door">
+              <button
+                ref={gitDoorRef}
+                type="button"
+                data-rail-door="git"
+                className={"sidebar-rail-btn claude-rail-item" + doorOpen(gitUp, gitCard.pinned)}
+                {...doorHint(gitDoorTitle(gitRepo), gitCard.ready && (gitUp || aHovers()))}
+                aria-label={gitLabel}
+                {...(gitCard.ready
+                  ? { "aria-haspopup": "dialog" as const, "aria-expanded": gitUp, "aria-controls": GIT_PEEK_ID }
+                  : {})}
+                onClick={pressGitDoor}
+                onPointerEnter={(e) => {
+                  if (e.pointerType !== "touch" && !dragging(e) && gitCard.ready && aHovers()) {
+                    setGitCardRail(railRef.current);
+                    gitCardIntent().enterRing(GIT_CARD_KEY, "pointer");
+                  }
+                }}
+                onPointerLeave={() => gitCardIntent().leaveRing("pointer")}
+                onKeyDown={(e) => {
+                  // Escape lets a PREVIEW go (a pinned card closes by its ×, or
+                  // this door's press).
+                  if (e.key === "Escape" && gitUp && !gitCard.held) {
+                    e.preventDefault();
+                    closeGitCard(true);
+                  }
+                }}
+              >
+                {seatBody(
+                  <>
+                    {GIT_ICON}
+                    {gitDots?.top && <span className={`sidebar-rail-dot is-${gitDots.top}`} aria-hidden="true" />}
+                    {gitDots?.second && <span className={`sidebar-rail-dot is-${gitDots.second} is-second`} aria-hidden="true" />}
+                    {pinMark(gitUp && gitCard.held)}
+                  </>,
+                  `Git · ${gitBranch(gitRepo)}`,
+                )}
+              </button>
+            </div>
+          </>
+        )}
+        {/* THE ROOM (header): the column's leftover, never drawn in. UNDER the Git section, above the favourites (owner,
+            2026-11-04: "Git should move up right after the list; favourites
+            stay at the bottom"): the foot keeps to the list's end, Git to
+            the foot, and the favourites to the rail's foot — where their
+            card anchors. */}
+        <div className="claude-rail-room" aria-hidden="true" />
+        {favs.length > 0 && (
+          // THE FAVOURITES, LAST (owner, 2026-11-03: "favourite should be
+          // below git"): past their own hairline, one ring per starred chat
+          // from anywhere — the chat the shell's favourite card stands
+          // beside (`.is-open`). A ring here hovers like a list ring, bar the
+          // open one (its caption stays); its press opens the favourite's
+          // card. THE BLOCKED STAND AT ITS HEAD (owner, 2026-11-05), as list
+          // rings: window A's hover, no star.
+          <>
+            {/* The fallback's favourites are all it draws: nothing above to
+                part them from. */}
+            {!favouritesOnly && <span className="sidebar-rail-sep is-tight" aria-hidden="true" />}
+            <div
+              className="claude-rail-favs"
+              role="list"
+              aria-label={blockedCount > 0 ? "Blocked and favourite chats" : "Favourite chats"}
+              // Its floor (claude-rail.css): three rings, or every star when fewer.
+              style={{ "--fav-floor": Math.min(favs.length, 3) } as CSSProperties}
+            >
+              {favs.map((seat) => ringOf(seat, true))}
+            </div>
+          </>
+        )}
+        {bots.length > 0 && (
+          // THE PINNED BOTS, UNDER THE FAVOURITES (owner, 2026-11-05: "have
+          // the right sidebar go all the way and have bots below it — pinned
+          // bots show up there; for now I can click on it to navigate to the
+          // page"): each bot's face, its name the caption, the bot's page
+          // its door. The red dot is the Bots row's (GlobalSidebar): the bot
+          // waits on the reader; the green one, news past their mark.
+          <>
+            {(favs.length > 0 || !favouritesOnly) && (
+              <span className="sidebar-rail-sep is-tight is-over-faces" aria-hidden="true" />
+            )}
+            <div className="claude-rail-bots" role="list" aria-label="Pinned bots">
+              {bots.map((b) => {
+                const name = b.name || b.id;
+                const href = botHref(b.id);
+                const subject = { id: b.id, name, face: (b.face ?? null) as FaceSubject["face"], status: b.status as FaceSubject["status"] };
+                const waiting = b.status === "waiting";
+                const unread = botHasUnread(b);
+                // THE RING'S CARD (BotPeek; claude-rail-lib `botRingRoute`):
+                // a hover previews, a press pins — or, with no room for one,
+                // the ring is the page's door as it was. While the card can stand it is the ring's
+                // caption (an empty hint is the opt-out, as the chats').
+                const card = botRingRoute({ noRoom: botNoRoom }) === "card";
+                // ONE WINDOW B (header): with a favourite's card open the
+                // ring's hover is its caption, as a favourite's ring beside
+                // an open favourite; a press still takes the window. While a
+                // bot's card is PINNED the other bots' rings say their name
+                // too — their hover shows no card (`botIntent` sits still for
+                // a held card; Bugbot on #2201).
+                // FREE PINS: nor does the pinned bot's own ring — its chat
+                // stands in its pinned window.
+                const hovers =
+                  card &&
+                  openFavKey === null &&
+                  !(botPinned && botKey !== null && botKey !== b.id) &&
+                  !(freePins && pinnedBotId === b.id) &&
+                  // …nor any face with a window open (`railQuiet`), bar the
+                  // one whose own card that is.
+                  !(railQuiet && !(botPinned && botKey === b.id));
+                const peeked = card && botKey === b.id;
+                return (
+                  <div key={b.id} role="listitem" className="claude-rail-seat">
+                    <a
+                      ref={(el) => {
+                        if (el) {
+                          botEls.current.set(b.id, el);
+                          setBotRing(b.id, el);
+                        } else {
+                          const was = botEls.current.get(b.id);
+                          botEls.current.delete(b.id);
+                          if (was) clearBotRing(b.id, was);
+                        }
+                      }}
+                      href={href}
+                      data-bot-id={b.id}
+                      className={
+                        "sidebar-rail-btn claude-rail-item claude-rail-bot" +
+                        (waiting ? " is-waiting" : "") +
+                        (peeked ? " peeked" : "") +
+                        (peeked && botPinned ? " is-pinned" : "")
+                      }
+                      aria-label={`${name} — ${botStatusWords(b.status)}`}
+                      data-hint={hovers ? "" : name}
+                      data-hint-title={name}
+                      data-hint-side="left"
+                      {...(railQuiet && !hovers
+                        ? { "data-hint-row": "", "data-hint-window": freePins && pinnedBotId === b.id ? "none" : "b" }
+                        : {})}
+                      {...(card
+                        ? {
+                            "aria-haspopup": "dialog" as const,
+                            "aria-expanded": peeked,
+                            "aria-keyshortcuts": "ArrowLeft",
+                            ...(peeked ? { "aria-controls": BOT_PEEK_ID } : {}),
+                            onKeyDown: onBotRingKey(b.id),
+                            // A leave is always heard (the chats' rule): the
+                            // intent must not think the pointer still rests
+                            // on a ring it left.
+                            onPointerLeave: () => botIntent.leaveRing("pointer"),
+                            onBlur: () => botIntent.leaveRing("focus"),
+                          }
+                        : freePins && pinnedBotId === b.id
+                          ? {
+                              // …and keeps its ArrowLeft with no room for a
+                              // card (`onBotRingKey` raises it).
+                              "aria-keyshortcuts": "ArrowLeft",
+                              onKeyDown: onBotRingKey(b.id),
+                            }
+                          : {})}
+                      {...(hovers
+                        ? {
+                            onPointerEnter: (e: ReactPointerEvent<HTMLAnchorElement>) => enterRing(b.id, e, botIntent),
+                            onFocus: (e: ReactFocusEvent<HTMLAnchorElement>) =>
+                              takeQuietFocus(e.currentTarget) ? botIntent.quietFocus(b.id) : botIntent.enterRing(b.id, "focus"),
+                          }
+                        : {})}
+                      onClick={(e) => {
+                        if (e.metaKey || e.ctrlKey || e.shiftKey || e.altKey || e.button !== 0) return;
+                        e.preventDefault();
+                        // FREE PINS: the pinned bot's ring raises its pinned
+                        // window whatever room the row leaves (`pressBotRing`
+                        // — CodeRabbit on #2349): it floats, and "no room for
+                        // a card" is the non-pin's question.
+                        if (!card && !(freePins && pinnedBotId === b.id)) {
+                          hideHint();
+                          void navigateUrl(href);
+                          return;
+                        }
+                        pressBotRing(b.id, href);
+                      }}
+                    >
+                      {seatBody(
+                        <>
+                          <span className="claude-rail-bot-face" aria-hidden="true">
+                            <Face b={subject} />
+                          </span>
+                          {waiting ? (
+                            <span className="sidebar-rail-dot is-attention" aria-hidden="true" />
+                          ) : unread ? (
+                            <span className="sidebar-rail-dot is-unread" aria-hidden="true" />
+                          ) : null}
+                          {pinMark(freePins ? pinnedBotId === b.id : peeked && botHeld)}
+                        </>,
+                        name,
+                      )}
+                    </a>
+                  </div>
+                );
+              })}
+            </div>
+          </>
+        )}
+      </div>
+      {/* The list's chat card (built above, `listCards`): drawn here unless
+          the shell's host draws it (free pins; rail-list-host-store). */}
+      {!listHosted && listCards}
+      {!hosted && card && renderCard(card)}
+    </aside>
+  );
+}

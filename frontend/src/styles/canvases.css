@@ -11,8 +11,9 @@
   overflow-y: auto;
 }
 
+/* 1200 = four 270px cards + three 16px gaps (1128) + the 28px gutters. */
 .canvases-inner {
-  max-width: 1180px;
+  max-width: 1200px;
   margin: 0 auto;
   padding: 32px 28px 64px;
 }
@@ -35,6 +36,161 @@
   margin: 0 0 20px;
   color: var(--fg-muted);
   font-size: 13px;
+}
+
+/* The disk baseline is on screen; the fresh listing is still in flight.
+   A small spinner beside the title — non-blocking, the stale cards stay live. */
+.canvases-refreshing {
+  display: inline-flex;
+  align-items: center;
+  color: var(--fg-muted);
+}
+.canvases-refreshing-icon {
+  width: 16px;
+  height: 16px;
+  animation: canvases-refreshing-spin 0.9s linear infinite;
+}
+/* Idle, the spinner's spot is the on-demand refetch: same 16px glyph, so the
+   swap to the spinner never shifts the head. */
+.canvases-refresh {
+  display: inline-flex;
+  align-items: center;
+  padding: 2px;
+  margin: -2px;
+  background: none;
+  border: none;
+  border-radius: 4px;
+  color: var(--fg-muted);
+  cursor: pointer;
+}
+.canvases-refresh:hover {
+  color: var(--fg);
+  background: var(--bg);
+}
+.canvases-refresh-icon {
+  width: 16px;
+  height: 16px;
+}
+@keyframes canvases-refreshing-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+/* The reference canvases (apps/canvases/MirrorStatus.tsx): how many read-only
+   copies Claude has to search and when they were last updated. Quiet by
+   design — muted 12px text, no border — and absent altogether for a reader
+   who is not using them. Floated to the right end of the subtitle's line, under
+   the head's actions: the head's own row has no room left at ordinary window
+   widths, and a float leaves the subtitle exactly where it was when there is
+   no chip. In a narrow window the subtitle wraps around it. */
+.canvases-mirror {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  float: right;
+  max-width: 100%;
+  padding: 2px 6px;
+  margin: -1px -6px 0 12px;
+  background: none;
+  border: none;
+  border-radius: 4px;
+  font: inherit;
+  font-size: 12px;
+  line-height: 16px;
+  color: var(--fg-muted);
+}
+button.canvases-mirror {
+  position: relative;
+  cursor: pointer;
+}
+/* The chip is 20px tall to sit on the subtitle's line; its press target is
+   28px. Out of flow, so neither the flex gap nor the layout sees it. */
+button.canvases-mirror::after {
+  content: "";
+  position: absolute;
+  inset: -4px 0;
+}
+button.canvases-mirror:hover:not(:disabled) {
+  color: var(--fg);
+  background: var(--bg);
+}
+button.canvases-mirror:disabled {
+  cursor: default;
+  opacity: 0.6;
+}
+.canvases-mirror-text {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.canvases-mirror-icon {
+  flex: none;
+  width: 12px;
+  height: 12px;
+}
+.canvases-mirror-icon.is-spinning {
+  animation: canvases-refreshing-spin 0.9s linear infinite;
+}
+.canvases-mirror.is-warning .canvases-mirror-icon {
+  color: var(--warning);
+}
+.canvases-mirror.is-error,
+button.canvases-mirror.is-error:hover:not(:disabled) {
+  color: var(--error);
+}
+
+/* Clones the move to <env>/user/<name> left at their old path. One line,
+   the names and reasons under it on demand; never in the way of the grid. */
+.canvases-layout-notice {
+  margin: 0 0 20px;
+  border: 1px solid rgba(var(--warning-rgb), 0.5);
+  border-radius: 6px;
+  background: rgba(var(--warning-rgb), 0.07);
+  font-size: 13px;
+}
+.canvases-layout-notice > summary {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 10px;
+  cursor: pointer;
+  list-style: none;
+}
+.canvases-layout-notice > summary::-webkit-details-marker {
+  display: none;
+}
+.canvases-layout-notice-chevron {
+  flex: none;
+  width: 14px;
+  height: 14px;
+  margin-left: auto;
+  color: var(--fg-muted);
+}
+.canvases-layout-notice[open] .canvases-layout-notice-chevron {
+  transform: rotate(90deg);
+}
+.canvases-layout-notice-icon {
+  flex: none;
+  width: 14px;
+  height: 14px;
+  color: var(--warning);
+}
+.canvases-layout-notice-body {
+  padding: 0 10px 10px 32px;
+  color: var(--fg-muted);
+  word-break: break-word;
+}
+.canvases-layout-notice-body p {
+  margin: 0 0 6px;
+}
+.canvases-layout-notice-body ul {
+  margin: 0;
+  padding-left: 18px;
+}
+.canvases-layout-notice-body code {
+  color: var(--fg);
 }
 
 .canvases-head-actions {
@@ -81,39 +237,66 @@
 }
 
 /* Card grid ---------------------------------------------------------------- */
-/* Chrome-less cards, modeled on the hosted workbench's gallery: the preview
-   image IS the card, with the name and two stat lines sitting directly on the
-   page background underneath it. No plate, no monogram — a canvas without an
-   uploaded preview gets the hosted gallery's map tile once per UDF, and only a
-   canvas with zero UDFs falls through to a line of text. */
+/* The hosted workbench home's recents card (CanvasCard.tsx says which client
+   component, and which of its props), value for value: 280px cards, 16px
+   apart; a 10px-padded plate on the secondary surface with a hairline that
+   turns the "selected" border colour on hover, lifting 2px with a shadow. */
 .canvases-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
-  gap: 34px 24px;
+  /* The hosted home's card at 270px rather than its 280, so 4 across fit the
+     page column (.canvases-inner is sized for exactly that). Fixed, not
+     minmax — auto-fill counts columns at a minmax's MAX, so a 240–280 range
+     still laid out 3. What a row leaves over is split both sides, so the
+     grid sits centred. */
+  grid-template-columns: repeat(auto-fill, 270px);
+  justify-content: center;
+  gap: 16px;
 }
 
 .canvas-card {
+  position: relative;
   display: flex;
   flex-direction: column;
-  gap: 10px;
-  text-align: left;
-  padding: 0;
-  background: none;
-  border: none;
-  border-radius: 0;
-  cursor: pointer;
-  color: inherit;
-  font: inherit;
+  gap: 8px;
+  min-width: 0;
+  padding: 10px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--bg-alt);
+  color: var(--fg);
+  transform: translateY(0);
 }
 
-.canvas-card:disabled {
-  opacity: 0.6;
+.canvas-card.is-hovered:not(.is-inert) {
+  border-color: var(--fg);
+  transform: translateY(-2px);
+  box-shadow: 0 4px 16px var(--shadow-sm);
+}
+
+.canvas-card.is-inert {
   cursor: default;
 }
 
-/* The thumbnail frame. The hairline is the only chrome left, and it exists for
-   light mode: a pale preview on white --bg would otherwise have no edge at
-   all. In dark it reads as the barely-there seam the screenshot shows. */
+/* The whole card is this link; the actions sit above it. */
+.canvas-card-link {
+  position: absolute;
+  inset: 0;
+  z-index: 1;
+  display: block;
+  border-radius: 10px;
+  /* An uncloned card's link has no href, so no default pointer. */
+  cursor: pointer;
+}
+
+.canvas-card.is-inert .canvas-card-link {
+  cursor: default;
+}
+
+.canvas-card-link:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
 .canvas-card-thumb {
   position: relative;
   aspect-ratio: 16 / 9;
@@ -121,26 +304,6 @@
   align-items: center;
   justify-content: center;
   overflow: hidden;
-  background: var(--bg-alt);
-  border: 1px solid var(--border);
-  border-radius: 6px;
-  transition: border-color 120ms ease;
-}
-
-/* The border+name shift is the whole hover affordance now that the card has no
-   surface of its own to tint. */
-.canvas-card:hover:not(:disabled) .canvas-card-thumb {
-  border-color: color-mix(in srgb, var(--accent) 55%, var(--border));
-}
-
-.canvas-card:hover:not(:disabled) .canvas-card-name {
-  color: var(--accent-soft);
-}
-
-.canvas-card:focus-visible {
-  outline: 2px solid var(--accent);
-  outline-offset: 3px;
-  border-radius: 6px;
 }
 
 /* Server-provided preview image filling the frame. */
@@ -150,11 +313,13 @@
   width: 100%;
   height: 100%;
   object-fit: cover;
+  border-radius: 4px;
+  background: var(--bg-alt);
 }
 
-/* Stand-in for a canvas with no uploaded preview: the hosted gallery's map tile,
-   once per UDF, in the grid shape that count rounds up into (see tileLayout).
-   `grid-template-*` arrive inline from the component, since the shape is data. */
+/* Stand-in for a canvas with no uploaded preview: the hosted gallery's map
+   tile (vendored, so the card looks right offline), once per UDF, in the grid
+   shape that count rounds up into. `grid-template-*` arrive inline. */
 .canvas-card-tiles {
   position: absolute;
   inset: 0;
@@ -175,79 +340,148 @@
 
 /* Only a canvas with zero UDFs lands here — there is nothing to tile. */
 .canvas-card-noshot {
-  font-size: 13px;
-  color: var(--fg-muted);
-}
-
-.canvas-card-body {
-  display: flex;
-  flex-direction: column;
-  gap: 7px;
-}
-
-.canvas-card-name {
-  font-size: 20px;
-  font-weight: 400;
-  letter-spacing: -0.01em;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  transition: color 120ms ease;
-}
-
-/* UDF count (or the clone hint) — the louder of the two stat lines. */
-.canvas-card-stat {
-  font-size: 13px;
-  color: var(--fg);
-}
-
-.canvas-card-meta {
-  font-size: 13px;
-  color: var(--fg-muted);
-}
-
-/* New-canvas inline form (replaces the head actions while open). The error
-   line hangs BELOW the row out of flow: it comes and goes per keystroke, and
-   in-flow it would grow the head and nudge the title and search box on every
-   character. The head instead opens a gap under itself ONCE, while the form
-   is up, so the line never lands on the subtitle paragraph. */
-.canvases-head.is-creating {
-  margin-bottom: 28px;
-}
-
-.canvases-new-form {
-  position: relative;
-}
-
-.canvases-new-row {
+  position: absolute;
+  inset: 0;
   display: flex;
   align-items: center;
+  justify-content: center;
+  background: var(--bg-alt);
+  font-size: 14px;
+  font-weight: 500;
+  color: var(--fg-faint);
+}
+
+/* Overlay actions: share + star top right, delete + new tab bottom right. */
+.canvas-card-actions {
+  position: absolute;
+  right: 10px;
+  z-index: 2;
+  display: flex;
+  align-items: center;
+}
+
+.canvas-card-actions.is-top {
+  top: 10px;
+  gap: 6px;
+}
+
+.canvas-card-actions.is-bottom {
+  bottom: 10px;
   gap: 8px;
 }
 
-.canvases-new-name {
-  width: 220px;
-}
-
-.canvases-new-name[aria-invalid="true"],
-.canvases-new-name[aria-invalid="true"]:focus {
-  border-color: var(--error);
-}
-
-/* Anchored to the form's right edge and growing LEFT, one line: rule text
-   fits in the form's width, a long create-call message stretches toward the
-   title and is clipped at the end (full text in the title tooltip). */
-.canvases-new-error {
-  position: absolute;
-  top: calc(100% + 4px);
-  right: 0;
-  max-width: min(640px, 70vw);
+/* baseui's mini secondary button, as the hosted card overrides it: a frosted
+   plate of the page colour that inverts on hover. */
+.canvas-card-action {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  /* baseui mini: 6px over/under, 8px either side of a 12px glyph. */
+  min-width: 28px;
+  height: 24px;
+  padding: 0 8px;
+  border: none;
+  border-radius: 4px;
+  background: color-mix(in srgb, var(--bg) 80%, transparent);
+  backdrop-filter: blur(8px);
+  -webkit-backdrop-filter: blur(8px);
+  color: var(--fg);
   font-size: 12px;
-  line-height: 1.3;
-  color: var(--error);
-  white-space: nowrap;
+  line-height: 1;
+  cursor: pointer;
+  transition:
+    opacity 0.3s,
+    visibility 0.3s,
+    background-color 0.3s,
+    color 0.3s;
+}
+
+.canvas-card-action.is-secondary {
+  color: var(--fg-muted);
+}
+
+.canvas-card-action.is-starred {
+  color: var(--accent);
+}
+
+.canvas-card-action:hover {
+  background: color-mix(in srgb, var(--fg) 80%, transparent);
+  color: var(--bg);
+}
+
+.canvas-card-action.is-hover-only {
+  opacity: 0;
+  visibility: hidden;
+}
+
+/* Focus anywhere in the card shows them too: `visibility: hidden` takes a
+   button out of the tab order, so a keyboard user tabbing onto the card's
+   link must already see (and be able to reach) its actions. */
+.canvas-card.is-hovered:not(.is-inert) .canvas-card-action.is-hover-only,
+.canvas-card:focus-within:not(.is-inert) .canvas-card-action.is-hover-only {
+  opacity: 1;
+  visibility: visible;
+}
+
+/* Title left, UDF count right (hover only). */
+.canvas-card-body {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  column-gap: 12px;
+  align-items: center;
+  min-width: 0;
+}
+
+.canvas-card-name {
+  position: relative;
+  display: block;
+  min-width: 0;
   overflow: hidden;
-  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 14px;
+  font-weight: 300;
+  line-height: 20px;
+  color: var(--fg);
+}
+
+.canvas-card-name-run {
+  display: inline-block;
+  white-space: nowrap;
+}
+
+/* Measured, never seen: the middle-truncated copy below stands in at rest. */
+.canvas-card-name-run.is-measure {
+  position: absolute;
+  left: 0;
+  top: 0;
+  visibility: hidden;
+  pointer-events: none;
+}
+
+.canvas-card-count {
+  font-size: 12px;
+  line-height: 16px;
+  white-space: nowrap;
+  color: var(--fg-faint);
+}
+
+/* Opening (clone + sync) — the hosted card's copy-in-progress scrim. */
+.canvas-card-scrim {
+  position: absolute;
+  inset: 0;
+  z-index: 11;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--bg) 55%, transparent);
+  cursor: wait;
+}
+
+.canvas-card-spinner {
+  width: 28px;
+  height: 28px;
+  animation: canvases-refreshing-spin 0.9s linear infinite;
 }
 
 .canvases-empty {
@@ -255,98 +489,51 @@
   padding: 32px 0;
 }
 
-/* ---- The canvas project page (/canvases-project/<env>/<name>, CanvasPage.tsx) */
-/* The app page's header, tab strip AND body (app-page.css) as they are: the
-   same 1050px column and gutters on every tab as the app page (owner,
-   2026-10-20). Only the panels below are this page's. */
-.canvas-page-icon {
-  cursor: default;
-  color: var(--fg-muted);
-}
-.canvas-page .app-page-name h1 {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  min-width: 0;
-}
-.canvas-page-env {
-  font-weight: 400;
-}
-/* Panels are stacked in one grid cell so a HIDDEN one keeps its box: the
-   Overview's workbench frame (React Flow + deck.gl) must not see a resize to
-   0 and back on a tab switch — a fit-to-view would move the camera the
-   reader left. `visibility` instead of `display` for exactly that; pointer
-   events off so the hidden frame cannot catch a hover or a click. */
-.canvas-page-stage {
-  position: relative;
-  flex: 1 1 auto;
-  min-height: 0;
-  display: flex;
-  flex-direction: column;
-}
-.canvas-page-panel {
-  flex: 1 1 auto;
-  min-height: 0;
-  display: flex;
-  flex-direction: column;
-}
-/* THE OVERVIEW STAYS IN FLOW, shown or hidden: it is the panel that sizes the
-   stage (the stage is the body's remaining height either way), so its box is
-   the same on every tab. The OTHER panels are the ones laid over it, so a
-   tall Tasks list never stretches the stage and so the frame under it. */
-.canvas-page-panel.canvas-page-overview.is-hidden {
-  visibility: hidden;
-  pointer-events: none;
-}
-.canvas-page-panel:not(.canvas-page-overview) {
-  position: absolute;
-  inset: 0;
-  overflow: auto;
-}
-/* The Overview frames the workbench edge to edge in a rounded plate, like the
-   app page's frame. */
-.canvas-page-overview {
-  border: 1px solid var(--border);
-  border-radius: 10px;
-  overflow: hidden;
-  background: var(--bg);
-}
-/* The nested Tasks page brings its own page padding (schedule.css); inside
-   this gutter it would be a second one — the app page's rule. */
-.canvas-page-tasks .schedule-page {
-  padding-inline: 0;
-}
-/* The Sync tab: a plate like the Overview's, holding the slot the Overview's
-   CanvasWorkspace portals the sync chrome into (the strip on top, the log
-   below it taking the rest). */
-.canvas-page-sync {
-  border: 1px solid var(--border);
-  border-radius: 10px;
-  overflow: hidden;
-  background: var(--bg);
-}
-.canvas-page-sync-slot {
-  flex: 1 1 auto;
-  min-height: 0;
-  display: flex;
-  flex-direction: column;
-}
-
 /* The sidebar's Canvases section (shell/CurrentAppsSection.tsx, section="canvases"): Projects' rows
-   with a canvas glyph, and the environment after the name when both hold
-   clones. */
+   with a canvas glyph, and the environment as a chip at the row's right edge
+   when both hold clones. The chip goes last (order 1) and `margin-left: auto`
+   pins it right, so chips line up in one column; the running/unread dot and a
+   "· N queued" count (order 0) stay after the name, as on a Projects row. No
+   slot is reserved on the chip's right for the hover ✕: .bookmark-actions is
+   absolutely positioned and its fade covers the chip on hover. */
 .canvas-row-glyph {
   cursor: default;
 }
 .canvas-row-env {
+  order: 1;
   flex: none;
-  margin-left: 6px;
+  margin-left: auto;
   font-size: 10px;
   line-height: 14px;
   padding: 0 5px;
   border: 1px solid var(--border);
   border-radius: 999px;
   color: var(--fg-muted);
+}
+.canvas-row-env-initial {
+  display: none;
+}
+/* Narrow sidebar: the chip shrinks to its initial so the name keeps the room.
+   The query is on the fold's inner box, the rows' common parent, so every row
+   flips at once and the chips stay one column. 200px of row ≈ the point where
+   "Production" leaves a name about eight characters. */
+.sidebar-canvases .sidebar-fold-inner {
+  container-type: inline-size;
+}
+@container (max-width: 200px) {
+  /* The initial ("P", "U", "C") is a round badge: a min-width equal to the
+     chip's height (14px line + 2px border) makes a one-letter pill a circle. */
+  .canvas-row-env {
+    min-width: 16px;
+    padding: 0 3px;
+    text-align: center;
+  }
+  .canvas-row-env-full {
+    display: none;
+  }
+  .canvas-row-env-initial {
+    display: inline;
+  }
 }
 
 /* Custom environment with no settings.toml: the prompt that stands where the
@@ -394,158 +581,17 @@
   white-space: pre-wrap;
 }
 
-/* ---- The Claude rail (ClaudeRail.tsx): the canvas page's right edge while
-   the Claude pane is shut. The global sidebar's collapsed column, mirrored:
-   same 48px, same button and dot classes (sidebar.css). */
-.canvas-rail {
-  position: relative;
-  flex: 0 0 48px;
-  width: 48px;
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  padding: 10px 0;
-  box-sizing: border-box;
-  border-left: 1px solid var(--border);
-  background: var(--bg);
-  --rail-sep: color-mix(in srgb, var(--fg) 22%, transparent);
+/* THE CANVAS'S CLAUDE PANE COLUMN (CanvasWorkspace): the chat's floor is the
+   explorer sidebar's (PANE_MIN_W 380); on a row too narrow for both floors the
+   pane yields the rest, so the workbench keeps its 320px (CANVAS_MIN_W). With
+   the Claude rail standing past the open pane (favourites on, ClaudeRail
+   `paneOpen`) the rail's 48px comes off that rest too — app-page.css's
+   `.app-page-claude` rule, for the same row shape. */
+.canvas-workspace-pane {
+  min-width: min(380px, calc(100% - 320px));
 }
-.canvas-rail .sidebar-rail-items {
-  width: 100%;
-}
-.canvas-rail-item {
-  position: relative;
-}
-/* The rail's inner edge (ClaudeRail `.canvas-rail-seam`): pulled left, it opens
-   the pane. 6px of hit area straddling the rail's border, and the app's seam
-   hairline on hover — the explorer's reopen edge (.preview-side-reopen). */
-.canvas-rail-seam {
-  position: absolute;
-  top: 0;
-  bottom: 0;
-  left: -3px;
-  width: 6px;
-  cursor: col-resize;
-  z-index: 3;
-}
-.canvas-rail-seam::after {
-  content: "";
-  position: absolute;
-  top: 0;
-  bottom: 0;
-  left: 2px;
-  width: 1px;
-  background: transparent;
-  pointer-events: none;
-  transition:
-    background var(--dur-fast) var(--ease-out),
-    box-shadow var(--dur-fast) var(--ease-out);
-}
-.canvas-rail-seam:hover::after {
-  background: var(--seam-hot);
-  box-shadow: 0 0 3px color-mix(in srgb, var(--seam-hot) 35%, transparent);
-}
-
-/* The rail's chats (ClaudeRail `.canvas-rail-chats`): one status ring per chat,
-   in the List view's order, under the New task seat, in the sidebar's
-   scrolling middle (.sidebar-rail-scroll). The ring is the Tasks page's own
-   (schedule.css `.schedule-ring`), centred in the 28px seat; the seat's hover
-   wash and `.active` are the sidebar's. */
-.canvas-rail-chats {
-  /* Scrolls on a short window rather than running off the rail. */
-  flex: 0 1 auto;
-}
-/* The list item wraps the link (ClaudeRail: the popup attributes live on the
-   link, not on a `listitem`); it is the 28px seat and nothing else. */
-.canvas-rail-seat {
-  display: flex;
-  flex: 0 0 auto;
-}
-.canvas-rail-chat {
-  position: relative;
-}
-/* NO DEAD ZONES (owner, 2026-11-02): the ring is 28px in a 48px rail with
-   4px between seats, and a pointer resting in the gap or the margin hovered
-   nothing. The link's hit area reaches half the gap up and down and nearly
-   to the rail's edges (9px: a 10th would scroll the rail sideways) — and the
-   WASH IS PAINTED ON THAT SAME BOX (owner: "tip of my pointer is on a
-   different item and a different item is shown highlighted"), so what lights
-   up is exactly what the pointer is over. The pseudo sits under the ring
-   (`z-index: -1` inside the link's own stacking context), and every state
-   wash the seat used to paint on itself moves onto it. */
-.canvas-rail-chat {
-  isolation: isolate;
-}
-.canvas-rail-chat::after {
-  content: "";
-  position: absolute;
-  inset: -2px -9px;
-  border-radius: 8px;
-  z-index: -1;
-}
-.canvas-rail-chat.canvas-rail-chat:hover,
-.canvas-rail-chat.canvas-rail-chat.active,
-.canvas-rail-chat.canvas-rail-chat.peeked,
-.canvas-rail-chat.canvas-rail-chat.is-last {
-  background: none;
-  box-shadow: none;
-}
-.canvas-rail-chat:hover::after,
-.canvas-rail-chat.active::after,
-.canvas-rail-chat.peeked::after {
-  background: rgba(var(--tint), 0.08);
-}
-/* The seat under the list while a node is selected (ClaudeRail
-   `.canvas-rail-all`): the canvas glyph, the way back to every chat on the
-   canvas. Below the scroller, so a short window never scrolls it away; a
-   hairline above it, the rail's own divider (.sidebar-rail-items wears the
-   same), so it reads as the list's foot and not as one more chat. */
-.canvas-rail-all-seat {
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  gap: 4px;
-  flex: 0 0 auto;
-  width: 28px;
-  margin-top: 6px;
-  padding-top: 6px;
-  border-top: 1px solid var(--rail-sep);
-}
-/* The held outsider's seat in the foot (ClaudeRail `heldExtra`): the ring
-   of a pinned chat that is not the selected node's, above the canvas glyph
-   and under the hairline, so it reads as "pinned, outside this list". */
-.canvas-rail-held {
-  display: flex;
-  justify-content: center;
-}
-/* The ring whose chat the hover card shows (ClaudeRail `.peeked`, behind
-   `canvas_rail_peek_enabled`): the hover wash stays on while the pointer is
-   over the card, so the card and its ring read as one thing. */
-.canvas-rail-chat.peeked {
-  color: var(--fg);
-}
-/* …and the ring whose card a click PINNED (ClaudeRail `.is-pinned`): a step
-   firmer than the hover wash, with a hairline, so "this one is open" holds
-   while the pointer is elsewhere — and still quieter than the ring's own
-   status colour. */
-.canvas-rail-chat.peeked.is-pinned::after {
-  background: rgba(var(--tint), 0.14);
-  box-shadow: inset 0 0 0 1px rgba(var(--tint), 0.22);
-}
-/* …and the ring whose card the reader HELD with its pin (ClaudeRail
-   `.is-held`; owner, 2026-11-02: "the item which is active on right sidebar
-   gets border accent as well"): the accent, the card's own held border, so
-   the ring and the card read as one thing while the pointer is anywhere. */
-.canvas-rail-chat.peeked.is-held::after {
-  box-shadow: inset 0 0 0 1.5px var(--accent);
-}
-/* THE LAST RING PRESSED (ClaudeRail `.is-last`; owner, 2026-11-02): the
-   sidebar's own current-place wash, a step firmer, with a hairline — so the
-   chat the reader last opened is found again at a glance, on a rail that
-   may have narrowed to a node and back since. Under the held accent. */
-.canvas-rail-chat.is-last::after {
-  background: rgba(var(--tint), 0.12);
-  box-shadow: inset 0 0 0 1px rgba(var(--tint), 0.28);
+.canvas-workspace-pane:has(~ .claude-rail:not([hidden])) {
+  min-width: min(380px, calc(100% - 320px - var(--claude-rail-w, 48px)));
 }
 
 /* THE SCRIM OVER THE WORKBENCH WHILE A PICTURE IS TAKEN (CanvasWorkspace,
@@ -611,549 +657,49 @@
   }
 }
 
-/* THE CARD OFF THE RAIL (RailPeek.tsx; behind `canvas_rail_peek_enabled`):
-   the hovered chat itself, a gap off the rail's left edge, placed by
-   rail-peek-lib `peekPlacement` (inline left/top/width/height). One element,
-   kept in the DOM; `.is-on` fades it in and slides the inner card 6px
-   (var(--dur-med)); off, `visibility` waits for the fade so the close is a
-   fade too. NO TRANSFORM ON THIS BOX — a transformed ancestor would re-root
-   every fixed-position popover inside the chat — hence the slide on the
-   inner wrapper, which ends at `transform: none`. Position changes glide
-   only while the card is up (the ring-to-ring swap); a hidden card jumps.
-   Under the shadcn dialogs (z-50, NewJobModal) and over the page. */
-.canvas-rail-peek {
-  position: fixed;
-  left: 0;
-  top: 0;
-  z-index: 45;
-  box-sizing: border-box;
-  display: flex;
-  flex-direction: column;
-  opacity: 0;
-  visibility: hidden;
-  pointer-events: none;
-  transition:
-    opacity var(--dur-med) var(--ease-out),
-    visibility 0s linear var(--dur-med);
-}
-.canvas-rail-peek.is-on {
-  opacity: 1;
-  visibility: visible;
-  pointer-events: auto;
-  /* Size glides too: a hover card that gets pinned grows to the remembered
-     size rather than jumping (RailPeek header, "a pinned card resizes"). */
-  transition:
-    opacity var(--dur-med) var(--ease-out),
-    top var(--dur-med) var(--ease-out),
-    left var(--dur-med) var(--ease-out),
-    width var(--dur-med) var(--ease-out),
-    height var(--dur-med) var(--ease-out),
-    visibility 0s;
-}
-/* …but not under the pointer: a corner drag moves the box every frame. */
-.canvas-rail-peek.is-resizing,
-.canvas-rail-peek.is-resizing .canvas-rail-peek-card {
-  transition: none;
-}
-.canvas-rail-peek.is-resizing {
-  user-select: none;
-  -webkit-user-select: none;
-}
-/* THE GRIPS (RailPeek, owner 2026-11-02): the pinned card's two LEFT
-   corners — the right edge stands against the rail — as 12px hit areas
-   (8px of them over the card's rounded corner, clear of the pin seat), with
-   the corner's resize cursor. Quiet until the pointer rests on the corner
-   (owner, 2026-11-02: "show it when we hover over the corner … when we drag
-   the corner it changes color to accent"): a short L in the ink's tone
-   traces the corner under the pointer, and turns to the accent while the
-   drag is on. Children of the fixed box, not of the card
-   (the card clips its overflow), above the head and the chat. */
-.canvas-rail-peek-grip {
-  position: absolute;
-  left: -4px;
-  width: 12px;
-  height: 12px;
-  z-index: 3;
-  touch-action: none;
-}
-.canvas-rail-peek-grip.is-tl {
-  top: -4px;
-  cursor: nwse-resize;
-}
-.canvas-rail-peek-grip.is-bl {
-  bottom: -4px;
-  cursor: nesw-resize;
-}
-.canvas-rail-peek-grip::after {
-  content: "";
-  position: absolute;
-  left: 4px;
-  width: 7px;
-  height: 7px;
-  border-left: 2px solid currentColor;
-  color: var(--fg);
-  opacity: 0;
-  transition:
-    opacity var(--dur-fast) var(--ease-out),
-    color var(--dur-fast) var(--ease-out);
-}
-.canvas-rail-peek-grip.is-tl::after {
-  top: 4px;
-  border-top: 2px solid currentColor;
-  border-top-left-radius: 4px;
-}
-.canvas-rail-peek-grip.is-bl::after {
-  bottom: 4px;
-  border-bottom: 2px solid currentColor;
-  border-bottom-left-radius: 4px;
-}
-.canvas-rail-peek-grip:hover::after,
-.canvas-rail-peek-grip.is-active::after {
-  opacity: 1;
-}
-.canvas-rail-peek-grip.is-active::after {
-  color: var(--accent);
-}
-.canvas-rail-peek-card {
-  flex: 1 1 auto;
-  min-height: 0;
-  display: flex;
-  flex-direction: column;
-  background: var(--bg);
-  color: var(--fg);
-  /* THE EDGE READS AGAINST THE WORKBENCH (owner, 2026-10-30: "hard to know
-     the separation between that and the code panel — contrasting border,
-     subtle but noticeable"). The card floats over the embed's own dark
-     panels, which share the app's border tone, so a plain `--border`
-     vanished. Two lines: a 1px border a few steps brighter than --border
-     (a quarter of the ink), and a 1px halo of the background colour outside
-     it, so the border stands on a thin band of our own tone whatever panel
-     is beneath — the same trick a menu on a menu uses. The drop shadow does
-     the rest. */
-  border: 1px solid color-mix(in srgb, var(--fg) 24%, var(--bg));
-  border-radius: 10px;
-  overflow: hidden;
-  box-shadow:
-    0 0 0 1px color-mix(in srgb, var(--bg) 70%, transparent),
-    0 14px 36px var(--shadow-sm),
-    0 2px 6px var(--shadow-ink-soft);
-  transform: translateX(6px);
-  transition: transform var(--dur-med) var(--ease-out);
-}
-.canvas-rail-peek.is-on .canvas-rail-peek-card {
-  transform: none;
-}
-/* A HELD card (the pin pressed; RailPeek `.is-held`) wears the accent on its
-   edge, the whole way round (owner, 2026-11-02: "in pin, we make border
-   accent of the whole preview window") — the one card on the page that an
-   outside press will not close should look held. The halo keeps its job. */
-.canvas-rail-peek.is-held .canvas-rail-peek-card {
-  border-color: var(--accent);
-  box-shadow:
-    0 0 0 1px color-mix(in srgb, var(--accent) 35%, transparent),
-    0 14px 36px var(--shadow-sm),
-    0 2px 6px var(--shadow-ink-soft);
-}
-/* The head, TWO ROWS (owner, 2026-11-02): the first row is the facts and
-   the seats — pin, number, where-chip, then at the right the unread count
-   and age, archive, Open, ⋮ — and the second row is the title alone, full
-   width. 12px, like the rail's own captions. */
-.canvas-rail-peek-head {
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
-  padding: 4px 8px 5px 6px;
-  border-bottom: 1px solid var(--border);
+/* Rename canvas dialog (apps/canvases/RenameCanvasDialog.tsx); the New canvas
+   dialog (NewCanvasDialog.tsx) shares its error and note lines. */
+.canvas-rename-error {
+  margin: 6px 0 0;
   font-size: 12px;
-  flex: 0 0 auto;
+  line-height: 1.4;
+  color: var(--error);
 }
-.canvas-rail-peek-row {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  min-height: 26px;
-  min-width: 0;
-}
-/* The flexible gap: everything before it hugs the left, everything after
-   it the right, and a long node name shrinks before any seat does. */
-.canvas-rail-peek-gap {
-  flex: 1 1 0;
-  min-width: 4px;
-}
-/* The title row: the recap sentence, one line, the head's old title style
-   (12px, 500, ellipsis) on a line of its own — no box (owner, 2026-11-02:
-   "keep it as it was previously just in a new line"). The pencil at its
-   right end shows on hover or focus (TaskPeekWho's rule). */
-.canvas-rail-peek-titlerow {
-  display: flex;
-  align-items: center;
-  gap: 4px;
-  min-width: 0;
-  min-height: 22px;
-  padding: 0 2px 0 6px;
-}
-.canvas-rail-peek-title {
-  flex: 0 1 auto;
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  font-weight: 500;
-}
-/* The reply after the title, the List row's `.tasks-title-reply`: a quiet
-   italic aside that takes what the title leaves, never a second title. With
-   no reply the title has the row (its `flex: 0 1 auto` still shrinks it to
-   the box). */
-.canvas-rail-peek-reply {
-  flex: 1 1 0;
-  min-width: 0;
-  margin-left: 4px;
+
+.canvas-rename-note {
+  margin: 10px 0 0;
+  font-size: 12px;
+  line-height: 1.4;
   color: var(--fg-muted);
-  font-style: italic;
-  font-weight: 300;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
 }
-.canvas-rail-peek-titlerow:not(:has(.canvas-rail-peek-reply)) .canvas-rail-peek-title {
-  flex: 1 1 auto;
+
+/* New canvas dialog (apps/canvases/NewCanvasDialog.tsx). */
+.canvas-new-label {
+  display: block;
+  margin: 0 0 6px;
+  font-size: 13px;
+  font-weight: 600;
 }
-.canvas-rail-peek-rename {
-  width: 22px;
-  height: 22px;
-  opacity: 0;
+
+.canvas-new-input {
+  width: 100%;
 }
-.canvas-rail-peek-titlerow:hover .canvas-rail-peek-rename,
-.canvas-rail-peek-rename:focus-visible {
-  opacity: 1;
-}
-@media (hover: none) {
-  .canvas-rail-peek-rename {
-    opacity: 0.6;
-  }
-}
-.canvas-rail-peek-title-input {
-  flex: 1 1 auto;
-  min-width: 0;
-  font: inherit;
-  font-weight: 500;
-  line-height: 18px;
-  color: var(--fg);
-  background: var(--bg);
-  border: 1px solid var(--accent);
-  border-radius: 4px;
-  padding: 1px 4px;
-  margin: 0;
-}
-.canvas-rail-peek-title-input[aria-invalid="true"] {
+
+.canvas-new-input[aria-invalid="true"],
+.canvas-new-input[aria-invalid="true"]:focus {
   border-color: var(--error);
 }
-.canvas-rail-peek-title-input:disabled {
-  opacity: 0.6;
-}
-.canvas-rail-peek-rename-error {
-  flex: 0 1 auto;
-  min-width: 0;
-  font-size: 11px;
-  color: var(--error);
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-/* The pin: pressed, it is the × (held card). Bootstrap's filled angled pin
-   at rest (RailPeek `PinAngleFill`); the seat's own hover wash either way. */
-/* THE PULSE SEAT: "2 ▭ 3m ago" as muted words (no chip), and the archive
-   button standing over the words' right end, shown on hover or focus — the
-   List row's hover-revealed actions (owner, 2026-11-02: "only on hover over
-   that area, like we did in card view"). The button carries the card's
-   background so it covers the age it stands on. A seat with no words
-   (`is-bare`) shows the button at rest. */
-.canvas-rail-peek-pulse {
-  position: relative;
-  flex: 0 0 auto;
-  display: inline-flex;
-  align-items: center;
-  min-width: 26px;
-  height: 26px;
-}
-.canvas-rail-peek-meta {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  padding: 0 4px;
-  font-size: 11px;
-  font-variant-numeric: tabular-nums;
-  color: var(--fg-muted);
-  white-space: nowrap;
-}
-.canvas-rail-peek-count {
-  display: inline-flex;
-  align-items: center;
-  gap: 3px;
-}
-.canvas-rail-peek-count.is-unread {
-  color: var(--fg);
-}
-.canvas-rail-peek-count svg {
-  position: relative;
-  top: 0.5px;
-}
-/* Scoped under the pulse (two classes): the base seat rule has one, and the
-   minifier is free to order equals as it likes. */
-.canvas-rail-peek-pulse .canvas-rail-peek-archive {
-  position: absolute;
-  right: 0;
-  top: 0;
-  width: 44px;
-  justify-content: flex-end;
-  padding-right: 6px;
-  border-radius: 0 6px 6px 0;
-  opacity: 0;
-  pointer-events: none;
-  /* Fades in from the right over the words it stands on — the List row's
-     revealed actions (`.tasks-acts-inner`): the card's background, solid
-     under the glyph, gone at the button's left edge. */
-  background: linear-gradient(to right, transparent, var(--bg) 42%);
-  transition: opacity 0.12s ease;
-}
-.canvas-rail-peek-pulse:hover .canvas-rail-peek-archive,
-.canvas-rail-peek-pulse:focus-within .canvas-rail-peek-archive,
-.canvas-rail-peek-pulse.is-bare .canvas-rail-peek-archive {
-  opacity: 1;
-  pointer-events: auto;
-}
-.canvas-rail-peek-pulse .canvas-rail-peek-archive:hover {
-  color: var(--fg);
-  background: linear-gradient(to right, transparent, var(--bg) 42%);
-}
-.canvas-rail-peek-pulse .canvas-rail-peek-archive:disabled {
-  opacity: 0.5;
-  cursor: default;
-}
-@media (hover: none) {
-  .canvas-rail-peek-pulse .canvas-rail-peek-archive {
-    opacity: 1;
-    pointer-events: auto;
-    position: static;
-    width: 26px;
-    padding-right: 0;
-    background: transparent;
-  }
-}
-.canvas-rail-peek-words {
-  flex: 0 0 auto;
-  white-space: nowrap;
-  color: var(--fg-muted);
-}
-.canvas-rail-peek-btn {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  width: 26px;
-  height: 26px;
-  flex: 0 0 auto;
-  padding: 0;
-  border: none;
-  border-radius: 6px;
-  background: transparent;
-  color: var(--fg-muted);
-  cursor: pointer;
-}
-.canvas-rail-peek-btn:hover {
-  background: rgba(var(--tint), 0.08);
-  color: var(--fg);
-}
-.canvas-rail-peek-btn:focus-visible {
-  outline: 2px solid var(--accent);
-  outline-offset: 1px;
-  color: var(--fg);
-}
-/* The chats: every kept mount stacked in the same box, the shown one visible.
-   `visibility`, not `display`: a hidden chat keeps its layout and its scroll
-   position, which is what makes coming back to it instant. */
-.canvas-rail-peek-body {
-  position: relative;
-  flex: 1 1 auto;
-  min-height: 0;
-}
-.canvas-rail-peek-chat {
-  position: absolute;
-  inset: 0;
-  display: flex;
-  flex-direction: column;
-  min-width: 0;
-  min-height: 0;
-  visibility: hidden;
-}
-.canvas-rail-peek-chat.is-shown {
-  visibility: visible;
-}
 
-/* The head's facts (RailPeek, owner 2026-10-30): the task number in the
-   Tasks page's register, and WHERE the chat lives — "Canvas", or the node's
-   name — as a quiet chip. The "Open" door is a word, not a glyph. */
-.canvas-rail-peek-id {
-  flex: 0 0 auto;
-  font-size: 11px;
-  font-variant-numeric: tabular-nums;
-  color: var(--fg-muted);
-}
-.canvas-rail-peek-scope {
-  flex: 0 0 auto;
-  max-width: 120px;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  font-size: 11px;
-  line-height: 18px;
-  padding: 0 7px;
-  border-radius: 9px;
-  border: 1px solid var(--border);
-  color: var(--fg-muted);
-}
-.canvas-rail-peek-scope.is-node {
-  color: var(--fg);
-  background: rgba(var(--tint), 0.06);
-}
-/* The node chip is a button (it selects the node in the workbench): the
-   same chip, with a button's UA styles reset and a hover wash like the
-   head's other seats. */
-button.canvas-rail-peek-scope.is-node {
-  margin: 0;
-  font-family: inherit;
-  cursor: pointer;
-  transition:
-    background-color 0.12s ease,
-    border-color 0.12s ease;
-}
-button.canvas-rail-peek-scope.is-node[aria-disabled="true"] {
-  cursor: default;
-}
-button.canvas-rail-peek-scope.is-node:not([aria-disabled="true"]):hover {
-  background: rgba(var(--tint), 0.14);
-  border-color: rgba(var(--tint), 0.35);
-}
-button.canvas-rail-peek-scope.is-node:not([aria-disabled="true"]):active {
-  background: rgba(var(--tint), 0.2);
-}
-button.canvas-rail-peek-scope.is-node:focus-visible {
-  outline: 2px solid var(--accent);
-  outline-offset: 1px;
-}
-/* The door, as the app's outline button (`.btn`, the sync strip's "Open in
-   workbench"), sized to the head's 26px seats. */
-.canvas-rail-peek-open {
-  flex: 0 0 auto;
-  height: 24px;
-  padding: 0 10px;
+/* Where the canvas goes: the env and the clone folder, as a quiet aside. */
+.canvas-new-where {
+  margin: 12px 0 0;
   font-size: 12px;
-  line-height: 22px;
-}
-/* The chat's own ⋮ (apps/claude/ui/Kebab), in a head seat: its button takes
-   the head's size and hover wash so it sits level with the close beside it. */
-.canvas-rail-peek-kebab {
-  display: inline-flex;
-  flex: 0 0 auto;
-}
-.canvas-rail-peek-kebab .c-kebabbtn {
-  width: 26px;
-  height: 26px;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  border: none;
-  border-radius: 6px;
-  background: transparent;
+  line-height: 1.45;
   color: var(--fg-muted);
-  font-size: 15px;
-  line-height: 1;
-  cursor: pointer;
-}
-.canvas-rail-peek-kebab .c-kebabbtn:hover {
-  background: rgba(var(--tint), 0.08);
-  color: var(--fg);
-}
-/* A seat with no conversation yet (a draft, a scheduled task): the card
-   hugs its content (`.is-plain`, no inline height) — the List's `Draft`
-   pill, when it was touched, its words, its settings. One door: the head's
-   Open. */
-.canvas-rail-peek.is-plain {
-  height: auto;
-  max-height: 250px;
-}
-/* …so the shown seat has to be IN FLOW: the stacked chats are absolute
-   (every kept mount in one box), which gives a hugging card no height. */
-.canvas-rail-peek.is-plain .canvas-rail-peek-body {
-  flex: 0 1 auto;
-}
-.canvas-rail-peek.is-plain .canvas-rail-peek-chat.is-shown {
-  position: static;
-}
-.canvas-rail-peek-plain {
-  padding: 14px 16px 16px;
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-  overflow: auto;
-}
-.canvas-rail-peek-plain-row {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  min-width: 0;
-}
-.canvas-rail-peek-pill {
-  flex: 0 0 auto;
-  font-size: 11px;
-  line-height: 18px;
-  padding: 0 7px;
-  border-radius: 9px;
-  border: 1px solid var(--border);
-  color: var(--fg-muted);
-}
-.canvas-rail-peek-pill.is-draft {
-  color: var(--error);
-  border-color: color-mix(in srgb, var(--error) 45%, transparent);
-}
-.canvas-rail-peek-plain-when {
-  flex: 1 1 auto;
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  font-size: 12px;
-  color: var(--fg-muted);
-}
-.canvas-rail-peek-plain-words {
-  margin: 0;
-  font-size: 13px;
-  line-height: 1.5;
-  white-space: pre-wrap;
   overflow-wrap: anywhere;
-  display: -webkit-box;
-  -webkit-line-clamp: 5;
-  -webkit-box-orient: vertical;
-  overflow: hidden;
-}
-.canvas-rail-peek-plain-words.is-empty {
-  color: var(--fg-muted);
-  font-style: italic;
-}
-.canvas-rail-peek-plain-meta {
-  margin: 0;
-  font-size: 11px;
-  color: var(--fg-muted);
 }
 
-/* THE BRIDGE between the card and the rail (RailPeek): transparent, the
-   gap's width, the card's height; a pointer resting in it is "on the card".
-   Hit-testable only while the card is up. */
-.canvas-rail-peek-bridge {
-  position: fixed;
-  z-index: 44;
-  pointer-events: none;
-  background: transparent;
-}
-.canvas-rail-peek-bridge.is-on {
-  pointer-events: auto;
+.canvas-new-where b,
+.canvas-new-where code {
+  color: var(--fg);
 }

@@ -1,5 +1,5 @@
 // Settings (edit an existing bot), on shadcn/ui (owner's ask, 2026-10-07: "the entire settings modal black, use
-// shadcn"): a Dialog with a rail of sections — General · Permissions · Browser · Skills · Routines · Memory, plus
+// shadcn"): a Dialog with a rail of sections — General · Permissions · Connections · Browser · Skills · Routines · Memory, plus
 // Phone on Super Bot (the one bot reachable over iMessage, docs §10) — and one setting per
 // row (SettingsRow.tsx): its name and one line of why on the left, the control on the right. Skills and Routines
 // (once their own dialogs behind the ☰ menu, folded in 2026-10-09) are lists whose every op posts at once, like the
@@ -23,21 +23,24 @@ import { Switch } from "@platform/shadcn/ui/switch";
 import { Textarea } from "@platform/shadcn/ui/textarea";
 import { cn } from "@platform/lib/utils";
 import { Face } from "../components/Face";
-import { FolderPlusIcon, Trash2Icon } from "lucide-react";
+import { FolderPlusIcon, SearchIcon, Trash2Icon } from "lucide-react";
 import { ApiError, api, request, type AllowRule, type AppRow, type Bot, type ChromeProfile, type Face as FaceT } from "../lib/api";
 import { EFFORTS, loginGroups, loginHint, loginLabel, loginValue, modelsFor, normApp } from "../lib/botform";
 import { faceOf } from "../lib/face";
 import { act, autoStage, clearContextOn, getState, setAutoStage, setClearContext, setSounds, soundsOn } from "../state/store";
-import type { BotDialogValue } from "./actions";
+import { exportBotFile, type BotDialogValue } from "./actions";
 import { askConfirm } from "./ask";
+import { navigateUrl } from "@platform/lib/router";
+import { ConnectionsSection, PREFERENCES_CONNECTIONS_URL } from "./ConnectionsSection";
 import { FacePopover } from "./FacePopover";
 import { PhoneSection } from "./PhoneSection";
+import { isLanHost } from "@platform/lib/host";
 import { RoutinesSection } from "./RoutinesSection";
 import { Row, Rows } from "./SettingsRow";
 import { DIALOG_CLASS, DIALOG_SIZE, FOOTER_CLASS, HEADER_CLASS } from "./shell";
 import { SkillsSection } from "./SkillsSection";
 
-export type SettingsTab = "general" | "permissions" | "browser" | "skills" | "routines" | "memory" | "phone";
+export type SettingsTab = "general" | "permissions" | "connections" | "browser" | "skills" | "routines" | "memory" | "phone";
 
 export interface BotSettingsProps {
   bot: Bot;
@@ -48,9 +51,13 @@ export interface BotSettingsProps {
 
 export function BotSettings({ bot, tab: tab0, onClose }: BotSettingsProps) {
   const isSuper = bot.kind === "super";
-  const tabs: [SettingsTab, string][] = [["general", "General"], ["permissions", "Permissions"], ["browser", "Browser"], ["skills", "Skills"],
-    ["routines", "Routines"], ["memory", "Memory"],
-    ...(isSuper ? [["phone", "Phone"] as [SettingsTab, string]] : [])];
+  // On the phone (isLanHost) the Connections, Browser and Phone tabs are not drawn: their routes (Preferences,
+  // /api/bots/browsers, iMessage) are Mac-side and the LAN door 404s them (lan.py `_DOORS`).
+  const lan = isLanHost();
+  const tabs: [SettingsTab, string][] = [["general", "General"], ["permissions", "Permissions"],
+    ...(lan ? [] : [["connections", "Connections"] as [SettingsTab, string], ["browser", "Browser"] as [SettingsTab, string]]),
+    ["skills", "Skills"], ["routines", "Routines"], ["memory", "Memory"],
+    ...(isSuper && !lan ? [["phone", "Phone"] as [SettingsTab, string]] : [])];
   const [tab, setTab] = useState<SettingsTab>(() => (tabs.some(([t]) => t === tab0) ? (tab0 as SettingsTab) : "general"));
   // What the dialog opened with (OpenBot's botDialog arguments).
   const [init] = useState(() => ({
@@ -58,7 +65,7 @@ export function BotSettings({ bot, tab: tab0, onClose }: BotSettingsProps) {
     approval: bot.approval || "ask", buildAccess: bot.build_access || "scoped", terminal: bot.terminal === true, encrypt: !!bot.encrypt,
     maxSteps: bot.max_steps ? String(bot.max_steps) : "",
     imessage: bot.imessage || "", imessageEnabled: !!bot.imessage_enabled, imessageTo: bot.imessage_to || "",
-    superAccess: bot.super_access || "ask", trustedApps: bot.trusted_apps || [], allowRules: bot.allow_rules || [],
+    superAccess: bot.super_access || "ask", trustedApps: bot.trusted_apps || [], connections: bot.connections || [], allowRules: bot.allow_rules || [],
     folders: bot.folders || [],
     browserId: isSuper ? "" : loginValue(bot),
   }));
@@ -100,6 +107,21 @@ export function BotSettings({ bot, tab: tab0, onClose }: BotSettingsProps) {
     }
     prevLive.current = liveTrusted;
   }, [liveKey]);  // eslint-disable-line react-hooks/exhaustive-deps
+  // Connected services this bot may use (bot.connections, Settings › Connections): the same live-fold as
+  // trusted_apps, since a card answered "Always approve" ticks a service while this dialog is open.
+  const [connections, setConnections] = useState<string[]>(init.connections);
+  const liveConnections = bot.connections || [];
+  const liveConnKey = liveConnections.join("|");
+  const prevLiveConn = useRef(liveConnections);
+  useEffect(() => {
+    const before = prevLiveConn.current;
+    const added = liveConnections.filter((a) => !before.includes(a));
+    const removed = before.filter((a) => !liveConnections.includes(a));
+    if (added.length || removed.length) {
+      setConnections((cur) => [...cur.filter((a) => !removed.includes(a)), ...added.filter((a) => !cur.includes(a))]);
+    }
+    prevLiveConn.current = liveConnections;
+  }, [liveConnKey]);  // eslint-disable-line react-hooks/exhaustive-deps
   const [allowRules, setAllowRules] = useState<AllowRule[]>(init.allowRules);
   // Folders it may read (docs §2 `folders`): the user's own folders, read-only for the bot. The native folder dialog
   // (POST /api/fs/pick-folder, the same one the templates use) when this machine has one; a typed path otherwise.
@@ -123,12 +145,13 @@ export function BotSettings({ bot, tab: tab0, onClose }: BotSettingsProps) {
   const bm = useMemo(() => ({ id: bot.id, name: init.name, face }), [bot.id, init.name, face]);
   const read = (): BotDialogValue => ({ name: name.trim(), model, effort, instructions, memory, approval, buildAccess, ...(terminalFeature ? { terminal } : {}), encrypt, profile, maxSteps,
     face: faceOf(bm), imessage: imessage.trim(), imessageEnabled, imessageTo: imessageTo.trim(), preset: "",
-    kind: isSuper ? "super" : "bot", superAccess, browserId, trustedApps, trustedAppsWas: liveTrusted, folders,
+    kind: isSuper ? "super" : "bot", superAccess, browserId, trustedApps, trustedAppsWas: liveTrusted, connections, connectionsWas: liveConnections, folders,
     allowRulesRemoved: init.allowRules.filter((r) => !allowRules.some((x) => x.kind === r.kind && x.key === r.key)) });  // the face shown is the face kept
   // Dirty = what Save would send. The trusted-apps pair is compared as the add / remove diff, not the lists: a tick
   // that lands from a build or a card while the dialog is open changes both lists and is not the user's edit.
   const fingerprint = (v: BotDialogValue) => JSON.stringify({ ...v,
-    trustedApps: v.trustedApps.filter((a) => !v.trustedAppsWas.includes(a)), trustedAppsWas: v.trustedAppsWas.filter((a) => !v.trustedApps.includes(a)) });
+    trustedApps: v.trustedApps.filter((a) => !v.trustedAppsWas.includes(a)), trustedAppsWas: v.trustedAppsWas.filter((a) => !v.trustedApps.includes(a)),
+    connections: v.connections.filter((a) => !v.connectionsWas.includes(a)), connectionsWas: v.connectionsWas.filter((a) => !v.connections.includes(a)) });
   const [initial] = useState(() => fingerprint(read()));
   const okDisabled = fingerprint(read()) === initial;
   const n = name.trim();
@@ -147,6 +170,8 @@ export function BotSettings({ bot, tab: tab0, onClose }: BotSettingsProps) {
     setFolderTyped(null);
   };
   const pickFolder = async () => {
+    // The native picker opens on the Mac's screen (/api/fs/pick-folder is a 404 on the LAN door): the phone types.
+    if (lan) { setFolderTyped(""); return; }
     if (pickingRef.current) return;
     pickingRef.current = true;
     setPicking(true);
@@ -165,6 +190,19 @@ export function BotSettings({ bot, tab: tab0, onClose }: BotSettingsProps) {
       window.setTimeout(() => { busy.current = held; }, 0);  // restore, never clear: a confirm may hold it meanwhile
     }
   };
+  // The apps list: ticked apps first, then the rest, each half by name; a search box narrows it by name or folder.
+  // "Ticked" is read once at open so a tick made here does not jump the row to the top under the pointer.
+  const [appQuery, setAppQuery] = useState("");
+  const [trustedAtOpen] = useState(() => new Set(init.trustedApps));
+  const visibleApps = useMemo(() => {
+    const q = appQuery.trim().toLowerCase();
+    const label = (a: AppRow) => (a.name || a.folder).toLowerCase();
+    return appRows
+      .filter((a) => !q || label(a).includes(q) || a.folder.toLowerCase().includes(q))
+      .map((a, i) => ({ a, i, on: trustedAtOpen.has(normApp(a.folder)) ? 0 : 1 }))
+      .sort((x, y) => x.on - y.on || label(x.a).localeCompare(label(y.a)) || x.i - y.i)
+      .map((r) => r.a);
+  }, [appRows, appQuery, trustedAtOpen]);
   const toggleTrusted = (folder: string, on: boolean) => {
     const k = normApp(folder);
     setTrustedApps((cur) => on ? (cur.includes(k) ? cur : [...cur, k]) : cur.filter((x) => x !== k));
@@ -190,19 +228,33 @@ export function BotSettings({ bot, tab: tab0, onClose }: BotSettingsProps) {
     if (okDisabled) { onClose(null); return; }
     if (await confirm("Discard changes?", "You have unsaved changes to this bot's settings.", "Discard")) onClose(null);
   };
+  // Export bot…: the export dialog takes the one dialog slot, so Settings closes; unsaved edits ask first, as a close does.
+  const exportFile = async () => {
+    if (busy.current) return;
+    if (!okDisabled && !(await confirm("Discard changes?", "You have unsaved changes to this bot's settings.", "Discard"))) return;
+    exportBotFile(bot.id);
+  };
+  // Connections › "All sign-in options in Preferences": leaving the bots app drops unsaved edits, so it asks as a close does.
+  const openPreferences = async () => {
+    if (busy.current) return;
+    if (!okDisabled && !(await confirm("Discard changes?", "You have unsaved changes to this bot's settings.", "Discard"))) return;
+    navigateUrl(PREFERENCES_CONNECTIONS_URL);
+  };
 
   return (
     <Dialog open modal={false} onOpenChange={(open) => { if (!open) void tryClose(); }}>
       <DialogContent showCloseButton={false} className={cn(DIALOG_CLASS, DIALOG_SIZE)}>
         <DialogHeader className={HEADER_CLASS}>
           <DialogTitle>Settings · {n || init.name}</DialogTitle>
-          <DialogDescription className="sr-only">How this bot thinks, what it may do without asking, its browser, its playbooks, its routines, its memory{isSuper ? " and your phone" : ""}.</DialogDescription>
+          <DialogDescription className="sr-only">How this bot thinks, what it may do without asking, the services it may use, its browser, its playbooks, its routines, its memory{isSuper ? " and your phone" : ""}.</DialogDescription>
         </DialogHeader>
-        <div className="flex min-h-0 flex-1 gap-6 px-6 pb-5">
-          <nav className="-ml-2.5 flex w-36 shrink-0 flex-col gap-0.5 self-start" aria-label="Settings sections">
+        {/* On the phone (lan) the section list is a scrolling row above the content, not a column beside it. */}
+        <div className={cn("flex min-h-0 flex-1 gap-6 px-6 pb-5", lan && "flex-col gap-3 px-4")}>
+          <nav className={cn("-ml-2.5 flex w-36 shrink-0 flex-col gap-0.5 self-start", lan && "m-0 w-full flex-row gap-1 self-stretch overflow-x-auto [scrollbar-width:none]")}
+            aria-label="Settings sections">
             {tabs.map(([t, l]) => (
               <button key={t} type="button" aria-current={tab === t ? "page" : undefined} onClick={() => setTab(t)}
-                className={cn("flex h-8 w-full cursor-pointer appearance-none items-center rounded-md border-0 bg-transparent px-2.5 text-sm outline-none transition-colors focus-visible:ring-3 focus-visible:ring-ring/50",
+                className={cn("flex h-8 w-full cursor-pointer appearance-none items-center rounded-md border-0 bg-transparent px-2.5 text-sm outline-none transition-colors focus-visible:ring-3 focus-visible:ring-ring/50", lan && "h-9 w-auto shrink-0 whitespace-nowrap px-3",
                   tab === t ? "bg-foreground/[0.08] font-medium text-foreground" : "text-muted-foreground hover:bg-foreground/[0.04] hover:text-foreground")}>
                 {l}
                 {t === "phone" && imessageEnabled && imessage ? <span className="ml-auto size-1.5 rounded-full bg-emerald-400" aria-label="connected" /> : null}
@@ -322,8 +374,17 @@ export function BotSettings({ bot, tab: tab0, onClose }: BotSettingsProps) {
                 </Row>
                 {appRows.length ? (
                   <Row title="Apps it may use without asking" text="A ticked app's tools and scripts run without asking. Everything else asks first." stack>
+                    {appRows.length > 5 ? (
+                      <div className="relative">
+                        <SearchIcon className="pointer-events-none absolute top-1/2 left-2.5 size-4 -translate-y-1/2 text-muted-foreground" aria-hidden="true" />
+                        <Input id="bmappq" type="search" placeholder="Search apps" autoComplete="off" value={appQuery} className="h-8 pl-8"
+                          aria-label="Search apps" onChange={(e) => setAppQuery(e.target.value)}
+                          onKeyDown={(e) => { if (e.key === "Escape" && appQuery) { e.stopPropagation(); setAppQuery(""); } }} />
+                      </div>
+                    ) : null}
                     <div className="max-h-48 divide-y divide-foreground/5 overflow-y-auto rounded-lg border border-input" id="bmtrusted">
-                      {appRows.map((a) => {
+                      {!visibleApps.length ? <div className="px-3 py-2 text-sm text-muted-foreground">No apps match “{appQuery.trim()}”.</div> : null}
+                      {visibleApps.map((a) => {
                         const on = trustedApps.includes(normApp(a.folder));
                         return (
                           <label key={a.folder} className="flex cursor-pointer items-center gap-2.5 px-3 py-2 text-sm hover:bg-foreground/[0.04]">
@@ -338,6 +399,8 @@ export function BotSettings({ bot, tab: tab0, onClose }: BotSettingsProps) {
                 ) : null}
               </Rows>
             ) : null}
+
+            {tab === "connections" ? <ConnectionsSection botName={n || init.name} enabled={connections} setEnabled={setConnections} openPreferences={() => { void openPreferences(); }} /> : null}
 
             {tab === "browser" ? (
               <Rows>
@@ -390,6 +453,7 @@ export function BotSettings({ bot, tab: tab0, onClose }: BotSettingsProps) {
           </div>
         </div>
         <DialogFooter className={FOOTER_CLASS}>
+          {isSuper ? null : <Button variant="outline" className="sm:mr-auto" onClick={() => { void exportFile(); }}>Export bot</Button>}
           <Button variant="outline" onClick={() => onClose(null)}>Cancel</Button>
           <Button disabled={okDisabled} onClick={ok}>Save</Button>
         </DialogFooter>

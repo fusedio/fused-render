@@ -10,7 +10,6 @@ import { presentSteps, seenKey, type FlowStep, type FollowUp, type Tour } from "
 
 export {
   TOURS,
-  availableTours,
   autoStartTourFor,
   tourById,
   type FlowStep,

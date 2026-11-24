@@ -475,6 +475,7 @@ CALLED = [
     ("store", "get", ()), ("store", "key", ()), ("store", "activity", ()),
     ("store", "ack", ()),
     ("classify", "kind_of", ()), ("classify", "ensure", ()),
+    ("ladder", "role_for", ("ask",)),
     ("flags", "snapshot", ()),
     ("engine", "status", ()), ("engine", "bring_in", ()), ("engine", "match", ()),
     ("engine", "keep_working", ()), ("engine", "move_aside", ()),

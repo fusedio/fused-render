@@ -18,6 +18,7 @@ import { cn } from "@platform/lib/utils";
 import { groupCollapsibles, isRun, leadSplit, seatTriggers, type CollapsibleRun } from "../protocol/segments";
 import { segText } from "../protocol/summaries";
 import type { Segment } from "../protocol/types";
+import { viewCardOf } from "../experts/view-card";
 import { Caret } from "./Caret";
 import { cardKey, runKey, useCardOpens } from "./cardPolicy";
 import { MarkdownView } from "./MarkdownView";
@@ -27,6 +28,7 @@ import { runWhenWords } from "./run-when";
 import { ThinkingView } from "./ThinkingView";
 import { ToolChip } from "./ToolChip";
 import { useMinuteTick } from "./useMinuteTick";
+import { ViewCard } from "./ViewCard";
 
 /** Numbers segment containers, for the position keys a thinking block is kept
  *  folded by (T:15196 `cardSeq`). */
@@ -65,6 +67,10 @@ export interface SegmentViewProps {
   /** The chat's working directory, threaded down to `MarkdownView`/`ToolChip`
    *  so a shell fence's or a Bash chip's "run" button `cd`'s there first. */
   cwd?: string | null;
+  /** The caller already folded these rows behind its own trigger, so draw every
+   *  row flat: no run grouping, no triggers. Not passed on to a nested
+   *  subagent's rows, which keep their normal folding. */
+  unfolded?: boolean;
 }
 
 /** MEMOIZED for the same reason `Turn` is, and this is where it pays: a settled
@@ -78,6 +84,7 @@ export const SegmentView = memo(function SegmentView({
   cardsAfter,
   live = false,
   cwd,
+  unfolded = false,
 }: SegmentViewProps) {
   const seqRef = useRef<number | null>(null);
   if (seqRef.current === null) seqRef.current = ++segSeq;
@@ -87,8 +94,11 @@ export const SegmentView = memo(function SegmentView({
   // index it had in `segments`, because `cardKey`, `cardsAfter` and the
   // streaming tail are all keyed by where a segment sits in the TURN.
   const rows = useMemo(
-    () => groupCollapsibles(segments, cardsAfter, live),
-    [segments, cardsAfter, live],
+    () =>
+      unfolded
+        ? segments.flatMap((seg, index) => (seg ? [{ kind: "seg" as const, index, seg }] : []))
+        : groupCollapsibles(segments, cardsAfter, live),
+    [segments, cardsAfter, live, unfolded],
   );
   // ONE READER AND ONE TOGGLE for every run in this turn: the trigger and the
   // members it opens are two positions in the list below, and a hook per run
@@ -199,7 +209,16 @@ export const SegmentView = memo(function SegmentView({
         node
       );
     if (seg.kind === "tool") {
-      nodes.push(withFiled(<ToolChip key={key} seg={seg} cardKey={key} cwd={cwd} nested={nested} />));
+      const view = viewCardOf(seg);
+      nodes.push(
+        withFiled(
+          view ? (
+            <ViewCard key={key} view={view} />
+          ) : (
+            <ToolChip key={key} seg={seg} cardKey={key} cwd={cwd} nested={nested} />
+          ),
+        ),
+      );
       return;
     }
     if (seg.kind === "thinking") {

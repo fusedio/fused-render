@@ -79,6 +79,7 @@ function state(over: Partial<ChatState> = {}): ChatState {
     queued: [],
     historyLoading: false,
     adopting: false,
+    adoptingRun: false,
     transcript: null,
     ownRunEndedAt: 0,
     repaired: 0,

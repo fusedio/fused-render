@@ -6,12 +6,12 @@
     "control": "select",
     "options": [
       "default",
-      "fable",
-      "opus",
-      "opus[1m]",
+      "haiku",
       "sonnet",
       "sonnet[1m]",
-      "haiku"
+      "opus",
+      "opus[1m]",
+      "fable"
     ],
     "doc": "Override the default model to use for Claude Code.",
     "default": null,

@@ -13,7 +13,7 @@ const MODEL_ENTRY: PrefEntry = {
   label: "Model",
   group: "Model & reasoning",
   control: "select",
-  options: ["default", "fable", "opus", "opus[1m]", "sonnet", "sonnet[1m]", "haiku"],
+  options: ["default", "haiku", "sonnet", "sonnet[1m]", "opus", "opus[1m]", "fable"],
   // SPARSE, and the packaged catalog's `model` entry carries none today — every
   // option it lists is already the word a person reads (the pinned
   // "claude-fable-5-1" that needed "Fable 5.1" was retired on 2026-09-18, since

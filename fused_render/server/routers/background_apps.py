@@ -12,7 +12,12 @@ project venv it would prefer is not built yet, so a daemon always starts
 rather than blocking a POST for however long building a venv would take
 (D631) — unlike `/api/run`'s fused-engine dispatch, which answers a missing
 venv with a structured `needs_install` response instead of ever substituting
-an interpreter that lacks the folder's declared packages. When the
+an interpreter that lacks the folder's declared packages. The fallback is
+only the first half (D1482): `start`/`restart` then kick off the venv build
+(`background_apps.build_env_then_respawn`, non-blocking, reported as
+`installing`/`install` in the response) and a watcher respawns the daemon on
+the venv once it exists; `restart` of a live child also adopts the freshly
+resolved interpreter. When the
 substituted `sys.executable` then can't run the daemon (it never has the
 folder's declared deps), `start`/`restart` report `background_apps.
 unbuilt_deps_reason`'s actionable message instead of the generic spawn
@@ -73,7 +78,8 @@ def _resolve(html) -> (
     it (D631). The fourth element is `background_apps.unbuilt_deps_reason`'s
     verdict on that fallback — None when the interpreter didn't need one, or
     an actionable reason for the caller to report if the fallback attempt
-    then fails.
+    then fails. A non-None reason also means the caller must start the venv
+    build (D1482), since nothing else will for a daemon-only page.
     """
     folder = _folder_for(html)
     if folder is None:
@@ -110,6 +116,33 @@ def _protocol_for(manifest: background_apps.Manifest | None) -> str | None:
     `status()` after `start()`/`restart()` just to learn what those two
     already had in hand from the same manifest their own `_resolve` load."""
     return None if manifest is None else ("main" if manifest.main else "daemon")
+
+
+def _with_install(response: dict, folder: str, unbuilt_reason: str | None) -> dict:
+    """When the daemon came up on the D631 fallback, start the venv build and
+    report it (`installing`/`install`) so a page can show it; the daemon moves
+    onto the venv by itself once the build lands (D1482)."""
+    if unbuilt_reason is None:
+        return response
+    install = background_apps.build_env_then_respawn(folder)
+    if install is not None:
+        response["installing"] = True
+        response["install"] = install
+    return response
+
+
+def _failed_unbuilt(folder: str) -> JSONResponse:
+    """502 for a failed D631 fallback spawn: nothing is running, so kick off
+    the venv build too (D1482) and have the daemon start once it lands. The
+    message says so rather than telling the user to retry by hand."""
+    body = {"error": f"{os.path.basename(folder)} declares a project "
+                     "environment that is not built yet. It is being "
+                     "installed now and the app will start once it is ready."}
+    install = background_apps.build_env_then_respawn(folder, start_if_stopped=True)
+    if install is not None:
+        body["installing"] = True
+        body["install"] = install
+    return JSONResponse(body, status_code=502)
 
 
 @router.get("/api/apps/background/status")
@@ -166,11 +199,13 @@ async def api_background_start(body: dict = Body(...),
         # then fails, the folder's own unbuilt venv is the known, actionable
         # cause — report that instead of ensure_background's generic spawn
         # failure, which names no fix.
-        detail = unbuilt_reason if unbuilt_reason is not None else str(e)
-        return _error(f"could not start {os.path.basename(folder)}'s "
-                      f"background app: {detail}", status=502)
-    return {"ok": True, "engine_id": engine_id, "pid": child.pid,
-            "version": child.version, "protocol": _protocol_for(manifest)}
+        if unbuilt_reason is None:
+            return _error(f"could not start {os.path.basename(folder)}'s "
+                          f"background app: {e}", status=502)
+        return _failed_unbuilt(folder)
+    response = {"ok": True, "engine_id": engine_id, "pid": child.pid,
+                "version": child.version, "protocol": _protocol_for(manifest)}
+    return _with_install(response, folder, unbuilt_reason)
 
 
 @router.post("/api/apps/background/autostart")
@@ -202,6 +237,7 @@ async def api_background_stop(body: dict = Body(...),
     if folder is None:
         return _error("request body must include 'html'")
     engine_id = background_apps.engine_id_for(folder)
+    background_apps.cancel_pending_start(folder)
     await asyncio.to_thread(engine_host.stop, engine_id)
     return {"ok": True}
 
@@ -244,15 +280,18 @@ async def api_background_restart(body: dict = Body(...),
                 retry_post=manifest.retry_post)
         else:
             child = await asyncio.to_thread(
-                engine_host.restart, engine_id, None, version=version)
+                engine_host.restart, engine_id, None, version=version,
+                python=interpreter)
     except (engine_host.EngineError, OSError) as e:
         # Same reasoning as `start`'s except-clause above: the fallback
         # interpreter already tried, so a failure here is best explained by
         # the folder's own unbuilt venv when that's what triggered it.
-        return _error(unbuilt_reason if unbuilt_reason is not None else str(e),
-                      status=502)
-    return {"ok": True, "pid": child.pid, "version": child.version,
-            "protocol": _protocol_for(manifest)}
+        if unbuilt_reason is None:
+            return _error(str(e), status=502)
+        return _failed_unbuilt(folder)
+    response = {"ok": True, "pid": child.pid, "version": child.version,
+                "protocol": _protocol_for(manifest)}
+    return _with_install(response, folder, unbuilt_reason)
 
 
 @router.get("/api/apps/background/running")

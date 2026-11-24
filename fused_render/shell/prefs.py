@@ -16,7 +16,9 @@ similar the word is: it says which local-model backend serves a capability when
 more than one can, and `"auto"` (the default, and the absence of a key) means
 the registry's own ordering decides. See ``inference_engines``; the resolution,
 including what happens to a preference this machine cannot honour, belongs to
-``ai/registry.py``.
+``ai/registry.py``. Since D1456 that preference is the TIE-BREAKER among the
+runners that can read a given model, no longer the sole selector, and a model
+can carry its own pin (**model_engines**, ``model_engines()``) that outranks it.
 
 Five more preferences are persisted: **reader_enabled** (whether the Reader
 listen-to-files accessibility mode is offered — opt-in, default off; see
@@ -79,12 +81,13 @@ locally like shell/bookmarks.py's guard is.
 import logging
 import os
 import re
+import sys
 import threading
+import time
 
 from fastapi import APIRouter, Body, Header
 from fastapi.responses import JSONResponse
 
-from fused_render import _flavor
 from fused_render.shell import storage
 
 logger = logging.getLogger(__name__)
@@ -109,7 +112,7 @@ VALID_CALLS_PARAMS = ("full", "keys", "off")
 # the global model is `model` in ~/.claude/settings.json (server/ai.py
 # `default_model`). The relay wants a full API id, so the short→id mapping
 # lives THERE, in one place, next to the caller that needs it.
-VALID_DEFAULT_MODELS = ("", "fable", "opus", "sonnet", "haiku")
+VALID_DEFAULT_MODELS = ("", "haiku", "sonnet", "opus", "fable")
 DEFAULT_CALLS_RETENTION_DAYS = 14
 #: How long a resident local model may sit idle before the reaper unloads it
 #: (SPEC AI-13). Minutes, not seconds — a sensible window is measured in
@@ -136,6 +139,40 @@ def _require_fused(x_fused: str | None) -> JSONResponse | None:
 
 def _path() -> str:
     return os.path.join(storage.home_dir(), "prefs.json")
+
+
+def path() -> str:
+    """Public accessor for the prefs.json path (stat-based change detection)."""
+    return _path()
+
+
+#: Bumped on EVERY in-process write of prefs.json. A same-size rewrite inside one
+#: mtime tick is invisible to a stat; this counter is not.
+_WRITE_GENERATION = 0
+
+
+def write_generation() -> int:
+    return _WRITE_GENERATION
+
+
+#: The payload's `revision`: wall-clock nanoseconds, bumped past the last one
+#: on every write, so it only ever grows — across a restart too, which the
+#: in-process generation above does not. A window that hears two prefs PUTs
+#: answered out of order (api.ts `onPrefsWrittenElsewhere`) keeps the newer.
+_REVISION = time.time_ns()
+
+
+def revision() -> int:
+    return _REVISION
+
+
+def _store(prefs: dict) -> None:
+    global _WRITE_GENERATION, _REVISION
+    try:
+        storage.write_json(_path(), prefs)
+    finally:
+        _WRITE_GENERATION += 1
+        _REVISION = max(time.time_ns(), _REVISION + 1)
 
 
 def read_prefs() -> dict:
@@ -185,7 +222,7 @@ def write_pref(key: str, value) -> dict:
     with _PREFS_LOCK:
         prefs = read_prefs()
         prefs[key] = value
-        storage.write_json(_path(), prefs)
+        _store(prefs)
         return prefs
 
 
@@ -451,17 +488,30 @@ def project_queue_enabled() -> bool:
     return read_prefs().get("project_queue_enabled") is True
 
 
-def task_recap_titles_enabled() -> bool:
-    """Whether every finished Claude turn gets a short haiku recap that titles
-    its Tasks row (default off — opt-in beta: it spends one haiku call per
-    finished turn, chat open or not).
-
-    Same idiom as `project_queue_enabled`: only a stored `true` is on. Off, the
-    listing carries no `recap` field, nothing is queued for haiku, and the
-    away fold's recap is never written to `session_settings.json` — the rows
-    and the fold are main's, byte for byte.
+def chat_recap_enabled() -> bool:
+    """Whether the in-chat recap fold ("while you were away" and on open, in the
+    chat and the Tasks peek) is shown (default ON — only a stored `false` is
+    off). The recap is produced on demand, one haiku call per recap. It does
+    not affect Tasks titles. The old `task_recap_titles_enabled` key is ignored.
     """
-    return read_prefs().get("task_recap_titles_enabled") is True
+    return read_prefs().get("chat_recap_enabled") is not False
+
+
+def experts_enabled() -> bool:
+    """Whether Experts are on (default off — experimental). Env `FUSED_RENDER_EXPERTS` "1"/"0" wins
+    both ways; else only a stored `true` is on. Off, no Bots rows, no routes, no task tools, no timers."""
+    env = os.environ.get("FUSED_RENDER_EXPERTS")
+    if env in ("1", "0"):
+        return env == "1"
+    return read_prefs().get("experts_enabled") is True
+
+
+def breakout_enabled() -> bool:
+    """Whether Breakout (research-only side chats seeded from selected messages)
+    is available (default off — opt-in beta). Off, no Breakout buttons render
+    and the agent refuses `breakout` starts. Only a stored `true` is on, or
+    Experts on (an expert's breakout is the plain one)."""
+    return experts_enabled() or read_prefs().get("breakout_enabled") is True
 
 
 def canvas_shot_slow_fallback_enabled() -> bool:
@@ -471,26 +521,31 @@ def canvas_shot_slow_fallback_enabled() -> bool:
     5–30 s with the canvas locked. Default off on macOS, where the fix is the
     grant (the canvas page refuses with that sentence instead); Windows and
     Linux fall back regardless of this flag, having no grant to point at.
-    Same idiom as `task_recap_titles_enabled`: only a stored `true` is on.
+    Same idiom as `project_queue_enabled`: only a stored `true` is on.
     """
     return read_prefs().get("canvas_shot_slow_fallback_enabled") is True
 
 
-def canvas_rail_peek_enabled() -> bool:
-    """Whether the canvas page's collapsed Claude rail shows a chat under the
-    pointer as a floating, live card (hover one of the rail's status rings →
-    the chat itself, scrollable and typeable, beside the rail) instead of the
-    one-line caption alone. Default off. Same idiom as
-    `canvas_shot_slow_fallback_enabled`: only a stored `true` is on.
+def rail_extras_enabled() -> bool:
+    """Whether the Claude rail's extras are on (owner, 2026-11-23: one switch
+    for three): a file page's other views (the mode menu's entries, the
+    active one left out) as doors above Git, each previewing the file that
+    way in a rail card; the expandable rail (a button at its top left widens
+    it to icon + title, its inner edge drags its width); and FREE PINS — a
+    pinned rail window keeps its exact place and size and the rail's column
+    goes to a second, non-pinned window (up to four windows). Default off.
+    Same idiom as `canvas_shot_slow_fallback_enabled`: only a stored `true`
+    is on. The three switches it replaced (file views on the rail, the
+    expandable rail, free rail pins) are ignored if still on disk.
     """
-    return read_prefs().get("canvas_rail_peek_enabled") is True
+    return read_prefs().get("rail_extras_enabled") is True
 
 
 def task_summary_titles_enabled() -> bool:
     """Whether Tasks rows are titled ONLY by the server's stable `title` (a
     name the reader chose, else the app's own haiku AI title refreshed every
-    few prompts, else Claude Code's `ai-title`, else the first line of the
-    first message) — never by the newest message, the haiku recap or
+    few prompts and again a minute after each turn settles, else Claude Code's `ai-title`, else the first line of the
+    first message) — never by the newest message or
     Claude's reply (default off; only a stored `true` is on). Shown as
     "Stable AI titles"; the key predates that name.
     Rows then carry `title_mode: "summary"`; the key is absent when off."""
@@ -575,28 +630,31 @@ def claude_default_permission() -> str:
 def lan_enabled() -> bool:
     """Whether the user's apps (everything under ~/Fused plus linked folders)
     are shared with the local network (default off — opt-in). The switch
-    fused_render/lan.py reads: on, a second listener on every interface serves
-    those apps to phones on the same Wi-Fi as http://render.fused.local/. A
+    fused_render/lan.py reads: on, an https listener on every interface serves
+    those apps to the Fused Render app on a phone on the same Wi-Fi. A
     feature flag, not a route guard: the loopback server is untouched either
     way."""
     return read_prefs().get("lan_enabled") is True
 
 
-#: The four agent switches (D17, docs/COPILOT_BACKEND.md; the third from
-#: docs/CODEX_BACKEND.md, the fourth from docs/GEMINI_BACKEND.md). Claude Code
-#: is on unless a stored `false` turns it off; Copilot, Codex and Gemini are
-#: off unless a stored `true` turns them on. Asymmetric defaults on purpose —
-#: "Claude by default" is the owner's rule — and `put_prefs` refuses the write
-#: that would clear all four.
+#: The six agent switches (D17, docs/COPILOT_BACKEND.md; the third from
+#: docs/CODEX_BACKEND.md, the fourth from docs/GEMINI_BACKEND.md, the fifth
+#: from docs/OPENCODE_BACKEND.md, the sixth from docs/CURSOR_BACKEND.md).
+#: Claude Code is on unless a stored `false` turns it off; Copilot, Codex,
+#: Gemini, OpenCode and Cursor are off unless a stored `true` turns them on.
+#: Asymmetric defaults on purpose — "Claude by default" is the owner's rule —
+#: and `put_prefs` refuses the write that would clear all six.
 #: `VALID_DEFAULT_BACKENDS` is in `registry.ORDER`: the PUT's default re-point
 #: walks it and takes the first agent that is on.
 AGENT_BACKEND_KEYS = {"claude": "claude_enabled", "copilot": "copilot_enabled",
-                      "codex": "codex_enabled", "gemini": "gemini_enabled"}
-VALID_DEFAULT_BACKENDS = ("claude", "copilot", "codex", "gemini")
+                      "codex": "codex_enabled", "gemini": "gemini_enabled",
+                      "opencode": "opencode_enabled", "cursor": "cursor_enabled"}
+VALID_DEFAULT_BACKENDS = ("claude", "copilot", "codex", "gemini", "opencode", "cursor")
 
 
 def backend_enabled(backend: str) -> bool:
-    """Whether `backend` ("claude" | "copilot" | "codex" | "gemini") may start
+    """Whether `backend` ("claude" | "copilot" | "codex" | "gemini" |
+    "opencode" | "cursor") may start
     chats and tasks. Unknown backend reads as off. See
     `agent_backends.registry.enabled_ids` for the never-empty guarantee this
     feeds."""
@@ -625,6 +683,14 @@ def gemini_enabled() -> bool:
     return backend_enabled("gemini")
 
 
+def opencode_enabled() -> bool:
+    return backend_enabled("opencode")
+
+
+def cursor_enabled() -> bool:
+    return backend_enabled("cursor")
+
+
 def default_backend() -> str:
     """The agent new chats and tasks start from, as stored — `"claude"` when
     unset or junk. Whether it is ENABLED is the registry's question
@@ -635,7 +701,7 @@ def default_backend() -> str:
 
 def _agents_state() -> dict:
     """`{"claude": bool, "copilot": bool, "codex": bool, "gemini": bool,
-    "default": id}` for `GET /api/prefs`. Imported lazily: the registry reads
+    "opencode": bool, "cursor": bool, "default": id}` for `GET /api/prefs`. Imported lazily: the registry reads
     this module for the switches. The REGISTRY's answer, not the raw switches:
     a hand-edited prefs.json that turns every switch off reads as Claude on
     there, and this page must agree."""
@@ -645,6 +711,8 @@ def _agents_state() -> dict:
             "copilot": registry.is_enabled("copilot"),
             "codex": registry.is_enabled("codex"),
             "gemini": registry.is_enabled("gemini"),
+            "opencode": registry.is_enabled("opencode"),
+            "cursor": registry.is_enabled("cursor"),
             "default": registry.default_id()}
 
 
@@ -684,6 +752,46 @@ def engine_for_capability(capability: str) -> str:
     """
     value = inference_engines().get(capability)
     return value if isinstance(value, str) and value else AUTO_ENGINE
+
+
+def model_engines() -> dict:
+    """The per-MODEL engine pins, as stored (D1456): `{repo_id: runner code}`.
+
+    The sibling of `inference_engines()` and read under the same rule — returned
+    raw, validated at the point of USE, non-strings dropped — because a pin
+    travels in a synced prefs.json exactly as the per-capability choice does,
+    and one naming a runner this machine lacks is to be IGNORED with a reason
+    (`registry.resolve_for_model`), never rewritten here. An absent id means
+    "no pin": the model follows the format classifier and the capability's
+    own preference.
+    """
+    stored = read_prefs().get("model_engines")
+    if not isinstance(stored, dict):
+        return {}
+    return {str(k): v for k, v in stored.items() if isinstance(v, str)}
+
+
+def engine_for_model(model_id: str) -> str:
+    """One model's pin — `AUTO_ENGINE` when there is none. Read on every
+    resolution, for the reason `engine_for_capability` is."""
+    value = model_engines().get(model_id)
+    return value if isinstance(value, str) and value else AUTO_ENGINE
+
+
+def _valid_model_engine_choice(model_id: str, code: str) -> str | None:
+    """None if `code` may be stored as `model_id`'s pin, else why not.
+
+    The capability is the one the LOCAL CACHE reads off the snapshot, so a pin
+    can only be set on a model that is downloaded (nothing to pin otherwise) and
+    only to a runner that serves what that model is. Availability stays out of
+    it, as with `_valid_engine_choice`.
+    """
+    from fused_render.ai import hub_cache
+
+    reading = hub_cache.cached_capability(model_id)
+    if not reading.cached or not reading.capability:
+        return f"{model_id!r} is not downloaded, so there is nothing to pin"
+    return _valid_engine_choice(reading.capability, code)
 
 
 def _valid_engine_choice(capability: str, code: str) -> str | None:
@@ -803,7 +911,7 @@ def auto_download_updates_enabled() -> bool:
 
 def index_low_impact_enabled() -> bool:
     """Whether the file index runs in *low-impact* mode (default OFF — opt-in
-    like `task_recap_titles_enabled`).
+    like `project_queue_enabled`).
 
     On, the index trades freshness for a quiet machine: one watcher owner per
     Mac (a machine-wide lease the installed :1777 app wins), longer and
@@ -1072,6 +1180,9 @@ def _unavailable_features() -> dict:
 
 def _prefs_response() -> dict:
     return {
+        # Read FIRST: everything below is read after it, so the payload is at
+        # least as new as the revision it carries (see `_REVISION`).
+        "revision": revision(),
         # Features this device lacks, with the reason (see `_unavailable_features`).
         "unavailable": _unavailable_features(),
         "engine": engine_state(),
@@ -1137,17 +1248,19 @@ def _prefs_response() -> dict:
         # No `forced_by` twin — there is no env override to report; see
         # `project_queue_enabled`.
         "queue": {"enabled": project_queue_enabled()},
-        # Whether finished turns are recapped by haiku and the Tasks rows
-        # titled by it (opt-in beta, `task_recap_titles_enabled`).
-        "task_recap": {"enabled": task_recap_titles_enabled()},
+        # Whether the in-chat recap fold is shown (default on,
+        # `chat_recap_enabled`). Does not touch Tasks titles.
+        "chat_recap": {"enabled": chat_recap_enabled()},
+        # Breakout side chats (opt-in beta, `breakout_enabled`).
+        "breakout": {"enabled": breakout_enabled()},
+        # Experts (experimental, `experts_enabled`; env can force it).
+        "experts": {"enabled": experts_enabled()},
         # The slow in-canvas screenshot fallback on a Mac
         # (`canvas_shot_slow_fallback_enabled`; off by default).
         "canvas_shot": {"slow_fallback": canvas_shot_slow_fallback_enabled()},
-        # The collapsed Claude rail's hover preview card on the canvas page
-        # (`canvas_rail_peek_enabled`; off by default). A hover previews, a
-        # click pins; there is no trigger choice (the old
-        # `canvas_rail_peek_trigger` key is ignored if still on disk).
-        "canvas_rail_peek": {"enabled": canvas_rail_peek_enabled()},
+        # The rail's extras — mode doors, the expandable rail, free pins
+        # (`rail_extras_enabled`; off by default).
+        "rail_extras": {"enabled": rail_extras_enabled()},
         # Stable AI Tasks titles (`task_summary_titles_enabled`).
         "task_summary_titles": {"enabled": task_summary_titles_enabled()},
         # Lean Claude sessions (`claude_strict_mcp_enabled`, default off).
@@ -1163,9 +1276,10 @@ def _prefs_response() -> dict:
         # the live listener state (url once it is up, error when it is not), so
         # the Preferences section can show the address a phone types.
         "lan": {"enabled": lan_enabled(), **_lan_status()},
-        # The four agent switches and the agent new chats/tasks start from
+        # The six agent switches and the agent new chats/tasks start from
         # (docs/COPILOT_BACKEND.md D17, docs/CODEX_BACKEND.md D17,
-        # docs/GEMINI_BACKEND.md D17). `default`
+        # docs/GEMINI_BACKEND.md D17, docs/OPENCODE_BACKEND.md D17,
+        # docs/CURSOR_BACKEND.md D17). `default`
         # is the EFFECTIVE one — the stored choice re-pointed to an enabled
         # agent by the registry — so the page never shows a default that is
         # switched off.
@@ -1278,7 +1392,9 @@ def _inference_engines_state() -> dict:
     """
     from fused_render.ai import registry
 
-    return {"capabilities": registry.describe_engines(), "auto": AUTO_ENGINE}
+    return {"capabilities": registry.describe_engines(),
+            "models": registry.describe_model_engines(),
+            "auto": AUTO_ENGINE}
 
 
 def _calls_store() -> dict:
@@ -1344,6 +1460,21 @@ def _forced_by(env_name: str, override) -> str | None:
     `effective_*` values above: ask the writer, don't re-derive.
     """
     return os.environ.get(env_name) if override is not None else None
+
+
+def _experts_switched() -> None:
+    """On (the env can hold it on whatever was stored): seed the shipped experts and start the daily update;
+    off: stop it. Best-effort: never fails the preference write."""
+    try:
+        if experts_enabled():
+            from fused_render.experts import scheduler, seed
+
+            seed.seed()
+            scheduler.start()
+        elif "fused_render.experts.scheduler" in sys.modules:
+            sys.modules["fused_render.experts.scheduler"].stop()
+    except Exception:  # noqa: BLE001
+        logger.exception("experts: switching on/off failed")
 
 
 @router.get("/api/prefs")
@@ -1434,7 +1565,7 @@ def put_prefs(body: dict = Body(...), x_fused: str | None = Header(default=None)
             had_previous = "native_windows_enabled" in prefs
             previous = prefs.get("native_windows_enabled")
             prefs["native_windows_enabled"] = value
-            storage.write_json(_path(), prefs)
+            _store(prefs)
 
             from fused_render import window_policy
 
@@ -1444,7 +1575,7 @@ def put_prefs(body: dict = Body(...), x_fused: str | None = Header(default=None)
                     prefs["native_windows_enabled"] = previous
                 else:
                     del prefs["native_windows_enabled"]
-                storage.write_json(_path(), prefs)
+                _store(prefs)
                 return JSONResponse(
                     {"error": "the window host refused the native-windows preference; try again"},
                     status_code=409,
@@ -1470,12 +1601,26 @@ def put_prefs(body: dict = Body(...), x_fused: str | None = Header(default=None)
                                     status_code=400)
             prefs["project_queue_enabled"] = value
             changed = True
-        if "task_recap_titles_enabled" in body:
-            value = body.get("task_recap_titles_enabled")
+        if "chat_recap_enabled" in body:
+            value = body.get("chat_recap_enabled")
             if not isinstance(value, bool):
-                return JSONResponse({"error": "'task_recap_titles_enabled' must be a boolean"},
+                return JSONResponse({"error": "'chat_recap_enabled' must be a boolean"},
                                     status_code=400)
-            prefs["task_recap_titles_enabled"] = value
+            prefs["chat_recap_enabled"] = value
+            changed = True
+        if "breakout_enabled" in body:
+            value = body.get("breakout_enabled")
+            if not isinstance(value, bool):
+                return JSONResponse({"error": "'breakout_enabled' must be a boolean"},
+                                    status_code=400)
+            prefs["breakout_enabled"] = value
+            changed = True
+        if "experts_enabled" in body:
+            value = body.get("experts_enabled")
+            if not isinstance(value, bool):
+                return JSONResponse({"error": "'experts_enabled' must be a boolean"},
+                                    status_code=400)
+            prefs["experts_enabled"] = value
             changed = True
         if "canvas_shot_slow_fallback_enabled" in body:
             value = body.get("canvas_shot_slow_fallback_enabled")
@@ -1484,12 +1629,12 @@ def put_prefs(body: dict = Body(...), x_fused: str | None = Header(default=None)
                                     status_code=400)
             prefs["canvas_shot_slow_fallback_enabled"] = value
             changed = True
-        if "canvas_rail_peek_enabled" in body:
-            value = body.get("canvas_rail_peek_enabled")
+        if "rail_extras_enabled" in body:
+            value = body.get("rail_extras_enabled")
             if not isinstance(value, bool):
-                return JSONResponse({"error": "'canvas_rail_peek_enabled' must be a boolean"},
+                return JSONResponse({"error": "'rail_extras_enabled' must be a boolean"},
                                     status_code=400)
-            prefs["canvas_rail_peek_enabled"] = value
+            prefs["rail_extras_enabled"] = value
             changed = True
         if "task_summary_titles_enabled" in body:
             value = body.get("task_summary_titles_enabled")
@@ -1560,10 +1705,7 @@ def put_prefs(body: dict = Body(...), x_fused: str | None = Header(default=None)
             value = body.get("lan_enabled")
             if not isinstance(value, bool):
                 return JSONResponse({"error": "'lan_enabled' must be a boolean"}, status_code=400)
-            # Fused Bot has no LAN sharing surface (boot never starts the
-            # listener either): known key, nothing stored, `lan.apply` below skipped.
-            if not _flavor.is_bot():
-                prefs["lan_enabled"] = value
+            prefs["lan_enabled"] = value
             changed = True
         if "engines" in body:
             # A MAP, applied key by key onto whatever is stored — the page changes
@@ -1588,6 +1730,34 @@ def put_prefs(body: dict = Body(...), x_fused: str | None = Header(default=None)
                     return JSONResponse({"error": problem}, status_code=400)
                 engines[str(capability)] = code
             prefs["engines"] = engines
+            changed = True
+        if "model_engines" in body:
+            # Same partial-update MAP rule as `engines`, one key per downloaded
+            # model. "auto" REMOVES the pin rather than storing it: an absent
+            # key is the default, and a pin file must not grow a row per model
+            # somebody once touched.
+            value = body.get("model_engines")
+            if not isinstance(value, dict):
+                return JSONResponse(
+                    {"error": "'model_engines' must be an object of repo id -> runner code"},
+                    status_code=400,
+                )
+            pins = model_engines()
+            for model_id, code in value.items():
+                if not isinstance(code, str):
+                    return JSONResponse(
+                        {"error": f"'model_engines[{model_id}]' must be a runner code or "
+                                  f"{AUTO_ENGINE!r}"},
+                        status_code=400,
+                    )
+                if code == AUTO_ENGINE:
+                    pins.pop(str(model_id), None)
+                    continue
+                problem = _valid_model_engine_choice(str(model_id), code)
+                if problem:
+                    return JSONResponse({"error": problem}, status_code=400)
+                pins[str(model_id)] = code
+            prefs["model_engines"] = pins
             changed = True
         if "indexing_enabled" in body:
             value = body.get("indexing_enabled")
@@ -1708,18 +1878,14 @@ def put_prefs(body: dict = Body(...), x_fused: str | None = Header(default=None)
         if "launcher_hotkey" in body:
             # Canonicalised before storing (`alt+space`, modifiers in display
             # order) and refused whole when malformed — a spec with no modifier
-            # would be a key taken from every app on the system. The wire name
-            # is the same in both apps; it is STORED under the flavor's key
-            # (`launcher.hotkey_key()`: `bot_launcher_hotkey` under Fused Bot),
-            # because both apps share this file and run side by side, and
-            # Carbon refuses a combo another process already holds.
+            # would be a key taken from every app on the system.
             from fused_render import hotkey, launcher
 
             try:
                 value = launcher.canonical_hotkey(body.get("launcher_hotkey"))
             except hotkey.SpecError as exc:
                 return JSONResponse({"error": f"'launcher_hotkey': {exc}"}, status_code=400)
-            prefs[launcher.hotkey_key()] = value
+            prefs["launcher_hotkey"] = value
             launcher_rebind = value
             changed = launcher_changed = True
         if "launcher_row_modifier" in body:
@@ -1729,16 +1895,16 @@ def put_prefs(body: dict = Body(...), x_fused: str | None = Header(default=None)
                 value = launcher.canonical_modifiers(body.get("launcher_row_modifier"))
             except hotkey.SpecError as exc:
                 return JSONResponse({"error": f"'launcher_row_modifier': {exc}"}, status_code=400)
-            prefs[launcher.row_modifier_key()] = value  # flavor's key, as above
+            prefs["launcher_row_modifier"] = value
             changed = launcher_changed = True
         agent_keys = tuple(AGENT_BACKEND_KEYS[b] for b in VALID_DEFAULT_BACKENDS)
         if any(k in body for k in (*agent_keys, "default_backend")):
-            # THE FIVE AGENT KEYS TOGETHER (D17, invariant 11): four switches
+            # THE SEVEN AGENT KEYS TOGETHER (D17, invariant 11): six switches
             # and the default. Each is applied onto the merged record first
             # and the RESULT is judged, so one PUT that turns Claude off and
-            # Codex on in the same body is fine, and so is one that turns three
-            # off while the fourth stays on, while one that would leave all
-            # four off is refused whole — there is no "no agent" state.
+            # Codex on in the same body is fine, and so is one that turns five
+            # off while the sixth stays on, while one that would leave all
+            # six off is refused whole — there is no "no agent" state.
             # `default_backend` naming an agent that ends up off is re-pointed
             # to the first one that is on (in `VALID_DEFAULT_BACKENDS` order,
             # which is `registry.ORDER`), in the same write, so a reader never
@@ -1763,7 +1929,9 @@ def put_prefs(body: dict = Body(...), x_fused: str | None = Header(default=None)
             on = {"claude": prefs.get("claude_enabled") is not False,
                   "copilot": prefs.get("copilot_enabled") is True,
                   "codex": prefs.get("codex_enabled") is True,
-                  "gemini": prefs.get("gemini_enabled") is True}
+                  "gemini": prefs.get("gemini_enabled") is True,
+                  "opencode": prefs.get("opencode_enabled") is True,
+                  "cursor": prefs.get("cursor_enabled") is True}
             if not any(on.values()):
                 return JSONResponse(
                     {"error": "turn on another agent first"}, status_code=400)
@@ -1777,21 +1945,21 @@ def put_prefs(body: dict = Body(...), x_fused: str | None = Header(default=None)
         if not changed:
             return JSONResponse(
                 {"error": "no known preference in request (expected 'engine', "
-                          "'engines', 'reader_enabled', 'canvases_enabled', 'app_sharing_enabled', 'live_previews_enabled', 'monitor_enabled', "
-                          "'contrib_remix_enabled', "
+                          "'engines', 'model_engines', 'reader_enabled', 'canvases_enabled', 'app_sharing_enabled', 'live_previews_enabled', 'monitor_enabled', 'marketplace_enabled', "
+                          "'contrib_enabled', 'contrib_remix_enabled', "
                           "'native_windows_enabled', 'chromium_windows_enabled', "
                           "'task_notify_terminal_sessions', "
                           "'project_queue_enabled', "
-                          "'task_recap_titles_enabled', "
+                          "'chat_recap_enabled', 'breakout_enabled', 'experts_enabled', "
                           "'canvas_shot_slow_fallback_enabled', "
-                          "'canvas_rail_peek_enabled', "
+                          "'rail_extras_enabled', "
                           "'task_summary_titles_enabled', "
                           "'claude_strict_mcp_enabled', 'claude_default_permission', "
                           "'bots_autostage', 'bots_sounds', 'bots_clear_enabled', "
                           "'tasks_view_tabs', 'pinned_tasks', "
                           "'lan_enabled', 'canvases_embed_proxy', "
                           "'claude_enabled', 'copilot_enabled', 'codex_enabled', "
-                          "'gemini_enabled', "
+                          "'gemini_enabled', 'opencode_enabled', 'cursor_enabled', "
                           "'default_backend', 'indexing_enabled', 'ranked_search_enabled', "
                           "'warm_run_enabled', "
                           "'index_low_impact_enabled', "
@@ -1803,7 +1971,12 @@ def put_prefs(body: dict = Body(...), x_fused: str | None = Header(default=None)
                           "'launcher_row_modifier')"},
                 status_code=400,
             )
-        storage.write_json(_path(), prefs)
+        _store(prefs)
+    if isinstance(body.get("experts_enabled"), bool):
+        # AFTER the write, like `lan_enabled`.
+        _experts_switched()
+    elif body.get("canvases_enabled") is True:
+        _experts_switched()  # the shipped experts wait for Canvases too (experts/seed.py)
     if body.get("canvases_embed_proxy") is False:
         # AFTER the write, like `lan_enabled`: stop the listener now rather
         # than at the next status read. Turning it ON is left to status,
@@ -1811,6 +1984,17 @@ def put_prefs(body: dict = Body(...), x_fused: str | None = Header(default=None)
         from fused_render.canvas_embed_proxy import controller
 
         controller.apply(None, None)
+    if body.get("canvases_enabled") is True:
+        # AFTER the write, best-effort: turning the canvas integration on is
+        # what makes the public `fused-asset` bucket searchable, so its index
+        # is fetched now (remote_index.py; a daemon thread, idempotent, one
+        # ingest at a time). Never allowed to fail the preference write.
+        try:
+            from fused_render import remote_index
+
+            remote_index.start_background("canvases-enabled")
+        except Exception:
+            logger.exception("remote index start failed")
     if "workbench_env" in body:
         # AFTER the write: the wrapper bakes workbench_env() in as the
         # FUSED_ENV a session's `fused` defaults to outside a clone, and it
@@ -1851,7 +2035,7 @@ def put_prefs(body: dict = Body(...), x_fused: str | None = Header(default=None)
         from fused_render.server import index_owner
 
         index_owner.on_flag_changed(bool(prefs.get("index_low_impact_enabled")))
-    if "lan_enabled" in body and not _flavor.is_bot():
+    if "lan_enabled" in body:
         # AFTER the write, like `engines` below: the listener follows the stored
         # preference, and a failure to bind is reported in the response's
         # `lan.error` rather than failing the PUT.
@@ -1859,7 +2043,7 @@ def put_prefs(body: dict = Body(...), x_fused: str | None = Header(default=None)
 
         lan.apply(prefs["lan_enabled"])
     unloaded: list[str] | None = None
-    if "engines" in body:
+    if "engines" in body or "model_engines" in body:
         # AFTER the write, because the reconciliation reads the new preference
         # rather than being told what changed — see `evict_stale_engines`. One
         # capability holds one resident model, and it belongs to the backend

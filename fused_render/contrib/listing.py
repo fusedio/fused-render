@@ -1040,8 +1040,13 @@ def draft(root: str) -> dict:
     _record(root)  # an own app with a repo, else its refusal
     lo = cached(root) or {}
     row = lo.get("row") if isinstance(lo.get("row"), dict) else None
-    pr_row = (lo.get("pr") or {}).get("row") if isinstance(lo.get("pr"), dict) else None
-    src = row or (pr_row if isinstance(pr_row, dict) else None)
+    pr = lo.get("pr") if isinstance(lo.get("pr"), dict) else {}
+    pr_row = pr.get("row") if isinstance(pr.get("row"), dict) else None
+    # An open request (an update, an edit, a first listing) is what the
+    # form edits — `edit_listing` continues it — so its row prefills, not
+    # the live row's older text.
+    in_flight = pr_row if pr.get("state") == "open" and pr.get("kind") != "remove" else None
+    src = in_flight or row or pr_row
     cats = categories()
     if src:
         out = {k: src.get(k) for k in ("slug", "name", "description", "category", "tags",
@@ -1098,8 +1103,28 @@ def _gate_publish(root: str, rec: dict) -> tuple[str, str, str]:
     return repo, branch, tip
 
 
-def _body(kind: str, row: dict | None, name: str, *, repo: str, subjects=()) -> str:
-    if kind == "remove":
+#: The row's listing fields — what Edit details may change (the commit,
+#: repo and branch stay; `remix_of` and the slug are not the author's).
+DETAIL_KEYS = ("name", "description", "category", "tags", "icon", "preview")
+
+
+def _body(kind: str, row: dict | None, name: str, *, repo: str, subjects=(),
+          edited: tuple[str, ...] = (), moving: bool = False) -> str:
+    if edited:
+        # Edit details: read differently — at the same version of the app,
+        # or (`moving`) on the update already in review.
+        fields = ", ".join(("screenshot" if k == "preview" else k) for k in edited)
+        if moving:
+            text = (f"Moves **{name}** (`{repo}`) to `{row['commit'][:7]}` and changes how "
+                    "it reads in the Fused Community.")
+            changed = "; ".join(s.rstrip(".") for s in subjects[:20])
+            text += ("\n\n## What changed\n" + (f"{changed}. " if changed else "")
+                     + f"Listing details: {fields}.")
+        else:
+            text = (f"Changes how **{name}** (`{repo}`) reads in the Fused Community; the app "
+                    f"stays at `{row['commit'][:7]}`.")
+            text += f"\n\n## What changed\nListing details: {fields}."
+    elif kind == "remove":
         text = (f"Removes **{name}** from the Fused Community. People who installed it keep "
                 "their copy on its last reviewed version.")
     elif kind == "update":
@@ -1256,6 +1281,61 @@ def publish_update(root: str) -> dict:
     subjects = _subjects(root, approved, tip)
     return _send(root, me, row["slug"], row, kind=kind, title=title,
                  body=_body(kind, row, row["name"], repo=repo, subjects=subjects), lo=lo)
+
+
+def edit_listing(root: str, details: dict) -> dict:
+    """Edit details (the Listing card's button, the Publish dialog opened on
+    a listed app): the live row — or the row of the request in review /
+    turned down — with `details` over it, at the SAME commit. Nothing here
+    needs the tip pushed or App Doctor clear: the version of the app does
+    not move, only how it reads. The index reviews the change like any
+    other request (about 30 minutes)."""
+    rec, me, lo = _require(root)
+    pr = lo.get("pr") or {}
+    removing = pr.get("kind") == "remove" and pr.get("state") == "open"
+    # A request in flight (an update's new version, a first listing) is
+    # what the edit continues — `_send` rewrites its branch, so building on
+    # the live row here would put the approved commit back under review.
+    # Else the live row, or the turned-down request's row.
+    open_ = pr.get("state") == "open" and not removing
+    in_flight = pr.get("row") if open_ else None
+    if removing:
+        raise PlainError(f"{lo['name']} is being removed from the Community. Wait for that "
+                         "to finish.", reason="removing")
+    if open_ and not isinstance(in_flight, dict):
+        # Its head could not be read: building on the live row would put
+        # the approved commit back under review in its place.
+        raise PlainError(f"The request for {lo['name']} in review couldn't be read. Press "
+                         "Check again, then edit.", reason="unread")
+    base = in_flight or lo.get("row") or (pr.get("row") if not removing else None)
+    if not isinstance(base, dict):
+        raise PlainError(f"{lo['name']} isn't in the Community yet. Publish it first.",
+                         reason="not-listed")
+    aid = _require_app_id(root)
+    old = old_slug_message(lo.get("name") or _app_name(root), base.get("slug"), aid,
+                           listed=bool(lo.get("row")))
+    if old:
+        raise PlainError(old, reason="old-slug")
+    repo = _str(base.get("repo")) or rec["repo"]
+    # The version is the row's own (build_row would read the working copy's
+    # metadata first, which may be ahead — or not parse at all).
+    details = {k: v for k, v in (details or {}).items() if k != "version"}
+    if _str(base.get("version")):
+        details["version"] = _str(base.get("version"))
+    row = build_row(root, rec, details, repo=repo, branch=_str(base.get("branch")) or "main",
+                    commit=_str(base.get("commit")), base=base)
+    edited = tuple(k for k in DETAIL_KEYS if row.get(k) != base.get(k))
+    if not edited:
+        raise PlainError("Nothing changed.", reason="unchanged")
+    live = lo.get("row") if isinstance(lo.get("row"), dict) else None
+    kind = "update" if live else "list"
+    title = f"{'Update' if kind == 'update' else 'List'} {row['name']}"
+    # Continuing an update in review: the request still moves the app.
+    moving = bool(live and in_flight and row["commit"] != live.get("commit"))
+    subjects = _subjects(root, live.get("commit"), row["commit"]) if moving else ()
+    return _send(root, me, row["slug"], row, kind=kind, title=title,
+                 body=_body(kind, row, row["name"], repo=repo, edited=edited, moving=moving,
+                            subjects=subjects), lo=lo)
 
 
 def remove(root: str) -> dict:

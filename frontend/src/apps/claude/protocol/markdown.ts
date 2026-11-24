@@ -3,9 +3,11 @@
 // as the vendored libs (marked 12.0.2, DOMPurify 3.4.13, highlight.js 11.11.1).
 import DOMPurify from "dompurify";
 import hljs from "highlight.js/lib/common";
-import { Marked } from "marked";
+import { Marked, type Tokenizer, type Tokens } from "marked";
 
 import { canRunInTerminal, openTerminal } from "@platform/lib/terminalDockStore";
+
+import { localPathFromHref } from "./filePaths";
 
 let md: ((t: string) => string) | null = null;
 let stage: Marked | null = null;
@@ -43,6 +45,26 @@ function rawHtmlAsText(html: string): string {
   return escapeHtml(html);
 }
 
+/**
+ * Strikethrough needs the DOUBLE tilde. marked's GFM `del` rule also takes a
+ * single one (`~x~`), and a model writes `~105 MB` or `(~4 M rows)` far more
+ * often than it strikes anything, so two of those in one paragraph came out as
+ * "~~105 MB raw file (~~4 M rows)" — struck through, with the tildes gone
+ * (Akshil, 2026-11-08). `~~` keeps working; a lone `~` is now text.
+ *
+ * AND IT STAYS ON ITS LINE: `[^\n]` where marked has `[\s\S]`. With
+ * `breaks: true` every newline is a hard break, and an unclosed `~~` on one
+ * line pairing with a `~~` three lines down struck everything between
+ * (his second test, same day) — GFM-legal, but not what either line meant.
+ */
+export const DOUBLE_TILDE_DEL = /^(~~)(?=[^\s~])([^\n]*?[^\s~])\1(?=[^~]|$)/;
+
+function doubleTildeOnly(this: Tokenizer, src: string): Tokens.Del | undefined {
+  const cap = DOUBLE_TILDE_DEL.exec(src);
+  if (!cap) return undefined;
+  return { type: "del", raw: cap[0], text: cap[2], tokens: this.lexer.inlineTokens(cap[2]) };
+}
+
 /** T:14944-14972 — configured once, lazily (its OWN Marked instance, not the shared `marked`
  * singleton: bots/lib/md.ts configures a different link renderer, and two
  * `marked.use()` callers in one process silently overwrite each other). */
@@ -51,6 +73,7 @@ function mdSetup(): (t: string) => string {
   stage = new Marked({
     gfm: true,
     breaks: true,
+    tokenizer: { del: doubleTildeOnly },
     renderer: {
       // See rawHtmlAsText above: the one raw-HTML rule, for every host.
       html: rawHtmlAsText,
@@ -58,8 +81,19 @@ function mdSetup(): (t: string) => string {
       // document-level sanitize enforces the URI allow-list; this only keeps
       // the raw href from breaking out of the attribute.
       link(href: string, _title: string | null | undefined, text: string) {
-        const h = (href || "").replace(/&/g, "&amp;").replace(/"/g, "&quot;");
-        return `<a href="${h}" target="_blank" rel="noopener noreferrer">${text}</a>`;
+        // A link to a LOCAL file (`/Users/…`, `~/x`, `file:///…`) is rewritten
+        // to the viewer's own URL and tagged `data-path` for MarkdownView's
+        // click handler. Left alone, `file:` fails DOMPurify's URI allow-list
+        // (the href is dropped and the click does nothing) and a bare `/x`
+        // opens a 404 under the shell's origin.
+        const local = localPathFromHref(href);
+        if (local) {
+          return (
+            `<a href="/render?path=${attr(encodeURIComponent(local))}" data-path="${attr(local)}"` +
+            ` target="_blank" rel="noopener noreferrer">${text}</a>`
+          );
+        }
+        return `<a href="${attr(href || "")}" target="_blank" rel="noopener noreferrer">${text}</a>`;
       },
     },
   });
@@ -75,6 +109,11 @@ function mdSetup(): (t: string) => string {
 export function parseMarkdownStage(text: string): string {
   mdSetup();
   return stage!.parse(text, { async: false }) as string;
+}
+
+/** An attribute value: keeps a raw href or path from breaking out of its quotes. */
+function attr(value: string): string {
+  return value.replace(/&/g, "&amp;").replace(/"/g, "&quot;").replace(/</g, "&lt;");
 }
 
 function escapeHtml(text: string): string {

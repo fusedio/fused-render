@@ -15,7 +15,7 @@ live in [`DESKTOP_SUPERVISOR.md`](DESKTOP_SUPERVISOR.md). Linux support is a new
 
 ## Goal
 
-Ship FusedRender as a single-file Linux desktop app with the user-visible
+Ship Fused Render as a single-file Linux desktop app with the user-visible
 guarantees a desktop app owes — single instance, file "Open with", tray,
 start-at-login, no orphaned process trees on crash, clean upgrade — packaged as
 an **AppImage** (download, `chmod +x`, run; no admin, no package-manager
@@ -140,6 +140,15 @@ and macOS behave exactly as before. Preferences reports
 `native_windows.available` on Linux while the host answers a ping, or while
 the supervisor says one could run here (`FUSED_RENDER_WINDOW_HOST_LAUNCHABLE`)
 even though the preference being off left none running to ping.
+
+**GPU rendering.** The host leaves WebKitGTK's DMABUF (GPU) renderer on:
+CPU compositing (`WEBKIT_DISABLE_DMABUF_RENDERER=1`) makes scrolling slow on
+shadow-heavy pages. Setting that variable in the environment still turns the
+renderer off. With the renderer on, the host marks each page
+`data-gpu-rendering` at document start. This renderer draws some opacity fades
+wrong: the faded element vanishes for a few frames as the fade lands. The
+stylesheets turn those fades off under the mark: the route fade on `#content`
+and the rail peek's transitions.
 
 **Fallback matrix.** Every row ends in `xdg-open` browser tabs, logged once to
 `logs/supervisor.log` (and `logs/window-host.log` for the host's own reason):

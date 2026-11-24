@@ -235,6 +235,40 @@
   z-index: 1;
 }
 
+/* A pane the shell draws itself (Preview's NativePane — an uncached bucket
+   object's download card): the frames' stacking and cross-fade, on a box
+   rather than an iframe. */
+.preview-frames .preview-native.preview-frame {
+  position: absolute;
+  inset: 0;
+  opacity: 0;
+  z-index: 0;
+  transition: opacity var(--dur-med) var(--ease-out);
+  background: var(--bg);
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+}
+
+.preview-frames .preview-native.preview-frame.is-shown {
+  opacity: 1;
+  z-index: 1;
+}
+
+/* A native pane that is NOT shown (the download card kept mounted behind
+   another mode) takes no pointer, focus or assistive-tech hit from the paint
+   it is hidden on: its link would otherwise stay in the tab order and over a
+   mode that is not itself stacked (the chat mount). `visibility` flips only
+   once the fade-out is over, and back at once when shown. */
+.preview-frames .preview-native.preview-frame:not(.is-shown) {
+  pointer-events: none;
+  visibility: hidden;
+  transition:
+    opacity var(--dur-med) var(--ease-out),
+    visibility 0s linear var(--dur-med);
+}
+
 /* ---- the preview SIDEBAR (`_side`) ---------------------------------------
    A file preview's right-hand column: the companion modes (`claude`,
    `git`) beside the content pane instead of in place of it
@@ -425,6 +459,46 @@ html.side-reopening iframe {
   flex-direction: column;
   background: var(--bg-alt);
   position: relative;
+}
+
+/* THE SLIDE (platform/lib/pane-presence; owner, 2026-11-05): the app page's
+   pane's (app-page.css), on this column — its basis runs 0 ↔ its own while
+   the contents keep their full width, pinned right, so the column slides in
+   from the window's edge. */
+.preview-side.is-entering,
+.preview-side.is-leaving {
+  overflow: hidden;
+}
+.preview-side.is-entering > *,
+.preview-side.is-leaving > * {
+  flex-shrink: 0;
+  width: var(--pane-w);
+  align-self: flex-end;
+}
+.preview-side.is-entering {
+  animation: preview-side-in var(--dur-panel) var(--ease-out);
+}
+.preview-side.is-leaving {
+  animation: preview-side-out var(--dur-panel) var(--ease-out) forwards;
+  pointer-events: none;
+}
+/* A reopen drag drives the inline basis itself: no entrance animation under it. */
+html.side-reopening .preview-side.is-entering {
+  animation: none;
+}
+@keyframes preview-side-in {
+  from {
+    flex-basis: 0;
+    min-width: 0;
+    opacity: 0;
+  }
+}
+@keyframes preview-side-out {
+  to {
+    flex-basis: 0;
+    min-width: 0;
+    opacity: 0;
+  }
 }
 
 /* FULL SCREEN (lib/side-maximized-store; toggled from the chat's ⋮ menu).
@@ -723,6 +797,7 @@ body.embed #sidebar,
 body.embed .sidebar-resize-handle,
 body.embed #breadcrumb,
 body.embed .preview-side-reopen,
+body.embed .claude-rail,
 body.embed .preview-header {
   display: none;
 }

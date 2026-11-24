@@ -198,7 +198,7 @@ test("FIX-23 — the copy pill takes its height from the column, as T's does", (
   const btn = one(TRANSCRIPT, ".chat-root .copybtn");
   expect(btn).not.toContain("line-height");
   expect(btn).toContain("padding: 3px 9px");
-  expect(btn).toContain("font-size: 11px");
+  expect(btn).toContain("font-size: calc(11px * var(--c-zoom, 1))");
 });
 
 test("FIX-24 — a plan card's fenced code wraps; only a reply's clips", () => {
@@ -211,7 +211,7 @@ test("FIX-24 — a plan card's fenced code wraps; only a reply's clips", () => {
   expect(reply).toContain("white-space: pre");
   const card = rules(TRANSCRIPT, ".chat-root .perm pre").join(" ");
   expect(card).toContain("white-space: pre-wrap");
-  expect(card).toContain("font-size: 12px");
+  expect(card).toContain("font-size: calc(12px * var(--c-zoom, 1))");
 });
 
 test("FIX-25 — the actual-size viewer has a real scroller on both axes", () => {
@@ -253,4 +253,20 @@ test("FIX-17 — one palette serves the chat AND every portaled surface", () => 
   const bridge = rules(CHAT, ".c-overlay").join(" ");
   expect(bridge).toContain("--error: var(--c-error)");
   expect(bridge).toContain("--c-card-bg");
+});
+
+test("chat text zoom — every px size in the chat sheets follows --c-zoom", () => {
+  // ⌘+ / ⌘− / ⌘0 (platform/lib/chat-zoom.ts) scale chat text through ONE
+  // variable; a literal px font-size or line-height left behind is a line that
+  // stays put while the rest of the chat grows (and a px line-height that does
+  // not grow clips its own text).
+  const SHEETS = ["ann", "chat", "composer", "filepreview", "home", "pane", "sched", "tasks", "transcript"];
+  for (const name of SHEETS) {
+    const css = strip(readFileSync(new URL(`./${name}.css`, import.meta.url), "utf8"));
+    expect(css.match(/(font-size|line-height):\s*[0-9.]+px\s*;/g) ?? [], name).toEqual([]);
+  }
+  // The roots read the shell's global factor; a compact wall tile pins 1.
+  expect(rules(CHAT, ".c-overlay").join(" ")).toContain("--c-zoom: var(--c-chat-zoom, 1)");
+  expect(rules(CHAT, ".chat-root.chat-compact").join(" ")).toContain("--c-zoom: 1;");
+  expect(rules(CHAT, ".chat-root").join(" ")).toContain("--c-fs-read: 14px");
 });

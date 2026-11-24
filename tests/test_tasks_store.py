@@ -1059,31 +1059,6 @@ def test_erasing_a_session_erases_what_it_ran_with(state_dir):
     assert tasks_store.session_settings(state, "sess-b") == ("opus", "max")
 
 
-def test_a_recap_rides_on_the_settings_record_and_goes_with_an_erase(state_dir):
-    """The turn recap is one more field on the session's record (Akshil,
-    2026-10-15: "just add a field in json"): it leaves model/effort alone, it
-    is replaced by a newer turn's, and an erase takes the whole record."""
-    tasks_store.record_settings("sess-a", "haiku", "low")
-    tasks_store.record_recap("sess-a", "u-1", "Fixed the login bug", now=10.0)
-    state = tasks_store.settings_state()
-    assert tasks_store.session_settings(state, "sess-a") == ("haiku", "low")
-    assert tasks_store.session_recap(state, "sess-a") == {
-        "text": "Fixed the login bug", "for_uuid": "u-1", "at": 10.0,
-        "empty": False}
-
-    tasks_store.record_recap("sess-a", "u-2", "", now=20.0)  # a failed turn
-    assert tasks_store.session_recap(tasks_store.settings_state(), "sess-a") == {
-        "text": "", "for_uuid": "u-2", "at": 20.0, "empty": False}
-    tasks_store.record_recap("sess-a", "u-3", "", now=30.0, empty=True)
-    assert tasks_store.session_recap(tasks_store.settings_state(), "sess-a")["empty"] is True
-    assert tasks_store.session_recap(state, "nobody") is None
-    assert tasks_store.record_recap("", "u-1", "x") == {}
-    assert tasks_store.record_recap("sess-a", "", "x") == {}
-
-    tasks_store.forget_session("sess-a")
-    assert tasks_store.session_recap(tasks_store.settings_state(), "sess-a") is None
-
-
 def test_an_ai_title_round_trips_and_a_failure_keeps_the_old_text(state_dir):
     """Stable AI titles: the title rides on the session record beside the
     recap. A failed attempt (empty text) must not blank a title the row is
@@ -1113,6 +1088,24 @@ def test_an_ai_title_round_trips_and_a_failure_keeps_the_old_text(state_dir):
 
     tasks_store.forget_session("sess-a")
     assert tasks_store.session_ai_title(tasks_store.settings_state(), "sess-a") is None
+
+
+def test_record_ai_title_started_at_drops_a_write_a_newer_job_beat(state_dir):
+    """A job that started before the stored title was written is stale: a newer
+    job finished first. Older stored row or no guard: written as before."""
+    tasks_store.record_ai_title("s", "Newer title", 5, now=100.0)
+    tasks_store.record_ai_title("s", "Stale title", 3, now=110.0, started_at=90.0)
+    got = tasks_store.session_ai_title(tasks_store.settings_state(), "s")
+    assert got["text"] == "Newer title" and got["at"] == 100.0
+
+    tasks_store.record_ai_title("s", "Fresh title", 6, now=120.0, started_at=105.0)
+    got = tasks_store.session_ai_title(tasks_store.settings_state(), "s")
+    assert got["text"] == "Fresh title" and got["turns"] == 6
+
+    tasks_store.record_ai_title("s", "Unguarded", 1, now=130.0)
+    got = tasks_store.session_ai_title(tasks_store.settings_state(), "s")
+    assert got["text"] == "Unguarded"  # a lower turn count still writes (scan reset)
+
 
 
 # ------------------------------------------------- did the user say anything?
@@ -1397,10 +1390,10 @@ def test_update_writes_through_a_tmp_file_and_replace(state_dir, monkeypatch):
         return real(src, dst)
 
     monkeypatch.setattr(tasks_store.os, "replace", spy)
-    tasks_store.record_recap("sess-a", "u-1", "Fixed the login bug", now=1.0)
+    tasks_store.record_ai_title("sess-a", "Fixed the login bug", 1, now=1.0)
     src, dst, body = seen[-1]
     assert src != dst and src.startswith(dst) and "Fixed the login bug" in body
-    assert tasks_store.session_recap(tasks_store.settings_state(), "sess-a")["text"]
+    assert tasks_store.session_ai_title(tasks_store.settings_state(), "sess-a")["text"]
 
 
 def test_record_settings_round_trips_permission():
@@ -1435,3 +1428,238 @@ def test_a_custom_title_rides_on_the_settings_record_and_goes_with_an_erase(stat
     tasks_store.record_title("sess-a", "Again")
     tasks_store.forget_session("sess-a")
     assert tasks_store.session_title(tasks_store.settings_state(), "sess-a") == ""
+
+
+# ------------------------------------------------------------ breakouts.json
+# A breakout (a research-only side chat forked from a chat) is never a task:
+# the Tasks scan reads this store and drops its sessions.
+
+
+def test_breakout_marks_round_trip(state_dir):
+    assert tasks_store.breakout_state() == {}
+    assert not tasks_store.is_breakout("sess-b")
+    tasks_store.mark_breakout("sess-b")
+    assert tasks_store.is_breakout("sess-b")
+    assert not tasks_store.is_breakout("sess-a")
+    assert "sess-b" in json.loads((state_dir / "breakouts.json").read_text())
+    tasks_store.mark_breakout("sess-b")  # idempotent
+    assert list(tasks_store.breakout_state()) == ["sess-b"]
+
+
+def test_breakout_mark_ignores_an_empty_key(state_dir):
+    tasks_store.mark_breakout("")
+    assert tasks_store.breakout_state() == {}
+    assert not tasks_store.is_breakout("")
+
+
+# ---------------------------------------------------------------- favourites
+
+
+def test_a_star_is_recorded_open_by_default_and_keeps_its_first_stamp(state_dir):
+    out = tasks_store.set_favourite("a", True, now=100.0)
+    assert out == {"starred": True, "open": True, "changed": ["a"]}
+    assert tasks_store.favourite_of(tasks_store.favourites_state(), "a") == (True, True)
+
+    again = tasks_store.set_favourite("a", True, open=False, now=200.0)
+    assert again["open"] is False
+    rec = json.loads((state_dir / "favourites.json").read_text())["a"]
+    assert rec == {"at": 100.0, "open": False}, "the original `at` stands"
+
+
+def test_at_most_one_favourite_is_open_at_a_time(state_dir):
+    tasks_store.set_favourite("a", True, now=1.0)
+    out = tasks_store.set_favourite("b", True, open=True, now=2.0)
+    assert sorted(out["changed"]) == ["a", "b"], "both flipped, both reported"
+    state = tasks_store.favourites_state()
+    assert tasks_store.favourite_of(state, "a") == (True, False)
+    assert tasks_store.favourite_of(state, "b") == (True, True)
+
+    # Starring one closed leaves the open one alone.
+    out = tasks_store.set_favourite("c", True, open=False, now=3.0)
+    assert out["changed"] == ["c"]
+    state = tasks_store.favourites_state()
+    assert tasks_store.favourite_of(state, "b") == (True, True)
+
+
+def test_unstarring_removes_the_record(state_dir):
+    tasks_store.set_favourite("a", True)
+    out = tasks_store.set_favourite("a", False)
+    assert out == {"starred": False, "open": False, "changed": ["a"]}
+    assert tasks_store.favourite_of(tasks_store.favourites_state(), "a") == (False, False)
+    assert tasks_store.set_favourite("a", False)["changed"] == []
+
+
+def test_a_corrupt_favourite_record_reads_tolerantly(state_dir):
+    (state_dir / "favourites.json").write_text(json.dumps(
+        {"junk": "x", "odd": {"at": "nope", "open": "yes"}, "ok": {"at": 1, "open": True}}))
+    state = tasks_store.favourites_state()
+    assert tasks_store.favourite_of(state, "junk") == (False, False)
+    assert tasks_store.favourite_of(state, "odd") == (True, False)
+    assert tasks_store.favourite_of(state, "missing") == (False, False)
+    # And opening another closes the good one without tripping on the bad ones.
+    out = tasks_store.set_favourite("new", True, open=True, now=5.0)
+    assert out["changed"] == ["new", "ok"]
+    (state_dir / "favourites.json").write_text("not json")
+    assert tasks_store.favourites_state() == {}
+
+
+def test_a_plain_star_opens_its_card_and_closes_the_other(state_dir):
+    """`open` not given: a star you just pressed is a card you want to see —
+    it opens, and the favourite that was open closes."""
+    tasks_store.set_favourite("a", True, now=1.0)
+    out = tasks_store.set_favourite("b", True, now=2.0)
+    assert out == {"starred": True, "open": True, "changed": ["b", "a"]}
+    state = tasks_store.favourites_state()
+    assert tasks_store.favourite_of(state, "a") == (True, False)
+    assert tasks_store.favourite_of(state, "b") == (True, True)
+    # Re-starring the open one keeps it open and moves nothing.
+    assert tasks_store.set_favourite("b", True) == {"starred": True, "open": True, "changed": []}
+    # Starring with `open=False` is the way to mark without opening.
+    out = tasks_store.set_favourite("c", True, open=False, now=3.0)
+    assert out["open"] is False and out["changed"] == ["c"]
+    assert tasks_store.favourite_of(tasks_store.favourites_state(), "b") == (True, True)
+
+
+def test_an_explicit_open_star_closes_the_others(state_dir):
+    tasks_store.set_favourite("a", True, now=1.0)
+    out = tasks_store.set_favourite("b", True, open=True, now=2.0)
+    assert out["open"] is True and sorted(out["changed"]) == ["a", "b"]
+    state = tasks_store.favourites_state()
+    assert tasks_store.favourite_of(state, "a") == (True, False)
+    assert tasks_store.favourite_of(state, "b") == (True, True)
+
+
+def test_force_closed_records_the_star_closed_whatever_was_asked(state_dir):
+    tasks_store.set_favourite("a", True, now=1.0)
+    out = tasks_store.set_favourite("b", True, open=True, force_closed=True)
+    assert out == {"starred": True, "open": False, "changed": ["b"]}
+    state = tasks_store.favourites_state()
+    assert tasks_store.favourite_of(state, "a") == (True, True), "others untouched"
+    assert tasks_store.favourite_of(state, "b") == (True, False)
+
+
+def test_a_corrupt_favourites_file_is_moved_aside_not_overwritten(state_dir):
+    bad = "{\"a\": {\"at\": 1, \"open\": tru"
+    (state_dir / "favourites.json").write_text(bad)
+    assert tasks_store.favourites_state() == {}, "reads as empty"
+    assert list(state_dir.glob("favourites.json.corrupt-*")) == [], \
+        "a read never moves it"
+    out = tasks_store.set_favourite("b", True, now=2.0)
+    assert out["starred"] is True
+    aside = list(state_dir.glob("favourites.json.corrupt-*"))
+    assert len(aside) == 1
+    assert aside[0].read_text() == bad, "the old bytes are kept"
+    assert json.loads((state_dir / "favourites.json").read_text()) == {
+        "b": {"at": 2.0, "open": True}}
+    # Once: the fresh file parses, so the next write moves nothing.
+    tasks_store.set_favourite("c", True, now=3.0)
+    assert len(list(state_dir.glob("favourites.json.corrupt-*"))) == 1
+
+
+def test_a_non_dict_favourites_file_counts_as_corrupt(state_dir):
+    (state_dir / "favourites.json").write_text("[1, 2]")
+    tasks_store.set_favourite("a", True, now=1.0)
+    aside = list(state_dir.glob("favourites.json.corrupt-*"))
+    assert len(aside) == 1 and aside[0].read_text() == "[1, 2]"
+
+
+def test_a_corrupt_file_with_nothing_to_write_is_left_alone(state_dir):
+    (state_dir / "favourites.json").write_text("not json")
+    out = tasks_store.set_favourite("a", False)
+    assert out["changed"] == []
+    assert (state_dir / "favourites.json").read_text() == "not json"
+    assert list(state_dir.glob("favourites.json.corrupt-*")) == []
+
+
+def test_a_failed_read_refuses_the_write_and_moves_nothing(state_dir,
+                                                         monkeypatch):
+    """A PermissionError (EMFILE, EIO) reading the store is not a corrupt
+    file: `_update` raises, the file is untouched, nothing is set aside —
+    and a plain read still answers {}."""
+    good = json.dumps({"a": {"at": 1.0, "open": True}})
+    path = state_dir / "favourites.json"
+    path.write_text(good)
+    real_open = open
+
+    def flaky_open(file, mode="r", *a, **k):
+        if str(file) == str(path) and "r" in mode and "+" not in mode:
+            raise PermissionError(13, "Permission denied", str(file))
+        return real_open(file, mode, *a, **k)
+
+    with monkeypatch.context() as m:
+        m.setattr(tasks_store, "open", flaky_open, raising=False)
+        with pytest.raises(PermissionError):
+            tasks_store.set_favourite("b", True, now=2.0)
+        assert tasks_store.favourites_state() == {}
+    assert path.read_text() == good
+    assert list(state_dir.glob("favourites.json.corrupt-*")) == []
+    assert not (state_dir / "favourites.json.tmp").exists()
+
+
+def test_a_corrupt_file_that_cannot_be_set_aside_is_not_overwritten(
+        state_dir, monkeypatch):
+    """The set-aside's `os.replace` failing refuses the write: the corrupt
+    bytes stay under the live name, nothing is set aside, no tmp is left."""
+    bad = "{\"a\": {\"at\": 1, \"open\": tru"
+    path = state_dir / "favourites.json"
+    path.write_text(bad)
+    real_replace = os.replace
+
+    def refusing_replace(src, dst, *a, **k):
+        if ".corrupt-" in str(dst):
+            raise PermissionError(13, "Permission denied", str(dst))
+        return real_replace(src, dst, *a, **k)
+
+    monkeypatch.setattr(tasks_store.os, "replace", refusing_replace)
+    with pytest.raises(OSError):
+        tasks_store.set_favourite("b", True, now=2.0)
+    assert path.read_text() == bad
+    assert list(state_dir.glob("favourites.json.corrupt-*")) == []
+    assert not (state_dir / "favourites.json.tmp").exists()
+
+
+def test_an_empty_favourites_file_is_empty_not_corrupt(state_dir):
+    (state_dir / "favourites.json").write_text("")
+    assert tasks_store.favourites_state() == {}
+    tasks_store.set_favourite("a", True, now=1.0)
+    assert list(state_dir.glob("favourites.json.corrupt-*")) == []
+    assert json.loads((state_dir / "favourites.json").read_text()) == {
+        "a": {"at": 1.0, "open": True}}
+
+
+def test_an_update_only_call_on_an_unstarred_key_is_a_no_op(state_dir):
+    out = tasks_store.set_favourite("a", None, True)
+    assert out == {"starred": False, "open": False, "changed": []}
+    assert tasks_store.favourites_state() == {}
+    assert not (state_dir / "favourites.json").exists(), "nothing written"
+
+
+def test_an_update_only_call_flips_open_and_closes_the_others(state_dir):
+    tasks_store.set_favourite("a", True, now=1.0)
+    tasks_store.set_favourite("b", True, open=False, now=2.0)
+    out = tasks_store.set_favourite("b", None, True)
+    assert out["starred"] is True and out["open"] is True
+    assert sorted(out["changed"]) == ["a", "b"]
+    state = tasks_store.favourites_state()
+    assert tasks_store.favourite_of(state, "a") == (True, False)
+    assert tasks_store.favourite_of(state, "b") == (True, True)
+    assert state["b"]["at"] == 2.0, "update-only never re-stamps"
+
+    out = tasks_store.set_favourite("b", None, False)
+    assert out == {"starred": True, "open": False, "changed": ["b"]}
+    assert tasks_store.favourite_of(tasks_store.favourites_state(), "b") == (True, False)
+
+
+def test_favourite_at_is_the_star_stamp_and_never_a_non_finite_number(state_dir):
+    """The rail sorts favourites by `favourite_at` (newest star first); a
+    record's stamp survives the card's open/close writes, and a NaN / inf
+    stamp on disk reads as None rather than breaking the pulse's JSON."""
+    tasks_store.set_favourite("a", True, now=100.0)
+    state = tasks_store.favourites_state()
+    assert tasks_store.favourite_at(state, "a") == 100.0
+    assert tasks_store.favourite_at(state, "missing") is None
+    tasks_store.set_favourite("a", None, open=False, now=200.0)
+    assert tasks_store.favourite_at(tasks_store.favourites_state(), "a") == 100.0
+    assert tasks_store.favourite_at({"n": {"at": float("nan")}}, "n") is None
+    assert tasks_store.favourite_at({"i": {"at": float("inf")}}, "i") is None
+    assert tasks_store.favourite_at({"s": {"at": "soon"}}, "s") is None

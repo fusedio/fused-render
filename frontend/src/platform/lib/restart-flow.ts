@@ -322,7 +322,7 @@ export function restartIsSlow(requestedAt: number | null, now: number): boolean 
 /** The sentence a stuck press ends in. Terminal states get sentences (the
  *  stage words stay one word); the overlay and the notification both say it, so
  *  it lives here once. */
-//  Functions, not constants: the name is the flavor's (platform/lib/flavor.ts),
+//  Functions, not constants: the name comes from platform/lib/flavor.ts,
 //  seeded after this module is evaluated.
 export function restartStuckTitle(): string {
   return `${displayName()} couldn't restart itself`;

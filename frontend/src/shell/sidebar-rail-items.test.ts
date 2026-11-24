@@ -41,23 +41,22 @@ const pin = (n: number): Bookmark => ({
 const range = (n: number): number[] => Array.from({ length: n }, (_, i) => i);
 
 describe("railExtras", () => {
-  test("caps apps at 5, canvases at 5 and pins at 3, keeping the head of each list in order", () => {
-    // An even split between apps and canvases (owner, 2026-10-23: 5-5, was 6-4).
-    const desk = [...range(9).map(app), ...range(7).map(canvas)];
-    const out = railExtras({ desk, pins: range(5).map(pin), bot: false, canvases: true });
-    expect(RAIL_APPS_MAX).toBe(5);
-    expect(RAIL_CANVASES_MAX).toBe(5);
-    expect(RAIL_PINS_MAX).toBe(3);
-    expect(out.apps.map((a) => a.name)).toEqual(range(5).map((i) => `app${i}`));
-    expect(out.canvases.map((a) => a.name)).toEqual(range(5).map((i) => `canvas${i}`));
-    expect(out.pins.map((b) => b.id)).toEqual(["b0", "b1", "b2"]);
+  test("caps apps, canvases and pins at 7 each, keeping the head of each list in order", () => {
+    // Seven of each (owner, 2026-11-09: was 5 / 5 / 3).
+    const desk = [...range(9).map(app), ...range(9).map(canvas)];
+    const out = railExtras({ desk, pins: range(9).map(pin), canvases: true });
+    expect(RAIL_APPS_MAX).toBe(7);
+    expect(RAIL_CANVASES_MAX).toBe(7);
+    expect(RAIL_PINS_MAX).toBe(7);
+    expect(out.apps.map((a) => a.name)).toEqual(range(7).map((i) => `app${i}`));
+    expect(out.canvases.map((a) => a.name)).toEqual(range(7).map((i) => `canvas${i}`));
+    expect(out.pins.map((b) => b.id)).toEqual(range(7).map((i) => `b${i}`));
   });
 
   test("splits an interleaved desk on `canvas`, each half in its own order", () => {
     const out = railExtras({
       desk: [canvas(2), app(2), app(1), canvas(1)],
       pins: [],
-      bot: false,
       canvases: true,
     });
     expect(out.apps.map((a) => a.name)).toEqual(["app2", "app1"]);
@@ -66,14 +65,9 @@ describe("railExtras", () => {
   });
 
   test("the Canvases gate off drops the canvases group only", () => {
-    const out = railExtras({ desk: [app(1), canvas(1)], pins: [pin(1)], bot: false, canvases: false });
+    const out = railExtras({ desk: [app(1), canvas(1)], pins: [pin(1)], canvases: false });
     expect(out.apps.map((a) => a.name)).toEqual(["app1"]);
     expect(out.canvases).toEqual([]);
     expect(out.pins.map((b) => b.id)).toEqual(["b1"]);
-  });
-
-  test("Fused Bot shows no group", () => {
-    const out = railExtras({ desk: [app(1), canvas(1)], pins: [pin(1)], bot: true, canvases: true });
-    expect(out).toEqual({ apps: [], canvases: [], pins: [] });
   });
 });

@@ -109,8 +109,12 @@ async function drafted(box: ReactTestRenderer, status: Record<string, unknown>) 
   taskStatus = "done";
   draftStatus = status;
   await act(async () => { button(box, "Draft it").props.onClick({ preventDefault() {} }); });
-  await tick();
-  await act(async () => { await new Promise((r) => setTimeout(r, 700)); });
+  // Wait for the drafted STATE, not a fixed 700 ms a slow runner can outlast:
+  // "Edit before saving" is enabled only once the draft's text has loaded and
+  // the task reads as done (every caller drafts a SKILL.md text).
+  const ready = () => button(box, "Edit before saving")?.props.disabled === false;
+  for (let i = 0; i < 100 && !ready(); i++) await tick(50, 1);
+  expect(ready()).toBe(true);
   await tick();
 }
 
@@ -369,7 +373,7 @@ describe("New skill", () => {
     expect(textOf(box.root.findByProps({ "data-testid": "draft-aside" }))).not.toContain("## Steps");
     statusFails = false;
     await act(async () => { button(box, "Retry refresh").props.onClick({ preventDefault() {} }); });
-    await tick();
+    for (let i = 0; i < 100 && button(box, "Save skill").props.disabled; i++) await tick(50, 1);
     expect(button(box, "Save skill").props.disabled).toBe(false);
     expect(textOf(box.root)).not.toContain("could not refresh");
   }, 15000);

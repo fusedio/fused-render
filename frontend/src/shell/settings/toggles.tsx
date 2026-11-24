@@ -9,14 +9,16 @@ import {
   putAppSharingEnabled,
   putCanvasesEmbedProxy,
   putCanvasesEnabled,
-  putCanvasRailPeekEnabled,
+  putRailExtrasEnabled,
   putGitAutoSyncEnabled,
   putLivePreviewsEnabled,
   putMonitorEnabled,
   putProjectQueueEnabled,
   putReaderEnabled,
   putTaskNotifyTerminalSessionsEnabled,
-  putTaskRecapTitlesEnabled,
+  putChatRecapEnabled,
+  putBreakoutEnabled,
+  putExpertsEnabled,
   putTaskSummaryTitlesEnabled,
   putClaudeDefaultPermission,
   putClaudeStrictMcpEnabled,
@@ -24,14 +26,16 @@ import {
 } from "@platform/lib/api";
 import { publishContribFlags } from "@platform/lib/contrib-flags";
 import { publishCanvasesEnabled } from "@apps/canvases/feature-flag";
-import { publishCanvasRailPeek } from "@apps/canvases/rail-peek-flag";
+import { publishRailExtras } from "../claude-rail/rail-extras-flag";
 import { publishAppSharingEnabled } from "@platform/lib/share-app-flag";
 import { publishLivePreviewsEnabled } from "@platform/lib/live-previews-flag";
 import { publishMonitorEnabled } from "@platform/lib/monitor-flag";
+import { publishExpertsEnabled } from "@platform/lib/experts-flag";
 import {
   publishDefaultPermission,
   publishProjectQueueEnabled,
-  publishTaskRecapTitlesEnabled,
+  publishChatRecapEnabled,
+  publishBreakoutEnabled,
 } from "@apps/claude/feature-flag";
 import { publishTaskNotifyTerminalSessions } from "../task-notify-terminal-flag";
 import { ErrorBanner } from "@platform/ui/ErrorBanner";
@@ -61,21 +65,48 @@ export function ProjectQueueControl({ prefs, onChange }: PrefControlProps) {
   );
 }
 
-// Haiku recaps titling the Tasks rows. Opt-in: one haiku call per turn.
-export function TaskRecapsControl({ prefs, onChange }: PrefControlProps) {
+// Breakout side chats: research-only side chats seeded with messages from a conversation. Opt-in beta.
+export function BreakoutControl({ prefs, onChange }: PrefControlProps) {
   return (
     <PrefToggleRow
-      id="task-recaps"
-      checked={prefs.task_recap?.enabled === true}
-      put={putTaskRecapTitlesEnabled}
-      after={(next) => publishTaskRecapTitlesEnabled(next.task_recap?.enabled === true)}
+      id="breakout"
+      checked={prefs.breakout?.enabled === true}
+      put={putBreakoutEnabled}
+      after={(next) => publishBreakoutEnabled(next.breakout?.enabled === true)}
       onChange={onChange}
     />
   );
 }
 
-// Tasks rows titled only by the stable summary `title`. The row key
-// (`title_mode`) arrives from the server on the next poll, so no publish.
+// Experts (docs/experts.md): their Bots rows, the task tools and the
+// breakout's "With". Published so an open page shows or drops them at once.
+export function ExpertsControl({ prefs, onChange }: PrefControlProps) {
+  return (
+    <PrefToggleRow
+      id="experts"
+      checked={prefs.experts?.enabled === true}
+      put={putExpertsEnabled}
+      after={(next) => publishExpertsEnabled(next.experts?.enabled === true)}
+      onChange={onChange}
+    />
+  );
+}
+
+// The in-chat recap fold. Default on: one haiku call per recap.
+export function ChatRecapControl({ prefs, onChange }: PrefControlProps) {
+  return (
+    <PrefToggleRow
+      id="chat-recap"
+      checked={prefs.chat_recap?.enabled !== false}
+      put={putChatRecapEnabled}
+      after={(next) => publishChatRecapEnabled(next.chat_recap?.enabled !== false)}
+      onChange={onChange}
+    />
+  );
+}
+
+// Stable AI titles for tasks, refreshed after each turn. The server names the
+// row itself, so no publish: the next poll carries the new title.
 export function TaskSummaryTitlesControl({ prefs, onChange }: PrefControlProps) {
   return (
     <PrefToggleRow
@@ -250,22 +281,16 @@ export function CanvasesEmbedProxyControl({ prefs, onChange }: PrefControlProps)
   );
 }
 
-// Published (rail-peek-flag.ts), so a canvas page in THIS tab follows the
-// switch at once. Another tab's shell holds its first answer until it reloads
-// — the same deal every published flag here offers.
-export function CanvasRailPeekControl({ prefs, onChange }: PrefControlProps) {
-  const on = prefs.canvas_rail_peek?.enabled === true;
+// RAIL EXTRAS (owner, 2026-11-23): one switch for the rail's mode doors, the
+// expandable rail and free pins.
+export function RailExtrasControl({ prefs, onChange }: PrefControlProps) {
+  const on = prefs.rail_extras?.enabled === true;
   return (
     <PrefToggleRow
-      id="canvases-rail-peek"
+      id="rail-extras"
       checked={on}
-      put={putCanvasRailPeekEnabled}
-      after={(next) => publishCanvasRailPeek(next.canvas_rail_peek)}
-      status={
-        on
-          ? "On — hovering a chat on the rail opens it as a card you can use; a click keeps it open."
-          : "Off — hovering shows the chat's one-line caption; clicking opens it in the panel."
-      }
+      put={putRailExtrasEnabled}
+      after={(next) => publishRailExtras(next.rail_extras)}
       onChange={onChange}
     />
   );

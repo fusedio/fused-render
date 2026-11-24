@@ -16,6 +16,7 @@ import {
   FIT_HYSTERESIS,
   FIT_TEXT_FLOOR,
   ROW_DROPS,
+  ROW_DROP_SELECTOR,
   TOOLBAR_DROPS,
   pickLevelFromNeeds,
   TOOLBAR_MERGE_LEVEL,
@@ -23,6 +24,7 @@ import {
   pickRowFit,
   pickRowLevel,
   rowNeed,
+  rowRestNeed,
 } from "./row-fit";
 
 // age, count, project chip, Draft chip — plausible measured costs.
@@ -197,6 +199,8 @@ interface FakeSeat {
   drop?: string;
   /** A container: its want is the sum of these, not its own used width. */
   kids?: readonly FakeSeat[];
+  /** Carries `data-fit-skip` — the list row's star and door seats. */
+  skip?: boolean;
 }
 
 function fakeNode(seat: FakeSeat, gap: number): unknown {
@@ -206,6 +210,7 @@ function fakeNode(seat: FakeSeat, gap: number): unknown {
     children: seat.kids ? kids : seat.empty ? [] : [1],
     textContent: seat.empty ? "" : "x",
     matches: (sel: string) => (seat.drop ? sel.includes(seat.drop) : false),
+    hasAttribute: (name: string) => name === "data-fit-skip" && !!seat.skip,
     getBoundingClientRect: () => ({ width: seat.width }),
     getClientRects: () => [1],
     offsetParent: {},
@@ -272,6 +277,22 @@ describe("rowNeed", () => {
     expect(need).toBeLessThan(502);
     // …so nothing is folded at all, and certainly not all four marks.
     expect(pickRowLevel(502, need, [46 + 8, 34 + 8, 80 + 8, 0])).toBe(0);
+  });
+
+  it("never charges a seat that opts out — at rest or grown under the pointer", () => {
+    // THE A/B ROW'S STAR AND DOOR SEATS (tasks.css, 2026-11-15): zero-width at
+    // rest, and 18/22px of real flow while a folded row is pointed at. A read
+    // that lands mid-hover must answer with the row's resting need — neither
+    // the box nor the gap it would be charged — or the level flaps on a hover.
+    const base: FakeSeat[] = [
+      { width: 20 }, // the status ring
+      { width: 31, content: 240, shrink: 1 }, // the title
+      { width: 34, content: 34 }, // the message count
+    ];
+    const rest = rowNeed(fakeRow([...base, { width: 0, skip: true }, { width: 0, skip: true }]));
+    const hovered = rowNeed(fakeRow([...base, { width: 18, skip: true }, { width: 22, skip: true }]));
+    expect(rest).toBe(rowNeed(fakeRow(base)));
+    expect(hovered).toBe(rest);
   });
 
   it("folds at most the age once the row is genuinely tight", () => {
@@ -372,6 +393,49 @@ describe("rowNeed's restore", () => {
       { width: 0, display: "none", drop: "tasks-row-time" },
     ];
     expect(rowNeed(fakeRow(seats))).toBe(55 + 24);
+  });
+});
+
+describe("the a/b row (2026-11-16)", () => {
+  it("never folds its folder chip — the project rung keeps its number and measures nothing there", () => {
+    // Owner: "it hides folder tag why, don't hide that". The rung stays third
+    // for the legacy row; on the a/b row its selector finds nothing, so it
+    // costs nothing and the ladder spends no level on it.
+    expect(ROW_DROPS.indexOf("project")).toBe(2);
+    expect(ROW_DROP_SELECTOR.project).toContain(".tasks-row:not(.tasks-row--ab) ");
+    // A rung that costs nothing is skipped, not spent.
+    expect(pickRowLevel(300, 400, [40, 40, 0, 0])).toBe(2);
+  });
+
+  it("charges a row pointed at what it needed at rest", () => {
+    // Under a pointer the count and the time leave the flow (tasks.css "Under
+    // a pointer"), so the row measures narrower than it is at rest. A read that
+    // lands then must answer with the resting need, or the level flaps.
+    const seats: FakeSeat[] = [
+      { width: 20 }, // the status ring
+      { width: 31, content: 240, shrink: 1 }, // the title
+      { width: 34, content: 34 }, // the message count
+      { width: 46, content: 46 }, // the time
+    ];
+    let pointed = false;
+    const live = (list: readonly FakeSeat[]) =>
+      Object.assign(fakeRow(list), {
+        matches: (sel: string) => sel === ".tasks-row--ab" || (pointed && sel === ".tasks-row--ab:hover"),
+        querySelector: () => null,
+      }) as unknown as HTMLElement;
+    const rest = new WeakMap<HTMLElement, number>();
+    const row = live(seats);
+    const atRest = rowRestNeed(row, undefined, rest);
+    expect(atRest).toBe(rowNeed(fakeRow(seats)));
+    // The same row under the pointer: count and time absolute, seats skipped.
+    pointed = true;
+    const hovered = Object.assign(row, live([seats[0]!, seats[1]!, { width: 34, position: "absolute" }, { width: 46, position: "absolute" }]));
+    expect(rowNeed(hovered)).toBeLessThan(atRest);
+    expect(rowRestNeed(hovered, undefined, rest)).toBe(atRest);
+    // Never read at rest: measured as it stands, and nothing is remembered.
+    const fresh = new WeakMap<HTMLElement, number>();
+    expect(rowRestNeed(hovered, undefined, fresh)).toBe(rowNeed(hovered));
+    expect(fresh.has(hovered)).toBe(false);
   });
 });
 

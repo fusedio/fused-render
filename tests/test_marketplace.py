@@ -1799,7 +1799,7 @@ def test_overwrite_refuses_a_showcase_folder_that_declares_another_app(env, gh_w
     r = client.post("/api/marketplace/install", json={"slug": "sine-starter", "overwrite": True}, headers=FUSED)
     assert r.status_code == 200 and r.json()["status"] == "ok", r.json()
     job = _wait_job(client, "sine-starter")
-    assert job["state"] == "error" and job["error"].startswith(f"The showcase copy at {d} is not this app"), job
+    assert job["state"] == "error" and job["error"].startswith(f"The copy at {d} is not this app"), job
     assert os.path.isfile(os.path.join(d, ".fused", "data.txt"))
     assert app_hidden.hidden_paths() == set()
     assert not os.path.exists(_app_dir(env, "sine-starter"))

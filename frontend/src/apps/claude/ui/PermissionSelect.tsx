@@ -15,6 +15,7 @@
 // fitted width, so nothing in the row moves.
 import { useCallback, useEffect, useMemo, useRef } from "react";
 import { agentLabel, capsOf, useAgentBackends } from "@platform/lib/agent-backends";
+import { PERMISSION_HINTS } from "@platform/lib/permission-modes";
 import type { PermissionMode } from "../protocol/types";
 import {
   GROUP_LABELS,
@@ -52,6 +53,7 @@ export function PermissionSelect({
       PERMISSION_MODES.filter((m) => plan || m !== "plan").map((value) => ({
         value,
         label: labels[value],
+        hint: PERMISSION_HINTS[value],
       })),
     [plan, labels],
   );

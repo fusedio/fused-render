@@ -8,13 +8,16 @@
 // walk over three awaits, and only a real mount/unmount can cross it.
 import { installDomShim } from "@platform/lib/testDomShim";
 installDomShim();
-import { afterEach, beforeEach, expect, test } from "bun:test";
+import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { act, create } from "react-test-renderer";
 
 const { ClaudeChat, annotationsForTests } = await import("./ClaudeChat");
+const { publishBreakoutEnabled, resetFlagsForTests } = await import("./feature-flag");
+const { Kebab } = await import("./ui/Kebab");
 const { createMemoryParamsStore } = await import("./params/store");
 const { resetListingFeedForTests } = await import("@shell/tasksPulse");
 const { troubleReport } = await import("@platform/lib/trouble");
+const { resetClaudeDefaultsForTests } = await import("@platform/lib/claude-defaults");
 
 /** One `/api/claude/agent` call: the action, plus the fields. */
 interface RunCall {
@@ -23,6 +26,11 @@ interface RunCall {
 }
 
 const runs: RunCall[] = [];
+let historyReads = 0;
+let historyTurns: unknown[] = [];
+let pollHint: unknown = undefined;
+/** What `start` answers instead of a run id (a refusal, say). */
+let startAnswer: unknown = undefined;
 /** Held back so a test can park the boot inside its detection wait: the
  *  agent's `defaults` read never answers. */
 let holdDetection = false;
@@ -87,6 +95,10 @@ function stubFetch(): void {
       scheduleReads++;
       return jsonRes({ entries: [] });
     }
+    if (url.startsWith("/api/claude-sessions/history")) {
+      historyReads++;
+      return jsonRes({ turns: historyTurns });
+    }
     if (url === "/api/prefs") return jsonRes({});
     if (url === "/api/claude/app-entry") return jsonRes({});
     if (url === "/api/claude/agent") {
@@ -98,8 +110,8 @@ function stubFetch(): void {
         return jsonRes({});
       }
       if (action === "live_host") return jsonRes({ run_id: "" });
-      if (action === "start") return jsonRes({ run_id: "r1" });
-      if (action === "poll") return jsonRes({ done: true, session_id: "s1", text: "ok" });
+      if (action === "start") return jsonRes(startAnswer === undefined ? { run_id: "r1" } : startAnswer);
+      if (action === "poll") return jsonRes({ done: true, session_id: "s1", text: "ok", ...(pollHint === undefined ? {} : { worktree_hint: pollHint }) });
       return jsonRes({});
     }
     return jsonRes({});
@@ -107,7 +119,19 @@ function stubFetch(): void {
 }
 
 beforeEach(() => {
+  // THE GLOBAL DEFAULTS READ IS SINGLE-FLIGHT and process-wide
+  // (platform/lib/claude-defaults `reading`). A chat mounted by an EARLIER file,
+  // under a fetch stub that never answered, leaves that read pinned for the rest
+  // of the bun run: every chat here then joins it, `defaults.ready` never comes,
+  // and an `initialAsk` sits out ASK_DETECTION_TIMEOUT_MS (1.5 s) — so each
+  // "sends once" test saw zero starts after its 20 ms settle. That was red on CI
+  // only (Linux file order), never locally. Reset before, not only after.
+  resetClaudeDefaultsForTests();
   runs.length = 0;
+  historyReads = 0;
+  historyTurns = [];
+  pollHint = undefined;
+  startAnswer = undefined;
   holdDetection = false;
   holdPaneStat = false;
   holdSessions = false;
@@ -126,6 +150,7 @@ beforeEach(() => {
 const mounted: Array<ReturnType<typeof create>> = [];
 afterEach(() => {
   for (const r of mounted.splice(0)) act(() => r.unmount());
+  resetFlagsForTests();
   (globalThis as { fetch: unknown }).fetch = realFetch;
 });
 
@@ -210,7 +235,7 @@ test("the HOSTED layout's pane is the host's frame: has_pane 1 and a pushed bloc
   // asserted together: no `<live-app-state>` block (so the model could not see
   // the app and no receipt was drawn), `has_pane: "0"` (so agent.py wrote an
   // `mcp.json` with no app-state channel and the CLI reported
-  // `mcp__fused_approvals__app_state` as not connected), and — because
+  // `mcp__fused_render__app_state` as not connected), and — because
   // `_pane_file` reads the pane off the LEADING block — a session recorded as a
   // FOLDER chat, which then never appeared in the file's Recent list (R3-1/R3-3).
   await mountChat({ initialAsk: "what can you see?", annotateTarget: hostFrameStub() });
@@ -286,12 +311,22 @@ test("a chat-only mount's first send says has_pane: 0", async () => {
   expect(started()[0].params.message).toContain("fix the chart");
 });
 
+test("a refused start says its message once: the red row, with the trouble card still up", async () => {
+  startAnswer = { error: "target not found: /x" };
+  const { r } = await mountChat({ initialAsk: "go" });
+  await settle(20);
+  expect(started().length).toBe(1);
+  const said = JSON.stringify(r.toJSON()).split("target not found").length - 1;
+  expect(said).toBe(1);
+  expect(JSON.stringify(r.toJSON())).toContain("Something went wrong");
+});
+
 test("an UNRESOLVED pane sends has_pane EMPTY and lets agent.py decide", async () => {
   // The split layout, whose target may well end up with a pane — but has not
   // yet. Neither answer is honest here, and the dishonest one is expensive:
   // `has_pane` is what agent.py builds the session's MCP roster off, ONCE, at
   // spawn, and nothing can repair it afterwards — so a `"0"` guessed while the
-  // pane's stat was in flight took `mcp__fused_approvals__app_state` away for
+  // pane's stat was in flight took `mcp__fused_render__app_state` away for
   // the whole session and the CLI reported the tool as unreachable (R2-10).
   // The empty string is agent.py's own "you decide": `main` reads it as no
   // opinion and answers with `_has_pane(file)`, off the filesystem, unraced.
@@ -363,7 +398,7 @@ function byClass(r: ReturnType<typeof create>, cls: string) {
   );
 }
 
-test("a HOSTED chat shows the strip — landing included — because the host has a target", async () => {
+test("a HOSTED chat shows the seats — landing included — because the host has a target", async () => {
   // The bug: `stripShown` read `!chatOnly`, a question about OUR layout, so the
   // sidebar lost the whole row on both views while the app sat on screen in the
   // middle column with its mark on it.
@@ -371,7 +406,8 @@ test("a HOSTED chat shows the strip — landing included — because the host ha
   await settle(20);
   // The landing, not the transcript: nothing has been sent.
   expect(byClass(r, "c-home").length).toBe(1);
-  expect(byClass(r, "c-anntools").length).toBe(1);
+  // The seats ride the shared head (TaskHead `seats`), the strip's row gone.
+  expect(byClass(r, "c-task-head").length).toBe(1);
   expect(byClass(r, "c-anncta").length).toBe(1);
   const seats = byClass(r, "c-anncta")[0].findAllByType("button");
   expect(seats.length).toBe(3);
@@ -387,7 +423,7 @@ test("a HOSTED chat shows the strip — landing included — because the host ha
   expect(seats[2].props.disabled).toBe(false);
 });
 
-test("the strip ROW stands even with nothing to photograph — it carries the ⋮", async () => {
+test("the head stands even with nothing to photograph — it carries the ⋮", async () => {
   // T's `#anntools` is static markup and holds `← Chats` and `#kebab` as well as
   // the three seats, so a folder listing keeps the row and loses only the
   // buttons (T:526 `body.nopane #kebab { margin-left: auto }` is that state).
@@ -396,7 +432,7 @@ test("the strip ROW stands even with nothing to photograph — it carries the �
   // re-stack (2026-09-10).
   const { r } = await mountChat({ annotateTarget: () => null });
   await settle(20);
-  expect(byClass(r, "c-anntools").length).toBe(1);
+  expect(byClass(r, "c-task-head").length).toBe(1);
   expect(byClass(r, "c-anncta").length).toBe(0);
   expect(byClass(r, "c-kebab").length).toBe(1);
 });
@@ -659,4 +695,407 @@ test("a peek with headerInPeek draws the slim top bar; a bare peek and a compact
   const compact = await mountChat({ compact: true, peek: true, headerInPeek: true, initialSessionId: "sess-abc12345" });
   await settle(20);
   expect(byClass(compact.r, "c-topbar").length).toBe(0);
+});
+
+// BREAKOUT DOOR: the top bar carries no Breakout button any more. The ⋮ menu
+// holds the item (the Kebab's `breakout` prop) in either layout, wherever the
+// gate passes.
+const kebabOf = (r: ReturnType<typeof create>) => r.root.findAllByType(Kebab)[0]!;
+test("no Breakout button in the bar: the kebab carries the item in the merged head and in the strip", async () => {
+  const onBreakout = () => {};
+  const merged = await mountChat({ mergedHead: true, onBreakout, initialSessionId: "sess-abc12345" });
+  await settle(20);
+  // The flag is opt-in: the stubbed prefs read leaves it off until published.
+  await act(async () => publishBreakoutEnabled(true));
+  await settle(20);
+  expect(byClass(merged.r, "c-anntools").length).toBe(0);
+  expect(byClass(merged.r, "c-breakout").length).toBe(0);
+  expect(kebabOf(merged.r).props.breakout.picking).toBe(false);
+
+  const strip = await mountChat({ onBreakout, initialSessionId: "sess-abc12345" });
+  await settle(20);
+  expect(byClass(strip.r, "c-task-head").length).toBe(1);
+  expect(byClass(strip.r, "c-breakout").length).toBe(0);
+  expect(kebabOf(strip.r).props.breakout).toBeDefined();
+});
+
+test("the kebab has no Breakout item while the flag is off (default) or without onBreakout", async () => {
+  const strip = await mountChat({ onBreakout: () => {}, initialSessionId: "sess-abc12345" });
+  await settle(20);
+  expect(kebabOf(strip.r).props.breakout).toBeUndefined();
+  const none = await mountChat({ initialSessionId: "sess-abc12345" });
+  await settle(20);
+  await act(async () => publishBreakoutEnabled(true));
+  await settle(20);
+  expect(kebabOf(none.r).props.breakout).toBeUndefined();
+});
+
+// BREAKOUT BOOT: a breakout card is a fresh chat. It restores no history and
+// wears the chip for its seeded messages until the first send carries them.
+test("a breakout boots empty: no history fetch, a chip for the selected messages above the composer", async () => {
+  const context = { block: "<breakout-context>\nThe user opened this side chat from 2 messages of their main chat.\n\nUser: q\n\nAssistant: a\n</breakout-context>", count: 2, title: "Parent" };
+  const { r } = await mountChat({ breakout: true, breakoutContext: context });
+  await settle(20);
+  expect(historyReads).toBe(0);
+  expect(byClass(r, "annsum-breakout").length).toBe(1);
+});
+
+test("a breakout card opens on the chat, never the folder landing", async () => {
+  const { r } = await mountChat({ breakout: true });
+  await settle(20);
+  expect(byClass(r, "c-home").length).toBe(0);
+});
+
+// SEND BACK: the card offers it only once the breakout has stopped, so the
+// reported `send` must start a fresh turn on an idle chat. It used to be a
+// follow-up and failed "no run to attach this message to".
+test("a breakout's reported send starts a new turn when the chat is idle", async () => {
+  let reported: { send: (t: string) => void } | null = null;
+  await mountChat({ breakout: true, onBreakoutState: (s: { send: (t: string) => void }) => { reported = s; } });
+  await settle(20);
+  expect(reported).not.toBeNull();
+  expect(started()).toHaveLength(0);
+  await act(async () => reported!.send("handoff text"));
+  await settle(20);
+  expect(started()).toHaveLength(1);
+  expect(started()[0]!.params["message"] ?? JSON.stringify(started()[0])).toContain("handoff text");
+});
+
+// BREAKOUT PICK MODE: the top-bar button toggles it; each exchange is one click target.
+describe("breakout pick mode", () => {
+  const HISTORY = [
+    { role: "user", text: "first question", uuid: "u1" },
+    { role: "assistant", text: "first answer", uuid: "a1" },
+    { role: "user", text: "second question", uuid: "u2" },
+    { role: "assistant", text: "second answer", uuid: "a2" },
+  ];
+  type Opened = { context: { block: string; count: number }; forkKey?: string };
+  async function mountParent(history: unknown[] = HISTORY, capture?: ((e: unknown) => void)[]) {
+    historyTurns = history;
+    const opened: Opened[] = [];
+    const doc = document as unknown as { addEventListener: (t: string, fn: (e: unknown) => void) => void };
+    const prev = doc.addEventListener;
+    if (capture) doc.addEventListener = (t, fn) => void (t === "keydown" && capture.push(fn));
+    try {
+      const m = await mountChat({ initialSessionId: "sess-abc12345", onBreakout: (req: Opened) => void opened.push(req) });
+      await settle(20);
+      await act(async () => publishBreakoutEnabled(true));
+      await settle(20);
+      return { ...m, opened };
+    } finally {
+      doc.addEventListener = prev;
+    }
+  }
+  const toggle = (r: ReturnType<typeof create>) => act(() => kebabOf(r).props.breakout.onToggle());
+  const picked = (r: ReturnType<typeof create>) => byClass(r, "is-pick-on").length;
+  const exchange = (r: ReturnType<typeof create>, i: number) =>
+    r.root.findAll((x) => typeof x.props.className === "string" && /\bturn\b/.test(x.props.className) && /\bis-pick\b/.test(x.props.className) && typeof x.type === "string")[i]!;
+  const click = (r: ReturnType<typeof create>, i: number, target: unknown = { closest: () => null }) =>
+    act(() => exchange(r, i).props.onClick({ target }));
+
+  test("no per-message breakout button, and no pick UI until the kebab item is pressed", async () => {
+    const { r } = await mountParent();
+    expect(byClass(r, "turn-breakout").length).toBe(0);
+    expect(byClass(r, "breakout-sel-bar").length).toBe(0);
+    expect(kebabOf(r).props.breakout.picking).toBe(false);
+  });
+
+  test("the kebab item enters pick mode with the latest exchange picked, and toggles it off", async () => {
+    const { r } = await mountParent();
+    toggle(r);
+    expect(kebabOf(r).props.breakout.picking).toBe(true);
+    expect(byClass(r, "breakout-sel-bar").length).toBe(1);
+    expect(picked(r)).toBe(2);
+    expect(byClass(r, "turn-pick-check").length).toBe(2);
+    toggle(r);
+    expect(byClass(r, "breakout-sel-bar").length).toBe(0);
+    expect(byClass(r, "is-pick").length).toBe(0);
+  });
+
+  test("clicking an exchange toggles it; a click on a link or button inside does not", async () => {
+    const { r } = await mountParent();
+    toggle(r);
+    click(r, 0);
+    expect(picked(r)).toBe(4);
+    click(r, 1, { closest: () => ({}) });
+    expect(picked(r)).toBe(4);
+    click(r, 1);
+    expect(picked(r)).toBe(2);
+    click(r, 2);
+    expect(picked(r)).toBe(0);
+  });
+
+  // RIGHT-CLICK on a message starts the pick with THAT exchange picked.
+  const idleTurns = (r: ReturnType<typeof create>) =>
+    r.root.findAll((x) => typeof x.type === "string" && /\bturn\b/.test(String(x.props.className ?? "")) && typeof x.props.onContextMenu === "function");
+  const ctx = (r: ReturnType<typeof create>, i: number, target: unknown = { closest: () => null }) => {
+    const ev = { target, prevented: false, preventDefault() { this.prevented = true; } };
+    act(() => idleTurns(r)[i]!.props.onContextMenu(ev));
+    return ev;
+  };
+
+  test("right-click on the FIRST exchange picks it and nothing else, with no custom menu", async () => {
+    const { r } = await mountParent();
+    const ev = ctx(r, 0);
+    expect(ev.prevented).toBe(true);
+    expect(byClass(r, "breakout-sel-bar").length).toBe(1);
+    expect(kebabOf(r).props.breakout.picking).toBe(true);
+    expect(picked(r)).toBe(2);
+    // The first exchange, not the default (latest) one.
+    expect(exchange(r, 0).props.className).toContain("is-pick-on");
+    expect(exchange(r, 2).props.className).not.toContain("is-pick-on");
+    expect(byClass(r, "context-menu").length).toBe(0);
+  });
+
+  test("right-click on an assistant turn picks its exchange", async () => {
+    const { r } = await mountParent();
+    ctx(r, 3);
+    expect(picked(r)).toBe(2);
+    expect(exchange(r, 3).props.className).toContain("is-pick-on");
+  });
+
+  test("right-click on a link or a code block keeps the native menu and does not pick", async () => {
+    const { r } = await mountParent();
+    const ev = ctx(r, 1, { closest: (sel: string) => (sel.includes("pre") ? {} : null) });
+    expect(ev.prevented).toBe(false);
+    expect(kebabOf(r).props.breakout.picking).toBe(false);
+    expect(byClass(r, "breakout-sel-bar").length).toBe(0);
+  });
+
+  test("right-click with a text selection keeps the native menu", async () => {
+    const { r } = await mountParent();
+    const w = window as unknown as { getSelection?: () => { toString(): string } };
+    const prev = w.getSelection;
+    w.getSelection = () => ({ toString: () => "some words" });
+    try {
+      expect(ctx(r, 1).prevented).toBe(false);
+    } finally {
+      w.getSelection = prev;
+    }
+    expect(kebabOf(r).props.breakout.picking).toBe(false);
+  });
+
+  test("while picking, right-click toggles the exchange and suppresses the native menu", async () => {
+    const { r } = await mountParent();
+    toggle(r);
+    expect(picked(r)).toBe(2);
+    const ev = exchange(r, 0);
+    const e1 = { target: { closest: () => null }, prevented: false, preventDefault() { this.prevented = true; } };
+    act(() => ev.props.onContextMenu(e1));
+    expect(e1.prevented).toBe(true);
+    expect(picked(r)).toBe(4);
+    const e2 = { target: { closest: () => null }, prevented: false, preventDefault() { this.prevented = true; } };
+    act(() => exchange(r, 0).props.onContextMenu(e2));
+    expect(picked(r)).toBe(2);
+  });
+
+  test("no right-click pick without onBreakout, or while the flag is off", async () => {
+    historyTurns = HISTORY;
+    const off = await mountChat({ initialSessionId: "sess-abc12345", onBreakout: () => {} });
+    await settle(20);
+    expect(idleTurns(off.r).length).toBe(0);
+  });
+
+  describe("breakout cwd follows the chat's worktree hint", () => {
+    async function openWith(hint: unknown): Promise<Record<string, unknown>> {
+      pollHint = hint;
+      historyTurns = HISTORY;
+      const opened: Record<string, unknown>[] = [];
+      const { r } = await mountChat({ initialSessionId: "sess-abc12345", initialAsk: "go", onBreakout: (req: Record<string, unknown>) => void opened.push(req) });
+      await settle(20);
+      await act(async () => publishBreakoutEnabled(true));
+      await settle(20);
+      toggle(r);
+      act(() => byClass(r, "breakout-sel-start")[0]!.props.onClick());
+      expect(opened).toHaveLength(1);
+      return opened[0]!;
+    }
+    test("an absolute hint path rides as cwd", async () => {
+      const req = await openWith({ path: "/w/repo/.claude/worktrees/x", branch: "x", via: "bash" });
+      expect(req["cwd"]).toBe("/w/repo/.claude/worktrees/x");
+      expect(req["file"]).toBe(baseProps.file);
+    });
+    test("no hint, an exit hint, or a relative path leaves cwd unset", async () => {
+      for (const hint of [undefined, { path: "", branch: "", via: "exit" }, { path: "wt/x", branch: "", via: "enter" }, { path: "", branch: "", via: "agent", label: "a" }]) {
+        const req = await openWith(hint);
+        expect("cwd" in req).toBe(false);
+        for (const m of mounted.splice(0)) await act(async () => m.unmount());
+      }
+    });
+  });
+
+  test("Start opens with the picked keys and leaves pick mode; Start is disabled at zero", async () => {
+    const { r, opened } = await mountParent();
+    toggle(r);
+    click(r, 0);
+    act(() => byClass(r, "breakout-sel-start")[0]!.props.onClick());
+    expect(opened).toHaveLength(1);
+    expect(opened[0]!.context.count).toBe(4);
+    expect(byClass(r, "breakout-sel-bar").length).toBe(0);
+    toggle(r);
+    click(r, 2);
+    expect(picked(r)).toBe(0);
+    expect(byClass(r, "breakout-sel-start")[0]!.props.disabled).toBe(true);
+  });
+
+  // Enter while picking is the Start button: the words become the breakout's first
+  // message and never reach the main session.
+  const box = (r: ReturnType<typeof create>) => r.root.findAllByType("textarea")[0]!;
+  const type = (r: ReturnType<typeof create>, value: string) =>
+    act(() => box(r).props.onChange({ currentTarget: { value, selectionStart: value.length, selectionEnd: value.length, style: {} }, target: { value } }));
+  const enter = (r: ReturnType<typeof create>) =>
+    act(() => box(r).props.onKeyDown({ key: "Enter", shiftKey: false, ctrlKey: false, metaKey: false, keyCode: 13, nativeEvent: {}, preventDefault() {}, stopPropagation() {} }));
+
+  test("Enter while picking starts the breakout with the typed text and posts nothing to the main chat", async () => {
+    const { r, opened } = await mountParent();
+    toggle(r);
+    expect(box(r).props.placeholder).toBe("Ask the breakout · Enter starts it");
+    type(r, "  why is it slow?  ");
+    enter(r);
+    await settle(20);
+    expect(opened).toHaveLength(1);
+    expect((opened[0] as { prompt?: string }).prompt).toBe("why is it slow?");
+    expect(started()).toHaveLength(0);
+    expect(byClass(r, "breakout-sel-bar").length).toBe(0);
+    expect(box(r).props.value).toBe("");
+  });
+
+  test("Enter with nothing picked sends nothing and keeps the words", async () => {
+    const { r, opened } = await mountParent();
+    toggle(r);
+    click(r, 2);
+    expect(picked(r)).toBe(0);
+    type(r, "hello");
+    enter(r);
+    await settle(20);
+    expect(opened).toHaveLength(0);
+    expect(started()).toHaveLength(0);
+    expect(box(r).props.value).toBe("hello");
+  });
+
+  test("the Start button carries the typed text; the send button is named Start breakout", async () => {
+    const { r, opened } = await mountParent();
+    toggle(r);
+    const send = byClass(r, "c-send")[0]!;
+    expect(send.props["aria-label"]).toBe("Start breakout");
+    expect(send.props.title).toBe("Start breakout");
+    type(r, "q?");
+    act(() => byClass(r, "breakout-sel-start")[0]!.props.onClick());
+    expect(opened).toHaveLength(1);
+    expect((opened[0] as { prompt?: string }).prompt).toBe("q?");
+    expect(started()).toHaveLength(0);
+  });
+
+  test("Start with an empty composer opens without a prompt", async () => {
+    const { r, opened } = await mountParent();
+    toggle(r);
+    act(() => byClass(r, "breakout-sel-start")[0]!.props.onClick());
+    expect(opened).toHaveLength(1);
+    expect("prompt" in opened[0]!).toBe(false);
+  });
+
+  test("an interrupted exchange with no reply text is not the default pick", async () => {
+    const { r } = await mountParent([...HISTORY, { role: "user", text: "third question", uuid: "u3" }, { role: "assistant", text: "", uuid: "a3" }]);
+    toggle(r);
+    expect(picked(r)).toBe(2);
+  });
+
+  test("a breakout card sends its prompt once as the first message", async () => {
+    const sent: string[] = [];
+    await mountChat({ breakout: true, breakoutPrompt: "first q", onBreakoutPromptSent: () => void sent.push("x") });
+    await settle(40);
+    expect(started()).toHaveLength(1);
+    expect(started()[0]!.params["prompt"] ?? JSON.stringify(started()[0])).toContain("first q");
+    expect(sent).toHaveLength(1);
+  });
+
+  test("Cancel leaves pick mode without opening", async () => {
+    const { r, opened } = await mountParent();
+    toggle(r);
+    act(() => byClass(r, "breakout-sel-cancel")[0]!.props.onClick());
+    expect(opened).toHaveLength(0);
+    expect(byClass(r, "breakout-sel-bar").length).toBe(0);
+  });
+
+  test("Escape cancels pick mode, and is left alone otherwise", async () => {
+    const keydown: ((e: unknown) => void)[] = [];
+    const { r } = await mountParent(HISTORY, keydown);
+    const press = async () => {
+      const evs = keydown.map(() => ({ key: "Escape", defaultPrevented: false, target: null, prevented: false, preventDefault() { this.prevented = true; } }));
+      await act(async () => keydown.forEach((fn, i) => fn(evs[i])));
+      return evs;
+    };
+    const idle = await press();
+    expect(idle.some((e) => e.prevented)).toBe(false);
+    toggle(r);
+    expect(picked(r)).toBe(2);
+    await press();
+    expect(byClass(r, "breakout-sel-bar").length).toBe(0);
+    expect(picked(r)).toBe(0);
+  });
+  // THE HOST'S MENU READS THE CHAT'S BREAKOUT STATE (the Tasks peek hides the ⋮).
+  test("onBreakoutControl reports available + picking, and its toggle enters pick mode", async () => {
+    const seen: Array<{ available: boolean; picking: boolean; toggle: () => void } | null> = [];
+    historyTurns = HISTORY;
+    const { r } = await mountChat({
+      initialSessionId: "sess-abc12345",
+      onBreakout: () => {},
+      onBreakoutControl: (c: (typeof seen)[number]) => void seen.push(c),
+    });
+    await settle(20);
+    const last = () => seen[seen.length - 1];
+    expect(last()?.available).toBe(false); // flag off
+    await act(async () => publishBreakoutEnabled(true));
+    await settle(20);
+    expect(last()).toMatchObject({ available: true, picking: false });
+    const first = last()!.toggle;
+    act(() => last()!.toggle());
+    expect(last()).toMatchObject({ available: true, picking: true });
+    expect(byClass(r, "breakout-sel-bar").length).toBe(1);
+    expect(last()!.toggle).toBe(first); // stable across renders
+    act(() => last()!.toggle());
+    expect(last()).toMatchObject({ picking: false });
+    await act(async () => r.unmount());
+    mounted.splice(mounted.indexOf(r), 1);
+    expect(last()).toBeNull();
+  });
+
+  test("Escape while picking: a capture listener on window cancels the pick and stops outer handlers", async () => {
+    const win = window as unknown as { addEventListener: (t: string, f: (e: unknown) => void, o?: unknown) => void; removeEventListener: (t: string, f: (e: unknown) => void, o?: unknown) => void };
+    const prevAdd = win.addEventListener;
+    const prevRemove = win.removeEventListener;
+    const caps: Array<(e: unknown) => void> = [];
+    win.addEventListener = (t, f, o) => void (t === "keydown" && (o === true || (o as { capture?: boolean } | undefined)?.capture) && caps.push(f));
+    win.removeEventListener = (t, f) => void (t === "keydown" && caps.includes(f) && caps.splice(caps.indexOf(f), 1));
+    try {
+      const { r } = await mountParent();
+      const outer: unknown[] = [];
+      const press = async () => {
+        let stopped = false;
+        const ev = { key: "Escape", defaultPrevented: false, target: null,
+          preventDefault() { this.defaultPrevented = true; }, stopPropagation() { stopped = true; }, stopImmediatePropagation() { stopped = true; } };
+        await act(async () => {
+          for (const f of [...caps]) f(ev);
+          if (!stopped) outer.push(ev); // the bubble listener on document
+        });
+        return ev;
+      };
+      // Not picking: no listener, the press reaches the outer handler untouched.
+      expect(caps).toHaveLength(0);
+      const idle = await press();
+      expect(idle.defaultPrevented).toBe(false);
+      expect(outer).toHaveLength(1);
+      toggle(r);
+      expect(kebabOf(r).props.breakout.picking).toBe(true);
+      expect(caps).toHaveLength(1);
+      const ev = await press();
+      expect(ev.defaultPrevented).toBe(true);
+      expect(outer).toHaveLength(1); // not called again
+      expect(kebabOf(r).props.breakout.picking).toBe(false);
+      expect(caps).toHaveLength(0); // listener removed
+    } finally {
+      win.addEventListener = prevAdd;
+      win.removeEventListener = prevRemove;
+    }
+  });
 });

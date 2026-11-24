@@ -29,6 +29,7 @@ import {
   type EmbedLoc,
 } from "@platform/lib/layout-codec";
 import type { Config } from "@platform/lib/api";
+import { parseRemoteLocation } from "@platform/lib/remote";
 import { SplitRightIcon, SplitDownIcon } from "@platform/ui/SplitIcons";
 import { MaximizeIcon, RestoreIcon } from "@platform/ui/MaximizeIcons";
 import PaneModeMenu from "@apps/explorer/PaneModeMenu";
@@ -195,14 +196,28 @@ function Pane({ node, ctx, first }: { node: LayoutLeaf; ctx: PaneCtx; first: boo
       </span>
     );
   };
-  addCrumb(underHome ? "~" : isDrive ? allParts[0] : "/", rootTarget, parts.length === 0, "root");
-  let acc = rootTarget === "/" ? "" : rootTarget.replace(/\/$/, "");
-  parts.forEach((p, i) => {
-    acc += "/" + p;
-    // The "~" crumb carries no slash, so its first segment needs one too.
-    if (i > 0 || underHome || isDrive) crumbs.push(<span key={"sep" + i} className="panel-crumb-sep">/</span>);
-    addCrumb(p, acc, i === parts.length - 1, acc);
-  });
+  const remote = parseRemoteLocation(loc.path);
+  if (remote) {
+    // An `s3://` location (platform/lib/remote.ts): `s3://bucket` › seg › …,
+    // each crumb its own prefix — the same crumbs the top bar draws.
+    const segs = remote.key.split("/").filter((s) => s.length > 0);
+    let at = `s3://${remote.bucket}/`;
+    addCrumb("s3://" + remote.bucket, at, segs.length === 0, "root");
+    segs.forEach((seg, i) => {
+      at += seg + "/";
+      crumbs.push(<span key={"sep" + i} className="panel-crumb-sep">/</span>);
+      addCrumb(seg, at, i === segs.length - 1, at);
+    });
+  } else {
+    addCrumb(underHome ? "~" : isDrive ? allParts[0] : "/", rootTarget, parts.length === 0, "root");
+    let acc = rootTarget === "/" ? "" : rootTarget.replace(/\/$/, "");
+    parts.forEach((p, i) => {
+      acc += "/" + p;
+      // The "~" crumb carries no slash, so its first segment needs one too.
+      if (i > 0 || underHome || isDrive) crumbs.push(<span key={"sep" + i} className="panel-crumb-sep">/</span>);
+      addCrumb(p, acc, i === parts.length - 1, acc);
+    });
+  }
 
   return (
     <div className={"panel-pane" + (maximized ? " maximized" : "")}>

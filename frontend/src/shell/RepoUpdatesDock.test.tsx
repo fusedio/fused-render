@@ -226,7 +226,6 @@ function fullProps(
     rows,
     dismissed: props.dismissed ?? {},
     terminal: props.terminal ?? [],
-    pairings: props.pairings ?? [],
     attention: props.attention ?? [],
     attentionDismissed: props.attentionDismissed ?? {},
     onAttentionDismiss: props.onAttentionDismiss,
@@ -238,7 +237,6 @@ function fullProps(
     onDismissAll: props.onDismissAll ?? (() => {}),
     onDone: props.onDone ?? (() => {}),
     onTerminalPatch: props.onTerminalPatch,
-    onPairingGone: props.onPairingGone,
     syncFailures: props.syncFailures ?? [],
     onSyncGone: props.onSyncGone,
   };
@@ -676,8 +674,8 @@ test("clicking the fold row reveals every job", () => {
 // DEVIATION from the pre-R3 behaviour this test's own name used to assert
 // (DECISIONS-status-popovers.md's R3 entry): once every non-attention row
 // kind is merged into one newest-first "Earlier" list, there is no single
-// kind left to scope `TERMINAL_VISIBLE_CAP` to — a repo row or a pairing
-// that happens to be the OLDEST rows on screen now folds exactly like an old
+// kind left to scope `TERMINAL_VISIBLE_CAP` to — a repo row
+// that happens to be the OLDEST row on screen now folds exactly like an old
 // finished job would. A waiting task never folds either way, because it
 // lives in "Needs you", untouched by any cap.
 test("the earlier cap spans every row kind together, not terminal jobs alone", () => {
@@ -686,13 +684,12 @@ test("the earlier cap spans every row kind together, not terminal jobs alone", (
   const tree = renderSeenView({
     rows,
     terminal,
-    pairings: [{ id: "p1", name: "Suryas iPhone", at: 1000 }],
     attention: [asking()],
   });
-  // 1 attention row (never folded) + 5 shown Earlier rows, out of 11 total
-  // non-attention rows (2 repo + 1 pairing + 8 terminal).
+  // 1 attention row (never folded) + 5 shown Earlier rows, out of 10 total
+  // non-attention rows (2 repo + 8 terminal).
   expect(findAll(tree, "dl-row").length).toBe(6);
-  expect(text(findAll(tree, "dl-panel-more")[0])).toBe("6 older notifications");
+  expect(text(findAll(tree, "dl-panel-more")[0])).toBe("5 older notifications");
 });
 
 // Finding 4 (code review 2026-09-16): TERMINAL_VISIBLE_CAP used to slice the
@@ -1440,24 +1437,6 @@ test("a dismissed waiting-task row comes back once the question changes", () => 
     attentionDismissed: { "sess-7": "Pull today's news" },
   });
   expect(findAll(tree, "dl-row")).toHaveLength(1);
-});
-
-test("clicking a pairing row opens LAN preferences and clears the row", () => {
-  withNav((pushed) => {
-    const onPairingGone = mock(() => {});
-    const tree = renderInstance({
-      rows: [],
-      pairings: [{ id: "p1", name: "Suryas iPhone", at: 1000 }],
-      onPairingGone,
-    });
-    const row = findAll(tree.toJSON() as ReactTestRendererJSON, "dl-row")[0];
-    expect(findAll(tree.toJSON() as ReactTestRendererJSON, "dl-row-open")).toHaveLength(1);
-    act(() => {
-      (row.props as { onClick: () => void }).onClick();
-    });
-    expect(pushed).toContain("/preferences?tab=lan");
-    expect(onPairingGone).toHaveBeenCalledWith("p1");
-  });
 });
 
 test("a task naming no folder still opens as a row — its door is /tasks itself", () => {

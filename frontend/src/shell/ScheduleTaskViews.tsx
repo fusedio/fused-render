@@ -24,6 +24,7 @@
 // accordion, the thread rows, the id chips, the unread dot) is in
 // styles/tasks.css.
 import { BulkBar, GroupCheck, RowCheck, useBulkArchive, type BulkSelect } from "@shell/TaskBulk";
+import { taskFaceShown, taskIconHref } from "./task-icons";
 import { useArchiveConfirm } from "@shell/archive-confirm";
 import { selectableTask } from "@shell/task-selection";
 import {
@@ -39,6 +40,7 @@ import {
 import type { DragEvent as ReactDragEvent } from "react";
 import { agentLabel, agentNamed, useAgentBackends } from "@platform/lib/agent-backends";
 import { AgentMark } from "@platform/ui/AgentMark";
+import { TaskStar } from "@platform/ui/TaskStar";
 import {
   cancelScheduledMessage,
   forceStart,
@@ -46,11 +48,13 @@ import {
   markTaskMessageRead,
   markWholeTaskRead,
   resendScheduledMessage,
+  retryAfterLimit,
   runScheduledNow,
   scheduleMessage,
   archiveTask,
   unarchiveTask,
 } from "@platform/lib/api";
+import { isUsageLimited, LIMIT_RETRY_HINT, LIMIT_RETRY_LABEL } from "@platform/lib/usage-limit";
 import { notify } from "@platform/lib/notifications";
 import { useNow } from "@platform/lib/clock";
 import { EraseTaskModal } from "./EraseTaskModal";
@@ -153,7 +157,6 @@ import {
   taskUnread,
   taskUnreadLabel,
   cardTitleLine,
-  recapTitlesOn,
   taskWhenFor,
   type TaskSortBy,
   threadView,
@@ -195,6 +198,7 @@ import { runAgent } from "@apps/claude/protocol/agent";
 // takes its filter type, its empty value and its filter function from the same
 // module it takes the views from.
 import { useRowFit } from "./row-fit";
+import { TaskIconPick } from "./TaskIconPick";
 import {
   PEEK_OPEN_CLASS,
   peekItemProps,
@@ -750,6 +754,18 @@ export function StopJobButton({
   );
 }
 
+/** THE RING'S OWN WORD — what `StatusIcon` names itself and says in its
+ *  tooltip: "Background" for the blue ring, "Blocked" for a red one that is
+ *  not parked on a card, else the lane's label ("Draft", "Done", …). One
+ *  copy, so a host that captions the ring's seat itself (TaskPeekWho, with
+ *  the ring `quiet`) says the same word (Bugbot on #2344: the head's caption
+ *  read the raw key `draft`). */
+export function statusRingWord(o: { status: BoardColumn; failed?: boolean | undefined; background?: boolean | undefined }): string {
+  if (o.background) return BACKGROUND_LABEL;
+  if (o.failed && o.status !== "needs_attention") return "Blocked";
+  return STATUS_LABELS[o.status] ?? o.status;
+}
+
 export function StatusIcon({
   status,
   failed,
@@ -758,8 +774,22 @@ export function StatusIcon({
   count,
   draftHeld,
   background,
+  icon,
+  quiet,
 }: {
   status: BoardColumn;
+  /** NO NATIVE TOOLTIP: the host captions the ring itself, at once
+   *  (platform/lib/hints `data-hint` on its seat — the task head's status
+   *  seat), and the browser's `title` would say the same word again a second
+   *  later. The accessible name stays. */
+  quiet?: boolean;
+  /** THE TASK'S FACE (task icons, 2026-11-10): the task's
+   *  `icon_slot` — null on a task that wears the ring (never given one and
+   *  not starred, or its icon removed; 2026-11-16). With the experiment on, the ring becomes that glyph —
+   *  same box, same hue, every mark (unread dot, draft dot, "!") in its
+   *  top-right corner (schedule.css `.schedule-ring--glyph`). Omitted on a container (a lane header, the
+   *  queue chip) and the ring is drawn as always. */
+  icon?: number | null;
   failed?: boolean;
   label?: string;
   /** Fill the centre — there is something in here nobody has looked at. */
@@ -783,11 +813,7 @@ export function StatusIcon({
   // still going — collapsing it into "Blocked" here would announce and tool
   // a waiting ring as broken.
   const red = failed && !background;
-  const text = label
-    ?? (background ? BACKGROUND_LABEL : undefined)
-    ?? (failed && status !== "needs_attention"
-      ? "Blocked"
-      : (STATUS_LABELS[status] ?? status));
+  const text = label ?? statusRingWord({ status, failed, background });
   const many = taskUnreadLabel(count ?? 0);
   // What the FILL is worth in words. The count when there is one, the bare word
   // when there is not — and nothing at all on a hollow ring, which is the point:
@@ -802,6 +828,9 @@ export function StatusIcon({
   // the one a person can still do something about.
   const marks = [draftHeld ? "unsent draft" : null, said]
     .filter(Boolean).join(", ");
+  // The glyph, when the listing sent this task a face (picked by hand, or
+  // starred and not removed — 2026-11-16).
+  const glyph = taskFaceShown(icon) ? taskIconHref(icon) : null;
   return (
     <span
       className={
@@ -809,12 +838,18 @@ export function StatusIcon({
         (red ? " schedule-ring--failed" : "") +
         (background ? " schedule-ring--background" : "") +
         (unread ? " schedule-ring--unread" : "") +
-        (draftHeld ? " schedule-ring--draft-held" : "")
+        (draftHeld ? " schedule-ring--draft-held" : "") +
+        (glyph ? " schedule-ring--glyph" : "")
       }
       aria-label={marks ? `${text}, ${marks}` : text}
       data-tip={many ?? ""}
-      title={many ? "" : text}
+      title={many || quiet ? "" : text}
     >
+      {glyph && (
+        <svg aria-hidden="true" focusable="false">
+          <use href={glyph} />
+        </svg>
+      )}
       {/* THE WAITING MARK IS AN ELEMENT, not a pseudo, and that is not a style
           preference — a ring has exactly two pseudos and BOTH are already spent
           on this very component. `::after` is the unread fill, and `::before` is
@@ -1981,6 +2016,22 @@ interface RunOutcome {
  *  the right thing to show. */
 async function performForceStart(task: Task): Promise<void> {
   await forceStart({ key: task.key });
+}
+
+/** RETRY NOW on a row the plan's usage limit paused — the continue prompt goes
+ *  now instead of at the reset (`POST /api/tasks/limit/retry`; the booked
+ *  comeback stays until a reply retires it). Returns the server's note when
+ *  the continue could not go this second, "" when it went. Refusals THROW,
+ *  like performForceStart, so each caller puts them in its own note line. */
+async function performLimitRetry(task: Task): Promise<string> {
+  const res = await retryAfterLimit(task.key);
+  return res.note || "";
+}
+
+/** Whether a row offers Retry now: paused on the usage limit, with a
+ *  conversation to continue (a `pending:` row has none). */
+function canRetryLimit(task: Task): boolean {
+  return isUsageLimited(task) && !!task.session_id;
 }
 
 /**
@@ -3254,6 +3305,7 @@ export function TaskRowItem({
   onPress,
   onQueued,
   onReload,
+  selected = false,
 }: {
   task: Task;
   /** For the marks that spell a path with `~` (the file mark's caption). */
@@ -3281,6 +3333,9 @@ export function TaskRowItem({
    */
   onQueued?: (override: QueueOverride) => void;
   onReload?: () => void;
+  /** The chat the reader last picked (platform/lib/last-chat): the Tasks
+   *  page's own "the one I just read" wash (`.is-selected`). */
+  selected?: boolean;
 }) {
   return (
     <TaskNode
@@ -3289,7 +3344,7 @@ export function TaskRowItem({
       showProject={false}
       folderMissing={false}
       open={false}
-      selected={false}
+      selected={selected}
       onSelect={NO_OP}
       onToggle={NO_OP}
       loading={false}
@@ -3383,6 +3438,98 @@ function FoldedNode({
     >
       <span className="tasks-fold-title">{cardTitleLine(task).text}</span>
     </div>
+  );
+}
+
+/** THE A/B ROW'S RING (TaskNode, `ab`): the icon picker's button
+ *  (TaskIconPick) — on ANY numbered task, ring or face, icons experiment on
+ *  (2026-11-16: the icon is not the star's). The Board card, the Cards wall and the Detailed view seat their
+ *  rings here too (owner, 2026-11-16: "click to change icon in status ring"
+ *  on every view); `nested` for the Board card, which is itself a
+ *  `<button>` (TaskStar's `nested`, for the same reason). */
+export function RingSeat({ task, onDone, nested = false, children }: {
+  task: Task;
+  onDone?: () => void;
+  nested?: boolean;
+  children: React.ReactNode;
+}) {
+  return (
+    <TaskIconPick task={task} nested={nested} {...(onDone ? { onDone } : {})}>
+      {children}
+    </TaskIconPick>
+  );
+}
+
+/** THE FILING BUTTON — Archive, or Unarchive on an archived task — one
+ *  component for every Tasks view that draws it in a slot of its own: the
+ *  List row (its mark slot, or its id slot on the a/b row), and the id slot
+ *  of the Board card, the Cards wall tile and the Detailed view's card on
+ *  the a/b switch (owner, 2026-11-16: "in card view we are missing the
+ *  archive button thing on task id" — "detailed view doesn't have archive
+ *  button on task id … fix that as well").
+ *
+ *  The DIRECTION is the intent's (tasks-lib.filingIntent) and the press is
+ *  the host's (`onPress`): each view already owns its filing path — the
+ *  row's note line, the Board's lane note, the wall's toast, the Detailed
+ *  view's Undo — and the confirm for a task that needs one sits on that
+ *  path, so this draws the button and nothing else.
+ *
+ *  A PRESS IS ITS OWN: it stops at the button, so it never opens the task
+ *  or toggles a selection (no host seats it inside a link: the List row's
+ *  link is a stretched SIBLING, under the button's `z-index: 2`). `nested` draws a `<span role="button">` for a host that is
+ *  itself a `<button>` (the Board card, TaskStar's `nested`), and that host
+ *  is a DRAG SOURCE: the span swallows its own mousedown, which is what
+ *  keeps a press on it from lifting the card — and keeps the press from
+ *  focusing the card under it. */
+export function FileAct({ file, onPress, disabled = false, label, nested = false, className }: {
+  file: FilingIntent;
+  onPress: () => void;
+  disabled?: boolean;
+  /** The accessible name, when the host's differs from the intent's own. */
+  label?: string;
+  nested?: boolean;
+  /** Extra classes, between `tasks-act` and the direction's suffix. */
+  className?: string;
+}) {
+  const press = (e: React.MouseEvent | React.KeyboardEvent) => {
+    e.stopPropagation();
+    // The span-button's host is a <button> (and a drag source): nothing of
+    // the press may reach it. A real button sits in no link on any host, so
+    // its press keeps the row's own shape.
+    if (nested) e.preventDefault();
+    if (disabled) return;
+    onPress();
+  };
+  const common = {
+    className: "tasks-act" + (className ? " " + className : "") + " tasks-act--" + file.kind,
+    "data-hint": file.title,
+    "aria-label": label ?? file.label,
+    onClick: press,
+  };
+  const glyph = file.kind === "archive" ? ICON_ARCHIVE : ICON_UNARCHIVE;
+  if (nested) {
+    return (
+      <span
+        {...common}
+        role="button"
+        tabIndex={0}
+        aria-disabled={disabled || undefined}
+        onMouseDown={(e) => {
+          e.preventDefault();
+          e.stopPropagation();
+        }}
+        onKeyDown={(e) => {
+          if (e.key === "Enter" || e.key === " ") press(e);
+        }}
+      >
+        {glyph}
+      </span>
+    );
+  }
+  return (
+    <button type="button" {...common} disabled={disabled}>
+      {glyph}
+    </button>
   );
 }
 
@@ -3701,6 +3848,9 @@ function TaskNode({
    *  while the flag is down, while `messageState` derives its own from "pending
    *  and past due", which is true in either build (🔴 review 2026-09-12). */
   const queueOn = useProjectQueueEnabled();
+  /* THE A/B ROW (Akshil, 2026-11-15): folder before the id, Archive over the
+     id, the star over the count, the page door over the time.
+     `tasks-row--ab` scopes the stylesheet's half. */
   // The `Draft` chip — this task's unsent composer text, or the row's own
   // unfinished form. tasks-lib.draftTag owns both cases and the tooltip.
   // Hidden while the side peek holds this row's draft (tasks-lib.draftHeldByPeek).
@@ -3732,7 +3882,8 @@ function TaskNode({
   // away" sat one flick from "open the chat I was just in" — but Recent chats
   // is the list a reader tidies from, and a row that cannot be filed there sends
   // them to the Tasks page for a gesture this same row already knows. Same
-  // slot, same reveal, same verb: `.tasks-act` on hover over the status ring.
+  // slot, same reveal, same verb: `.tasks-act` on hover over the status ring
+  // (over the id on the a/b row).
   const file = filingIntent(task);
   // Mark read — the whole task at once, so clearing 89 unread messages is not 89
   // clicks through 89 transcripts. Asked of the count this row is DRAWING, so
@@ -3760,7 +3911,8 @@ function TaskNode({
   // flag goes up on the press and comes down when the pointer LEAVES the row
   // (`onMouseLeave` below), and while it is up `.is-refiled` (tasks.css) hands
   // the mark slot back to the STATUS RING — now drawing the new state, which is
-  // the confirmation — instead of the reveal. Leave and return, and the hover
+  // the confirmation — instead of the reveal (on the a/b row, the id slot back
+  // to TASK-nnn, the ring beside it the confirmation). Leave and return, and the hover
   // offers the (now opposite) action again, exactly like any other row.
   const [refiled, setRefiled] = useState(false);
   // The delete target, or null. LOCAL to the row (design.md §2: "each surface
@@ -3775,7 +3927,8 @@ function TaskNode({
   // WHETHER THE STRIP HIDES THE SUFFIX MARKS (Akshil, 2026-09-16: "show the
   // icon only when the overlay hides it"). Measured, never guessed from a
   // width (see responsive-collision rule): the inline marks' right edge
-  // against where the strip's fade begins — Open's left edge less the fade —
+  // against where the strip's fade begins — Open's left edge less the fade
+  // (the strip's first button on the a/b row, whose door is over the time) —
   // so the answer does not depend on whether the copies themselves are drawn,
   // and cannot oscillate.
   //
@@ -3798,7 +3951,9 @@ function TaskNode({
       const marks = row.querySelectorAll<HTMLElement>(
         ":scope > .tasks-row-file, :scope > .tasks-row-sched",
       );
-      const door = row.querySelector<HTMLElement>(".tasks-acts .tasks-act--page");
+      // The a/b row's strip has no door (it is over the time): its first
+      // button, if any, is where the fade begins. No button, no fade.
+      const door = row.querySelector<HTMLElement>(".tasks-acts .tasks-act");
       let under = false;
       if (marks.length && door) {
         const fadeLeft = door.getBoundingClientRect().left - STRIP_FADE_PX;
@@ -3861,6 +4016,23 @@ function TaskNode({
       setNote((e as Error).message);
     } finally {
       setActing(false);
+      onReload?.();
+    }
+  };
+  // Retry now on a usage-limited row: same shape as `force`, the note line
+  // carries whatever the server said when the continue did not simply go.
+  const [retrying, setRetrying] = useState(false);
+  const retryLimit = async () => {
+    setActing(true);
+    setRetrying(true);
+    setNote("");
+    try {
+      setNote(await performLimitRetry(task));
+    } catch (e) {
+      setNote((e as Error).message);
+    } finally {
+      setActing(false);
+      setRetrying(false);
       onReload?.();
     }
   };
@@ -4244,11 +4416,71 @@ function TaskNode({
     }
   };
 
+  /* The Board's drag onto Archive — or out of it — as a press. ONE button on
+     the row, never two: a task is either put away or it is not, so
+     tasks-lib.filingIntent answers with a direction and this draws that
+     direction's glyph and calls that direction's verb.
+
+     ON AN ARCHIVED ROW IT IS THE ONLY BUTTON (showsRowActions, above).
+     Unarchive beside a Re-run would suggest the two are related, and the one
+     thing this gesture must never be read as is starting work.
+
+     THE ONE ROW ACTION NOT BEHIND SHOW_ROW_ACTIONS (Akshil, 2026-08-18: bring
+     the archive button back, visible on hover). Filing a task away had no
+     press anywhere in the List while the strip was off — the only route was
+     switching to the Board, expanding the Archive lane and dragging — which
+     made the honest answer to "can a task be deleted?" (no: it is archived)
+     barely true on this view.
+
+     HOVER-REVEALED, not permanent: a list at rest must grow no chrome (§2 —
+     only critical actions get visible buttons), and this is one button on
+     every row that has ever run. `.tasks-act` in tasks.css owns that, and it
+     does it with `opacity` plus a `:focus-visible` arm rather than
+     `visibility`/`display`, so the button stays in the tab order and lights up
+     for a keyboard that lands on it. It is still not rendered at all on a task
+     with nothing to file, which is the difference that matters:
+     hidden-until-hover is for a live control, not for a dead one.
+
+     Seated over the id. The button itself is `FileAct`, the one every
+     view's id slot draws (2026-11-16). */
+  const fileButton = file && (
+    <FileAct file={file} disabled={acting} onPress={() => void refile(file)} />
+  );
+  /* THE QUICK DOOR OUT (.claude-design/task-side-peek/design.md, Round 3): the
+     row's own press opens the peek beside the list, and this is the way to the
+     WHOLE page when that is what the reader wants — today's Explorer route,
+     unchanged, which is exactly where the row used to go. Hover-revealed like
+     every other row action (`.tasks-act`, above the stretched link at
+     `z-index: 2`, so its press is its own), and a real link with a real href
+     so ⌘-click and middle-click open a tab. Seated over the time — where its
+     hint also carries the time it stands over. */
+  const pageDoor = (to: string) => (
+    <a
+      className="tasks-act tasks-act--page"
+      href={to}
+      aria-label={`Open ${shortTaskId(task.task_id)} in ${opensCanvas(task) ? "Canvas" : "Explorer"}`}
+      data-hint={
+        task.provisional || !when.title
+          ? pageDoorLabel(task)
+          : `${pageDoorLabel(task)} · ${when.title}`
+      }
+      onClick={(e) => {
+        // A modified press is the browser's (the row's own link rule).
+        if (opensElsewhere(e)) return;
+        e.preventDefault();
+        e.stopPropagation();
+        navigateUrl(to);
+      }}
+    >
+      {OPEN_DOOR_LABEL}
+    </a>
+  );
+
   return (
     <div className="tasks-node" ref={nodeRef}>
       {archiveAsk.node}
       <div
-        className={"tasks-row" + (open ? " is-open" : "")
+        className={"tasks-row tasks-row--ab" + (open ? " is-open" : "")
           + (selected ? " is-selected" : "") + (pressable ? "" : " is-inert")
           + (peeked ? ` ${PEEK_OPEN_CLASS}` : "")
           + (refiled ? " is-refiled" : "")}
@@ -4414,7 +4646,7 @@ function TaskNode({
             next poll, and it is the count the tooltip names. */}
         {bulk && <RowCheck select={bulk} task={task} />}
         {/* THE MARK SLOT: the ring at rest, the Archive button under the pointer,
-            in the same box (`.tasks-rowmark`, tasks.css).
+            in the same box (`.tasks-rowmark`, tasks.css) — on the legacy row.
 
             The two used to be at opposite ends of the row — the ring in the rail
             and Archive out by the folder chip — which made "file this away" a
@@ -4427,57 +4659,28 @@ function TaskNode({
             The button is ABSOLUTELY positioned inside a slot sized to the ring,
             so it is out of flow and no pixel of the row can move when it appears
             — the rail (`--tasks-rail-x`), the thread's indent under it and the
-            caret's hit zone to its left are all untouched. */}
+            caret's hit zone to its left are all untouched.
+
+            THE A/B ROW (Akshil, 2026-11-15) swaps nothing here: Archive stands
+            over the id instead (`.tasks-idslot` below), and the status ring or
+            glyph is a button — `TaskIconPick` wraps it on any numbered task
+            with the icons experiment on (2026-11-16: any task can be given an
+            icon, not only a favourite) and the press opens the icon picker.
+            With the experiment off, or on a task with no number yet, the slot holds no control and the press falls through
+            to the link as before. */}
         <span className="tasks-rowmark">
-          <StatusIcon
-            status={taskColumn(task)}
-            failed={ringFailed(task)}
-            label={asking || undefined}
-            unread={unread > 0}
-            count={unread}
-            draftHeld={draftRing(task) && !heldInPeek}
-            background={liveJobRow(task)}
-          />
-          {/* The Board's drag onto Archive — or out of it — as a press. ONE
-              button in this slot, never two: a task is either put away or it is
-              not, so tasks-lib.filingIntent answers with a direction and this
-              draws that direction's glyph and calls that direction's verb.
-
-              ON AN ARCHIVED ROW IT IS THE ONLY BUTTON (showsRowActions, above).
-              Unarchive beside a Re-run would suggest the two are related, and the
-              one thing this gesture must never be read as is starting work.
-
-              THE ONE ROW ACTION NOT BEHIND SHOW_ROW_ACTIONS (Akshil, 2026-08-18:
-              bring the archive button back, visible on hover). Filing a task away
-              had no press anywhere in the List while the strip was off — the only
-              route was switching to the Board, expanding the Archive lane and
-              dragging — which made the honest answer to "can a task be deleted?"
-              (no: it is archived) barely true on this view.
-
-              HOVER-REVEALED, not permanent: a list at rest must grow no chrome
-              (§2 — only critical actions get visible buttons), and this is one
-              button on every row that has ever run. `.tasks-act` in tasks.css
-              owns that, and it does it with `opacity` plus a `:focus-visible` arm
-              rather than `visibility`/`display`, so the button stays in the tab
-              order and lights up for a keyboard that lands on it. It is still not
-              rendered at all on a task with nothing to file, which is the
-              difference that matters: hidden-until-hover is for a live control,
-              not for a dead one. */}
-          {file && (
-            <button
-              type="button"
-              className={"tasks-act tasks-act--" + file.kind}
-              data-hint={file.title}
-              aria-label={file.label}
-              disabled={acting}
-              onClick={(e) => {
-                e.stopPropagation();
-                void refile(file);
-              }}
-            >
-              {file.kind === "archive" ? ICON_ARCHIVE : ICON_UNARCHIVE}
-            </button>
-          )}
+          <RingSeat task={task} {...(onReload ? { onDone: onReload } : {})}>
+            <StatusIcon
+              status={taskColumn(task)}
+              failed={ringFailed(task)}
+              label={asking || undefined}
+              unread={unread > 0}
+              count={unread}
+              draftHeld={draftRing(task) && !heldInPeek}
+              background={liveJobRow(task)}
+              icon={task.icon_slot}
+            />
+          </RingSeat>
         </span>
         {/* IN EVERY LIST, INCLUDING THE CHAT PANE'S (Akshil, 2026-09-14). It
             was taken off the borrowed row for a round, on the argument that a
@@ -4487,13 +4690,9 @@ function TaskNode({
             or carried to the Tasks page. The title is the element that gives
             way, which is what it is for. */}
         <TaskAgentMark backend={task.backend} />
-        <IdChip id={task.task_id} kind="task" />
-        {/* THE FOLDER CHIP SITS HERE, between the id and the title (Akshil,
-            2026-09-15): the row's left end is where it says what it IS — the id,
-            then the folder it belongs to, then the words. It lived at the right
-            end among the tags until then; DraftChip stays there alone. Same
-            component, same press, same shield — only the slot moved. */}
-        {prRef && <PrNumChip prRef={prRef} />}
+        {/* THE FAVOURITE STAR sits over the count (`.tasks-bseat--fav`
+            below). The a/b row puts the folder first: status, folder, id,
+            title. */}
         {showProject && (
           <IdentityChip
             name={basename(task.project)}
@@ -4510,6 +4709,16 @@ function TaskNode({
             active={pinned}
           />
         )}
+        {/* THE ID SLOT (a/b row): TASK-nnn at rest, the filing button under
+            the pointer, in the same box (`.tasks-idslot`, tasks.css) — the mark
+            slot's technique, one seat to the right. The button is out of flow
+            over the number, so no pixel of the row moves. No button (a run in
+            flight) means the number stays under the pointer. */}
+        <span className="tasks-idslot">
+          <IdChip id={task.task_id} kind="task" />
+          {fileButton}
+        </span>
+        {prRef && <PrNumChip prRef={prRef} />}
         {/* Beside the id, the same component in the same place as on the card
             (design-principles §1): a tag that moved between the two views would
             be two different marks to learn. */}
@@ -4541,14 +4750,11 @@ function TaskNode({
              the row's own styles (hints.ts `renderTaskHint`, Akshil,
              2026-09-19): what the row clamps is what the reader is missing. */
           data-hint-title={line.hint}
-          data-hint-reply={recapTitlesOn(task) ? "" : task.last_reply || ""}
+          data-hint-reply={task.last_reply || ""}
         >
           {label}
         </span>
-        {/* Never with task recap titles on (`recapTitlesOn`: the server sends a
-            `recap` key only then): the title carries the words, and the full
-            reply stays in the hover (`data-hint-reply`). */}
-        {task.last_reply && !recapTitlesOn(task) ? (
+        {task.last_reply ? (
           <span
             className="tasks-title-reply"
             data-hint={task.last_reply}
@@ -4756,7 +4962,7 @@ function TaskNode({
           {/* THE MARKS AGAIN, inside the strip (Akshil, 2026-09-16): a long
               title puts its file/clock mark under the fade the strip draws,
               so the strip repeats the mark — same glyph, same tooltip —
-              right before Open. Captions only, no press: the inline mark
+              ahead of the strip's buttons. Captions only, no press: the inline mark
               already carries the row's press, and a second target for it
               here would sit where the reader is aiming at Open. */}
           {marksUnderStrip && taskFile_ ? (
@@ -4777,7 +4983,7 @@ function TaskNode({
         {/* THE STRIP IS BEHIND SHOW_ROW_ACTIONS, all of it. Archive is the one
             row action that is live, and it is no longer part of this strip at all
             — it moved into the mark slot at the row's leading edge on 2026-08-18
-            (see `.tasks-rowmark` above). Each button still carries its own guard
+            (see `.tasks-rowmark` above; `.tasks-idslot` on the a/b row). Each button still carries its own guard
             rather than the group carrying one, so the three keep their hard-won
             ORDER whichever of them are rendered: "clear it, run it, open it". */}
         {/* The drag from Upcoming into In Progress, without the drag — and on
@@ -4830,6 +5036,26 @@ function TaskNode({
             {FORCE_START_LABEL}
           </button>
         )}
+        {/* RETRY NOW, on a row the usage limit paused ("Usage limit · resumes
+            4:00 AM") — the same seat and register as Force start, and like it
+            not behind SHOW_ROW_ACTIONS: switching accounts makes the wait
+            pointless, and this is the press that says so. */}
+        {canRetryLimit(task) && (
+          <button
+            type="button"
+            className="tasks-act tasks-act--skip"
+            title={LIMIT_RETRY_HINT}
+            aria-label={`${LIMIT_RETRY_LABEL} for ${task.task_id}`}
+            data-testid="task-limit-retry"
+            disabled={acting}
+            onClick={(e) => {
+              e.stopPropagation();
+              void retryLimit();
+            }}
+          >
+            {retrying ? "Retrying\u2026" : LIMIT_RETRY_LABEL}
+          </button>
+        )}
         {SHOW_ROW_ACTIONS && seen && (
           <button
             type="button"
@@ -4862,7 +5088,8 @@ function TaskNode({
         )}
         {/* ARCHIVE IS NOT HERE ANY MORE (2026-08-18). It sat between Run now and
             Open chat, out by the folder chip; it is in the row's MARK SLOT now,
-            swapping with the status ring on hover (see `.tasks-rowmark` above).
+            swapping with the status ring on hover (see `.tasks-rowmark` above) —
+            or with TASK-nnn on the a/b row (`.tasks-idslot`).
             The strip's remaining order still reads left-to-right as "clear it,
             run it, open it", and the day SHOW_ROW_ACTIONS flips there is no
             fourth button to find a place for. */}
@@ -4875,35 +5102,12 @@ function TaskNode({
             row's OWN click is still not this (see `activate`): on an accordion it
             toggles and opens nothing, and on a leaf it opens that leaf's single
             message through the message path, marking that one message. */}
-        {/* THE QUICK DOOR OUT (.claude-design/task-side-peek/design.md, Round 3):
-            the row's own press opens the peek beside the list, and this is the
-            way to the WHOLE page when that is what the reader wants — today's
-            Explorer route, unchanged, which is exactly where the row used to
-            go. Hover-revealed like every other row action (`.tasks-act`, above
-            the stretched link at `z-index: 2`, so its press is its own), and a
-            real link with a real href so ⌘-click and middle-click open a tab.
-
-            NOT ON A DRAFT: an unfinished New task form has no page to open —
-            its press re-opens the card — so a door there would be a promise
-            nothing can keep. `page` is null on a row whose folder is gone for
-            the same reason (the toast already says so). */}
-        {SHOW_PAGE_DOOR && peekOn && page && !openDraft && (
-          <a
-            className="tasks-act tasks-act--page"
-            href={page}
-            aria-label={`Open ${shortTaskId(task.task_id)} in ${opensCanvas(task) ? "Canvas" : "Explorer"}`}
-            data-hint={pageDoorLabel(task)}
-            onClick={(e) => {
-              // A modified press is the browser's (the row's own link rule).
-              if (opensElsewhere(e)) return;
-              e.preventDefault();
-              e.stopPropagation();
-              navigateUrl(page);
-            }}
-          >
-            {OPEN_DOOR_LABEL}
-          </a>
-        )}
+        {/* THE QUICK DOOR OUT (`pageDoor`, above). NOT ON A DRAFT: an
+            unfinished New task form has no page to open — its press re-opens
+            the card — so a door there would be a promise nothing can keep.
+            `page` is null on a row whose folder is gone for the same reason
+            (the toast already says so). The a/b row seats it over the TIME
+            (see the end of the row). */}
         {/* ON THE PEEKED ROW IT IS THE OTHER HALF OF THE SAME GESTURE
             (.claude-design/task-side-peek/design.md): the conversation this
             button opens is already open beside the row, so pressing it again
@@ -5120,6 +5324,22 @@ function TaskNode({
             </span>
           );
         })()}
+        {/* THE COUNT SLOT'S OTHER HALF: THE FAVOURITE STAR (Akshil, 2026-11-15
+            — the a/b row). The count at rest, the star under the pointer,
+            filled when the task is starred. It sat left of the id, always
+            shown, from 2026-11-05 until then.
+
+            A ZERO-WIDTH SEAT after the count (the hover strip's own trick,
+            `.tasks-bseat` in tasks.css) with the star hung off its right
+            edge, over the count's ink — so the swap moves nothing, and the
+            star outlives a count the fit ladder has folded (the seat then
+            takes its own 18px while the row is pointed at). `data-fit-skip`
+            keeps both off the ladder's measurement (row-fit.ts `rowNeed`).
+            Empty when the task has nothing to star (TaskStar's own rule), and
+            the count then stays put. */}
+        <span className="tasks-bseat tasks-bseat--fav" data-fit-skip="">
+          <TaskStar task={task} />
+        </span>
         {/* ALWAYS drawn (2026-08-18). It used to be `{when && …}` and taskWhen
             returned null on a task whose three-message window is empty — a session
             holding only a `/clear` — which left the last cell of that row blank
@@ -5147,6 +5367,23 @@ function TaskNode({
         ) : (
           <span className="tasks-row-time" data-hint={when.title}>
             {when.text}
+          </span>
+        )}
+        {/* THE TIME SLOT'S OTHER HALF: THE DOOR TO THE WHOLE PAGE (Akshil,
+            2026-11-15 — the a/b row; .claude-design/task-side-peek/design.md,
+            Round 3 for the door itself). The row's own press opens the peek
+            beside the list; this goes to the page — today's Explorer route,
+            unchanged. The time at rest, "↗ Open" under the pointer, in the
+            time's own box: the same zero-width seat as the star's, the door
+            hung off its right edge over the time's ink — the time column
+            keeps the legacy row's width, so a door wider than the time
+            overhangs leftwards, while hovered only (tasks.css). Where the ladder has folded the
+            time, the seat takes 22px while the row is pointed at and the door
+            is the arrow alone. Such a row as has no door (a draft, a gone
+            folder) keeps its time under the pointer. */}
+        {SHOW_PAGE_DOOR && peekOn && page && !openDraft && (
+          <span className="tasks-bseat tasks-bseat--door" data-fit-skip="">
+            {pageDoor(page)}
           </span>
         )}
       </div>
@@ -5950,6 +6187,16 @@ export function TaskBoard({
     }
     onReload();
   };
+  const retryLimit = async (task: Task) => {
+    setNote(null);
+    try {
+      const said = await performLimitRetry(task);
+      if (said) setNote(said);
+    } catch (e) {
+      setNote((e as Error).message);
+    }
+    onReload();
+  };
 
   const refile = async (task: Task, intent: FilingIntent) => {
     if (intent.kind === "archive") {
@@ -6267,6 +6514,7 @@ export function TaskBoard({
                     onFile={(intent) => refile(task, intent)}
                     onRun={(intent) => runNow(task, intent)}
                     onForceStart={() => force(task)}
+                    onRetryLimit={() => retryLimit(task)}
                     onErased={onReload}
                     onOpen={(intent) => openCard(task, intent)}
                     {...(onOpenDraft ? { onOpenDraft } : {})}
@@ -6321,6 +6569,7 @@ function TaskCard({
   onFile,
   onRun,
   onForceStart,
+  onRetryLimit,
   onOpen,
   onOpenDraft,
   onErased,
@@ -6371,6 +6620,9 @@ function TaskCard({
    * may be reachable. The drag onto In Progress presses the same verb. The
    * board owns the call, so its refusal lands in the one note. */
   onForceStart: () => Promise<void>;
+  /** Retry now on a card the usage limit paused (`canRetryLimit`). The board
+   *  owns the call, so its refusal lands in the one note, like Force start. */
+  onRetryLimit: () => Promise<void>;
   /** Open the conversation, marking the thread read on the way. The board owns
    * it because the board owns the read set — and it is only ever called with a
    * non-null intent, so this card cannot navigate to nowhere. */
@@ -6431,6 +6683,10 @@ function TaskCard({
   // page's vocabulary is most careful about: a Board that offered a return the
   // List did not draw is exactly the divergence the old SHOW_UNARCHIVE was.
   const file = filingIntent(task);
+  // THE A/B CARD (owner, 2026-11-16: "in card view we are missing the archive
+  // button thing on task id, and click to change icon in status ring"):
+  // Archive leaves the hover strip for the id slot in the head, and the ring —
+  // where this card draws one — is the icon picker's button.
   // Run now / Re-run, which the List row and the calendar popover both already
   // offer and this card did not. The SAME function decides it here as there
   // (tasks-lib.taskRunIntent, which asks runNowIntent — the very function
@@ -6485,6 +6741,8 @@ function TaskCard({
   /** …and what a waiting card is waiting on — the List row's sentence. */
   const asking = attentionCaption(task);
   const [busy, setBusy] = useState(false);
+  /** Retry now is the press in flight — its button says so. */
+  const [retrying, setRetrying] = useState(false);
   // The Board's own copy of the List row's erase confirm; see the foot.
   const [erasing, setErasing] = useState(false);
   // …and of its discard, for the same reason: one press, not two.
@@ -6510,7 +6768,7 @@ function TaskCard({
     // one. The action is a SIBLING pinned over the card's head — where the head
     // has spare room to its right on every card — rather than a nested control
     // the browser would refuse to parse.
-    <div className={"tasks-card-wrap" + (isDragging ? " is-dragging" : "")}
+    <div className={"tasks-card-wrap tasks-card-wrap--ab" + (isDragging ? " is-dragging" : "")}
       data-checked={bulk?.selection.has(task.key) ? "1" : undefined}>
       {bulk && <RowCheck select={bulk} task={task} />}
       <button
@@ -6557,7 +6815,12 @@ function TaskCard({
           onDragStart();
         }}
         onDragEnd={onDragEnd}
-        onClick={() => {
+        onClick={(e) => {
+          // A PRESS FROM A PORTAL IS NOT THE CARD'S (Bugbot, PR #2300): the a/b
+          // ring's icon picker is portalled to the body, and React bubbles its
+          // clicks — a pick, a shuffle, Remove — up the component tree to here.
+          // Only a press on this card's own DOM opens it.
+          if (!e.currentTarget.contains(e.target as Node)) return;
           // The draft arm first, for the List row's reason: a draft has no
           // session and no folder to be missing from — the form IS its content.
           // Both kinds of draft come through here, the never-sent chat included
@@ -6618,18 +6881,47 @@ function TaskCard({
             So the head is the id, and a ring on the one card whose status its lane
             does not mention. */}
         <span className="schedule-tv-card-head">
-          {waiting
-            ? <StatusIcon status="needs_attention" label={asking || undefined} />
-            /* THE THIRD CARD WHOSE RING SAYS WHAT ITS LANE DOES NOT: a finished
-               turn with a job still running under it, drawn In Progress
-               (tasks-lib.liveJobRow / boardLane). The List row's own ring —
-               blue, "Background" — and ahead of the failed flag, as on the List
-               row and the Cards wall (StatusIcon: background outranks failed). */
-            : jobs
-              ? <StatusIcon status={status} background />
-              : failedOffLane && <StatusIcon status={lane} failed />}
+          {/* THE A/B CARD'S RING IS A BUTTON (RingSeat → TaskIconPick, the List
+              row's own): it opens the icon picker, on a numbered task with the
+              icons experiment on — a span-button, `nested`, since the card is a
+              <button>. Only where this card draws a ring at all (the rule
+              above): a card whose ring would repeat its lane still draws none. */}
+          {(waiting || jobs || failedOffLane) && (
+            <RingSeat task={task} nested>
+              {waiting
+                ? <StatusIcon status="needs_attention" label={asking || undefined} />
+                /* THE THIRD CARD WHOSE RING SAYS WHAT ITS LANE DOES NOT: a finished
+                   turn with a job still running under it, drawn In Progress
+                   (tasks-lib.liveJobRow / boardLane). The List row's own ring —
+                   blue, "Background" — and ahead of the failed flag, as on the List
+                   row and the Cards wall (StatusIcon: background outranks failed). */
+                : jobs
+                  ? <StatusIcon status={status} background />
+                  : failedOffLane && <StatusIcon status={lane} failed />}
+            </RingSeat>
+          )}
           <TaskAgentMark backend={task.backend} />
-          <IdChip id={task.task_id} kind="task" />
+          {/* The star left of the id; a span-button, since the card is a <button>. */}
+          <TaskStar task={task} nested />
+          {/* THE ID SLOT (a/b card): the List row's `.tasks-idslot` — TASK-nnn
+              at rest, the filing button over it while the card is pointed at,
+              in the same box (tasks.css "The a/b Board card"), so nothing on
+              the card moves. A span-button (`nested`), and the hover strip's
+              own Archive stands down below: one filing button per card. No
+              button where the filing cannot change (a run in flight): the
+              number stays. */}
+          <span className="tasks-idslot">
+            <IdChip id={task.task_id} kind="task" />
+            {file ? (
+              <FileAct
+                file={file}
+                nested
+                disabled={busy}
+                label={`${file.label} ${shortTaskId(task.task_id)}`}
+                onPress={() => void refile(file)}
+              />
+            ) : null}
+          </span>
           {/* The draft chip left this head with the List row's (Akshil,
               2026-09-11) and for the same reason — it is a tag now, and the
               tags sit together at the card's other end. It is in the foot,
@@ -6802,9 +7094,13 @@ function TaskCard({
           and it is the same button on the other view, so keeping it flagged here
           while the List shows it is exactly the divergence the shared flag exists
           to prevent (§1 — same element, same behaviour in every view). The strip
-          itself is drawn whenever either survives its guard. */}
-      {((peekOn && page) || file || folderMissing || (hasDraft(task) && !heldInPeek)
-        || canForceStart(task) || jobs || (SHOW_ROW_ACTIONS && run)) && (
+          itself is drawn whenever either survives its guard.
+
+          ON THE A/B CARD ARCHIVE IS NOT HERE (2026-11-16): it stands over the
+          id in the head (`.tasks-idslot` above), the List row's seat, and a
+          second copy here would be two filing buttons on one card. */}
+      {((peekOn && page) || folderMissing || (hasDraft(task) && !heldInPeek)
+        || canForceStart(task) || canRetryLimit(task) || jobs || (SHOW_ROW_ACTIONS && run)) && (
         <span className="tasks-card-acts">
           {/* DISCARD, the List row's own act in the card's hover strip — same
               glyph, same class, same caption, same silence at rest (design.md,
@@ -6885,6 +7181,28 @@ function TaskCard({
               {FORCE_START_LABEL}
             </button>
           )}
+          {/* RETRY NOW, the List row's own press on a card the usage limit
+              paused — same seat and register as Force start. */}
+          {canRetryLimit(task) && (
+            <button
+              type="button"
+              className="tasks-act tasks-card-act tasks-act--skip"
+              title={LIMIT_RETRY_HINT}
+              aria-label={`${LIMIT_RETRY_LABEL} ${shortTaskId(task.task_id)}`}
+              data-testid="task-limit-retry"
+              disabled={busy}
+              onClick={() => {
+                setBusy(true);
+                setRetrying(true);
+                void onRetryLimit().finally(() => {
+                  setBusy(false);
+                  setRetrying(false);
+                });
+              }}
+            >
+              {retrying ? "Retrying\u2026" : LIMIT_RETRY_LABEL}
+            </button>
+          )}
           {/* The List row's quick door, in the card's own hover strip — same
               act, same glyph, same caption (design.md, Round 3). A SIBLING of
               the card rather than a child, because the card IS a button; that
@@ -6915,18 +7233,6 @@ function TaskCard({
               onClick={() => void runNow(run)}
             >
               {run.rerun ? ICON_RERUN : ICON_PLAY}
-            </button>
-          )}
-          {file && (
-            <button
-              type="button"
-              className={"tasks-act tasks-card-act tasks-act--" + file.kind}
-              data-hint={file.title}
-              aria-label={`${file.label} ${shortTaskId(task.task_id)}`}
-              disabled={busy}
-              onClick={() => void refile(file)}
-            >
-              {file.kind === "archive" ? ICON_ARCHIVE : ICON_UNARCHIVE}
             </button>
           )}
         </span>

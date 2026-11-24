@@ -21,6 +21,7 @@ old localStorage keys. PUT validates every known key, DROPS unknown ones
 (a newer client's extra key must not break an older server), and answers 400
 on a known key with a bad value. Every sub-object is optional.
 """
+import math
 import os
 import re
 
@@ -34,6 +35,9 @@ router = APIRouter()
 VERSION = 1
 SIDEBAR_MIN_W = 180
 SIDEBAR_MAX_W = 400
+# The right rail's expanded width (frontend platform/lib/railstate.ts).
+RAIL_MIN_W = 180
+RAIL_MAX_W = 400
 MAX_VIEW_STATE = 500
 MAX_PATH = 4096
 MAX_QUERY = 512
@@ -41,6 +45,19 @@ MAX_RECENT_PATHS = 8
 # The canvas rail's pinned preview card, as dragged (RailPeek's corner grips).
 RAIL_PEEK_MIN = 120
 RAIL_PEEK_MAX = 10000
+# The rail cards whose dragged size the document keeps.
+RAIL_CARD_KEYS = ("canvasRailPeek", "canvasRailFav")
+# The chat text zoom (⌘+ / ⌘− / ⌘0, platform/lib/chat-zoom.ts): one factor for
+# every chat, snapped to these steps (ui-layout.ts CHAT_TEXT_SCALES).
+CHAT_TEXT_SCALES = (0.8, 0.9, 1, 1.1, 1.25, 1.5, 1.75, 2)
+# Keys an OLDER bundle's whole-document PUT never names: carried forward from
+# the stored document rather than dropped (see put_ui_layout).
+CARRIED_KEYS = (*RAIL_CARD_KEYS, "chatTextScale", "chatSeen", "rail")
+# The task chat's "seen" mark (apps/claude/ui/chatSeen.ts): session id → where
+# the reader last sat at the end of it (`k:d:r`, a position in the log). The bots'
+# `seen_seq`, for task chats: where the NEW rule goes on the next open.
+MAX_CHAT_SEEN = 300
+MAX_CHAT_ID = 128
 _IDENT_RE = re.compile(r"^[a-z0-9_-]{1,32}$")
 
 
@@ -57,6 +74,12 @@ def _path() -> str:
 
 def _is_int(v) -> bool:
     return isinstance(v, int) and not isinstance(v, bool)
+
+
+def _snap_scale(v: float):
+    """`v` clamped to the step list's ends and snapped to its nearest step."""
+    v = min(CHAT_TEXT_SCALES[-1], max(CHAT_TEXT_SCALES[0], v))
+    return min(CHAT_TEXT_SCALES, key=lambda s: abs(s - v))
 
 
 def _is_key(v) -> bool:
@@ -94,6 +117,12 @@ def _clean(doc) -> dict:
         _check(_is_int(sb.get("width")) and SIDEBAR_MIN_W <= sb["width"] <= SIDEBAR_MAX_W)
         _check(isinstance(sb.get("collapsed"), bool))
         out["sidebar"] = {"width": sb["width"], "collapsed": sb["collapsed"]}
+    if "rail" in doc:
+        rl = doc["rail"]
+        _check(isinstance(rl, dict))
+        _check(_is_int(rl.get("width")) and RAIL_MIN_W <= rl["width"] <= RAIL_MAX_W)
+        _check(isinstance(rl.get("expanded"), bool))
+        out["rail"] = {"width": rl["width"], "expanded": rl["expanded"]}
     for key in ("bookmarksCollapsed", "currentAppsCollapsed", "canvasesCollapsed"):
         if key in doc:
             _check(isinstance(doc[key], bool))
@@ -134,15 +163,30 @@ def _clean(doc) -> dict:
     if "rememberLastFolder" in doc:
         _check(isinstance(doc["rememberLastFolder"], bool))
         out["rememberLastFolder"] = doc["rememberLastFolder"]
-    if "canvasRailPeek" in doc:
-        rp = doc["canvasRailPeek"]
+    # The rail's pinned card (`canvasRailPeek`) and the favourite's card
+    # (`canvasRailFav`): the size the reader dragged each to, same shape.
+    for card in RAIL_CARD_KEYS:
+        if card not in doc:
+            continue
+        rp = doc[card]
         _check(isinstance(rp, dict))
         size: dict = {}
         for key in ("width", "height"):
             v = rp.get(key)
             _check(_is_int(v) and RAIL_PEEK_MIN <= v <= RAIL_PEEK_MAX)
             size[key] = v
-        out["canvasRailPeek"] = size
+        out[card] = size
+    if "chatSeen" in doc:
+        cs = doc["chatSeen"]
+        _check(isinstance(cs, dict) and len(cs) <= MAX_CHAT_SEEN)
+        for k, v in cs.items():
+            _check(isinstance(k, str) and 0 < len(k) <= MAX_CHAT_ID)
+            _check(isinstance(v, str) and 0 < len(v) <= MAX_CHAT_ID)
+        out["chatSeen"] = dict(cs)
+    if "chatTextScale" in doc:
+        v = doc["chatTextScale"]
+        _check(isinstance(v, (int, float)) and not isinstance(v, bool) and math.isfinite(v))
+        out["chatTextScale"] = _snap_scale(v)
     return out
 
 
@@ -173,11 +217,14 @@ def put_ui_layout(layout=Body(default=None), x_fused: str | None = Header(defaul
     except _Invalid:
         return JSONResponse({"error": "invalid layout"}, status_code=400)
     # A document from an OLDER bundle (another window, the desktop app before
-    # its relaunch) says nothing of `canvasRailPeek`; the whole-document PUT
-    # must not drop the size a newer one saved (CodeRabbit on #2062).
-    if "canvasRailPeek" not in clean:
+    # its relaunch) says nothing of `canvasRailPeek` / `canvasRailFav` /
+    # `chatTextScale` / `rail`; the whole-document PUT must not drop the value
+    # a newer one saved (CodeRabbit on #2062).
+    missing = [key for key in CARRIED_KEYS if key not in clean]
+    if missing:
         stored = read_layout()
-        if stored and "canvasRailPeek" in stored:
-            clean["canvasRailPeek"] = stored["canvasRailPeek"]
+        for key in missing:
+            if stored and key in stored:
+                clean[key] = stored[key]
     storage.write_json(_path(), clean)
     return {"ok": True}

@@ -294,6 +294,49 @@ describe("paneFracFromSharedWidth", () => {
   });
 });
 
+// THE RAIL STANDING PAST THE PANE (favourites on, rail-peek-lib `railInset`):
+// the pane and the list share only what is left beside it, so the floors are
+// the room's — and the answer stays a share of the whole split (the pane's
+// flex-basis). The list is what the pane and the rail leave.
+describe("paneFracFromSharedWidth beside a standing rail", () => {
+  const RAIL = 48;
+  const list = (frac: number, w: number) => w - frac * w - RAIL;
+
+  test("a wide shared width on a resized split leaves the list its floor beside the rail", () => {
+    // A split just past both floors, the rail's 48 off it: the pane's floor
+    // measured against the whole split leaves the list under its own.
+    const w = SIDE_PANE_MIN_WIDTH + LIST_MIN_W + 20;
+    const frac = paneFracFromSharedWidth(2000, w, RAIL);
+    expect(list(frac, w)).toBeGreaterThanOrEqual(LIST_MIN_W - 1e-9);
+    // Measured against the whole split it would have starved the list.
+    expect(list(paneFracFromSharedWidth(2000, w), w)).toBeLessThan(LIST_MIN_W);
+  });
+
+  test("an undragged layout on a split just past both floors keeps the list's floor", () => {
+    // Room just under both floors together (the degenerate band) answers the
+    // companion share of the ROOM, never the split's floor-clamped pixels.
+    const w = SIDE_PANE_MIN_WIDTH + LIST_MIN_W + RAIL - 10;
+    const frac = paneFracFromSharedWidth(null, w, RAIL);
+    expect(frac).toBeCloseTo((companionFrac(w - RAIL) * (w - RAIL)) / w, 10);
+    expect(list(frac, w)).toBeGreaterThan(0);
+  });
+
+  test("a width that fits is kept in pixels, whatever the rail", () => {
+    expect(paneFracFromSharedWidth(400, 1200, RAIL) * 1200).toBeCloseTo(400, 6);
+  });
+
+  test("no rail answers exactly what it always did", () => {
+    for (const [px, w] of [
+      [null, 1200],
+      [400, 1200],
+      [2000, 600],
+      [900, 300],
+    ] as const) {
+      expect(paneFracFromSharedWidth(px, w, 0)).toBe(paneFracFromSharedWidth(px, w));
+    }
+  });
+});
+
 // ---------------------------------------------------------------- drag close
 // The listing pane's version of the sidebars' drag-to-close (#680): between the
 // pane's floor and `closeOverdrag(floor)` short of it the clamp renders the

@@ -16,14 +16,12 @@
 // (`status.locked`): the dropdown is disabled and the query ignored, since the
 // server 423s any other env.
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import previewTile from "@assets/canvas-preview-tile.png";
 import { navigateUrl, replaceSearch } from "@platform/lib/router";
 import { ErrorBanner } from "@platform/ui/ErrorBanner";
-import {
-  generateCanvasName,
-  sanitizeCanvasName,
-  validateCanvasName,
-} from "./canvas-name";
+import { Modal } from "@platform/ui/modal/Modal";
+import { Loader2, RefreshCw } from "lucide-react";
+import { contractHome, useHome } from "@platform/lib/home-path";
+import { NewCanvasDialog } from "./NewCanvasDialog";
 import {
   CanvasOwnedError,
   ENV_NAMES,
@@ -33,8 +31,10 @@ import {
   cancelLogin,
   cloneCanvas,
   createCanvas,
+  deleteCanvas,
   deleteFusedSettings,
   getCanvasesStatus,
+  getCanvasFavourites,
   getCanvasPreviews,
   listCanvases,
   logout,
@@ -42,11 +42,14 @@ import {
   startLogin,
   startSync,
   isWorkbenchEnv,
+  setCanvasFavourite,
   type CanvasEntry,
   type CanvasesStatus,
   type WorkbenchEnv,
 } from "./api";
+import { CanvasCard, canvasDisplayName } from "./CanvasCard";
 import { FusedSettingsModal } from "./FusedSettingsModal";
+import { LayoutNotice, MirrorChip, useReferenceMirror } from "./MirrorStatus";
 
 /** sync/start before opening a canvas. Another process owning the clone
  *  (409 `owned`) is not a reason to stay on the list: the workspace shows
@@ -81,75 +84,32 @@ function effectiveEnv(s: CanvasesStatus, picked: WorkbenchEnv | null): Workbench
 // slower than this makes a completed sign-in feel stuck.
 const LOGIN_POLL_MS = 1500;
 
-// A canvas with no uploaded preview gets the hosted gallery's stand-in: one
-// dark map tile per UDF, laid out in a grid, so the card still reads as a
-// canvas of N things instead of an empty box. The tile is the workbench's own
-// `preview_thumbnail_1.png` (fused-magic S3, main_marketing_website/), vendored
-// into the bundle rather than hot-linked — this app runs locally and a card
-// that needs the network to look right is a card that breaks offline.
-const TILE_CAP = 16;
-
-// The gallery's grid shapes, keyed by the layout each count rounds up into: 5
-// tiles use the 6 layout with an empty cell, 7 uses the 8, and so on. Copied
-// from the client's `getGridTemplateByCount` so the two gardens match.
-type TileLayout = { gridTemplateColumns: string; gridTemplateRows: string };
-
-const TILE_LAYOUTS: Record<number, TileLayout> = {
-  1: { gridTemplateColumns: "1fr", gridTemplateRows: "1fr" },
-  2: { gridTemplateColumns: "1fr 1fr", gridTemplateRows: "1fr" },
-  3: { gridTemplateColumns: "1fr 1fr", gridTemplateRows: "1fr 1fr" },
-  4: { gridTemplateColumns: "1fr 1fr", gridTemplateRows: "1fr 1fr" },
-  6: { gridTemplateColumns: "1fr 1fr 1fr", gridTemplateRows: "1fr 1fr" },
-  8: { gridTemplateColumns: "1fr 1fr 1fr 1fr", gridTemplateRows: "1fr 1fr" },
-  9: { gridTemplateColumns: "1fr 1fr 1fr", gridTemplateRows: "1fr 1fr 1fr" },
-  12: { gridTemplateColumns: "1fr 1fr 1fr 1fr", gridTemplateRows: "1fr 1fr 1fr" },
-  15: {
-    gridTemplateColumns: "1fr 1fr 1fr 1fr 1fr",
-    gridTemplateRows: "1fr 1fr 1fr",
-  },
-  16: {
-    gridTemplateColumns: "1fr 1fr 1fr 1fr",
-    gridTemplateRows: "1fr 1fr 1fr 1fr",
-  },
-};
-
-function tileLayout(count: number): TileLayout {
-  const size = [1, 2, 3, 4, 6, 8, 9, 12, 15, 16].find((n) => n >= count) ?? 16;
-  return TILE_LAYOUTS[size];
-}
-
-// Full locale date+time, seconds and four-digit year included — the same string
-// the hosted workbench's gallery prints under a canvas name.
-function formatModified(mtime: number): string {
-  return new Date(mtime * 1000).toLocaleString();
-}
-
 export default function Canvases() {
   const [status, setStatus] = useState<CanvasesStatus | null>(null);
   const [canvases, setCanvases] = useState<CanvasEntry[] | null>(null);
+  // True while the list on screen is the disk baseline and the fresh one is
+  // still on its way.
+  const [refreshing, setRefreshing] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState<string | null>(null); // canvas being opened
   const [loggingIn, setLoggingIn] = useState(false);
   const [query, setQuery] = useState("");
-  const [creating, setCreating] = useState(false); // form visible
-  const [newName, setNewName] = useState("");
-  // The line under the name box. Two sources, kept apart because only one
-  // gates Create: a rule the typed name breaks (`nameError`, per keystroke,
-  // disables Create) and the create call's failure (`submitError`, leaves
-  // Create on so the same name can be retried). Separate from `error` (the
-  // page banner) so a typo never paints a banner over the listing.
-  const [nameError, setNameError] = useState<string | null>(null);
-  const [submitError, setSubmitError] = useState<string | null>(null);
-  const [createBusy, setCreateBusy] = useState(false);
-  const newNameRef = useRef<HTMLInputElement | null>(null);
-  // The form mounts with the suggestion selected: Enter keeps it, typing
-  // replaces it (as the workbench's modal). Once per open, not per keystroke.
-  useEffect(() => {
-    if (creating) newNameRef.current?.select();
-  }, [creating]);
-  // Preview URLs that failed to load (expired presigned URL, deleted asset) —
-  // fall back to the monogram instead of a broken-image icon.
-  const [brokenPreviews, setBrokenPreviews] = useState<Set<string>>(new Set());
+  // The New canvas dialog is open (NewCanvasDialog owns its draft and errors).
+  const [creating, setCreating] = useState(false);
+  // The account's favourite collection ids (the hosted home's star, same
+  // control-plane list). Null until read — or when the read failed — and the
+  // cards hide their star rather than show every canvas as unstarred.
+  const [favourites, setFavourites] = useState<Set<string> | null>(null);
+  // Bumped when a toggle starts: drops favourites reads that left before it.
+  const favSeqRef = useRef(0);
+  // Ids with a star write on the wire: a second press waits it out, so a PUT
+  // and a DELETE for one canvas never race (and a failed first write cannot
+  // roll back a second one).
+  const favInFlightRef = useRef<Set<string>>(new Set());
+  // The canvas whose card's trash was pressed: the confirm dialog's target.
+  const [deleteTarget, setDeleteTarget] = useState<CanvasEntry | null>(null);
+  const [deleteCanvasBusy, setDeleteCanvasBusy] = useState(false);
+  const [deleteCanvasErr, setDeleteCanvasErr] = useState("");
   const pollRef = useRef<number | null>(null);
   // creds_stamp at the moment login started: a re-login over a stale-but-
   // present store never flips logged_in, so completion = the stamp changing.
@@ -164,6 +124,8 @@ export default function Canvases() {
   // Bumped on every environment change: a listing or preview batch that
   // departed under the old env must not land in the new env's page.
   const envGenRef = useRef(0);
+  // Sequence of listing requests within an env generation: see `refresh`.
+  const listSeqRef = useRef(0);
   // The ~/.fused/settings.toml editor. It opens by itself the first time a
   // status says custom is picked and unconfigured (a dropdown pick or a
   // `?env=custom` load alike); a dismissal is remembered until the pick
@@ -175,6 +137,9 @@ export default function Canvases() {
   const [deleteArmed, setDeleteArmed] = useState(false);
   const [deleteBusy, setDeleteBusy] = useState(false);
   const env = status ? effectiveEnv(status, picked) : null;
+  // The reference canvases of the env on show: the head's chip, and the
+  // notice for clones the folder-layout move left behind.
+  const referenceMirror = useReferenceMirror(env, status, setError);
 
   // Presigned preview URLs, keyed by collection id — the second, slower half
   // of the listing (D364). Kept beside `canvases` rather than merged into it so
@@ -215,8 +180,35 @@ export default function Canvases() {
     }
   }, []);
 
+  // Read the favourites alongside the listing, never in front of it. A
+  // failure just leaves the stars hidden (an external CLI has no shim; an old
+  // control plane has no endpoint) — not worth a banner over the cards.
+  const fillFavourites = useCallback(async (env: WorkbenchEnv) => {
+    const gen = envGenRef.current;
+    // A read that left before a toggle answers with the list as it was: it
+    // must not land over the toggle (favSeqRef moves on every toggle).
+    const seq = favSeqRef.current;
+    try {
+      const { collection_ids } = await getCanvasFavourites(env);
+      if (gen !== envGenRef.current || seq !== favSeqRef.current) return;
+      setFavourites(new Set(collection_ids));
+    } catch {
+      if (gen !== envGenRef.current || seq !== favSeqRef.current) return;
+      setFavourites(null);
+    }
+  }, []);
+
   const refresh = useCallback(async () => {
     const gen = envGenRef.current;
+    // Two list reads for the SAME env can overlap (a settings save, a delete,
+    // the header button): the env generation does not move, so the older
+    // one's answers — above all its slow fresh one — must not land over the
+    // newer one's. Only the latest sequence writes. Taken HERE, before the
+    // status read, so an older fresh answer cannot land in that window (a
+    // just-deleted canvas popping back). The spinner goes with it: its owner
+    // is now superseded and may no longer clear it.
+    const seq = ++listSeqRef.current;
+    setRefreshing(false);
     try {
       // The PICKED env's login (custom has its own `[auth]`, D1412); with no
       // pick yet, the default env's — the same env `effectiveEnv` lands on.
@@ -254,12 +246,31 @@ export default function Canvases() {
           setError(null);
           return;
         }
-        const { canvases } = await listCanvases(env);
-        if (gen !== envGenRef.current) return;
+        const { canvases, stale } = await listCanvases(env);
+        if (gen !== envGenRef.current || seq !== listSeqRef.current) return;
         setCanvases(canvases);
         // Deliberately NOT awaited: the cards render on the line above, and
-        // the thumbs pop in when the signing batch lands.
+        // the thumbs (and stars) pop in when their batches land.
         void fillPreviews(env, canvases);
+        void fillFavourites(env);
+        if (stale) {
+          // The baseline painted; now the real list (stale-while-revalidate,
+          // like the workbench home). Same generation check: an env switch
+          // while this was out must not write the old env's list.
+          setRefreshing(true);
+          try {
+            const second = await listCanvases(env, true);
+            if (gen !== envGenRef.current || seq !== listSeqRef.current) return;
+            setCanvases(second.canvases);
+            void fillPreviews(env, second.canvases);
+          } finally {
+            // Only the refresh that is still current may clear the hint: a
+            // newer one may have set it for its own fresh request.
+            if (gen === envGenRef.current && seq === listSeqRef.current) {
+              setRefreshing(false);
+            }
+          }
+        }
       }
       setError(null);
     } catch (e) {
@@ -274,7 +285,40 @@ export default function Canvases() {
       }
       setError(err.message);
     }
-  }, [fillPreviews]);
+  }, [fillPreviews, fillFavourites]);
+
+  // The header's refresh button: straight to the control plane (`fresh`),
+  // the cards on screen stay live under the spinner. Takes a list sequence
+  // like `refresh`, so a background revalidation still out cannot land over
+  // this answer, and a later refresh or env switch drops this one.
+  const onRevalidate = async () => {
+    if (!env || refreshing) return;
+    const gen = envGenRef.current;
+    const seq = ++listSeqRef.current;
+    setRefreshing(true);
+    try {
+      const { canvases: next } = await listCanvases(env, true);
+      if (gen !== envGenRef.current || seq !== listSeqRef.current) return;
+      setCanvases(next);
+      setError(null);
+      void fillPreviews(env, next);
+      void fillFavourites(env);
+    } catch (e) {
+      if (gen !== envGenRef.current || seq !== listSeqRef.current) return;
+      const err = e as Error & { status?: number };
+      // Same as `refresh`: an unrefreshable sign-in shows the sign-in flow.
+      if (err.status === 401) {
+        setStatus((prev) => (prev ? { ...prev, logged_in: false } : prev));
+        setError(`Your Fused sign-in expired — sign in again. (${err.message})`);
+        return;
+      }
+      setError(err.message);
+    } finally {
+      if (gen === envGenRef.current && seq === listSeqRef.current) {
+        setRefreshing(false);
+      }
+    }
+  };
 
   // The dropdown: rewrite the query in place (no history entry — Back leaves
   // the catalog, it doesn't step through environments), drop everything the
@@ -286,13 +330,15 @@ export default function Canvases() {
     setPicked(next);
     replaceSearch(catalogPath(next));
     setCanvases(null);
+    setRefreshing(false);
     // Collection ids and signed URLs belong to the environment they came from.
     setPreviews({});
     previewsAskedRef.current = new Set();
+    setFavourites(null);
     setError(null);
-    // So does the new-canvas form: its suggestion and its duplicate verdict
+    // So does the New canvas dialog: its suggestion and its duplicate verdict
     // were judged against the old env's listing.
-    closeCreate();
+    setCreating(false);
     // Stop watching the old env's browser sign-in: its stamp is the old
     // env's store (custom's is its own, D1412), so judging the new env by it
     // would call the sign-in done or failed wrongly. The sign-in itself
@@ -426,9 +472,13 @@ export default function Canvases() {
         return;
       }
       setCanvases(null);
-      // Signed URLs belong to the account that just signed out.
+      // A fresh listing still in flight for the old account must not leave
+      // its hint on the signed-out page.
+      setRefreshing(false);
+      // Signed URLs (and stars) belong to the account that just signed out.
       setPreviews({});
       previewsAskedRef.current = new Set();
+      setFavourites(null);
       setQuery("");
       setCreating(false);
       await refresh();
@@ -455,6 +505,111 @@ export default function Canvases() {
     }
   };
 
+  // The card's "Open canvas in new tab": a cloned canvas's workspace opens
+  // as-is; an uncloned one is cloned (and its sync armed) first, since that
+  // page cannot open a canvas with no folder. If the window cannot be opened
+  // after the clone's await (a popup policy that wants a fresh gesture), the
+  // canvas opens here instead — the clone is done either way.
+  const onOpenInNewTab = async (canvas: CanvasEntry) => {
+    if (!env) return;
+    const path = canvasWorkspacePath(env, canvas.name);
+    // A blocked window (null) opens the canvas here instead. No "noopener"
+    // feature: with it window.open always returns null and a block could not
+    // be told apart; the opener link is cut on the handle instead.
+    const openWindow = () => {
+      const w = window.open(path, "_blank");
+      if (w) w.opener = null;
+      else navigateUrl(path);
+      return w !== null;
+    };
+    if (canvas.cloned) {
+      openWindow();
+      return;
+    }
+    const gen = envGenRef.current;
+    setBusy(canvas.name);
+    setError(null);
+    try {
+      await cloneCanvas(env, canvas.name);
+      await startSyncForOpen(env, canvas.name);
+      // The env changed while the clone was out: the listing on screen is
+      // another env's, whose same-named canvas this clone says nothing about.
+      if (gen !== envGenRef.current) return;
+      setCanvases((prev) =>
+        prev ? prev.map((c) => (c.name === canvas.name ? { ...c, cloned: true } : c)) : prev,
+      );
+      if (!openWindow()) return;
+    } catch (e) {
+      if (gen !== envGenRef.current) return;
+      setError((e as Error).message);
+    }
+    setBusy(null);
+  };
+
+  // Optimistic, rolled back on failure — the hosted star's behaviour. One
+  // write per canvas at a time (favInFlightRef); a press while one is out is
+  // ignored, which is also what the user sees (the star already flipped).
+  const onToggleFavourite = async (canvas: CanvasEntry) => {
+    if (!env || !canvas.id || favourites === null) return;
+    const id = canvas.id;
+    if (favInFlightRef.current.has(id)) return;
+    favInFlightRef.current.add(id);
+    favSeqRef.current += 1;
+    const gen = envGenRef.current;
+    const on = !favourites.has(id);
+    const flip = (want: boolean) =>
+      setFavourites((prev) => {
+        if (prev === null) return prev;
+        const next = new Set(prev);
+        if (want) next.add(id);
+        else next.delete(id);
+        return next;
+      });
+    flip(on);
+    try {
+      await setCanvasFavourite(env, id, on);
+    } catch (e) {
+      if (gen !== envGenRef.current) return;
+      flip(!on);
+      setError(`${on ? "Adding" : "Removing"} favourite failed: ${(e as Error).message}`);
+    } finally {
+      favInFlightRef.current.delete(id);
+    }
+  };
+
+  // The confirmed delete: server AND this machine (the clone folder goes too).
+  // The server drops its listing cache, so the re-list is the truth.
+  const onConfirmDelete = async () => {
+    if (!env || !deleteTarget || deleteCanvasBusy) return;
+    setDeleteCanvasBusy(true);
+    setDeleteCanvasErr("");
+    try {
+      await deleteCanvas(env, deleteTarget.name);
+      const gone = deleteTarget.name;
+      setCanvases((prev) => (prev ? prev.filter((c) => c.name !== gone) : prev));
+      setDeleteTarget(null);
+      void refresh();
+    } catch (e) {
+      // 409 `owned` (another fused-render process syncs the clone) and CLI
+      // failures alike: the server's sentence, inside the dialog.
+      setDeleteCanvasErr((e as Error).message);
+    } finally {
+      setDeleteCanvasBusy(false);
+    }
+  };
+
+  // The share link's origin: the env's workbench (`base_url`), as the hosted
+  // card's `getPublicOrigin()`.
+  const shareOrigin = useMemo(() => {
+    const base = env && status?.envs?.[env]?.base_url;
+    if (!base) return null;
+    try {
+      return new URL(base).origin;
+    } catch {
+      return null;
+    }
+  }, [env, status]);
+
   // Names the duplicate rule checks against: the LIVE listing, so a canvas
   // that appears while the box is open (poll, another session) is caught by
   // onCreate's re-check even if the keystroke validation missed it.
@@ -466,77 +621,30 @@ export default function Canvases() {
     [canvases],
   );
 
-  // The listing moves under an open form (poll, env switch, a canvas created
-  // elsewhere): re-judge the typed name against the names as they are now.
-  useEffect(() => {
-    if (!creating) return;
-    setNameError(
-      existingNames === null
-        ? "Loading canvases…"
-        : validateCanvasName(newName, existingNames),
-    );
-    // newName is judged on every keystroke already (onNewNameChange).
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [creating, existingNames]);
-
-  const openCreate = () => {
-    if (existingNames === null) return;
-    // The workbench prefills `canvas_<n>` and selects it, so Enter alone
-    // creates and typing replaces.
-    const suggested = generateCanvasName(existingNames);
-    setNewName(suggested);
-    setNameError(validateCanvasName(suggested, existingNames));
-    setSubmitError(null);
-    setCreating(true);
-  };
-
-  const closeCreate = () => {
-    setCreating(false);
-    setNewName("");
-    setNameError(null);
-    setSubmitError(null);
-  };
-
-  const onNewNameChange = (raw: string) => {
-    const name = sanitizeCanvasName(raw);
-    setNewName(name);
-    setNameError(
-      existingNames === null
-        ? "Loading canvases…"
-        : validateCanvasName(name, existingNames),
-    );
-    setSubmitError(null);
-  };
-
-  const onCreate = async () => {
-    const name = newName.trim();
-    if (!env || existingNames === null) return;
-    const invalid = validateCanvasName(name, existingNames);
-    if (invalid) {
-      setNameError(invalid);
-      return;
-    }
-    setCreateBusy(true);
-    setSubmitError(null);
+  // The dialog's Create: the name has passed its rules against the live
+  // listing. A throw lands under the dialog's field, not in the page banner,
+  // and leaves the dialog open for a retry.
+  const onCreate = async (name: string) => {
+    if (!env) throw new Error("No environment selected");
     setError(null);
-    try {
-      await createCanvas(env, name);
-      await cloneCanvas(env, name);
-      await startSyncForOpen(env, name);
-      navigateUrl(canvasWorkspacePath(env, name));
-    } catch (e) {
-      setSubmitError((e as Error).message);
-      setCreateBusy(false);
-    }
+    await createCanvas(env, name);
+    await cloneCanvas(env, name);
+    await startSyncForOpen(env, name);
+    navigateUrl(canvasWorkspacePath(env, name));
   };
 
-  const createError = nameError ?? submitError;
+  // Where this env's clones land, as the dialog prints it (`~/…`).
+  const home = useHome();
+  const canvasesDir = env ? status?.envs?.[env]?.canvases_dir ?? null : null;
 
   const filtered = useMemo(() => {
     if (canvases === null) return null;
-    const q = query.trim().toLowerCase();
+    // Cards print names with spaces for underscores: match in that form, so a
+    // query typed from the title ("map query") and one typed from the folder
+    // name ("map_query") both find the canvas.
+    const q = canvasDisplayName(query.trim().toLowerCase());
     const shown = q
-      ? canvases.filter((c) => c.name.toLowerCase().includes(q))
+      ? canvases.filter((c) => canvasDisplayName(c.name.toLowerCase()).includes(q))
       : canvases.slice();
     // Last-modified first (local clone mtime, else the server's last_updated);
     // canvases we know nothing about last, alphabetically.
@@ -555,8 +663,36 @@ export default function Canvases() {
   return (
     <div className="canvases-page">
       <div className="canvases-inner">
-        <div className={"canvases-head" + (creating ? " is-creating" : "")}>
+        <div className="canvases-head">
           <h1 className="canvases-title">Workbench Canvases</h1>
+          {/* The disk baseline is on screen while the fresh listing is in
+              flight (stale-while-revalidate): a small non-blocking spinner,
+              never a scrim — the stale cards stay usable. */}
+          {refreshing ? (
+            <span
+              className="canvases-refreshing"
+              role="status"
+              aria-label="Refreshing the list"
+              title="Refreshing the list…"
+            >
+              <Loader2 className="canvases-refreshing-icon" aria-hidden />
+            </span>
+          ) : (
+            // Idle: the same spot is the on-demand refetch.
+            status?.logged_in &&
+            !customUnconfigured &&
+            canvases !== null && (
+              <button
+                type="button"
+                className="canvases-refresh"
+                aria-label="Refresh the list"
+                title="Refresh the list"
+                onClick={() => void onRevalidate()}
+              >
+                <RefreshCw className="canvases-refresh-icon" aria-hidden />
+              </button>
+            )
+          )}
           {/* The picker shows signed out too: each env can be its own login
               (custom's `[auth]`, D1412), so a signed-out pick must still be
               able to switch back. The rest needs that env's login. */}
@@ -572,7 +708,7 @@ export default function Canvases() {
                   id="canvases-env"
                   className="field-control"
                   value={env}
-                  disabled={status.locked || busy !== null || createBusy}
+                  disabled={status.locked || busy !== null}
                   onChange={(e) => {
                     const v = e.target.value;
                     if (isWorkbenchEnv(v)) onPickEnv(v);
@@ -596,67 +732,15 @@ export default function Canvases() {
                     value={query}
                     onChange={(e) => setQuery(e.target.value)}
                   />
-                  {creating ? (
-                    <form
-                      className="canvases-new-form"
-                      onSubmit={(e) => {
-                        e.preventDefault();
-                        void onCreate();
-                      }}
-                    >
-                      <div className="canvases-new-row">
-                        <input
-                          ref={newNameRef}
-                          className="field-control canvases-new-name"
-                          autoFocus
-                          placeholder="new_canvas_name"
-                          value={newName}
-                          onChange={(e) => onNewNameChange(e.target.value)}
-                          onKeyDown={(e) => {
-                            if (e.key === "Escape" && !createBusy) {
-                              e.preventDefault();
-                              closeCreate();
-                            }
-                          }}
-                          disabled={createBusy}
-                          aria-invalid={createError ? "true" : undefined}
-                          aria-describedby={createError ? "canvases-new-error" : undefined}
-                        />
-                        <button
-                          className="btn btn-primary"
-                          type="submit"
-                          disabled={createBusy || !!nameError}
-                        >
-                          {createBusy ? "Creating…" : "Create"}
-                        </button>
-                        <button
-                          className="btn"
-                          type="button"
-                          onClick={closeCreate}
-                          disabled={createBusy}
-                        >
-                          Cancel
-                        </button>
-                      </div>
-                      {createError && (
-                        <div
-                          id="canvases-new-error"
-                          className="canvases-new-error"
-                          title={createError}
-                        >
-                          {createError}
-                        </div>
-                      )}
-                    </form>
-                  ) : (
-                    <button
-                      className="btn btn-primary"
-                      onClick={openCreate}
-                      disabled={existingNames === null}
-                    >
-                      + New canvas
-                    </button>
-                  )}
+                  {/* Disabled until the listing loads: the dialog's
+                      suggestion and duplicate rule need the names. */}
+                  <button
+                    className="btn btn-primary"
+                    onClick={() => setCreating(true)}
+                    disabled={existingNames === null}
+                  >
+                    + New canvas
+                  </button>
                   <span className="canvases-account">
                     <button className="btn" onClick={() => void onLogout()}>
                       Sign out
@@ -667,11 +751,19 @@ export default function Canvases() {
             </div>
           )}
         </div>
+        {/* Ahead of the subtitle it floats beside: the head's own row is full
+            at ordinary window widths (the title already wraps there). */}
+        <MirrorChip
+          mirror={referenceMirror.mirror}
+          starting={referenceMirror.starting}
+          onRun={() => void referenceMirror.run()}
+        />
         <p className="canvases-sub">
           Develop workbench canvases locally: pick a canvas, edit its files with
           Claude Code, and every save is pushed back to the hosted workbench.
         </p>
         {error && <ErrorBanner>{error}</ErrorBanner>}
+        <LayoutNotice layout={referenceMirror.layout} />
         {status && !status.cli_found && (
           <p>
             The fused CLI is not available in this server&rsquo;s environment.
@@ -758,89 +850,89 @@ export default function Canvases() {
         )}
         {status?.logged_in && env && !customUnconfigured && filtered !== null && filtered.length > 0 && (
           <div className="canvases-grid">
-            {filtered.map((canvas) => {
-              // Either the free public URL from the listing, or the signed one
-              // the previews batch filled in afterwards (D364).
-              const thumb =
-                canvas.preview_url ?? (canvas.id ? previews[canvas.id] : undefined) ?? null;
-              // Local clone mtime when we have one, else the control plane's
-              // last_updated — the same expression the sort above orders by.
-              const modified = canvas.mtime ?? canvas.updated_at;
-              // The clone's own *.py count wins when we have one (it sees local
-              // edits the workbench hasn't been pushed yet); otherwise the
-              // listing's count, which exists for every canvas in the account.
-              const nUdfs = canvas.n_udfs ?? canvas.n_code_udfs ?? null;
-              // An account whose listing predates the count field (or came from
-              // the bare-name CLI fallback) still gets a map rather than an
-              // empty box — one tile, standing for "a canvas", not for a count.
-              const tiles = nUdfs === null ? 1 : Math.min(nUdfs, TILE_CAP);
-              return (
-              <button
+            {filtered.map((canvas) => (
+              <CanvasCard
                 key={canvas.name}
-                className="canvas-card"
-                onClick={() => void onOpen(canvas)}
-                disabled={busy !== null || createBusy}
-              >
-                <span className="canvas-card-thumb">
-                  {thumb && !brokenPreviews.has(thumb) ? (
-                    <img
-                      className="canvas-card-img"
-                      src={thumb}
-                      alt=""
-                      loading="lazy"
-                      onError={() =>
-                        setBrokenPreviews((prev) => {
-                          const next = new Set(prev);
-                          next.add(thumb);
-                          return next;
-                        })
-                      }
-                    />
-                  ) : tiles > 0 ? (
-                    <span className="canvas-card-tiles" style={tileLayout(tiles)}>
-                      {Array.from({ length: tiles }, (_, i) => (
-                        <img
-                          key={i}
-                          className="canvas-card-tile"
-                          src={previewTile}
-                          alt=""
-                        />
-                      ))}
-                    </span>
-                  ) : (
-                    <span className="canvas-card-noshot">
-                      No UDFs present in the canvas
-                    </span>
-                  )}
-                </span>
-                <span className="canvas-card-body">
-                  <span className="canvas-card-name" title={canvas.name}>
-                    {canvas.name}
-                  </span>
-                  <span className="canvas-card-stat">
-                    {busy === canvas.name
-                      ? "Cloning…"
-                      : nUdfs === null
-                        ? "Not cloned yet — click to clone & open"
-                        : `${nUdfs} UDF${nUdfs === 1 ? "" : "s"}${
-                            // The count now exists before the clone does, but
-                            // an uncloned card still needs to say what a click
-                            // will do — it is the only affordance it has.
-                            canvas.cloned ? "" : " · click to clone & open"
-                          }`}
-                  </span>
-                  {modified !== null && (
-                    <span className="canvas-card-meta">
-                      Last modified: {formatModified(modified)}
-                    </span>
-                  )}
-                </span>
-              </button>
-              );
-            })}
+                canvas={canvas}
+                href={canvasWorkspacePath(env, canvas.name)}
+                // Either the free public URL from the listing, or the signed
+                // one the previews batch filled in afterwards (D364).
+                thumb={
+                  canvas.preview_url ?? (canvas.id ? previews[canvas.id] : undefined) ?? null
+                }
+                loading={busy === canvas.name}
+                disabled={busy !== null && busy !== canvas.name}
+                isFavourite={
+                  canvas.id && favourites !== null ? favourites.has(canvas.id) : undefined
+                }
+                shareUrl={
+                  canvas.share_token && shareOrigin
+                    ? `${shareOrigin}/canvas/${encodeURIComponent(canvas.share_token)}`
+                    : null
+                }
+                onOpen={() => void onOpen(canvas)}
+                onOpenInNewTab={() => void onOpenInNewTab(canvas)}
+                onDelete={() => {
+                  setDeleteCanvasErr("");
+                  setDeleteTarget(canvas);
+                }}
+                onToggleFavourite={() => void onToggleFavourite(canvas)}
+              />
+            ))}
           </div>
         )}
       </div>
+      {deleteTarget && (
+        <Modal
+          title={`Delete ${canvasDisplayName(deleteTarget.name)}?`}
+          busy={deleteCanvasBusy}
+          onClose={() => {
+            if (!deleteCanvasBusy) setDeleteTarget(null);
+          }}
+          footer={
+            <>
+              <button
+                type="button"
+                className="btn btn-secondary"
+                disabled={deleteCanvasBusy}
+                onClick={() => setDeleteTarget(null)}
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                className="btn btn-danger"
+                aria-disabled={deleteCanvasBusy}
+                onClick={() => void onConfirmDelete()}
+              >
+                {deleteCanvasBusy ? "Deleting…" : "Delete canvas"}
+              </button>
+            </>
+          }
+        >
+          <p>
+            This deletes the canvas from your Fused account
+            {deleteTarget.cloned ? " and removes its local folder on this machine" : ""}.
+          </p>
+          <p>
+            <b>This is permanent and cannot be undone.</b>
+          </p>
+          {deleteCanvasErr && (
+            <p className="deploy-error" role="alert">
+              {deleteCanvasErr}
+            </p>
+          )}
+        </Modal>
+      )}
+      {creating && env && (
+        <NewCanvasDialog
+          envLabel={ENV_NAMES[env].tag}
+          canvasesDir={canvasesDir ? contractHome(canvasesDir, home) : null}
+          existingNames={existingNames}
+          onCreate={onCreate}
+          onClose={() => setCreating(false)}
+        />
+      )}
       {settingsOpen && (
         <FusedSettingsModal
           onClose={() => {

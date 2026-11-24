@@ -91,7 +91,7 @@ export function FilePreviewModal({ path, onClose, stat = statPath }: FilePreview
     >
       <div className="chat-root c-filepreview-root">
         {view.kind === "missing" ? (
-          <div className="c-fp-missing">File no longer exists</div>
+          <div className="c-fp-missing">Can&rsquo;t open this file: it no longer exists or isn&rsquo;t readable</div>
         ) : view.kind === "ready" ? (
           <iframe className="c-fp-frame" src={view.src} title={"Preview of " + name} />
         ) : null}

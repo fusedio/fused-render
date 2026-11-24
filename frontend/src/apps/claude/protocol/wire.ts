@@ -20,16 +20,11 @@
 //
 // Pure TS: no DOM, no React.
 
-/** T:4761 — the app-state block's tag. */
-export const APP_STATE_TAG = "live-app-state";
-/** T:4775 — the annotations block's tag. */
-export const ANN_TAG = "annotations";
-/** T:4790 — the attached-pictures block's tag. */
-export const PANE_SHOT_TAG = "pane-shot";
-/** The focused-terminal metadata line agent.py's `_with_terminal_hint` writes
- *  onto a send (D1326). Server-side only: the page never composes it, but the
- *  inbox rows and the CLI's echoed user records carry it back verbatim. */
-export const TERMINAL_HINT_TAG = "terminal-hint";
+import { BREAKOUT_FILES_TAG } from "@platform/lib/breakout-context";
+import { ANN_TAG, APP_STATE_TAG, BREAKOUT_CTX_TAG, PANE_SHOT_TAG, TERMINAL_HINT_TAG } from "@platform/lib/wire-tags";
+
+export { formatBreakoutContext } from "@platform/lib/breakout-context";
+export { ANN_TAG, APP_STATE_TAG, BREAKOUT_CTX_TAG, PANE_SHOT_TAG, TERMINAL_HINT_TAG };
 
 // ---- markers (T:10525-10545) ----------------------------------------------
 //
@@ -391,7 +386,7 @@ export function annotationsIn(text: string | null | undefined): AnnotationWire[]
  * pushed in front of the three that have a stated place. The sort is STABLE, so
  * two blocks of the same kind stay in the order their owner emitted them.
  */
-export const BLOCK_ORDER: readonly string[] = [APP_STATE_TAG, PANE_SHOT_TAG, ANN_TAG];
+export const BLOCK_ORDER: readonly string[] = [APP_STATE_TAG, PANE_SHOT_TAG, BREAKOUT_CTX_TAG, ANN_TAG];
 
 /** Which of `BLOCK_ORDER` a composed block opens with; `BLOCK_ORDER.length` for
  *  anything else, which is what puts it last.
@@ -444,6 +439,42 @@ export function stripPaneBlock(text: string | null | undefined): string {
   return (text || "").replace(re, "").trim();
 }
 
+/** The breakout-context block, removed from wherever it sits. */
+export function stripBreakoutBlock(text: string | null | undefined): string {
+  const re = new RegExp("<" + BREAKOUT_CTX_TAG + ">[\\s\\S]*?</" + BREAKOUT_CTX_TAG + ">\\s*", "g");
+  return (text || "").replace(re, "").trim();
+}
+
+/** The parent messages a breakout's first send carried: how many, the parent
+ *  chat's title when it was known, and the quoted messages as plain text. */
+export interface BreakoutContextWire {
+  count: number;
+  title?: string;
+  body: string;
+}
+
+/** Read the `<breakout-context>` block back out of a wire message. */
+export function breakoutContextIn(text: string | null | undefined): BreakoutContextWire | null {
+  const m = new RegExp("<" + BREAKOUT_CTX_TAG + ">([\\s\\S]*?)</" + BREAKOUT_CTX_TAG + ">").exec(text || "");
+  if (!m) return null;
+  const inner = m[1].trim();
+  const split = inner.indexOf("\n\n");
+  const head = split < 0 ? inner : inner.slice(0, split);
+  let body = split < 0 ? "" : inner.slice(split + 2);
+  // The files list is the block's last section, in a tag quoted text cannot
+  // carry (`formatBreakoutContext` neutralizes it there).
+  body = body.replace(new RegExp("(?:^|\\n\\n)<" + BREAKOUT_FILES_TAG + ">\\n[\\s\\S]*?\\n</" + BREAKOUT_FILES_TAG + ">$"), "");
+  const count = /from (\d+) messages?/.exec(head);
+  const title = /titled ("(?:[^"\\]|\\.)*")/.exec(head);
+  let parsed: string | undefined;
+  try {
+    parsed = title ? (JSON.parse(title[1]) as string) : undefined;
+  } catch {
+    parsed = undefined;
+  }
+  return { count: count ? Number(count[1]) : 0, ...(parsed ? { title: parsed } : {}), body: body.trim() };
+}
+
 /** T:10608 `stripAnnBlock` — TWO shapes, forever: today's tagged block from
  *  anywhere, and the legacy prose + fenced json at position ZERO. */
 export function stripAnnBlock(text: string | null | undefined): string {
@@ -469,7 +500,10 @@ export function stripTerminalHintBlock(text: string | null | undefined): string 
 /** T:10552 `stripBlocks` — the inverse of `composeOutgoing`: exactly what the
  *  user typed, or the markers naming what a wordless send carried. */
 export function stripBlocks(text: string | null | undefined): string {
-  const noState = stripAppStateBlock(stripTerminalHintBlock(text));
+  // The breakout block goes FIRST: it quotes other text, and the other
+  // strippers must never see into it.
+  const noContext = stripBreakoutBlock(text);
+  const noState = stripAppStateBlock(stripTerminalHintBlock(noContext));
   const noPaneShot = stripPaneBlock(noState);
   const bare = stripAnnBlock(noPaneShot);
   if (bare) return bare;
@@ -495,18 +529,23 @@ export interface Inbound {
   appState?: string;
   paneShots?: PaneShotWire[];
   annotations?: AnnotationWire[];
+  breakoutContext?: BreakoutContextWire;
 }
 
 /** Read a wire message whole: what to show in the bubble plus everything a
  *  restored turn needs to rebuild its receipt (T:10932 rebuilds exactly this). */
 export function parseInbound(text: string | null | undefined): Inbound {
-  const raw = text || "";
-  const out: Inbound = { text: stripBlocks(raw) };
+  const whole = text || "";
+  const out: Inbound = { text: stripBlocks(whole) };
+  // The other readers never look inside the quoted block.
+  const raw = stripBreakoutBlock(whole);
   const state = new RegExp("<" + APP_STATE_TAG + ">([\\s\\S]*?)</" + APP_STATE_TAG + ">").exec(raw);
   if (state) out.appState = state[1].trim();
   const shots = paneShotIn(raw);
   if (shots.length) out.paneShots = shots;
   const notes = annotationsIn(raw);
   if (notes.length) out.annotations = notes;
+  const ctx = breakoutContextIn(whole);
+  if (ctx) out.breakoutContext = ctx;
   return out;
 }

@@ -4,10 +4,23 @@
 // `cards` action until the host has nothing left running.
 import { installDomShim } from "@platform/lib/testDomShim";
 installDomShim();
-import { describe, expect, test } from "bun:test";
+import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 
 const { CARD_WATCH_MS, createChatController } = await import("./run-controller");
 const { createMemoryParamsStore } = await import("../params/store");
+const { resetFlagsForTests, setPrefsDeadlineForTests } = await import("../feature-flag");
+
+// The same guard as run-controller.test.ts (its note says why): a decision
+// here awaits `queueFlagReady`, the claude flags are process-wide, and an
+// earlier file can leave the shared prefs read pinned — "a decision parks the
+// card and clears the line" then sat out the 8 s gate on CI's file order.
+beforeAll(() => {
+  resetFlagsForTests();
+  setPrefsDeadlineForTests(1);
+});
+afterAll(() => {
+  setPrefsDeadlineForTests();
+});
 
 import type { runAgent } from "./agent";
 import type { CardsResponse, PermissionRow, PollResponse, Segment, TaskRecord } from "./types";

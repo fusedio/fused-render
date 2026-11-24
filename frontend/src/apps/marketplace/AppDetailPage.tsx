@@ -56,7 +56,7 @@ import {
   type MarketRelease,
 } from "@platform/lib/marketplace";
 import { AppActionPill, CategoryGlyph, EmptyState, MarketCard, compactCount, openDetail, remixOf } from "./shared";
-import { onInstallStarted } from "./install-flow";
+import { onInstallStarted, replaceInstall } from "./install-flow";
 import { trustItemsFor } from "./trust";
 
 /** U+202F NARROW NO-BREAK SPACE: "12.4 MB" never wraps between number and
@@ -233,7 +233,25 @@ export function AppDetailPage({ slug, snap, bare = false }: { slug: string; snap
       <>Installed{app.installed.version ? <> · v{app.installed.version}</> : null}</>
     );
   } else if (action.kind === "retry") {
-    note = <span className="is-error">{action.error}</span>;
+    const replacePath = job?.code === "replace" ? job.replace_path : null;
+    note = (
+      <span className="is-error">
+        {action.error}
+        {replacePath && (
+          <>
+            {" "}
+            <button
+              type="button"
+              className="as-link-btn as-note-cta"
+              title={`Install the Community version in your apps folder; the data of the copy at ${replacePath} moves along and that folder is hidden (its files stay).`}
+              onClick={() => replaceInstall(app, replacePath)}
+            >
+              Replace it, keep its data
+            </button>
+          </>
+        )}
+      </span>
+    );
   } else if (action.kind === "progress") {
     note = job?.message || (job?.state === "installing" ? "Installing…" : "Downloading…");
   } else if (action.kind === "get") {

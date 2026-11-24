@@ -633,8 +633,9 @@ _WIRE_TRIED = False
 _RESUMED = False
 
 
-def _claim_folder(manager, folder: str, task_key: str) -> tuple[bool, bool]:
-    """Take `folder` for `task_key`: `(ok, took)`. **One call, because
+def _claim_folder(manager, folder: str,
+                  task_key: str) -> tuple[bool, bool, str]:
+    """Take `folder` for `task_key`: `(ok, took, token)`. **One call, because
     look-then-act is the bug** (H3, 2026-09-17).
 
     `ok` False means another task has it. `took` says whether THIS call is what
@@ -653,29 +654,40 @@ def _claim_folder(manager, folder: str, task_key: str) -> tuple[bool, bool]:
     Best-effort in the same direction as every other gate here: a manager that
     cannot answer gives a GO, never a silent drop of the user's message — and
     `took` False with it, because a gate that does not know what it did must not
-    undo it."""
+    undo it.
+
+    `token` is the claim token the manager minted for THIS count
+    (`claim_for_send`) — "" whenever nothing is known to have been counted: a
+    refusal, a fail-open GO, a manager without tokens. It is the only licence
+    to take an absorbed count back (`_uncount_folder`): a fail-open GO counted
+    nothing, and taking a count off on its say-so would subtract a real
+    send's."""
     if manager is None or not folder or not task_key:
-        return True, False
+        return True, False, ""
+    for_send = getattr(manager, "claim_for_send", None)
     took_fn = getattr(manager, "claim_took", None)
     claim = getattr(manager, "claim", None)
     try:
+        if for_send is not None:
+            ok, took, token = for_send(folder, task_key)
+            return bool(ok), bool(took), (str(token or "") if ok else "")
         if took_fn is not None:
             ok, took = took_fn(folder, task_key)
-            return bool(ok), bool(took)
+            return bool(ok), bool(took), ""
         if claim is not None:
             # A manager from before the tri-state: one bool, so "took" is the
             # best guess there is — which is the behaviour this had.
             ok = bool(claim(folder, task_key))
-            return ok, ok
+            return ok, ok, ""
         # While T1's `claim` lands: the old two-step, but back-to-back with
         # nothing in between — the gap is instructions, not a spawn.
         if not manager.is_free(folder, task_key):
-            return False, False
+            return False, False, ""
         manager.started(folder, task_key)
-        return True, True
+        return True, True, ""
     except Exception:  # noqa: BLE001 — an undecidable gate is an open one
         logger.debug("could not claim %s for %s", folder, task_key, exc_info=True)
-        return True, False
+        return True, False, ""
 
 
 def _release_folder(manager, task_key: str) -> None:
@@ -689,6 +701,23 @@ def _release_folder(manager, task_key: str) -> None:
     except Exception:  # noqa: BLE001 — reconcile is the backstop
         logger.debug("could not release the folder held for %s", task_key,
                      exc_info=True)
+
+
+def _uncount_folder(manager, entry: dict, task_key: str, token: str) -> None:
+    """Take back the one send run-now counted on an owner it did not take
+    (`QueueManager.uncount`), proved by the claim's own `token`. Releases
+    only when that unsent count is the last one left. A manager without the
+    method (a test double, an older build) keeps the old behaviour:
+    nothing."""
+    uncount = getattr(manager, "uncount", None)
+    if uncount is None or not task_key or not token:
+        return
+    try:
+        uncount(_pq().queue_key(str(entry.get("target") or "")), task_key,
+                token)
+    except Exception:  # noqa: BLE001 — reconcile is the backstop
+        logger.debug("could not take back the count run-now left on %s",
+                     task_key, exc_info=True)
 
 
 class BackendRefused(ValueError):
@@ -2640,6 +2669,7 @@ def _claim(entry_id: str, now: datetime, session_id: str = "") -> dict | None:
     ("resume this one"), and a row that resumed a conversation without recording
     which one would read afterwards as a fresh send. `session_learned` goes with
     it, because the system worked this id out from a run — nobody chose it."""
+    stale = None
     with _store_lock():
         entries = _read()
         for entry in entries:
@@ -2647,6 +2677,15 @@ def _claim(entry_id: str, now: datetime, session_id: str = "") -> dict | None:
                 continue
             if entry.get("state") != PENDING:
                 return None
+            if is_comeback(entry) and _comeback_stale(entry):
+                # THE CONVERSATION WENT ON WITHOUT IT — a reply landed after
+                # the comeback was booked (another account, the terminal, a
+                # Retry now). "Continue where it stopped" fired into a chat
+                # that is not stopped redoes work, so it is called off instead.
+                entry["state"] = CANCELLED
+                _write(entries)
+                stale = dict(entry)
+                break
             entry["state"] = SENDING
             entry["fired"] = now.isoformat()
             if session_id and not str(entry.get("session_id") or ""):
@@ -2658,6 +2697,10 @@ def _claim(entry_id: str, now: datetime, session_id: str = "") -> dict | None:
         else:
             return None
     _sync_wake()
+    if stale is not None:
+        _queue_forget(stale)
+        _notify(_entry_keys(stale))
+        return None
     return claimed
 
 
@@ -3185,6 +3228,37 @@ def _entry_keys(entry: dict) -> set[str]:
     return {k for k in keys if k}
 
 
+def _record_verdict(entry: dict, turn: str, reason: str = "") -> None:
+    """Stamp a turn's REAL outcome — `ok`, `failed` (with `reason`) or
+    `cancelled` — and run the follow-ups every verdict owes: ring the loop and
+    the Tasks watchers, settle the job row, toast.
+
+    One copy for the two places that learn an outcome: the live watch
+    (`_turn_tick`, off `_poll`) and a lost watch that read it from the session's
+    transcript instead (`_transcript_verdict`). A cancel emits no event — a
+    stop needs no toast to tell the person who pressed it."""
+    entry_id = entry["id"]
+    # `turn_at` is WHEN the verdict landed, stamped wherever `turn` is written.
+    # The Tasks page needs the moment, not just the word: a transcript still
+    # being written to meaningfully after this stamp is new work, and only the
+    # verdict's own closing echo may be set aside
+    # (`tasks._verdict_outvotes_live`).
+    if turn == "failed":
+        _update(entry_id, turn="failed", error=reason,
+                turn_at=_now().isoformat())
+    else:
+        _update(entry_id, turn=turn, turn_at=_now().isoformat())
+    _turn_ended(entry)
+    if turn == "cancelled":
+        _report(entry_id, state="cancelled")
+    elif turn == "failed":
+        _report(entry_id, state="error", message=reason)
+        _emit(EVENT_FAILED, entry, reason)
+    else:
+        _report(entry_id, state="done", detail="finished")
+        _emit(EVENT_DONE, entry)
+
+
 def _turn_tick(entry: dict, run_id: str, agent, data: dict) -> bool:
     """One observation of a live turn. False stops the watch.
 
@@ -3239,26 +3313,9 @@ def _turn_tick(entry: dict, run_id: str, agent, data: dict) -> bool:
             # went exactly as asked. No event either, for the same reason the ✕
             # below emits none: a stop needs no toast to tell the person who
             # pressed it.
-            _update(entry_id, turn="cancelled", turn_at=_now().isoformat())
-            _turn_ended(entry)
-            _report(entry_id, state="cancelled")
+            _record_verdict(entry, "cancelled")
             return False
-        if reason:
-            _update(entry_id, turn="failed", error=reason,
-                    turn_at=_now().isoformat())
-            _turn_ended(entry)
-            _report(entry_id, state="error", message=reason)
-            _emit(EVENT_FAILED, entry, reason)
-        else:
-            # `turn_at` is WHEN the verdict landed, stamped wherever `turn` is
-            # written. The Tasks page needs the moment, not just the word: a
-            # transcript still being written to meaningfully after this stamp
-            # is new work, and only the verdict's own closing echo may be set
-            # aside (`tasks._verdict_outvotes_live`).
-            _update(entry_id, turn="ok", turn_at=_now().isoformat())
-            _turn_ended(entry)
-            _report(entry_id, state="done", detail="finished")
-            _emit(EVENT_DONE, entry)
+        _record_verdict(entry, "failed" if reason else "ok", reason)
         return False
 
     # UNANSWERED ONLY. `_poll` hands back every request the run has raised,
@@ -3294,9 +3351,7 @@ def _turn_tick(entry: dict, run_id: str, agent, data: dict) -> bool:
             except Exception:  # noqa: BLE001 — a cancel that fails is still a stop attempt
                 logger.debug("could not cancel scheduled run %s", run_id,
                              exc_info=True)
-        _update(entry_id, turn="cancelled", turn_at=_now().isoformat())
-        _turn_ended(entry)
-        _report(entry_id, state="cancelled")
+        _record_verdict(entry, "cancelled")
         return False
     return True
 
@@ -3422,16 +3477,26 @@ def _close_unwatched(entry: dict, reason: str) -> None:
     the send: `_turn_tick` may have resolved it seconds ago, and re-closing would
     overwrite a real outcome with a shrug.
 
-    `turn` becomes `unknown`, which is the honest word. The work may well have
-    finished — the transcript knows, and the run id on the entry is how to go and
-    read it — but this app stopped being able to say, and a row that claims to be
-    running when nothing is watching it is the lie the job registry's `stalled`
-    state exists to avoid telling."""
+    The session's transcript is asked first (`_transcript_verdict`): a turn
+    that ended there gets its real verdict, one still being written by a live
+    session is left unstamped for the next sweep to re-adopt or re-check. Only when the transcript
+    cannot say does `turn` become `unknown` — this app stopped being able to
+    say, and a row that claims to be running when nothing is watching it is
+    the lie the job registry's `stalled` state exists to avoid telling."""
     entry_id = entry["id"]
     with _lock:
         stored = next((e for e in _read() if e.get("id") == entry_id), None)
         if stored is None or stored.get("state") != SENT or stored.get("turn"):
             return  # already resolved, or never got far enough to need this
+    # ASK THE SESSION BEFORE SHRUGGING. The transcript records how the turn
+    # ended whoever was (or was not) watching it, so a lost watch is not
+    # necessarily a lost verdict.
+    found = _transcript_verdict(stored)
+    if found == _STILL_RUNNING:
+        return  # left unresolved for the next sweep to re-adopt
+    if found is not None:
+        _record_verdict(stored, found[0], found[1])
+        return
     _update(entry_id, turn="unknown", error=reason,
             turn_at=_now().isoformat())
     _report(entry_id, state="error", message=reason)
@@ -3441,6 +3506,117 @@ def _close_unwatched(entry: dict, reason: str) -> None:
     # the stored copy, which knows the session the run reported; the copy this
     # thread has held since the send may predate it.
     _turn_ended(stored)
+
+
+_STILL_RUNNING = "running"
+
+
+def _transcript_verdict(stored: dict):
+    """What the session's own transcript says about a turn this app lost track
+    of: `(turn, reason)` for a turn that ENDED there, `_STILL_RUNNING` for one
+    a live session may still be writing, None when it cannot say.
+
+    | the send's own turn in the transcript           | answer              |
+    |-------------------------------------------------|---------------------|
+    | a finished reply the transcript proves closed   | ("ok", "")          |
+    | a finished reply, fresh, session still running  | _STILL_RUNNING      |
+    | a finished reply, stale or nothing running it   | ("ok", "")          |
+    | the CLI's interrupt marker                      | ("cancelled", "")   |
+    | an API-error row / a non-clean stop_reason      | ("failed", why)     |
+    | turn open, not cut off by a later turn, live    | _STILL_RUNNING      |
+    | turn open otherwise                             | None (→ unknown)    |
+    | no prompt at/after the send, unreadable, …      | None (→ unknown)    |
+
+    THE SEND'S OWN TURN, not the last one (`session_last_turn(since=fired)`):
+    the first turn opened at or after the claim stamped `fired`, up to the
+    next turn's prompt. A resumed session already holds every earlier turn,
+    and a later one — the user's next message, a background job's wake —
+    must not answer for this one. No `fired`, no evidence.
+
+    A FINISHED REPLY IS CONFIRMED before it is believed when the transcript
+    alone cannot prove the turn over (no later turn, no `turn_duration`): a
+    text row can be an intermediate block written just before its `tool_use`.
+    It stands unless it is fresh (inside STALE_TAIL_SEC) AND the live
+    registry says a process is running a turn on the session — which, once the
+    host's `turn_ended` has landed (`tasks_watch.is_turn_ended`), it does not,
+    background job or no.
+
+    _STILL_RUNNING never re-adopts or re-checks on the spot. The caller leaves
+    `turn` empty and lets go, and the entry stays an orphan for the next sweep:
+    a followable run is adopted again (`_resolve_orphan`), an unfollowable one
+    comes straight back here through `_close_unwatched` — so either way the
+    question is asked at most once per sweep, and the row resolves the first
+    sweep after the transcript closes or the session stops being live.
+
+    The session asked is the ANSWER (`claude_session_id`) when the watch
+    captured one, else the INPUT (`session_id`) a resume named — the fork case
+    lands under a new id, which the send-time guard then refuses."""
+    session = str(stored.get("claude_session_id")
+                  or stored.get("session_id") or "")
+    if not session:
+        return None
+    try:
+        sent_at = parse_due(str(stored.get("fired") or "")).timestamp()
+    except ValueError:
+        return None
+    try:
+        from fused_render import session_liveness
+
+        last = session_liveness.session_last_turn(session, since=sent_at)
+    except Exception:  # noqa: BLE001 — no evidence, not a failed close
+        logger.debug("could not read the transcript for %s", session,
+                     exc_info=True)
+        return None
+    if not last or float(last.get("at") or 0.0) <= sent_at:
+        return None
+    state = last.get("state")
+    if state == "ok" and not last.get("closed"):
+        fresh = (_now().timestamp() - float(last.get("at") or 0.0)
+                 < session_liveness.STALE_TAIL_SEC)
+        if fresh and _registry_running(session):
+            return _STILL_RUNNING
+    if state in ("ok", "cancelled", "failed"):
+        return state, str(last.get("error") or "")
+    if state != "open" or last.get("closed"):
+        return None
+    return _STILL_RUNNING if _session_still_live(session) else None
+
+
+def _registry_running(session_id: str) -> bool:
+    """Does the live registry say a process is running a TURN on this session
+    right now? False with no opinion. `live_from_registry` already sets a
+    `busy` row aside once the host's `turn_ended` landed, so a CLI kept alive
+    by a background job after its turn ended answers False."""
+    try:
+        from fused_render import tasks_watch
+
+        opinion = tasks_watch.live_from_registry(session_id)
+    except Exception:  # noqa: BLE001
+        logger.debug("could not read the registry for %s", session_id,
+                     exc_info=True)
+        return False
+    return bool(opinion and opinion[0])
+
+
+def _session_still_live(session_id: str) -> bool:
+    """Is a process still writing this session? The live registry
+    (`~/.claude/sessions`, through `tasks_watch`) when it has an opinion,
+    else the transcript's own activity window.
+
+    Asked only of a turn still OPEN in the transcript. The registry's "not
+    running" once the host's `turn_ended` landed is right here too: the main
+    turn did end (sidechain rows never read as it — `session_last_turn`), so
+    a transcript that still reads open cannot say how, and None is honest."""
+    try:
+        from fused_render import tasks_watch
+
+        opinion = tasks_watch.live_from_registry(session_id)
+        if opinion is not None:
+            return bool(opinion[0])
+    except Exception:  # noqa: BLE001
+        logger.debug("could not read the registry for %s", session_id,
+                     exc_info=True)
+    return _session_live(session_id, _now())
 
 
 def _busy_sessions(entries: list[dict]) -> set[str]:
@@ -4614,10 +4790,22 @@ def _asked_now(entry: dict, now: datetime) -> dict:
 
 
 def _run_now_managed(manager, entry: dict, now: datetime) -> tuple[dict | None,
-                                                                    bool]:
-    """`(answer, took)`: run-now's answer when another task owns this entry's
-    folder, or None when the folder is this entry's to run in — and whether
-    this call is what TOOK the folder.
+                                                                    bool, str]:
+    """`(answer, took, token)`: run-now's answer when another task owns this
+    entry's folder, or None when the folder is this entry's to run in — whether
+    this call is what TOOK the folder, and the claim token of the send it
+    COUNTED on the owner ("" when nothing is known to be counted — see
+    `_claim_folder`): took it, or was absorbed into an owner already filed
+    under this entry's own key (`claim_for_send` bumps `turns` for that).
+
+    A `token` without `took` is the race this exists for (2026-11-08): the
+    tick claims the folder for a freshly created task a beat before run-now
+    does, run-now's claim lands on that same owner and bumps `turns` to 2, and
+    then loses the ENTRY claim to the tick and sends nothing. Nothing ever
+    gave that count back. In a live app the run's session refile hides it; if
+    the app restarts first, one `turn_ended` leaves `turns` at 1 and the
+    folder stays owned until the CLI exits — for ever while it holds a
+    background job.
 
     `took` is what every early return below reads before handing the tree back
     (`_release_folder`). A run-now on a message that follows a chat which
@@ -4645,9 +4833,9 @@ def _run_now_managed(manager, entry: dict, now: datetime) -> tuple[dict | None,
     # THE GATE OWNS WHAT IT LETS THROUGH (H3): this is a claim, not a look. A
     # None answer below means the folder is OURS from this instant — every path
     # after it either sends or gives it back (`_release_folder`).
-    ok, took = _claim_folder(manager, folder, key)
+    ok, took, token = _claim_folder(manager, folder, key)
     if not folder or ok:
-        return None, bool(took)
+        return None, bool(took), (token if folder else "")
     set_priority([entry_id], True)
     stored = _asked_now(dict(entry, priority=True), now)
     manager.enqueue(folder, key, entry_id)
@@ -4658,7 +4846,7 @@ def _run_now_managed(manager, entry: dict, now: datetime) -> tuple[dict | None,
             "queued": True, "position": int(place.get("position") or 1),
             "ahead_task_key": str(owner.get("task") or ""),
             "ahead_session": str(owner.get("session_id") or ""),
-            "ahead_run": str(owner.get("run_id") or "")}, False
+            "ahead_run": str(owner.get("run_id") or "")}, False, ""
 
 
 def run_now(entry_id: str, now: datetime | None = None) -> dict:
@@ -4739,8 +4927,8 @@ def run_now(entry_id: str, now: datetime | None = None) -> dict:
     # index and nothing else. With the flag off (or in a build with no manager)
     # there is no folder rule at all and run-now is the one that shipped.
     manager = _qm() if _pq().enabled() else None
-    queued, took = (_run_now_managed(manager, entry, now) if manager is not None
-                    else (None, False))
+    queued, took, token = (_run_now_managed(manager, entry, now)
+                           if manager is not None else (None, False, ""))
     if queued is not None:
         return queued
     # Past that line the folder is ours (H3) — but only the call that TOOK it
@@ -4750,6 +4938,12 @@ def run_now(entry_id: str, now: datetime | None = None) -> dict:
     # absorbed by that turn (or goes on the next pass) instead.
     task_key = _task_key(entry)
     held = bool(took)
+    # A send COUNTED on an owner this call did not take (absorbed into the
+    # owner filed under this entry's own key) is ours to take back when
+    # nothing is sent — with `uncount` and the claim's own token, which never
+    # ends a turn still holding the folder (`_release_folder` would, and that
+    # turn is not ours to end).
+    absorbed = bool(token) and not held
     # The echo rule joins run-now's refusal only under the flag: main's run-now
     # refused on a warm transcript alone, and flag off stays that.
     if session and (session in busy
@@ -4762,6 +4956,8 @@ def run_now(entry_id: str, now: datetime | None = None) -> dict:
         # entry joins the line NOW while its `due` stays what was asked for.
         if held:
             _release_folder(manager, task_key)
+        elif absorbed:
+            _uncount_folder(manager, entry, task_key, token)
         return {"ok": False, "found": True, "entry": _asked_now(entry, now),
                 "reason": ("the conversation this message continues has a turn "
                            "running right now — it will go on its own as soon "
@@ -4773,6 +4969,8 @@ def run_now(entry_id: str, now: datetime | None = None) -> dict:
         # `cancel_queued` gives to the same race, and for the same reason.
         if held:
             _release_folder(manager, task_key)
+        elif absorbed:
+            _uncount_folder(manager, entry, task_key, token)
         return {"ok": False, "found": True, "entry": None,
                 "reason": ("already claimed for sending — the scheduler got to "
                            "it first")}
@@ -4972,6 +5170,167 @@ def resend(entry_id: str, now: datetime | None = None) -> dict:
     # it to the user would report a problem they do not have.
     note = str(outcome.get("reason") or "") if entry.get("state") == PENDING else ""
     return {"ok": True, "found": True, "entry": entry, "reason": note}
+
+
+# ------------------------------------------------- the usage-limit comeback
+#
+# When a chat turn dies on the plan's usage limit the chat books ONE scheduled
+# message on that session, due when the window reopens (`protocol/quota.ts`
+# CONTINUE_TITLE / CONTINUE_PROMPT, `run-controller.scheduleComeback`). These
+# are the same two constants, restated: they are a wire fact between the chat
+# that books the entry and this module, which keeps it single, retires it once
+# the conversation has moved on, and runs it early on "Retry now".
+COMEBACK_TITLE = "Continue after usage limit"
+COMEBACK_PROMPT = ("Your usage limit has reset. Continue the task you were "
+                   "working on where it stopped. Do not repeat steps that "
+                   "were already completed.")
+
+
+def is_comeback(entry: dict | None) -> bool:
+    """Is this entry the chat's usage-limit comeback? Its title is the mark."""
+    return bool(entry) and str(entry.get("title") or "").strip() == COMEBACK_TITLE
+
+
+def _comeback_session(entry: dict) -> str:
+    return str(entry.get("session_id") or entry.get("claude_session_id") or "")
+
+
+def pending_comebacks(session_id: str,
+                      entries: list[dict] | None = None) -> list[dict]:
+    """Every PENDING comeback booked on this session, soonest first."""
+    if not session_id:
+        return []
+    if entries is None:
+        with _lock:
+            entries = _read()
+    found = [dict(e) for e in entries
+             if e.get("state") == PENDING and is_comeback(e)
+             and _comeback_session(e) == session_id]
+    found.sort(key=lambda e: str(e.get("due") or ""))
+    return found
+
+
+def supersede_comebacks(entry: dict) -> list[str]:
+    """ONE COMEBACK PER CONVERSATION: cancel every other pending comeback on the
+    session `entry` (a comeback just booked) belongs to, and return their ids.
+
+    A retry that hits the limit again books a fresh one, a second window open on
+    the same chat books its own, a reload books again — and each of them is the
+    same promise ("continue when the window reopens"). Kept side by side they
+    would each fire the continue prompt into one conversation. The newest wins:
+    it carries the newest reset time the CLI reported."""
+    if not is_comeback(entry):
+        return []
+    session = _comeback_session(entry)
+    keep = str(entry.get("id") or "")
+    gone = []
+    for other in pending_comebacks(session):
+        other_id = str(other.get("id") or "")
+        if other_id and other_id != keep and cancel(other_id) is not None:
+            gone.append(other_id)
+    if gone:
+        _notify(_entry_keys(entry))
+    return gone
+
+
+def _comeback_stale(entry: dict) -> bool:
+    """Has the conversation this comeback would continue ALREADY gone on — a
+    finished reply in its transcript newer than the moment the comeback was
+    booked? False whenever the transcript cannot say."""
+    session = _comeback_session(entry)
+    if not session:
+        return False
+    try:
+        booked = parse_due(str(entry.get("created") or "")).timestamp()
+    except ValueError:
+        return False
+    try:
+        from fused_render import session_liveness
+
+        last = session_liveness.session_last_turn(session)
+    except Exception:  # noqa: BLE001 — no evidence is "not stale"
+        logger.debug("could not read the transcript for %s", session,
+                     exc_info=True)
+        return False
+    return bool(last) and last.get("state") == "ok" \
+        and float(last.get("at") or 0.0) > booked
+
+
+def retry_after_limit(session_id: str, target: str = "", backend: str = "",
+                      now: datetime | None = None) -> dict:
+    """RETRY NOW on a conversation the plan's usage limit stopped:
+    `{"ok", "found", "entry", "reason", "comeback", "queued"}`.
+
+    The reader switched accounts (or the window reopened early) and does not
+    want to wait for the booked comeback. So the continue prompt goes NOW, as a
+    NEW one-off on the same session — `resend`'s shape, sent through `run_now`
+    and its claim like every other send.
+
+    THE BOOKED COMEBACK IS LEFT WHERE IT IS, and that is what keeps this safe in
+    both outcomes. Still limited: the retry dies on the limit too and the
+    comeback is still due at the reset — the chat's own re-booking, if it
+    makes one, supersedes it (`supersede_comebacks`), so there is never more
+    than one. Not limited: the retry is answered, and a reply newer than the
+    comeback's booking retires it (`_comeback_stale` at claim time, and the
+    tasks listing's sweep the moment the reply is seen).
+
+    With no comeback booked (cancelled, or the chat never got to post it) the
+    caller names the `target` and `backend` the conversation runs in, and the
+    prompt is the comeback's own."""
+    now = now or _now()
+    with _lock:
+        entries = _read()
+    booked = pending_comebacks(session_id, entries)
+    lead = booked[0] if booked else None
+    # A SECOND PRESS IS NOT A SECOND RETRY. One already in flight on this
+    # session is the answer; one still waiting (the conversation was closing
+    # its turn) is run again rather than joined by another.
+    if session_id and session_id in _busy_sessions(entries):
+        return {"ok": True, "found": True, "entry": None,
+                "comeback": str((lead or {}).get("id") or ""), "queued": False,
+                "reason": "already retrying — the continue is running now"}
+    waiting = next((dict(e) for e in entries
+                    if e.get("state") == PENDING and "retry_of" in e
+                    and _comeback_session(e) == session_id), None)
+    if waiting is not None:
+        outcome = run_now(str(waiting.get("id") or ""), now)
+        with _lock:
+            stored = next((e for e in _read()
+                           if e.get("id") == waiting.get("id")), waiting)
+        still = stored.get("state") == PENDING
+        return {"ok": True, "found": True, "entry": stored,
+                "comeback": str((lead or {}).get("id") or ""),
+                "queued": bool(outcome.get("queued")) and still,
+                "reason": str(outcome.get("reason") or "") if still else ""}
+    permission_mode = ""
+    message = COMEBACK_PROMPT
+    if lead is not None:
+        target = str(lead.get("target") or "") or target
+        message = str(lead.get("message") or "") or COMEBACK_PROMPT
+        permission_mode = str(lead.get("permission_mode") or "")
+        backend = _entry_backend(lead)
+    if not session_id or not target:
+        return {"ok": False, "found": False, "entry": None, "comeback": "",
+                "queued": False,
+                "reason": "nothing to retry — this conversation is not paused "
+                          "on the usage limit"}
+    # `origin="chat"`: the reader pressed for this from their own chat, so it
+    # is not a calendar message — no composer lock, no "your scheduled
+    # message is running" note over a turn they just asked for.
+    fresh = create(target, message, now, session_id=session_id,
+                   permission_mode=permission_mode, session_learned=True,
+                   origin="chat", backend=backend)
+    _update(fresh["id"], retry_of=str((lead or {}).get("id") or ""))
+    outcome = run_now(fresh["id"], now)
+    with _lock:
+        stored = next((e for e in _read()
+                       if str(e.get("id") or "") == fresh["id"]), None)
+    entry = stored or fresh
+    still = entry.get("state") == PENDING
+    return {"ok": True, "found": True, "entry": entry,
+            "comeback": str((lead or {}).get("id") or ""),
+            "queued": bool(outcome.get("queued")) and still,
+            "reason": str(outcome.get("reason") or "") if still else ""}
 
 
 def _loop() -> None:

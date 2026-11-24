@@ -34,6 +34,19 @@ afterEach(() => {
 
 const path = (u: string) => new URL(u, "http://x").pathname;
 
+test("opencode's doors are /api/opencode/* (docs/OPENCODE_BACKEND.md D10)", async () => {
+  await getAgentHealth("opencode");
+  await refreshAgentHealth("opencode");
+  await startAgentLogin("opencode");
+  await linkAgentPath("opencode");
+  expect(urls.map(path)).toEqual([
+    "/api/opencode/health",
+    "/api/opencode/health/refresh",
+    "/api/opencode/login",
+    "/api/opencode/link-path",
+  ]);
+});
+
 test("gemini's doors are /api/gemini/* (docs/GEMINI_BACKEND.md D10)", async () => {
   await getAgentHealth("gemini");
   await refreshAgentHealth("gemini");

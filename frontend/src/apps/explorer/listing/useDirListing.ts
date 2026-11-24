@@ -2,7 +2,9 @@
 // Load-more pagination for truncated listings, the WebSocket dir watch that
 // drives refreshes, and the "new row" tint cue.
 import { useEffect, useRef, useState } from "react";
-import { clearListPrefetch, listDir, prefetchListDir, type HttpError } from "@platform/lib/api";
+import { clearListPrefetch, type HttpError } from "@platform/lib/api";
+import { isRemoteLocation } from "@platform/lib/remote";
+import { listFolder as listDir, prefetchFolder as prefetchListDir } from "@apps/explorer/listing/source";
 import { appearedKeys } from "@platform/lib/flip";
 import { notify } from "@platform/lib/notifications";
 import { ROW_NEW_MS, type ListingState } from "@apps/explorer/listing/types";
@@ -107,7 +109,11 @@ export function useDirListing(fsPath: string, listPath: string = fsPath) {
   // — LS-2, accepted). Closed on unmount = navigating away (LS-3). On change,
   // debounce 300 ms then re-fetch; sort params live in URL + state, so a
   // refetch preserves them.
+  //
+  // An `s3://` folder (listing/source.ts) has no directory on this disk to
+  // watch: its listing is the bucket index's, refreshed server-side.
   useEffect(() => {
+    if (isRemoteLocation(fsPath)) return;
     let sock: WebSocket | null = null;
     let retry: ReturnType<typeof setTimeout> | null = null;
     let timer: ReturnType<typeof setTimeout> | null = null;

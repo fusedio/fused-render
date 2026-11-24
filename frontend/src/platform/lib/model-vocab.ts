@@ -49,3 +49,43 @@ export function listedModelIn(
   const base = v.replace(QUALIFIER, "");
   return base !== v && list.includes(base) ? base : "";
 }
+
+/** WHAT EACH CLAUDE MODEL IS FOR, in a word or two — printed small beside the
+ *  name in every model menu while it is open (Akshil, 2026-11-07). The pill
+ *  itself stays the bare name. Keyed by the alias the pickers offer; every
+ *  model list reads Haiku → Sonnet → Opus → Fable, lightest to heaviest, the
+ *  same way the Thinking list reads Low → Max. */
+export const MODEL_DESCRIPTIONS: Readonly<Record<string, string>> = {
+  haiku: "Fast",
+  sonnet: "Balanced",
+  opus: "Deep reasoning",
+  fable: "Autonomous agents",
+};
+
+// A full Claude id names its family second: `claude-opus-4-6`, `claude-sonnet-5`.
+const FAMILY_ID = /^claude-(haiku|sonnet|opus|fable)\b/i;
+
+/** The description for any spelling of a Claude model (`opus[1m]`, a full
+ *  id like `claude-opus-4-6`, a legacy Fable id), or "" for a model with none
+ *  (another agent's ids). */
+export function modelDescription(value: string | null | undefined): string {
+  const base = normalizeModel(value).replace(QUALIFIER, "");
+  const family = FAMILY_ID.exec(base)?.[1]?.toLowerCase() ?? base;
+  return Object.prototype.hasOwnProperty.call(MODEL_DESCRIPTIONS, family) ? MODEL_DESCRIPTIONS[family] : "";
+}
+
+/** How each `--effort` level is SAID in a menu — the New task card's words
+ *  ("High"; "Xhigh", the CLI's word capitalised). A level this map has never
+ *  heard of says itself, first letter capitalised ("minimal" → "Minimal"). */
+export const EFFORT_LABELS: Readonly<Record<string, string>> = {
+  low: "Low",
+  medium: "Medium",
+  high: "High",
+  xhigh: "Xhigh",
+  max: "Max",
+};
+
+export function effortLabel(value: string): string {
+  if (Object.prototype.hasOwnProperty.call(EFFORT_LABELS, value)) return EFFORT_LABELS[value];
+  return value ? value[0].toUpperCase() + value.slice(1) : value;
+}

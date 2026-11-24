@@ -1,6 +1,6 @@
 import { expect, test } from "bun:test";
 
-import { listedModelIn, normalizeModel } from "./model-vocab";
+import { listedModelIn, modelDescription, normalizeModel } from "./model-vocab";
 
 test("every Fable spelling is said as fable, and nothing else is touched", () => {
   // The pinned id the pickers used to offer, a dated full id, the bare alias.
@@ -37,4 +37,21 @@ test("listedModelIn finds the row a stored value means, qualifier or not, and no
   expect(listedModelIn("claude-opus-9", MODELS)).toBe("");
   expect(listedModelIn("", MODELS)).toBe("");
   expect(listedModelIn(undefined, MODELS)).toBe("");
+});
+
+test("every Claude model says what it is for, under any spelling; other ids say nothing", () => {
+  expect(["haiku", "sonnet", "opus", "fable"].map(modelDescription)).toEqual([
+    "Fast",
+    "Balanced",
+    "Deep reasoning",
+    "Autonomous agents",
+  ]);
+  expect(modelDescription("opus[1m]")).toBe("Deep reasoning");
+  expect(modelDescription("claude-fable-5-1")).toBe("Autonomous agents");
+  expect(modelDescription("claude-opus-4-6")).toBe("Deep reasoning");
+  expect(modelDescription("claude-haiku-4-5[1m]")).toBe("Fast");
+  expect(modelDescription("default")).toBe("");
+  expect(modelDescription("gpt-5")).toBe("");
+  expect(modelDescription("toString")).toBe("");
+  expect(modelDescription("")).toBe("");
 });

@@ -48,6 +48,12 @@ def render(
     from fused_render.server import templates as _server_templates
     if _server_templates.is_native_template_path(path):
         return _error("served by the shell", status=404)
+    # A downloaded S3 object is untrusted bucket content: never serve it as a
+    # same-origin page with the runtime injected (nor record it as an app).
+    # Templates still read it via `_file=` -> /api/fs/raw, which is hardened.
+    from fused_render import remote_fetch
+    if remote_fetch.in_cache(path):
+        return _error("a downloaded remote file cannot be opened as a page", status=403)
     if not os.path.isfile(path):
         # An app FOLDER names its entry page: redirect (not serve inline) so
         # the page's own URL carries the .html path — the runtime resolves

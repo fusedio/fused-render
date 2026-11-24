@@ -17,8 +17,10 @@ long-running thing in the app already lives, and it is the surface that can
 show bytes, a phase, and a Cancel without the sidebar badge growing a second
 progress readout. Cancel arrives the way every job cancel does — as a flag on
 the reply to the progress tick this manager was going to send anyway — and is
-honoured only while DOWNLOADING; once the artifact swap starts there is no
-safe point to stop at.
+honoured only while DOWNLOADING; once the artifact is being written there is
+no safe point to stop at. On macOS "written" means STAGED beside the bundle
+(update/mac.py) and applied on quit; on Linux the AppImage is replaced in
+place (the mounted one keeps serving the running process).
 
 Everything runs on worker threads and never raises out of the manager: a
 failed check leaves state "idle"/"error", never a dead loop. Job reporting is
@@ -103,8 +105,9 @@ MIN_CHECK_GAP_S = 60.0
 # retry.
 FAILED_CHECK_GAP_S = 5.0
 CANCELLED_MESSAGE = "Cancelled"
-# Keep a margin over the artifact itself: the download and the staged/swapped
-# copy coexist briefly during the swap.
+# Keep a margin over the artifact itself: the download and the staged copy
+# coexist during the install — and on macOS the staged copy then sits beside
+# the bundle until the next quit applies it.
 _DISK_SPACE_FACTOR = 3
 
 
@@ -113,8 +116,9 @@ class UpdateManager:
 
     states: idle -> checking -> (idle | available) -> installing(progress)
             -> installed | error(message)
-    "installed" means the artifact on disk is the new version; the existing
-    installed_version drift banner drives the restart from there. Every
+    "installed" means the new version is what launches next (`_disk_version`:
+    staged beside the mac bundle, or an AppImage replaced in place); the
+    existing installed_version drift banner drives the restart from there. Every
     method takes the same route through those states regardless of platform —
     `method()` rides along on status() purely as an INFORMATIONAL word (mac's
     subclass uses it for "brew" vs "dmg"; nothing here brances on it)."""
@@ -601,7 +605,9 @@ class UpdateManager:
         #     fallback, a lazily-loaded chunk — and by the time the row
         #     existed the installer had already swapped the `.app` on disk,
         #     so the chunk the running window would have fetched was gone.
-        #     Clicking the card blanked the page (Akshil, 2026-09-19).
+        #     Clicking the card blanked the page (Akshil, 2026-09-19). The
+        #     mac installer no longer swaps at all (it stages; the quit
+        #     applies), but the row stays gone for the first reason.
         #
         # So the row is REMOVED rather than finished: `jobs.forget` takes it
         # off the registry outright (it is allowed to take a row that is still

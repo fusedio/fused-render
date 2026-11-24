@@ -6,6 +6,7 @@ import os
 import sqlite3
 import subprocess
 
+from fused_render.bots import paths as bpaths
 from fused_render.bots import channels, imessage, registry, store
 from fused_render.bots.channels import base, router as rmod
 from fused_render.bots.channels.base import Caps, Channel, Inbound
@@ -260,9 +261,11 @@ def test_imessage_poll_filters_and_identity(app_home, tmp_path, monkeypatch):
     dbp = str(tmp_path / "chat.db")
     _fake_chat_db(dbp)
     monkeypatch.setattr(imessage, "CHAT_DB", dbp)
-    store.write_meta("b1", {"id": "b1", "name": "Scout", "kind": "super", "imessage": "+1 555 123 4567"})
+    bid = "b1b1b1b1"
+    bpaths.place(bid, "Scout")
+    store.write_meta(bid, {"id": bid, "name": "Scout", "kind": "super", "imessage": "+1 555 123 4567"})
     ch = ImessageChannel()
-    assert ch.door() == ("b1", "+15551234567")
+    assert ch.door() == (bid, "+15551234567")
     assert ch.poll() == []                              # first run: cursor set to now, nothing replayed
     assert imessage.load_cursor()["rowid"] == 2
     _add(dbp, 3, 1, "find flats")                       # owner over iMessage

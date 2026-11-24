@@ -103,7 +103,7 @@ typedef NS_ENUM(NSInteger, FRNavigationPolicy) {
 /// The one engine per process. CEF initialises once and cannot restart.
 @interface FRChromiumEngine : NSObject
 /// Start CEF from the unpacked engine directory (holding `Chromium Embedded
-/// Framework.framework` and the `FusedRender Helper*.app` bundles). Returns
+/// Framework.framework` and the `Fused Render Helper*.app` bundles). Returns
 /// nil on failure; `+lastError` says why. `cachePath` is the profile dir
 /// (one for every view). `product` is the app's user-agent marker
 /// ("FusedRender/1.2.3"); the engine keeps a `Chrome/<major>` token in

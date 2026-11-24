@@ -53,7 +53,7 @@ into `platform/` instead.
 - `styles/chat.css` — `T:13-101` tokens as `--c-*` under `.chat-root`; `styles/hljs.css` scoped highlight theme.
 - `ui/`, `pane/`, `shots/`, `ann/`, `sched/`, `live/` — where each old subsystem lands (design.md §1).
   - `ui/CommandMenu.tsx` the slash-command menu over the composer (`menuQuery`, `menuKey`); `Composer.tsx` intercepts local commands before `onSend`.
-  - `ui/TasksPanel.tsx` the background-tasks strip between transcript and composer (`.chat-tasks`, `styles/tasks.css`): collapsed summary, rows, "Output" via the `task_output` action. Open state is `ClaudeChat`'s; `/tasks` toggles it.
+  - `ui/TasksPanel.tsx` the background-tasks strip between transcript and composer (`.chat-tasks`, `styles/tasks.css`): collapsed summary; opened, one row per running task, and the row toggles its output (`task_output` action) or, for an agent, its latest update. Open state is `ClaudeChat`'s; `/tasks` toggles it.
   - `ui/tasksContext.ts` the task registry by id for `ToolChip`'s header (`ChipTaskInfo`); an agent chip with `children` draws them with `SegmentView` in a `.chat-subagent` block.
   - `ui/WorktreeMenu.tsx` the worktree switcher — in `Topbar` for a file or folder chat inside a repo, under the path on the landing (`HomeCard`); a switch is `paneChatUrl(switchTarget(row), "")` through `onNavigate` (the same file in the other checkout when it exists there, else its folder).
 

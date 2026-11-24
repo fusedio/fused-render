@@ -2,6 +2,7 @@
 // control on the right, hairlines between rows. A `stack` row puts a wide control (textarea, list) under the text
 // instead. Rows fill the width whatever their number, so a section with two settings reads as designed, not empty.
 import type { ReactNode } from "react";
+import { isLanHost } from "@platform/lib/host";
 import { cn } from "@platform/lib/utils";
 
 export function Rows({ className, children }: { className?: string; children: ReactNode }) {
@@ -17,9 +18,9 @@ export function Row({ title, text, htmlFor, stack, children }: { title: ReactNod
   );
   if (stack) return <div className="flex flex-col gap-2.5 py-4 first:pt-0 last:pb-0">{head}{children}</div>;
   return (
-    <div className="flex items-center justify-between gap-8 py-4 first:pt-0 last:pb-0">
+    <div className={cn("flex items-center justify-between gap-8 py-4 first:pt-0 last:pb-0", isLanHost() && "flex-col items-stretch gap-2.5")}>
       {head}
-      <div className="flex w-80 max-w-[50%] shrink-0 justify-end">{children}</div>
+      <div className={cn("flex w-80 max-w-[50%] shrink-0 justify-end", isLanHost() && "w-full max-w-none justify-start")}>{children}</div>
     </div>
   );
 }

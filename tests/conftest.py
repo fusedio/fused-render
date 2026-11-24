@@ -32,14 +32,131 @@ Only allocate + register cleanup when the var is unset, so a caller that set it
 never use. The dirs we create are removed at process exit.
 """
 import atexit
+import faulthandler
 import os
 import shutil
+import signal
 import sys
 import tempfile
+import threading
+import traceback
 import types
 from pathlib import Path
 
 import pytest
+
+
+# --- the pytest process must never leave its session or signal itself -------
+# CI's `test-python` job lost an xdist worker (`[gwN] node down: Not properly
+# terminated`, no traceback, a different "crashed" test every time) in about
+# half its runs. One thing every such run had in common: three test files call
+# a subprocess's real entry point IN-PROCESS (`index.worker.main`,
+# `_env_install_worker.main`, `worker_base.serve`), and each of those starts
+# with a real `os.setsid()`. Under `-n 0` that fails with EPERM (pytest leads
+# its group) and is swallowed, so nobody saw it; in an xdist worker it
+# SUCCEEDS, and from then on the worker leads its own session, its own process
+# group (pgid == its pid) and an orphaned one at that. A `killpg(<pid>)` that
+# used to be a harmless ESRCH — and many tests write `pid=os.getpid()` into
+# fake run/pid files that cancel/stop code then signals — now reaches the
+# worker itself. So, in THIS process (never a forked child, which must keep
+# the real calls):
+#   * `os.setsid()` is a recorded no-op — the in-process state `-n 0` always had;
+#   * `os.kill`/`os.killpg` aimed at this process or its group raise instead,
+#     and the test that did it fails by name at teardown (a raise on a
+#     background thread would otherwise only be a warning);
+#   * `os._exit` and a fatal SIGTERM/SIGHUP print a stack first, so the next
+#     worker death names its cause instead of reading as "Not properly
+#     terminated".
+_TEST_PROCESS_PID = os.getpid()
+_real_setsid = getattr(os, "setsid", None)
+_real_kill = os.kill
+_real_killpg = getattr(os, "killpg", None)
+_real_os_exit = os._exit
+_SELF_SIGNALS: list = []
+
+
+def _in_test_process() -> bool:
+    return os.getpid() == _TEST_PROCESS_PID
+
+
+def _refuse_self_signal(call: str) -> None:
+    where = "".join(traceback.format_stack(limit=12)[:-2])
+    _SELF_SIGNALS.append(f"{call} on {threading.current_thread().name}:\n{where}")
+    raise ProcessLookupError(f"tests/conftest.py refused {call}: it targets the pytest process")
+
+
+def _guarded_setsid():
+    if _in_test_process():
+        return None
+    return _real_setsid()
+
+
+def _guarded_kill(pid, sig):
+    if sig != 0 and _in_test_process():
+        own_group = os.getpgid(0) if hasattr(os, "getpgid") else None
+        if pid in (0, _TEST_PROCESS_PID) or (own_group is not None and pid == -own_group):
+            _refuse_self_signal(f"os.kill({pid}, {sig!r})")
+    return _real_kill(pid, sig)
+
+
+def _guarded_killpg(pgid, sig):
+    if sig != 0 and _in_test_process() and pgid in (0, os.getpgid(0)):
+        _refuse_self_signal(f"os.killpg({pgid}, {sig!r})")
+    return _real_killpg(pgid, sig)
+
+
+def _loud_os_exit(code):
+    if _in_test_process():
+        sys.__stderr__.write(
+            f"\n!!! os._exit({code}) called in the pytest process "
+            f"(pid {_TEST_PROCESS_PID}) on {threading.current_thread().name}:\n"
+            + "".join(traceback.format_stack()[:-1]))
+        sys.__stderr__.flush()
+    _real_os_exit(code)
+
+
+if _real_setsid is not None:
+    os.setsid = _guarded_setsid
+os.kill = _guarded_kill
+if _real_killpg is not None:
+    os.killpg = _guarded_killpg
+os._exit = _loud_os_exit
+for _signame in ("SIGTERM", "SIGHUP"):
+    if hasattr(signal, _signame) and sys.__stderr__ is not None:
+        try:
+            faulthandler.register(getattr(signal, _signame), file=sys.__stderr__,
+                                  all_threads=True, chain=True)
+        except (AttributeError, ValueError, OSError):  # Windows / no usable stderr
+            pass
+
+
+@pytest.fixture(autouse=True)
+def _no_self_signal():
+    """Fail the test that aimed a signal at the pytest process (see above).
+
+    Pending records are never cleared unreported: one left by a module- or
+    session-scoped fixture (which runs before this one) fails the first test
+    that sees it, and `pytest_sessionfinish` below catches any recorded after
+    the last test's teardown. Each record carries its own stack, so the
+    message names the real caller either way."""
+    yield
+    if _SELF_SIGNALS:
+        seen = "\n".join(_SELF_SIGNALS)
+        del _SELF_SIGNALS[:]
+        pytest.fail("this test signalled the pytest process itself — under xdist "
+                    "that silently kills the worker. Point the pid/pgid at a "
+                    "child you spawned, or monkeypatch the kill.\n" + seen,
+                    pytrace=False)
+
+def pytest_sessionfinish(session, exitstatus):
+    """The backstop for `_no_self_signal`: a self-signal recorded where no
+    test's teardown could report it (a late fixture teardown) still fails the
+    run."""
+    if _SELF_SIGNALS:
+        sys.__stderr__.write("\n!!! a fixture signalled the pytest process itself "
+                             "(tests/conftest.py guard):\n" + "\n".join(_SELF_SIGNALS) + "\n")
+        session.exitstatus = pytest.ExitCode.TESTS_FAILED
+
 
 for _var, _prefix in (("FUSED_RENDER_HOME", "fused-render-tests-"),
                        ("FUSED_RENDER_DIR", "fused-render-tests-dir-"),
@@ -135,9 +252,6 @@ def pytest_configure(config):
 # otherwise start a background model call for every parked Bash request it lists. Tests of the read clear this.
 os.environ.setdefault("FUSED_RENDER_PERMISSION_RISK", "0")
 os.environ.setdefault("FUSED_RENDER_ENGINE", "builtin")
-# Tests describe Fused Render; a stale fused_render/_baked_flavor.py from a
-# local bot DMG build must not flip them (port 1777 assertions, startup set).
-os.environ.setdefault("FUSED_RENDER_FLAVOR", "render")
 # export_app_env() starts a probe that runs the developer's real login shell
 # (login_path.py); no test should ever spawn it. test_login_path.py clears this
 # for the one test that exercises start().
@@ -419,6 +533,29 @@ def _no_git_auto_sync_threads(monkeypatch):
 
 
 @pytest.fixture(autouse=True)
+def _no_dev_machine_mflux_registry():
+    """No test reads THIS machine's installed mflux registry: the derived
+    mflux variants (`formats.mflux_variant_recipe`) would otherwise make a
+    dev box with the mflux venv installed resolve ids a CI box refuses. A
+    test that wants a registry calls `formats.set_mflux_registry_reader`."""
+    import sys
+
+    from fused_render.ai.runners import formats
+
+    def empty():
+        formats.set_mflux_registry_reader(lambda: {})
+        # The mflux worker imports its own top-level `formats` module, a
+        # second instance with its own reader.
+        worker_formats = sys.modules.get("formats")
+        if worker_formats is not None and hasattr(worker_formats, "set_mflux_registry_reader"):
+            worker_formats.set_mflux_registry_reader(lambda: {})
+
+    empty()
+    yield
+    empty()
+
+
+@pytest.fixture(autouse=True)
 def _no_queue_manager_across_tests():
     """No test inherits another test's queue index.
 
@@ -658,7 +795,7 @@ def _no_bots_threads(monkeypatch, tmp_path_factory):
     monkeypatch.setenv("FUSED_RENDER_APP_HOME", str(tmp_path_factory.mktemp("no-fusedbot")))
     monkeypatch.setattr(bots_registry, "start", lambda: None)
     # The routines wake agent (registry.sync_wake -> schedule_wake.sync): under a venv python there is no app
-    # bundle, so a sync REMOVES ~/Library/LaunchAgents/<flavor>.schedule-wake.plist — the developer's real Tasks
+    # bundle, so a sync REMOVES ~/Library/LaunchAgents/<bundle id>.schedule-wake.plist — the developer's real Tasks
     # wake agent. Tests reach it through every routine add/edit/fire now that they elect the owner lazily.
     monkeypatch.setattr(bots_registry, "sync_wake", lambda: None)
     bots_registry.reset_for_tests()
@@ -821,6 +958,59 @@ def _no_startup_engine_warm(monkeypatch):
     engine._available_cached = None
     yield
     engine._available_cached = None
+
+
+@pytest.fixture(autouse=True)
+def _no_startup_marketplace_blocks(monkeypatch):
+    """Neutralize create_app's Marketplace block-list check (`_startup_marketplace_blocks`
+    -> `contrib.blocks.startup`), same leaked-thread hazard as the fixtures above.
+
+    It runs once per worker process (`blocks._started`), on a daemon thread
+    that calls `httpx.get` for the block list. Whatever test is running when
+    that thread gets there catches the request in its own patched `httpx.get`.
+    On CI that test was tests/test_hub_models.py, whose Hub fakes saw the
+    blocklist URL as their first call ("a guarded size lookup still reached the
+    Hub", `'limit=10' in '...marketplace_blocklist.json'`). No test asserts
+    the thread starts; the block-list tests call `refresh`/`enforce_all`
+    directly."""
+    from fused_render.contrib import blocks
+
+    monkeypatch.setattr(blocks, "startup", lambda: False)
+
+
+@pytest.fixture(autouse=True)
+def _no_remote_index_ingest_thread(monkeypatch):
+    """No test may start the `fused-asset` bucket index ingest (remote_index.py).
+
+    Two paths reach it: PUT /api/prefs with `canvases_enabled: True`
+    (prefs.put_prefs' side effect, which test_shell_prefs drives) and the
+    `_startup_remote_index` hook of any lifespan entered with the flag on. Both
+    end in `start_background`, a daemon thread that downloads the real index
+    over `urllib` and writes it under whatever FUSED_RENDER_HOME is current
+    when it gets there — the same leaked-thread hazard as the fixtures above.
+    `startup_check` calls `start_background` by module global, so this one
+    patch covers both. Tests that are ABOUT the ingest call `ingest()`
+    directly, or re-patch this in the test body."""
+    from fused_render import remote_index
+
+    monkeypatch.setattr(remote_index, "start_background", lambda reason: False)
+
+
+@pytest.fixture(autouse=True)
+def _no_contrib_sweep_thread(monkeypatch):
+    """Neutralize create_app's contrib sweep (`_startup_contrib_sweep` ->
+    `contrib.refresh.start`), the other way the block list leaks out of a
+    lifespan.
+
+    The thread lives for the worker process and, SWEEP_FIRST_S after the
+    first lifespan entered, ticks `blocks.sweep_tick` -> `refresh(force=True)`
+    -> `httpx.get` for the block list. Whatever test is running then catches
+    the request in its own patched `httpx.get`; on CI that was
+    tests/test_hub_models.py (`'search=...' in '...marketplace_blocklist.json'`).
+    The sweep's tests call `sweep_once`/`sweep_tick` directly, never the thread."""
+    from fused_render.contrib import refresh
+
+    monkeypatch.setattr(refresh, "start", lambda: None)
 
 
 @pytest.fixture(autouse=True)
@@ -1042,3 +1232,11 @@ def _no_engine_warm(monkeypatch):
     from fused_render import engine
 
     monkeypatch.setattr(engine, "_warm_started", True)
+
+
+@pytest.fixture(autouse=True)
+def _no_cursor_warm_spares(monkeypatch):
+    """No test starts a Cursor warm spare (`agent._prewarm_cursor`, fired by
+    `_defaults`) by accident: it spawns a host process. The spare tests turn
+    it back on for themselves (`FUSED_CURSOR_PREWARM=1`)."""
+    monkeypatch.setenv("FUSED_CURSOR_PREWARM", "0")

@@ -384,11 +384,20 @@ def shapefile_companions(path: str) -> list[str]:
     return found
 
 
+def _feature_layers(path: str) -> list[str]:
+    import pyogrio
+
+    return [str(name) for name, geometry in pyogrio.list_layers(path) if geometry is not None]
+
+
 def _to_geojson(path: str, layer: str = "") -> dict:
     import pyogrio
 
     final = _cache_path(_cache_key(path, "geojson", layer), ".geojson")
     if not final.exists():
+        names = [] if layer else _feature_layers(path)
+        if len(names) > 1:
+            return {"load": "vector", "path": path, "layers": names}
         tmp = final.with_name(final.name + f".{os.getpid()}.tmp")
         frame = _to_wgs84(pyogrio.read_dataframe(path, layer=layer or None))
         pyogrio.write_dataframe(frame, str(tmp), driver="GeoJSON")
@@ -521,7 +530,7 @@ def _array_to_cog(array, bounds, key: str) -> dict:
 
 # ---- inspect ----------------------------------------------------------------------------
 
-def inspect(path: str) -> dict:
+def inspect(path: str, layer: str = "") -> dict:
     """A compact description of what a source holds."""
     suffix = _suffix(path)
     if multidim_suffix(path) or suffix in MULTIDIM_FILES:
@@ -544,8 +553,8 @@ def inspect(path: str) -> dict:
     if suffix in BROWSER_VECTOR:
         try:
             import pyogrio
-            info = pyogrio.read_info(path)
-            return {
+            info = pyogrio.read_info(path, layer=layer or None)
+            out = {
                 "kind": "vector",
                 "features": int(info.get("features", -1)),
                 "geometry_type": info.get("geometry_type"),
@@ -553,6 +562,10 @@ def inspect(path: str) -> dict:
                 "fields": {str(n): str(t) for n, t in zip(info["fields"], info["dtypes"])},
                 "bounds": [float(v) for v in info["total_bounds"]] if info.get("total_bounds") is not None else None,
             }
+            names = _feature_layers(path)
+            if len(names) > 1:
+                out["layers"] = names
+            return out
         except Exception:
             if suffix != ".json":
                 raise
@@ -672,7 +685,7 @@ def main(target: str = "", action: str = "plan", entrypoint: str = "", layer: st
         elif action == "crs":
             result = _crs_info(crs, bounds)
         elif action == "inspect":
-            result = inspect(target)
+            result = inspect(target, layer)
         else:
             raise Refusal(f"unknown action {action!r}")
         return {"status": "ok", **result}

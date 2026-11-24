@@ -2,7 +2,7 @@
 misbehaved, built from files on disk alone.
 
 `build_bundle()` writes `fused-render-diagnostics-<YYYYmmdd-HHMMSS>.zip` to
-the Desktop (or `<home>/downloads` when there is no Desktop) and returns its
+~/Downloads (or `<home>/downloads` when there is no Downloads folder) and returns its
 path. It must work with NO server running — the menubar item, the
 `fused-render diagnostics` CLI and a wedged server all call it the same way —
 so nothing here talks HTTP; every source is a file or a short subprocess.
@@ -111,15 +111,15 @@ def _base_home() -> str:
 
 
 def _default_out_dir() -> str:
-    desktop = os.path.expanduser("~/Desktop")
-    if os.path.isdir(desktop):
-        return desktop
+    downloads = os.path.expanduser("~/Downloads")
+    if os.path.isdir(downloads):
+        return downloads
     return os.path.join(_home(), "downloads")
 
 
 def _bundle_executable() -> str:
-    """`CFBundleExecutable` of the bundle we run from, else the flavor's
-    app name ("FusedRender" / "FusedBot").
+    """`CFBundleExecutable` of the bundle we run from, else
+    `_flavor.app_name()` ("FusedRender").
     Read here rather than via `app.bundle_executable` — app.py imports
     uvicorn and AppKit-adjacent modules, and the CLI path must stay light."""
     exe = os.path.abspath(sys.executable)
@@ -742,12 +742,17 @@ def _unified_log(w: _Writer, window_start: float, now: float, tmp_dir: str) -> N
     # the path, and none of them reach the app log (the spawn just says
     # EACCES). Scoped to those three senders, not a bare CONTAINS over
     # everything.
+    # Every name the bundle folder can have: `Fused Render.app`, or
+    # `FusedRender.app` on an install from before the rename.
+    python_paths = " OR ".join(
+        f'eventMessage CONTAINS "{name}.app/Contents/MacOS/python"'
+        for name in (_flavor.bundle_name(), *_flavor.legacy_bundle_names()))
     predicate = ('(sender == "kernel" AND eventMessage CONTAINS "memorystatus") OR '
                  'subsystem == "com.apple.memorystatus" OR '
                  f'(process == "{_flavor.app_name()}" AND subsystem == "com.apple.runningboard") OR '
                  'process == "fused-apple-ai" OR '
                  '((process == "kernel" OR process == "syspolicyd" OR process == "amfid") '
-                 f'AND eventMessage CONTAINS "{_flavor.app_name()}.app/Contents/MacOS/python")')
+                 f'AND ({python_paths}))')
     span = min(now - window_start, LOG_SHOW_MAX_SPAN_S)
     deadline = time.monotonic() + LOG_SHOW_TIMEOUT_S
 

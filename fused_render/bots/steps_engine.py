@@ -32,7 +32,8 @@ Each turn you see the current page (URL, title, interactive elements with refs l
 
 Reply with strict JSON only, no prose, no code fences:
 {"thought": "<one short sentence for the user, what you see and what you'll do>",
- "action": "<goto|click|type|press|select|hover|scroll|wait|read|back|tab|readfile|ls|find|upload|save|text|texts|remember|forget|recall|note|learn|build|show|offer|tool|py|marketplace_search|marketplace_install|done|ask|login>",
+ "action": "<goto|click|type|press|select|hover|scroll|wait|read|back|tab|readfile|ls|find|upload|save|text|texts|remember|forget|recall|note|learn|routine_add|build|show|offer|tool|py|marketplace_search|marketplace_install|done|ask|login>",
+ "kind": "<for routine_add: interval|daily|once>", "minutes": <for routine_add interval: every N minutes, min 5>, "weekdays": [<for routine_add daily: 0 Mon … 6 Sun; omit for every day>], "at": "<for routine_add once: local date-time, YYYY-MM-DD HH:MM>",
  "file": "<for readfile / upload: file name from FILES or a path under FOLDERS; for ls / find: the folder (optional); for py: the .py file in the app, omit to load its SKILL.md>", "name": "<for save: file name, e.g. posts.md; for build: short app name; for show: app name or folder; for offer: an app from APPS, or the name of the app to build; for tool: the tool name>",
  "app": "<for tool: the app folder from APP TOOLS; for py: the app folder or name from APPS>", "args": {<for tool / py: the parameters as a JSON object>},
  "to": "<for text / texts: a CONTACTS name or handle>", "seconds": <for texts: wait up to this long for a NEW reply, max 300>,
@@ -63,10 +64,11 @@ Actions:
 - text to text: send an iMessage from this Mac to someone in CONTACTS (by name or handle). Only listed contacts can be texted; anyone else -> tell the user in `ask` or `done`. A text cannot be unsent, so it always goes through the approval gate. Keep it short and plain; no Markdown.
 - texts to [seconds]: read the recent iMessage thread with a CONTACTS person (their replies and yours). With `seconds`, it first waits up to that long for a NEW message from them (use it right after `text` when the task needs their answer; 60-180 is sensible, then check again or `done` with "no reply yet"). Read-only, no approval needed.
 - learn name value text: save a PLAYBOOK, a reusable recipe for this kind of task. `name` is a short title, `value` the comma-separated trigger words a future task would contain (e.g. "linkedin feed, linkedin posts"), `text` 5-15 numbered steps with exact URLs, what to click, what to skip. Use it right before `done` when a task took real exploration and is likely to be asked again; do not save one when a matching PLAYBOOK already worked.
+- routine_add text kind [minutes] [value] [weekdays] [at]: schedule a ROUTINE for yourself, a task this bot runs on its own on a schedule, when the user asks for one ("check X every hour", "every weekday at 9 send me…"). `text` is the whole task a future run will get (self-contained: a run has no chat context), `kind` interval (`minutes`, min 5), daily (`value` = HH:MM local, `weekdays` 0 Mon…6 Sun, omit for every day) or once (`at`). The user approves the card every time. The APP GUIDE's counts line lists the routines you have: never add a twin. Editing, pausing, running now or deleting one is the user's, in Routines.
 - build name text: have Claude Code create a small local app for the user (a fused-render app: a web page, optionally with Python behind it). `name` is a short app name ("Expense tracker"), `text` a clear spec: what it shows, what the user does in it, where any data comes from (paste the data or URLs you gathered). Use it when a tool serves the request better than a one-off browsing answer: a dashboard, a tracker, a form, a calculator, a page worth re-running later, or something a browser cannot do at all. If an app with that `name` already exists it is UPDATED in place: `text` then describes the change, not the whole app again (reuse the exact name the app was built under; `show` lists the names). Only pass `new: true` when the user explicitly wants a separate copy. The build runs on its own for several minutes; you get a link at once. Report that link with `done` right away (do not wait for the build); the user is told again when it is ready. Say "I'll build an app for that" in `thought`; at most one build per task. When the user asked for the app themselves, go straight to `build` (no `ask`, no `offer`): the approval card shows them the name, folder and spec and one click confirms it. A build the user accepted from your `offer` has already started when you hear back.
 - show name: put a built app INTO THE CHAT as a card the user opens right there (inline in the thread, beside the chat, or in a tab). `name` is the app's name or folder (from the APPS list in your prompt, a build link, @APPS_ROOT@/<folder>, or the page you are on). Every app in APPS can be shown, whoever built it. With no `name`, the page you are on, if it is one of the built apps. A pasted /render link that carries extra params (the page's "Copy state" button makes these) is that app at that exact state: pass the whole link as `name` so the card reopens it that way. Use it whenever the user asks to see, show, open or embed an app "here", "in the chat" or "in this view"; do NOT read the app's contents aloud instead. The card is the answer: follow with `done` in one line.
 - offer name [text]: PROPOSE an app and wait for the user's one-click answer. `name` is an app from APPS that would serve them better than a browsing answer (they get its card with "Use it" / "Not now"), or, when none fits, the name of a small app you would `build`, with `text` = its spec exactly as for `build` (they get "Build it" / "Not now", and a yes starts the build right away). `message`: one or two plain sentences on what it would do for them; when the offer comes at the end of the task, put your full findings in `message` too, so the answer is there whichever they pick. At most ONE offer per task; never on a routine task; never for a quick fact or a single click. You then get a USER line: accepted -> the build has started (or the card is in the chat), so `done` in one line with the link; declined -> `done` in one line (never repeat the findings) or carry on browsing; anything else is an instruction about the offer.
-- tool app name args: call one of the APP TOOLS (functions that local apps on this Mac expose; the list is in your prompt when any exist). `app` is the app folder, `name` the tool, `args` a JSON object with exactly the parameters shown. Prefer a tool over browsing when it does the job directly (reading or editing a document, sending mail, querying data the app owns). Tools marked [approval] change something and go through the approval gate; the rest run at once. The result comes back under CURRENT RESULT in your next step: use it (report with `done`); the same call with the same args is refused until the user speaks again. Never put passwords or keys in args. If no APP TOOLS section is present, there are none.
+- tool app name args: call one of the APP TOOLS (functions that local apps on this Mac, or connected services like Notion, expose; the list is in your prompt when any exist). `app` is the app folder, `name` the tool, `args` a JSON object with exactly the parameters shown. Prefer a tool over browsing when it does the job directly (reading or editing a document, sending mail, querying data the app owns). Tools marked [approval] change something and go through the approval gate; the rest run at once. The result comes back under CURRENT RESULT in your next step: use it (report with `done`); the same call with the same args is refused until the user speaks again. Never put passwords or keys in args. If no APP TOOLS section is present, there are none.
 - py app file args: run one .py of a local fused app DIRECTLY (its main(**args), no browsing), the same way the app's own page runs it. Apps marked [py] in APPS ship a SKILL.md that says what each file does and how to call it. `py` app with NO file loads that SKILL.md into APP SKILLS for the rest of the task (apps you just built and apps the task names are loaded already); then `py` app file args, with `file` one of its `## file.py` sections and `args` exactly as that section shows. A file without a section cannot be called; an app without a SKILL.md has no callable Python (use its page). The value comes back under CURRENT RESULT in your next step (60 s max): USE it — report with `done` — and never issue the same call again unless the user asks again or the args differ (a repeat is refused). An args error means re-read the section and fix the call. Prefer it over clicking through an app when the file does the job. Apps you built run at once (unless their SKILL.md marks the file for approval); a file of any other app pauses for the user's yes. Never put passwords or keys in args.
 @MARKETPLACE@- remember text: save one short durable note to your MEMORY (persists across tasks; the page is unchanged). Use it for site quirks ("LinkedIn feed is at /feed; dismiss the messaging overlay first"), user preferences ("user wants summaries as bullet lists"), and where things live. Never store passwords, codes or other secrets. One note per fact; do not repeat what MEMORY already says.
 
@@ -124,7 +126,7 @@ _TOOL_CONFUSION = re.compile(
     r"|only [^.]{0,30}?(gmail|slack|calendar|mcp)[^.]{0,20}tools?", re.I)
 
 # Actions whose step leaves the browser as it was: no thumbnail (an empty box under the chip).
-_NO_THUMB = ("readfile", "ls", "find", "tool", "py", "marketplace_search", "marketplace_install", "build", "show", "save", "remember", "forget", "recall", "note", "learn", "text", "texts", "done", "ask")
+_NO_THUMB = ("readfile", "ls", "find", "tool", "py", "marketplace_search", "marketplace_install", "build", "show", "save", "remember", "forget", "recall", "note", "learn", "routine_add", "text", "texts", "done", "ask")
 
 
 def _one_liner(act, result, obs, label=""):
@@ -390,8 +392,9 @@ def run(bot, task, label=None):
             # An "Approve forever" rule from an earlier card skips it (tools.forever_rule; the same rule set as
             # the agent engine, so a bot moved to a local model keeps what the user allowed).
             rule = tools.forever_rule(bot, act, decision, obs) if why else None
-            # ALWAYS_ASK (marketplace_install) raises the card under "Never ask" too, like the agent engine's _act.
-            ask = bool(why) and (act in tools.ALWAYS_ASK or (bot.meta.get("approval") or "ask") != "auto")
+            # ALWAYS_ASK (marketplace_install) and a service this bot may not use yet (tools.must_ask) raise the card
+            # under "Never ask" too, like the agent engine's _act.
+            ask = bool(why) and (tools.must_ask(bot, act, decision) or (bot.meta.get("approval") or "ask") != "auto")
             if ask and tools.forever_match(bot, rule):
                 bot.emit("note", f"Running without asking ({rule['label']}: approved forever).")
                 history.append(f"APPROVED by a standing rule the user set: {tools.describe(bot, act, decision, obs)}")
@@ -439,8 +442,8 @@ def run(bot, task, label=None):
             # it so the prompt does not fill up with stale page text.
             history = [h if len(h) <= 800 else h[:800] + " …[trimmed]" for h in history]
             history.append(f"{lbl} -> {result}")
-            if ckey is not None and act == "marketplace_install" and not result.startswith("error"):
-                ran_calls[ckey] = result  # one install per instruction, as the agent engine's _act keeps it
+            if ckey is not None and act in ("marketplace_install", "routine_add") and not result.startswith("error"):
+                ran_calls[ckey] = result  # one install / one routine per instruction, as the agent engine's _act keeps it
             if ckey is not None and result.startswith("RESULT:"):
                 ran_calls[ckey] = result
                 # An app call changes nothing the bot can see: make the result the
@@ -512,7 +515,7 @@ def _prompt(bot, task, history, obs, visited=None, past=None, result=None):
              + channels.prompt_for(bot))
     # The app guide is mounted like a skill: only when the task or a recent user line asks about the app itself.
     recent_user = " ".join(h for h in history[-14:] if h.startswith(("USER INSTRUCTION:", "USER ANSWER:")))
-    guide_s = (botmod.app_guide() + f"\nCounts now: {sum(1 for r in m.get('routines') or [] if r.get('enabled'))} active routine(s), "
+    guide_s = (botmod.app_guide() + f"\nCounts now: {botmod.routines_brief(m)}; "
                f"{len(bot.skills())} skill(s), memory {len([l for l in bot.memory().splitlines() if l.strip()])}/{bot.MEMORY_LINES} notes.\n\n"
                if botmod.APP_GUIDE_TRIGGER.search(task + " " + recent_user) else "")
     mem = bot.memory_for_prompt()
@@ -544,7 +547,7 @@ def _prompt(bot, task, history, obs, visited=None, past=None, result=None):
     declined = bot.declined_offers()
     if declined:
         dls_s += "\n\nOFFERS DECLINED (the user turned these app offers down recently; do not offer them again): " + ", ".join(sorted(declined))
-    dls_s += apptools.prompt_section(apptools.registry(), apptools.trusted_set(bot.meta))
+    dls_s += apptools.prompt_section(apptools.registry(), apptools.trusted_set(bot.meta), apptools.connections_set(bot.meta))
     dls_s += apptools.skill_section(bot._skill_dirs(task))  # SKILL.md of the apps this task needs (see _skill_dirs)
     skills_s = bot.skills_for_prompt(task)
     # CURRENT RESULT: the last app call's value IS the bot's current state.

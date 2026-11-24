@@ -25,6 +25,12 @@ describe("md", () => {
     expect(html).toContain('<td class="nw">Not built in</td>');
     expect(html).not.toContain("|");
   });
+  test("a lone `~` is text, `~~` strikes (the Claude funnel's rule, 2026-11-08)", () => {
+    expect(parseMdStage("~105 MB raw file (~4 M rows)")).not.toContain("<del>");
+    expect(parseMdStage("~105 MB raw file (~4 M rows)")).toContain("~105 MB raw file (~4 M rows)");
+    expect(parseMdStage("keep ~~drop~~ keep")).toContain("<del>drop</del>");
+  });
+
   test("raw HTML the bot writes is text, never markup", () => {
     expect(parse("<script>alert(1)</script>")).toContain("&lt;script&gt;alert(1)&lt;/script&gt;");
     expect(parse("a <b>bold</b> b")).toContain("&lt;b&gt;bold&lt;/b&gt;");

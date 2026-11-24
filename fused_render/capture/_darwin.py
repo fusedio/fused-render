@@ -33,6 +33,7 @@ never starts must raise, not hang a request forever.
 
 from __future__ import annotations
 
+import math
 import os
 import platform
 import threading
@@ -243,6 +244,10 @@ def refuse(mode: str, spec: dict) -> str | None:
 # ------------------------------------------------------------------- helpers
 
 
+class _Timeout(RuntimeError):
+    """`_Wait.result` gave up waiting: the call never answered."""
+
+
 class _Wait:
     """A completion handler as a blocking call, with the error it carried."""
 
@@ -257,10 +262,10 @@ class _Wait:
                              if hasattr(error, "localizedDescription") else error)
         self.event.set()
 
-    def result(self) -> None:
-        if not self.event.wait(WAIT_S):
-            raise RuntimeError(f"{self.what} did not answer within "
-                               f"{int(WAIT_S)}s")
+    def result(self, timeout: float = WAIT_S) -> None:
+        if not self.event.wait(timeout):
+            raise _Timeout(f"{self.what} did not answer within "
+                           f"{int(timeout)}s")
         if self.error:
             raise RuntimeError(f"{self.what} failed: {self.error}")
 
@@ -887,3 +892,341 @@ def _sck_shot(out: str, display, spec: dict) -> str:
         raise RuntimeError("the screenshot came back empty")
 
     return _write_image(out, image, bool(spec.get("jpeg")))
+
+
+# -------------------------------------------------------------- window still
+#
+# `shot_region` photographs the PIXELS UNDER A RECT of the screen, so the
+# window the page lives in has to be in front, on one display and not behind
+# another app — which an agent's gesture-less `canvas_screenshot` cannot
+# arrange (D1472: the user is reading the chat with another window up, and
+# the one picture that would have shown the bug was refused). `shot_window`
+# asks ScreenCaptureKit for THE WINDOW instead: a desktop-independent window
+# filter draws it from its own backing store, so another window on top,
+# another Space or another display change nothing. The page names its window
+# by the frame the browser reports (`screenX/Y`, `outerWidth/Height`, points,
+# top-left origin — the same space `SCWindow.frame` is in) and the match is
+# by that box, not by a window id the page cannot know.
+#
+# Still needs the Screen Recording grant, and still a picture of what the
+# window LAST DREW: a web view in a fully occluded window stops painting, so
+# the page keeps its own "is this document visible" gate and takes the slow
+# in-page road when it is not (canvas-shot-native.ts).
+
+#: How long a ScreenCaptureKit WINDOW list is reused (`_sc_window`). The
+#: list only supplies the `SCWindow` object for an id the live window server
+#: list already chose; a window newer than the copy is fetched by one fresh
+#: walk, and a window that has since closed fails the capture and clears it.
+#: Stamped when the walk ANSWERS, not when it was asked: a walk that took
+#: seconds would otherwise be cached already expired.
+WINDOW_CACHE_S = 5.0
+#: How long the own-process walk may take before the full walk gets the rest
+#: of the budget (`capture.WINDOW_BUDGET_S` bounds every wait here). It runs
+#: only when this process owns the window (`pick_window`'s `pid`): a process
+#: with no windows of its own has seen `getCurrentProcessShareableContent`
+#: never answer at all (2026-10-31).
+WINDOW_OWN_WALK_S = 1.0
+#: How far (points, per edge) the page's frame may sit from a window's before
+#: they are not the same window: a title bar the browser counts differently,
+#: a shadow, a half-pixel. Two app windows a user has not deliberately
+#: stacked are further apart than this.
+WINDOW_MATCH_SLACK = 48.0
+#: What a browser puts AFTER the page's title in its window's title
+#: (`_title_shows`), optionally followed by a profile name.
+BROWSER_TITLE_SEPS = (" - ", " \u2014 ", " \u2013 ")
+BROWSER_NAMES = ("Google Chrome", "Google Chrome for Testing", "Chromium",
+                 "Mozilla Firefox", "Firefox", "Firefox Developer Edition",
+                 "Microsoft Edge", "Brave", "Brave Browser", "Arc", "Vivaldi",
+                 "Opera", "Safari")
+#: Written by a walk's completion handler, which may land after its caller
+#: gave up (a late answer still serves the next still); a dict item set/get
+#: is atomic, so no lock beyond the GIL.
+_window_cache: dict = {}   # "ours" | "all" -> ({window id: SCWindow}, time.monotonic())
+
+
+def _left(deadline: float) -> float:
+    """Seconds left before `deadline` (monotonic); `_Timeout` when none."""
+    left = deadline - time.monotonic()
+    if left <= 0:
+        raise _Timeout("the window screenshot ran out of time")
+    return left
+
+
+def _cg_windows() -> list:
+    """Every window the window server has, LIVE, as `pick_window` reads one:
+    id, owner pid, frame, title, layer, on-screen. `CGWindowListCopyWindowInfo`
+    answers in milliseconds and its titles are current — a tab switched
+    behind a window shows up at once — where a ScreenCaptureKit list is a
+    snapshot that took seconds to walk (and a cached one held the OLD title
+    long enough to photograph the wrong tab, 2026-10-31). The title needs
+    the Screen Recording grant; without it another app's window is untitled
+    and `pick_window` never takes it."""
+    rows = Quartz.CGWindowListCopyWindowInfo(
+        Quartz.kCGWindowListOptionAll | Quartz.kCGWindowListExcludeDesktopElements,
+        Quartz.kCGNullWindowID) or []
+    out = []
+    for row in rows:
+        bounds = row.get("kCGWindowBounds") or {}
+        try:
+            frame = (float(bounds["X"]), float(bounds["Y"]),
+                     float(bounds["Width"]), float(bounds["Height"]))
+            wid = int(row.get("kCGWindowNumber"))
+        except (KeyError, TypeError, ValueError):
+            continue
+        out.append({"id": wid, "pid": int(row.get("kCGWindowOwnerPID") or 0),
+                    "frame": frame,
+                    "title": str(row.get("kCGWindowName") or ""),
+                    "layer": int(row.get("kCGWindowLayer") or 0),
+                    "onscreen": bool(row.get("kCGWindowIsOnscreen"))})
+    return out
+
+
+def _shareable_windows(ours: bool, timeout: float) -> dict:
+    """`{window id: SCWindow}` for every window ScreenCaptureKit will share,
+    ON-SCREEN OR NOT — a window on another Space, or behind another app, is
+    exactly the one `shot_window` exists for. `ours` walks this process's
+    windows alone (macOS 14.4+; the packaged app runs this server
+    in-process, so the shell's windows ARE ours), a fraction of the full
+    walk's cost on a busy Mac; the full walk is for a page in a browser.
+    Waits `timeout`; an answer after that still fills the cache."""
+    which = "ours" if ours else "all"
+    box: dict = {}
+    wait = _Wait("listing windows")
+
+    def handler(content, error):
+        if content is not None:
+            windows = {int(w.windowID()): w for w in content.windows()}
+            _window_cache[which] = (windows, time.monotonic())
+            box["windows"] = windows
+        wait.done(error)
+
+    if ours:
+        SCK.SCShareableContent.getCurrentProcessShareableContentWithCompletionHandler_(handler)
+    else:
+        SCK.SCShareableContent.getShareableContentExcludingDesktopWindows_onScreenWindowsOnly_completionHandler_(
+            True, False, handler)
+    wait.result(timeout)
+    return box.get("windows") or {}
+
+
+def _can_walk_ours() -> bool:
+    return hasattr(SCK.SCShareableContent,
+                   "getCurrentProcessShareableContentWithCompletionHandler_")
+
+
+def _sc_window(wid: int, own: bool, deadline: float):
+    """The `SCWindow` for a window id the live list chose. `own`: the window
+    is this process's, so its own (cheap) list is tried before every app's;
+    another app's window is only in the full list. A cached list
+    (`WINDOW_CACHE_S`) serves first; only when none holds the id (a window
+    newer than the copies) are the lists walked afresh, once each, inside
+    `deadline`. A walk that does not answer is skipped, not fatal, and
+    nothing is latched: a first walk held up by the Screen Recording prompt
+    answers normally the next time. None when no list has the window."""
+    walks = (["ours"] if own and _can_walk_ours() else []) + ["all"]
+    now = time.monotonic()
+    for which in walks:
+        hit = _window_cache.get(which)
+        if hit and now - hit[1] < WINDOW_CACHE_S and wid in hit[0]:
+            return hit[0][wid]
+    for which in walks:
+        left = _left(deadline)
+        try:
+            windows = _shareable_windows(
+                which == "ours", min(WINDOW_OWN_WALK_S, left) if which == "ours" else left)
+        except RuntimeError:        # `_Timeout` too: the next list, if any
+            continue
+        if wid in windows:
+            return windows[wid]
+    return None
+
+
+def _title_shows(have: str, want: str) -> bool:
+    """Whether a window titled `have` shows the page titled `want`: the very
+    title (the desktop app, Safari), or the title then a browser's name
+    ("T - Google Chrome", "T — Mozilla Firefox", "T - Google Chrome - Work").
+    A bare prefix is not enough: a page titled "Canvas" is not shown by
+    "Canvas Settings - Google Chrome" (D1472 review)."""
+    if have == want:
+        return True
+    for sep in BROWSER_TITLE_SEPS:
+        if not have.startswith(want + sep):
+            continue
+        rest = have[len(want) + len(sep):]
+        for name in BROWSER_NAMES:
+            if rest == name or any(rest.startswith(name + s) for s in BROWSER_TITLE_SEPS):
+                return True
+    return False
+
+
+def pick_window(windows: list, frame, title: str | None = None,
+                slack: float = WINDOW_MATCH_SLACK, pid: int | None = None):
+    """The window whose box is the page's `frame` (x, y, w, h in points):
+    the closest by the sum of the four edge distances, within `slack` on
+    every edge; None when nothing is that close. Only ordinary windows
+    (layer 0 — a status item, a tooltip or a sheet is never the page's), an
+    on-screen one winning a tie.
+
+    `title` is the page's `document.title`, and it is the SECOND KEY
+    (`_title_shows`): among the windows at the box, one whose title shows
+    the page wins; a titled window that does NOT is refused, because it
+    shows something else — another tab in front of the page, a second
+    window dropped on the very same spot (two Chromium windows at one box
+    photographed the wrong one, 2026-10-31) — and a still of it would be a
+    confident picture of the wrong thing.
+
+    ANOTHER APP's window (`pid` is this process's, `os.getpid()` by
+    default) needs that title match: the box alone would photograph
+    whatever app sits there, so a page with no title, or a Mac without the
+    grant (every other app's window untitled), gets no window still in a
+    browser. This process's own windows (the desktop app) may still match
+    by box when untitled or when the page has none. Pure, so it is tested
+    without a screen."""
+    own_pid = os.getpid() if pid is None else pid
+    fx, fy, fw, fh = frame
+    want = (title or "").strip()
+    best = None
+    for win in windows:
+        if win.get("layer", 0) != 0:
+            continue
+        x, y, w, h = win["frame"]
+        edges = (abs(x - fx), abs(y - fy), abs(w - fw), abs(h - fh))
+        if max(edges) > slack:
+            continue
+        have = str(win.get("title") or "").strip()
+        shows = bool(want and have) and _title_shows(have, want)
+        if want and have and not shows:
+            continue  # titled, and showing something else
+        if not shows and win.get("pid") != own_pid:
+            continue  # another app's window, matched by its box alone
+        key = (0 if shows else 1, sum(edges), 0 if win.get("onscreen") else 1)
+        if best is None or key < best[0]:
+            best = (key, win)
+    return best[1] if best else None
+
+
+def _scale_at(x: float, y: float) -> int:
+    """Backing pixels per point of the display under a screen point (the
+    window's centre): 2 on a Retina panel, 1 else, the main display's when
+    the point is on none."""
+    err, ids, count = Quartz.CGGetDisplaysWithPoint(Quartz.CGPointMake(x, y), 4, None, None)
+    display_id = list(ids)[0] if err == 0 and count else Quartz.CGMainDisplayID()
+    mode = Quartz.CGDisplayCopyDisplayMode(display_id)
+    if mode is None:                                     # pragma: no cover
+        return 1
+    points = max(1, int(Quartz.CGDisplayModeGetWidth(mode)))
+    pixels = int(Quartz.CGDisplayModeGetPixelWidth(mode))
+    return max(1, round(pixels / points))
+
+
+def crop_box(window_frame, rect, image_size, slack: float = 1.0):
+    """Where `rect` (screen points) lands in a still of `window_frame`
+    (screen points) that is `image_size` pixels: `(x, y, w, h)` in pixels.
+    The scale comes from the IMAGE against the frame rather than from a
+    display mode, so a still ScreenCaptureKit rounded is cropped where it
+    really is. A rect not inside the window (past `slack` points on any
+    edge) is REFUSED with None, as `locate` refuses a rect off its display:
+    the page draws the answer at the rect's own size, so a clamped picture
+    would be stretched over the wrong pixels, silently. Pure."""
+    wx, wy, ww, wh = window_frame
+    iw, ih = image_size
+    if ww <= 0 or wh <= 0 or iw <= 0 or ih <= 0:
+        return None
+    x, y, w, h = rect
+    if (x < wx - slack or y < wy - slack
+            or x + w > wx + ww + slack or y + h > wy + wh + slack):
+        return None
+    sx, sy = iw / ww, ih / wh
+    half_up = lambda v: int(math.floor(v + 0.5))   # not banker's rounding
+    left = min(iw, max(0, half_up((x - wx) * sx)))
+    top = min(ih, max(0, half_up((y - wy) * sy)))
+    right = min(iw, max(0, half_up((x - wx + w) * sx)))
+    bottom = min(ih, max(0, half_up((y - wy + h) * sy)))
+    if right - left <= 0 or bottom - top <= 0:
+        return None
+    return (left, top, right - left, bottom - top)
+
+
+def _sck_window_shot(out: str, win: dict, rect, spec: dict) -> dict:
+    """One ScreenCaptureKit still of `win` (a `_cg_windows` row plus its
+    `SCWindow`), the whole window at the backing scale of the display under
+    it, cropped to `rect` (screen points) and written to `out`, inside
+    `spec["deadline"]`."""
+    from fused_render.capture import CaptureError
+
+    x, y, w, h = win["frame"]
+    scale = _scale_at(x + w / 2, y + h / 2)
+    content_filter = SCK.SCContentFilter.alloc().initWithDesktopIndependentWindow_(win["window"])
+    config = SCK.SCStreamConfiguration.alloc().init()
+    config.setWidth_(int(w * scale))
+    config.setHeight_(int(h * scale))
+    config.setShowsCursor_(False)
+    # A window across two displays is otherwise clipped to the one it
+    # started on — the very case the window road exists for (D1472).
+    if hasattr(config, "setIgnoreGlobalClipSingleWindow_"):
+        config.setIgnoreGlobalClipSingleWindow_(True)
+    box: dict = {}
+    wait = _Wait("taking the window screenshot")
+
+    def handler(image, error):
+        box["image"] = image
+        wait.done(error)
+
+    SCK.SCScreenshotManager.captureImageWithFilter_configuration_completionHandler_(
+        content_filter, config, handler)
+    wait.result(_left(spec["deadline"]))
+    image = box.get("image")
+    if image is None:
+        raise RuntimeError("the window screenshot came back empty")
+    size = (int(Quartz.CGImageGetWidth(image)), int(Quartz.CGImageGetHeight(image)))
+    crop = crop_box(win["frame"], rect, size)
+    if crop is None:
+        raise CaptureError(
+            "the region to photograph is not inside the page's window, or "
+            "too small to crop — move the window so the canvas is fully "
+            "inside it and try again")
+    cropped = Quartz.CGImageCreateWithImageInRect(image, Quartz.CGRectMake(*crop))
+    if cropped is None:                                  # pragma: no cover
+        raise RuntimeError("the window screenshot could not be cropped")
+    return _write_image(out, cropped, bool(spec.get("jpeg")))
+
+
+def shot_window(out: str, spec: dict) -> dict:
+    """`capture.shot_window`'s hook: a still of the window whose frame is
+    `spec["window"]` and whose title shows `spec["title"]`, cropped to
+    `spec["rect"]` (both boxes in screen points), to `out`, every wait
+    inside `spec["deadline"]` (monotonic; `capture.WINDOW_BUDGET_S`).
+    `Unsupported` below macOS 14 (`SCScreenshotManager` is the only window
+    still here; the region still covers 13), `CaptureError` when no window
+    showing this page sits where the page says its own does."""
+    from fused_render.capture import WINDOW_BUDGET_S, CaptureError, Unsupported
+
+    old = _too_old(SCSHOT_MIN)
+    if old:
+        raise Unsupported("window screenshots " + old)
+    frame, rect, title = spec["window"], spec["rect"], spec.get("title")
+    deadline = spec.get("deadline") or time.monotonic() + WINDOW_BUDGET_S
+    spec = {**spec, "deadline": deadline}
+    info = pick_window(_cg_windows(), frame, title)
+    if info is None:
+        raise CaptureError(
+            "no window showing this page sits where the page says its own "
+            "does — the page's window could not be found to photograph")
+    own = info.get("pid") == os.getpid()
+    win = _sc_window(info["id"], own, deadline)
+    if win is None:
+        raise RuntimeError("the page's window is not one ScreenCaptureKit will share")
+    try:
+        return _sck_window_shot(out, {**info, "window": win}, rect, spec)
+    except (CaptureError, _Timeout):
+        raise                       # a refusal, or a call that never answered: no second try
+    except Exception:                                    # noqa: BLE001
+        # The cached SCWindow may be gone (closed, re-created on a reload):
+        # once more on a fresh walk, and only when that walk still has the
+        # window — the same object failing twice is the same failure. Both
+        # inside the same deadline, so a slow first try leaves no retry.
+        _window_cache.clear()
+        again = _sc_window(info["id"], own, deadline)
+        if again is None:
+            raise
+        return _sck_window_shot(out, {**info, "window": again}, rect, spec)

@@ -12,7 +12,7 @@
 // foot only feeds them the peek store, the URL and the visibility state, and
 // spends the answer on the one whole-task read call the List's Mark read button
 // already makes.
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState, useSyncExternalStore } from "react";
 import { markWholeTaskRead } from "@platform/lib/api";
 import type { TaskPulseTask } from "@platform/lib/api";
 import { usePeekedKey } from "@shell/task-peek-store";
@@ -25,6 +25,9 @@ export interface OpenContext {
   search: string;
   /** `document.visibilityState === "visible"`. */
   visible: boolean;
+  /** Keys a card holds open on screen (`useHoldOpenTask`): the rail's
+   *  pressed card, a held favourite's card. */
+  held?: readonly string[];
 }
 
 /** Keys of the tasks the reader has open and can see right now. */
@@ -40,11 +43,12 @@ export function openTaskKeys(tasks: readonly TaskPulseTask[], ctx: OpenContext):
   } catch {
     session = "";
   }
+  const held = new Set(ctx.held ?? []);
   const out: string[] = [];
   for (const t of tasks) {
     const peeked = ctx.peekedKey != null && ctx.peekedKey === t.key;
     const onPage = session !== "" && t.session_id === session;
-    if (peeked || onPage) out.push(t.key);
+    if (peeked || onPage || held.has(t.key)) out.push(t.key);
   }
   return out;
 }
@@ -72,12 +76,64 @@ export function useDocumentVisible(): boolean {
   return visible;
 }
 
+// A CHAT A CARD HOLDS OPEN (2026-11-11: "status update and unread dot
+// clearing from the canvas rail side"). The rail's card (RailPeek) shows a
+// chat over any page — a canvas, a folder — that is neither the side peek nor
+// the URL's `session_id`, so a reply landing while the reader watched it there
+// lit the ring's dot (and raised a "Task finished" notice) for a chat on
+// screen. A card that holds a chat open says so here, and the document's one
+// open-task reader (`useTaskStatusNotify`) counts it like the peek: marked
+// read as it arrives, no notice. Counted, so two holders of one key (the list
+// card and the favourite's) let go independently.
+const heldOpen = new Map<string, number>();
+let heldSnapshot: readonly string[] = [];
+const heldListeners = new Set<() => void>();
+
+function publishHeld(): void {
+  heldSnapshot = Array.from(heldOpen.keys());
+  for (const fn of heldListeners) fn();
+}
+
+/** Hold `key` open until the returned release is called (once). */
+export function holdOpenTask(key: string): () => void {
+  heldOpen.set(key, (heldOpen.get(key) ?? 0) + 1);
+  publishHeld();
+  let released = false;
+  return () => {
+    if (released) return;
+    released = true;
+    const n = (heldOpen.get(key) ?? 1) - 1;
+    if (n > 0) heldOpen.set(key, n);
+    else heldOpen.delete(key);
+    publishHeld();
+  };
+}
+
+/** The keys cards hold open right now. */
+export function readHeldOpenTasks(): readonly string[] {
+  return heldSnapshot;
+}
+
+function subscribeHeld(fn: () => void): () => void {
+  heldListeners.add(fn);
+  return () => {
+    heldListeners.delete(fn);
+  };
+}
+
+/** Holds `key` open while it is non-null (a card showing that chat to the
+ *  reader); null holds nothing. */
+export function useHoldOpenTask(key: string | null): void {
+  useEffect(() => (key ? holdOpenTask(key) : undefined), [key]);
+}
+
 /** The open-and-visible keys, recomputed on every poll. */
 export function useOpenTaskKeys(tasks: readonly TaskPulseTask[]): string[] {
   const peekedKey = usePeekedKey();
   const visible = useDocumentVisible();
+  const held = useSyncExternalStore(subscribeHeld, readHeldOpenTasks, readHeldOpenTasks);
   const search = typeof location === "undefined" ? "" : location.search;
-  return openTaskKeys(tasks, { peekedKey, search, visible });
+  return openTaskKeys(tasks, { peekedKey, search, visible, held });
 }
 
 /** Marks every unread message of an open, visible task read. One request per

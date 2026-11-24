@@ -2,7 +2,7 @@
 // confirm), "Learn from last task" and the hand-written form (Title, Trigger words, Steps). Every op posts at once and
 // the next poll repaints the list; nothing here touches the Settings snapshot or its Save. The confirm is a sibling
 // modal, so it goes through the dialog's `confirm` (holds `busy`) and not askConfirm directly.
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Trash2Icon } from "lucide-react";
 import { Badge } from "@platform/shadcn/ui/badge";
 import { Button } from "@platform/shadcn/ui/button";
@@ -10,6 +10,7 @@ import { Field, FieldDescription, FieldGroup, FieldLabel } from "@platform/shadc
 import { Input } from "@platform/shadcn/ui/input";
 import { Textarea } from "@platform/shadcn/ui/textarea";
 import { api, type Bot } from "../lib/api";
+import { revealWithin } from "../lib/scroll";
 import { act } from "../state/store";
 import { CARD_CLASS } from "./shell";
 
@@ -30,11 +31,21 @@ export function SkillsSection({ b, confirm }: SectionProps) {
   useEffect(() => { setSent(false); }, [b.learning, b.seq]);
   const learning = sent || !!b.learning;
   const sk = b.skills || [];
-  // By id, not ref: the shadcn Input forwards no ref on React 18.
-  const focusTitle = () => requestAnimationFrame(() => document.getElementById("sktitle")?.focus());
+  // By id, not ref: the shadcn Input forwards no ref on React 18. The form opens under the list (Edit as well as
+  // "Write one by hand"): bring it into view inside the dialog's own scroller only ([data-sec]), never the page, and
+  // focus without the browser's own scroll (which would move every scrollable ancestor).
+  const focusTitle = () => requestAnimationFrame(() => {
+    const form = document.getElementById("sform");
+    revealWithin(form?.closest<HTMLElement>("[data-sec]") ?? null, form);
+    document.getElementById("sktitle")?.focus({ preventScroll: true });
+  });
 
+  // Which draft the form holds: a save that finishes closes the form only if it still holds the draft it sent
+  // (Edit or "Write one by hand" on another skill meanwhile opened a new one, whose text must not be dropped).
+  const draft = useRef(0);
   const edit = (name: string) => {
     const k = sk.find((x) => x.name === name); if (!k) return;
+    draft.current++;
     setEditing(name); setTitle(k.title); setTrigger(k.trigger); setBody(k.body); setForm(true); focusTitle();
   };
   const del = async (name: string) => {
@@ -43,15 +54,16 @@ export function SkillsSection({ b, confirm }: SectionProps) {
     await act(() => api.skills(b.id, { op: "delete", rid: name }));
   };
   const save = async () => {
+    const mine = draft.current;
     const r = await act(() => api.skills(b.id, { op: "save", name: title, trigger, text: body, ...(editing ? { rid: editing } : {}) }));
-    if (!r?.ok) return;
+    if (!r?.ok || draft.current !== mine) return;  // refused (the banner says why): the draft stays for another try
     setForm(false); setEditing(null);
   };
   const learn = async () => {
     const r = await act(() => api.skills(b.id, { op: "learn" }));
     if (r?.ok) setSent(true);  // progress shows in the thread; the new card lands with a later poll
   };
-  const blank = () => { setEditing(null); setTitle(""); setTrigger(""); setBody(""); setForm(true); focusTitle(); };
+  const blank = () => { draft.current++; setEditing(null); setTitle(""); setTrigger(""); setBody(""); setForm(true); focusTitle(); };
 
   return (
     <div className="flex flex-col gap-4">

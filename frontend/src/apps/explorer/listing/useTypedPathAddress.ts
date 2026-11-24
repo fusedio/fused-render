@@ -4,7 +4,7 @@
 // says whether it is real — the same shape as `FilesHome.tsx`'s own address
 // resolution for the home page's box, scoped to one folder instead of home.
 import { useEffect, useRef, useState } from "react";
-import { statPath } from "@platform/lib/api";
+import { statLocation as statPath } from "@apps/explorer/listing/source";
 import { INSTANT_DEBOUNCE_MS } from "@platform/lib/instant-search";
 import { listingAddress } from "@apps/explorer/listing/listing-address";
 

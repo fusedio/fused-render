@@ -45,6 +45,7 @@ let saveBlockedReason: typeof import("./NewJobModal").saveBlockedReason;
 let TITLE_PLACEHOLDER: typeof import("./NewJobModal").TITLE_PLACEHOLDER;
 let ASK_PLACEHOLDER: typeof import("./NewJobModal").ASK_PLACEHOLDER;
 let taskFieldsOf: typeof import("./NewJobModal").taskFieldsOf;
+let customNameOf: typeof import("./NewJobModal").customNameOf;
 let initialTextOf: typeof import("./NewJobModal").initialTextOf;
 let composeTaskMessage: typeof import("./NewJobModal").composeTaskMessage;
 let withoutTitleHeading: typeof import("./NewJobModal").withoutTitleHeading;
@@ -88,6 +89,7 @@ beforeAll(async () => {
   TITLE_PLACEHOLDER = mod.TITLE_PLACEHOLDER;
   ASK_PLACEHOLDER = mod.ASK_PLACEHOLDER;
   taskFieldsOf = mod.taskFieldsOf;
+  customNameOf = mod.customNameOf;
   initialTextOf = mod.initialTextOf;
   composeTaskMessage = mod.composeTaskMessage;
   withoutTitleHeading = mod.withoutTitleHeading;
@@ -270,7 +272,7 @@ describe("the payload", () => {
     );
     // The KEY travels, not the label: "opus" is what `--model` takes, "Opus" is
     // only how the card says it. Same for "high", whose field is labelled
-    // Thinking.
+    // Effort.
     expect(picked.model).toBe("opus");
     expect(picked.effort).toBe("high");
 
@@ -2434,7 +2436,7 @@ describe("Delete and Discard share one seat and one skin", () => {
 
   test("…and Delete's glyph, with the label and the tooltip that are its own", () => {
     const s = src();
-    const discard = s.slice(s.indexOf("{(draftId || (recordKey && !editing)) && ("));
+    const discard = s.slice(s.indexOf("{!landing && (draftId || (recordKey && !editing)) && ("));
     const button = discard.slice(0, discard.indexOf("</button>"));
     expect(button).toContain("{ICON_TRASH}");
     expect(button).toContain('title="Discard this draft"');
@@ -2451,7 +2453,7 @@ describe("Delete and Discard share one seat and one skin", () => {
     // would draw both, which is the one thing this seat may not do.
     expect(s).toContain("const del = deleteActionFor(editing);");
     expect(s).toContain("{del && (");
-    expect(s).toContain("{(draftId || (recordKey && !editing)) && (");
+    expect(s).toContain("{!landing && (draftId || (recordKey && !editing)) && (");
   });
 });
 
@@ -2677,8 +2679,10 @@ describe("the source-task chip", () => {
   test("an Edit never wears one", () => {
     // That heading already IS the task, and the card is not continuing anything.
     expect(page()).toContain("if (editing) return null;");
-    // …the h2 is just the card's name; the agent crumb is `titleLead` beside it.
-    expect(card()).toContain('title={editing ? "Edit task" : "New task"}');
+    // …the h2 is the task's editable name; the dialog is still named for what
+    // the card is, and the agent crumb is `titleLead` beside it.
+    expect(card()).toContain('ariaLabel={editing ? "Edit task" : "New task"}');
+    expect(card()).toContain('placeholder={fields.title || "Untitled task"}');
     expect(card()).toContain("{...(editing || !sourceTask ? {} : {");
   });
 
@@ -2697,7 +2701,8 @@ describe("the source-task chip", () => {
 
   test("where there is no peek, the chip is a statement and not a dead button", () => {
     // The page hands over the name alone…
-    expect(page()).toContain("onOpen: peekable ? () => openSourceTask(sourceTask) : null,");
+    // (The rail's Tasks card is a door too: it opens the task in itself.)
+    expect(page()).toContain("onOpen: peekable || inCard ? () => openSourceTask(sourceTask) : null,");
     // …and the card draws a span for it.
     expect(card()).toContain(
       '<span className="new-task-source">from {shortTaskId(sourceTask.taskId)}</span>');
@@ -2903,23 +2908,48 @@ describe("property pills", () => {
     expect(s).toContain("PERMISSION_ORDER.indexOf(m)");
   });
 
-  test("the pill row starts with Model, then Access, Where, When", () => {
+  test("Where and When sit in the head; the pill row is Model, Effort, Access, then the verbs", () => {
     const s = src();
-    const order = ["Model", "Permissions", "Folder", "When"].map((k) => s.indexOf(`ariaLabel="${k}"`));
-    expect(order[0]).toBeGreaterThan(-1);
-    expect(order[0]).toBeLessThan(order[1]);
-    expect(order[1]).toBeLessThan(order[2]);
-    expect(order[2]).toBeLessThan(order[3]);
+    // Head (Modal `headActions`) is rendered as a prop, so it precedes the body.
+    const order = ["Folder", "When", "Model", "Effort", "Permissions"].map((k) => s.indexOf(`ariaLabel="${k}"`));
+    expect(order.every((i) => i > -1)).toBe(true);
+    expect([...order].sort((a, b) => a - b)).toEqual(order);
+    const head = s.indexOf("headActions={(");
+    expect(head).toBeGreaterThan(-1);
+    expect(head).toBeLessThan(order[0]);
+    // No footer row: Discard and Create close the pill row, after Access.
+    expect(s).not.toContain("      footer={");
+    const verbs = s.indexOf('<div className="nt-row-actions">');
+    expect(verbs).toBeGreaterThan(order[4]);
+    expect(s.indexOf("schedule-save", verbs)).toBeGreaterThan(s.indexOf("Discard\n", verbs));
   });
 
   test("the stale-time note ignores the seed when nothing is picked", () => {
     expect(src()).toMatch(/pastNoteFor\(timePicked && pickedOk \? picked : null,/);
   });
 
-  test("the MODEL pill shows the model and its thinking level, never with a ·", () => {
+  test("the MODEL pill says the model alone; Effort is its own pill (the composer's row)", () => {
     const s = src();
-    expect(s).toContain('const modelText = (taskRunLabel(runModels, model) || "Default")');
-    expect(s).not.toMatch(/modelText[^;]*·/);
+    expect(s).toContain('const modelText = taskRunLabel(runModels, model) || "Default";');
+    expect(s).not.toContain("effortText.toLowerCase()");
+    // The three run words are bare pills; where and when are the chips, pushed
+    // to the right edge by the gap between the two groups.
+    expect(s.match(/className="pp--bare"/g)?.length).toBe(3);
+    // No Effort pill for a model whose catalog row lists no levels: the
+    // whole pill is behind the guard, not just its rows.
+    const think = s.indexOf('ariaLabel="Effort"');
+    expect(s.lastIndexOf("{runEfforts.length ? (", think)).toBeGreaterThan(s.indexOf('ariaLabel="Model"'));
+    const group = s.indexOf('<div className="nt-pills nt-pills--head"><div className="nt-pills-right">');
+    expect(group).toBeGreaterThan(s.indexOf("headActions={("));
+    expect(group).toBeLessThan(s.indexOf('ariaLabel="Folder"'));
+  });
+
+  test("the ACCESS menu says what a mode means on the row's hover, not under the menu", () => {
+    const s = src();
+    const menu = s.slice(s.indexOf('aria-label="Permissions"'), s.indexOf('<div className="nt-row-actions">'));
+    expect(menu).toContain("data-hint={PERMISSION_HINTS[m]}");
+    expect(menu).not.toContain("nt-menu-note");
+    expect(s).toContain('import { PERMISSION_HINTS, permissionLabel } from "@platform/lib/permission-modes";');
   });
 
   test("Escape in an open pill popover closes the popover only", () => {
@@ -2933,6 +2963,14 @@ describe("property pills", () => {
     expect(s).toContain('if (!recentsOpen) togglePill("where");');
     expect(s).not.toContain("suppressOpen");
     expect(s).not.toContain("ASK_HINT_KEY");
+  });
+
+  test("a stored title is a custom name only when it is not the text's first line", () => {
+    expect(customNameOf(null, "fix the bug\n\nbody")).toBe("");
+    expect(customNameOf("fix the bug", "fix the bug\n\nbody")).toBe("");
+    expect(customNameOf("Bug triage", "fix the bug\n\nbody")).toBe("Bug triage");
+    const long = "word ".repeat(30).trim();
+    expect(customNameOf(shortTitle(long), long)).toBe("");
   });
 
   test("editing keeps a long first line whole, once", () => {
@@ -2949,9 +2987,9 @@ describe("property pills", () => {
     expect(initialTextOf({ title: "a", text: "a\nb" }, undefined, "a", "b")).toBe("a\nb");
   });
 
-  test("four pills, in source order: Model, Access, Where, When", () => {
+  test("three pills in the row, in source order: Model, Effort, Access", () => {
     const s = src();
-    const at = ["Model", "Permissions", "Folder", "When"].map((k) => s.indexOf(`ariaLabel="${k}"`));
+    const at = ["Model", "Effort", "Permissions"].map((k) => s.indexOf(`ariaLabel="${k}"`));
     expect(at.every((i) => i > -1)).toBe(true);
     expect([...at].sort((a, b) => a - b)).toEqual(at);
     // …and they sit in the row that replaced the folder row.
@@ -2974,8 +3012,8 @@ describe("property pills", () => {
 
   test("the controls keep the aria-labels the rest of the suite finds them by", () => {
     const s = src();
-    for (const l of ['ariaLabel="Permissions"', 'ariaLabel="Model"', 'aria-label="Thinking"',
-      'ariaLabel="Repeats"']) {
+    for (const l of ['ariaLabel="Permissions"', 'ariaLabel="Model"', 'ariaLabel="Effort"',
+      'aria-label="Effort"', 'ariaLabel="Repeats"']) {
       expect(s).toContain(l);
     }
   });
@@ -3057,7 +3095,7 @@ describe("the agent crumb is the agent dropdown", () => {
     expect(s).toContain('className="pp--agent"');
     expect(s).toContain("agents.all.map((b) =>");
     expect(s.includes("agents.backends.map(")).toBe(false);
-    expect(s).toContain("popHeight={300}");
+    expect(s).toContain("popHeight={agents.all.length * 40 + 60}");
     expect(s).toContain("AGENT_PREFS_URL");
   });
 });

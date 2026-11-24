@@ -19,16 +19,28 @@ import {
   useCallback,
   useEffect,
   useId,
+  useLayoutEffect,
   useRef,
   useState,
   type CSSProperties,
   type KeyboardEvent as ReactKeyboardEvent,
+  type MouseEvent as ReactMouseEvent,
+  type PointerEvent as ReactPointerEvent,
   type ReactNode,
   type RefObject,
 } from "react";
 import { createPortal } from "react-dom";
 import { useDeferredClose } from "@platform/lib/hooks";
 import { isTopmost, popModal, pushModal } from "./esc-stack";
+import {
+  isPopoverEdge,
+  popoverDrag,
+  popoverPlacement,
+  type PopoverBox,
+  type PopoverEdge,
+  type PopoverGrip,
+  type PopoverLimits,
+} from "./popover-place";
 import { OVERLAY_EXIT_MS } from "@platform/lib/exit-animation";
 import {
   CLOSE_CONTROL_SELECTOR,
@@ -43,6 +55,23 @@ import {
 // sat one Tab away and unreachable (Bugbot, #1009).
 const FOCUSABLE =
   'a[href],button:not([disabled]),textarea:not([disabled]),input:not([disabled]),select:not([disabled]),iframe,[tabindex]:not([tabindex="-1"])';
+
+/** What the chassis hands a caller's own head (`ModalProps.head`). */
+export interface ModalHeadContext {
+  titleId: string;
+  /** The ✕'s guarded close: busy and dirty guards, the exit animation. */
+  close: () => void;
+  /** No close while an action that must not be abandoned is running. */
+  busy: boolean;
+  /** A dirty close was asked for once: the next press discards. */
+  armed: boolean;
+  parts: {
+    title: ReactNode;
+    titleLead?: ReactNode;
+    titleAside?: ReactNode;
+    headActions?: ReactNode;
+  };
+}
 
 export interface ModalProps {
   title: ReactNode;
@@ -94,6 +123,28 @@ export interface ModalProps {
    * renders the bare `h2`, byte-identical for every existing caller.
    */
   titleLead?: ReactNode;
+  /**
+   * THE CALLER'S OWN HEAD, in place of the chassis' `.modal-head` — the shared
+   * task head (shell/TaskHead) on the New task card's open chat and the Cards
+   * popup, so a task reads the same in a dialog as in every other view of it.
+   * `title`, `titleAside`, `titleLead`, `headActions` and the ✕ are then not
+   * drawn: the head brings its own corner control.
+   *
+   * A FUNCTION OF THE CHASSIS' CONTEXT: `titleId`, because the dialog is still
+   * named by its heading (`aria-labelledby`, unless `ariaLabel` says
+   * otherwise) and the head puts the id on its own title element; and `close`,
+   * the ✕'s own guarded close (busy, dirty, the exit animation), which the
+   * head's corner control must call instead of the caller's raw `onClose`.
+   * Absent: the head every caller has always had, byte for byte.
+   *
+   * …AND THE PIECES THE CALLER PASSED for the chassis' own head (`parts`), so a
+   * caller whose head is built from them (the New task card's form: the agent
+   * crumb, the name, the source chip, the Folder and When pills) hands the
+   * same nodes to its own head instead of building them twice; and `busy` /
+   * `armed`, the two states the ✕ shows (hidden while busy, amber once a
+   * dirty close has been asked for).
+   */
+  head?: (ctx: ModalHeadContext) => ReactNode;
   onClose: () => void;
   children: ReactNode;
   // When true, Esc / backdrop / ✕ do NOT close (an action is running that must
@@ -133,6 +184,11 @@ export interface ModalProps {
   // component lifted verbatim from a page (the /apps composer in the sidebar's
   // New app modal, D489); every FORM modal keeps the default.
   plainBody?: boolean;
+  /** The ✕ in the head's LEFT corner, before the title — the rail cards'
+   *  seat (TasksPeek, the bot card). Default: the right end. */
+  closeAtStart?: boolean;
+  /** No ✕ at all (a card whose Back is the way out while it shows a chat). */
+  hideClose?: boolean;
   // WHERE TO PORTAL, when it is not `document.body` (D890, the plan popup).
   // Read ONCE, at mount (see the lazy `useState` below) — a portal target does
   // not change out from under an already-open dialog. Returning `null` (not
@@ -144,13 +200,158 @@ export interface ModalProps {
   // container is a different (top) document than the one this script's own
   // `document` global points at.
   getContainer?: () => Element | null;
+  /**
+   * POPOVER PRESENTATION (owner, 2026-11-07: the rail's + opens the New task
+   * card "like the popover for task chats" — the same card, floating beside
+   * the rail, not a modal). The same head, body, footer, Esc stack, busy and
+   * dirty guards; what changes:
+   *   • no scrim — the page stays live (`.modal-popover`, pointer-events only
+   *     on the card), no `aria-modal`, no Tab trap, no focus reclaim;
+   *   • placed to the LEFT of `beside` (or `anchor`), top-aligned with
+   *     `anchor`, clamped inside the viewport (`popover-place.ts`), and kept
+   *     there as the card's height or the window changes;
+   *   • an OUTSIDE PRESS closes it like the ✕ (unless `pinned`) — except a
+   *     press on the anchor (the opener's own), inside another dialog stacked over
+   *     it, or inside a portaled popper (`[data-radix-popper-content-wrapper]`,
+   *     `[data-modal-popover-keep]`): the card's own pill menus live inside
+   *     the dialog, so containment already covers them;
+   *   • focus goes back to the anchor on close only when it would otherwise
+   *     be lost (on the card, or nowhere) — an outside press that put the
+   *     caret elsewhere keeps it there.
+   * Absent: the modal, byte-identical.
+   */
+  popover?: {
+    anchor: RefObject<HTMLElement | null>;
+    /** Whose LEFT edge the card stands beside (the rail); `anchor`'s if absent. */
+    beside?: RefObject<HTMLElement | null>;
+    /** Where the card's top is level with, when not `anchor`'s own box (the
+     *  rail's draft cards stand at the list's first ring, as window A does,
+     *  whichever ring opened them). Null: `anchor`'s. */
+    anchorBox?: () => { left: number; top: number } | null;
+    /** Bumped by the opener to close the card the chassis' own way (the
+     *  exit animation, the busy and dirty guards) — the rail's hover preview
+     *  timing out. */
+    closeSignal?: number;
+    /**
+     * HOVER PREVIEW AND PIN (owner, 2026-11-07: "hover on plus icon should
+     * show the card as well, and click does cement it unless you click on the
+     * cross icon"). Absent: the popover above, unchanged. Otherwise:
+     *   • `false` — a PREVIEW: it takes no focus at mount (a hover must not
+     *     pull the caret off the page) and gives none back at close; an
+     *     outside press and Escape close it; the first thing the reader does
+     *     INSIDE it — a press, the focus arriving on a field — calls `onPin`;
+     *   • `true` — PINNED: only its ✕ (and the caller's own actions, Create)
+     *     close it — an outside press and Escape do not.
+     */
+    pinned?: boolean;
+    /** A `pinned: true` popover that ESCAPE still closes (the rail's TEMP
+     *  card, claude-rail rail-pin-lib: a hover and a temp card close on
+     *  Escape, only a pinned one ignores it). Not an Escape something inside
+     *  already took (`defaultPrevented`), nor one pressed in a menu, a
+     *  listbox or a dialog the card opened — that one's Escape is its own. */
+    tempEscape?: boolean;
+    /** The reader acted inside a preview (`pinned: false`): pin it. */
+    onPin?: () => void;
+    /** ANY press inside the card, pinned or not — React's capture phase, so a
+     *  menu portaled out of it counts, and a grip's press too: the opener's
+     *  own outside-press rule reads it (the rail's temp card, claude-rail
+     *  rail-pin-lib). */
+    onPressInside?: () => void;
+    /** The pointer entered / left the card (the opener's hover grace). */
+    onPointerEnter?: () => void;
+    onPointerLeave?: () => void;
+    /** A FIXED SIZE (owner, 2026-11-07: the rail's + "same width/height as
+     *  window A"): the card takes this width and height — clamped inside the
+     *  viewport, an inset on every side (popover-place.ts) — and its body
+     *  scrolls inside, so the ✕ and the footer are never clipped. Absent:
+     *  `width`, and the content's own height. */
+    size?: { width: number; height: number };
+    /** RESIZABLE (owner, 2026-11-08: the +'s card "is supposed to be window
+     *  A, but resize is not working for that modal"): a sized card grows the
+     *  rail card's grips — its two left corners and its left, top and bottom
+     *  edges (`.modal-popover-grip`, the rail's own look) — and the drag
+     *  resizes it in place (popover-place.ts `popoverDrag`). The release
+     *  reports the size dragged to (`onResize`); the caller remembers it and
+     *  hands it back as `size`, which re-places the card level with its
+     *  anchor again. Absent: no grips. */
+    /** WHERE IT STANDS, THE CALLER'S WAY (owner, 2026-11-08: the +'s card is
+     *  window A's and must keep clear of window B's card, as the rail's own
+     *  cards do — rail-peek-lib `placeClear`): asked for the box on every
+     *  measure, with the size wanted; null falls back to `popoverPlacement`
+     *  above. `placeKey` re-measures when it changes (window B's box). */
+    place?: (want: { width: number; height: number }) => PopoverBox | null;
+    placeKey?: unknown;
+    /** An element whose resize re-measures the placement — the workspace
+     *  row, which a sidebar collapsing reshapes while the dialog and the
+     *  window keep their sizes (CodeRabbit on #2189). */
+    watch?: () => Element | null;
+    resize?: PopoverLimits & {
+      /** A floor the bottom may not be dragged past (viewport y), asked at
+       *  the drag's start with the card's box: window B's card's top, for a
+       *  card standing above it (rail-peek-lib `bottomClear`). */
+      maxBottom?: (box: { left: number; top: number; width: number; height: number }) => number | undefined;
+      /** The box the drag keeps the card inside (the rail's workspace row);
+       *  the viewport if absent or null. Asked at the drag's start. */
+      bounds?: () => { left: number; top: number; width: number; height: number } | null;
+      /** The size let go at, and WHICH of its two dimensions the drag moved
+       *  (an edge drag moves one): the caller keeps its remembered value for
+       *  the other, so a width the window clamped is not saved over it by a
+       *  height-only drag (CodeRabbit on #2189). `box`: the whole box let go
+       *  at — where a left or top grip moved the card to. */
+      onResize: (
+        size: { width: number; height: number },
+        changed: { width: boolean; height: boolean },
+        box: PopoverBox & { height: number },
+      ) => void;
+      /** THE GRIPS, when not the five beside an anchor (`POPOVER_GRIPS`): the
+       *  caller's card let go of its anchor wears the right edge and corners
+       *  too (the rail's floating window, owner 2026-11-17). */
+      grips?: readonly PopoverGrip[];
+      /** THE DRAG, the caller's way, in place of `popoverDrag` and `adjust`:
+       *  the box a grip's drag asks for (the rail's floating window, clamped
+       *  to the viewport). */
+      drag?: (
+        edge: PopoverGrip,
+        start: PopoverBox & { height: number },
+        dx: number,
+        dy: number,
+      ) => PopoverBox & { height: number };
+      /** A last say over each drag frame's box (`next`), given the grip held
+       *  and the box the drag began from — the rail's width magnet
+       *  (claude-rail card-snap.ts). `onDragEnd` when the drag lets go. */
+      adjust?: (
+        next: PopoverBox & { height: number },
+        edge: PopoverEdge,
+        start: PopoverBox & { height: number },
+      ) => PopoverBox & { height: number };
+      onDragEnd?: () => void;
+    };
+    /** Where the sized card stands, as it changes, and null when it goes —
+     *  for a host that lines other cards up with it (the rail's magnet). */
+    onBox?: (box: { left: number; top: number; width: number; height: number } | null) => void;
+    /** THE CALLER MOVES THE CARD BY ITS HEAD (the rail's pinned window,
+     *  claude-rail useCardMove; owner, 2026-11-17): the dialog's pointerdown
+     *  and double-click go to it, and its class to the layer. Where the card
+     *  then stands is the caller's `place`. Absent: no such handlers. */
+    move?: {
+      className: string;
+      onPointerDown: (e: ReactPointerEvent<HTMLElement>) => void;
+      onDoubleClick: (e: ReactMouseEvent<HTMLElement>) => void;
+    };
+  };
 }
+
+const POPOVER_GRIPS: readonly PopoverEdge[] = ["l", "t", "b", "tl", "bl"];
+
+/** Presses inside these never dismiss a popover-mode dialog (Modal `popover`). */
+const POPOVER_KEEP = '.modal-overlay, [role="dialog"], [data-radix-popper-content-wrapper], [data-modal-popover-keep]';
 
 export function Modal({
   title,
   ariaLabel,
   titleAside,
   titleLead,
+  head,
   onClose,
   children,
   busy = false,
@@ -162,8 +363,11 @@ export function Modal({
   dialogClassName,
   closeTitle,
   plainBody = false,
+  closeAtStart = false,
+  hideClose = false,
   headActions,
   getContainer,
+  popover,
 }: ModalProps) {
   const titleId = useId();
   // Resolved ONCE, at mount — see `getContainer`'s doc comment above.
@@ -181,6 +385,12 @@ export function Modal({
   const dialogRef = useRef<HTMLDivElement>(null);
   const restoreRef = useRef<Element | null>(null);
   const [confirmClose, setConfirmClose] = useState(false);
+  // The popover's pin, as it is NOW — read by the document listeners and the
+  // unmount below, which are bound once.
+  const pinnedRef = useRef(popover?.pinned);
+  pinnedRef.current = popover?.pinned;
+  const tempEscapeRef = useRef(popover?.tempEscape === true);
+  tempEscapeRef.current = popover?.tempEscape === true;
 
   // Store the previously-focused element, move focus into the dialog on mount,
   // and restore it on unmount. Callers win: an `initialFocus` ref takes
@@ -196,7 +406,10 @@ export function Modal({
     // (the default) -> `document === ownerDoc`, so nothing changes.
     restoreRef.current = document.activeElement;
     const dialog = dialogRef.current;
-    if (initialFocus?.current) {
+    // A hover preview takes no focus (header of `popover.pinned`).
+    if (popover?.pinned === false) {
+      // nothing
+    } else if (initialFocus?.current) {
       initialFocus.current.focus();
     } else if (!(dialog && dialog.contains(ownerDoc.activeElement))) {
       const focusables = Array.from(
@@ -204,12 +417,28 @@ export function Modal({
       );
       const target =
         dialog?.querySelector<HTMLElement>("[autofocus]") ??
-        focusables.find((el) => !el.closest(".modal-head")) ??
+        focusables.find((el) => !el.closest(".modal-head, .modal-head-slot")) ??
         focusables[0] ??
         dialog;
       target?.focus();
     }
     return () => {
+      if (popover) {
+        // A popover closed by a press elsewhere: the caret went where the
+        // reader sent it. Only focus that would be LOST (left on the card that
+        // is going, or nowhere) goes back — to the anchor, the door it came by.
+        const active = ownerDoc.activeElement as Element | null;
+        const onCard = !!active && !!dialog?.contains(active);
+        // A preview never had the caret unless it is on it now: nothing lost.
+        if (pinnedRef.current === false && !onCard) return;
+        const lost = !active || active === ownerDoc.body || !active.isConnected || onCard;
+        if (!lost) return;
+        // The CURRENT anchor (CodeRabbit on #2220): a card carried across a
+        // page hop stands beside the new page's door, not the first one's.
+        const back = (popoverRef.current?.anchor.current ?? popover.anchor.current ?? restoreRef.current) as HTMLElement | null;
+        back?.focus?.({ preventScroll: true });
+        return;
+      }
       const el = restoreRef.current as HTMLElement | null;
       el?.focus?.();
     };
@@ -227,7 +456,7 @@ export function Modal({
     if (!el) return;
     const active = ownerDoc.activeElement as HTMLElement | null;
     const dialog = dialogRef.current;
-    if (active && dialog?.contains(active) && !active.closest(".modal-head")) return;
+    if (active && dialog?.contains(active) && !active.closest(".modal-head, .modal-head-slot")) return;
     el.focus();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [focusSignal]);
@@ -281,7 +510,8 @@ export function Modal({
   // nested [role="dialog"] (a popover) that legitimately holds focus.
   useEffect(() => {
     const dialog = dialogRef.current;
-    if (!dialog) return;
+    // A popover is not modal: focus may leave it for the page.
+    if (!dialog || popover) return;
     const onFocusOut = (e: FocusEvent) => {
       const next = e.relatedTarget as Node | null;
       if (next && dialog.contains(next)) return;
@@ -335,6 +565,15 @@ export function Modal({
   useEffect(() => {
     const onDocKey = (e: KeyboardEvent) => {
       if (e.key !== "Escape") return;
+      // A pinned popover closes by its ✕ only (header of `popover.pinned`) —
+      // but for the opener's temp card (`popover.tempEscape`).
+      if (pinnedRef.current === true) {
+        if (!tempEscapeRef.current || e.defaultPrevented) return;
+        const pop = (e.target as Element | null)?.closest?.(
+          "[role='menu'], [role='listbox'], [role='dialog'], [role='alertdialog']",
+        );
+        if (pop && pop !== dialogRef.current) return;
+      }
       if (!isTopmost(token.current)) return;
       attemptClose();
     };
@@ -343,8 +582,134 @@ export function Modal({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [attemptClose]);
 
+  // POPOVER: the opener closes it the chassis' own way (the exit animation,
+  // the busy and dirty guards) — `closeSignal` bumped by the opener.
+  const closeSignal = popover?.closeSignal ?? 0;
+  const seenSignal = useRef(closeSignal);
+  useEffect(() => {
+    if (closeSignal === seenSignal.current) return;
+    seenSignal.current = closeSignal;
+    attemptClose();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [closeSignal]);
+
+  // POPOVER: an outside press closes it, as the ✕ would (header of `popover`).
+  // Capture phase, pointerdown — the house rule (platform/lib/dismissOnOutside):
+  // the card is gone before whatever the reader aimed at reacts, and a row
+  // that stops propagation cannot leave it undismissable.
+  const popoverOn = !!popover;
+  const popoverRef = useRef(popover);
+  popoverRef.current = popover;
+  const attemptCloseRef = useRef(attemptClose);
+  attemptCloseRef.current = attemptClose;
+  useEffect(() => {
+    if (!popoverOn) return;
+    const onDown = (e: Event) => {
+      const t = e.target as Element | null;
+      if (!t || typeof (t as Node).nodeType !== "number") return;
+      const dialog = dialogRef.current;
+      if (dialog && dialog.contains(t)) return;
+      const anchor = popover?.anchor.current;
+      if (anchor && anchor.contains(t)) return;
+      const el = t.nodeType === 1 ? t : t.parentElement;
+      if (el?.closest?.(POPOVER_KEEP)) return;
+      // A dialog stacked over this one owns the press.
+      if (!isTopmost(token.current)) return;
+      // A pinned popover closes by its ✕ only (header of `popover.pinned`).
+      if (pinnedRef.current === true) return;
+      attemptCloseRef.current();
+    };
+    ownerDoc.addEventListener("pointerdown", onDown, true);
+    return () => ownerDoc.removeEventListener("pointerdown", onDown, true);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [popoverOn]);
+
+  const sizeW = popover?.size?.width;
+  const sizeH = popover?.size?.height;
+  // THE DRAG (header of `popover.resize`): the box while a grip is held,
+  // then — until the caller hands back a new `size` — the size it was let go
+  // at, so the card does not snap back for a frame between the release and
+  // the caller's re-render.
+  const resize = popover?.resize;
+  const [dragBox, setDragBox] = useState<(PopoverBox & { height: number }) | null>(null);
+  const [dragged, setDragged] = useState<{ width: number; height: number } | null>(null);
+  const [gripHeld, setGripHeld] = useState<PopoverGrip | null>(null);
+  const dragStart = useRef<{
+    x: number;
+    y: number;
+    box: PopoverBox & { height: number };
+    pointerId: number;
+    edge: PopoverGrip;
+    el: HTMLElement;
+    floor: number | undefined;
+    bounds: { left: number; top: number; width: number; height: number } | null;
+  } | null>(null);
+  const dragLast = useRef<(PopoverBox & { height: number }) | null>(null);
+  useEffect(() => {
+    setDragged(null);
+  }, [sizeW, sizeH]);
+  // POPOVER: where it stands (popover-place.ts), re-measured as the card's
+  // height or the window changes. The first guess is taken at mount, off the
+  // anchor alone (the card's height is not known yet): never hidden while it
+  // is measured, because the card's field takes the caret in this very
+  // commit and a `visibility: hidden` box cannot hold focus.
+  const sized = sizeW !== undefined && sizeH !== undefined;
+  // …or, between a drag's release and the caller handing the size back, the
+  // size the drag let go at (`dragged`): the card re-places itself on it —
+  // its right edge against `beside` again — rather than paint a new width
+  // at the old left (Bugbot on #2189).
+  const wantWidth = dragged?.width ?? sizeW ?? (typeof width === "number" ? width : 580);
+  const wantHeight = dragged?.height ?? sizeH;
+  const placeKey = popover?.placeKey;
+  const [place, setPlace] = useState<PopoverBox | null>(() => {
+    const anchor = popover?.anchor.current;
+    const view = ownerDoc.defaultView;
+    if (!anchor || !view || typeof anchor.getBoundingClientRect !== "function") return null;
+    const want = { width: wantWidth, height: wantHeight ?? 0 };
+    const own = sized ? popover?.place?.(want) : null;
+    if (own) return own;
+    const a = popover?.anchorBox?.() ?? anchor.getBoundingClientRect();
+    const b = (popover?.beside?.current ?? anchor).getBoundingClientRect();
+    return popoverPlacement(a, b, want, { width: view.innerWidth, height: view.innerHeight }, sized);
+  });
+  useLayoutEffect(() => {
+    if (!popoverOn) return;
+    const view = ownerDoc.defaultView;
+    const measure = () => {
+      const anchor = popover?.anchor.current;
+      const dialog = dialogRef.current;
+      if (!anchor || !dialog || !view) return;
+      // A sized card asks for its size, not for what it now measures (its
+      // own last placement).
+      const want = { width: wantWidth, height: wantHeight ?? dialog.offsetHeight };
+      const own = sized ? popover?.place?.(want) : null;
+      const a = popover?.anchorBox?.() ?? anchor.getBoundingClientRect();
+      const b = (popover?.beside?.current ?? anchor).getBoundingClientRect();
+      const next = own ?? popoverPlacement(a, b, want, { width: view.innerWidth, height: view.innerHeight }, sized);
+      setPlace((was) =>
+        was && was.left === next.left && was.top === next.top && was.width === next.width && was.height === next.height
+          ? was
+          : next,
+      );
+    };
+    measure();
+    const RO = (view as (Window & { ResizeObserver?: typeof ResizeObserver }) | null)?.ResizeObserver;
+    const ro = RO && dialogRef.current ? new RO(measure) : null;
+    if (ro && dialogRef.current) ro.observe(dialogRef.current);
+    const watched = popover?.watch?.();
+    if (ro && watched) ro.observe(watched);
+    view?.addEventListener("resize", measure);
+    return () => {
+      ro?.disconnect();
+      view?.removeEventListener("resize", measure);
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [popoverOn, wantWidth, wantHeight, placeKey]);
+
   const onKeyDown = (e: ReactKeyboardEvent) => {
     if (e.key !== "Tab") return;
+    // A popover is not modal: Tab walks on into the page.
+    if (popover) return;
     const dialog = dialogRef.current;
     if (!dialog) return;
     const nodes = Array.from(dialog.querySelectorAll<HTMLElement>(FOCUSABLE)).filter(
@@ -369,15 +734,150 @@ export function Modal({
     }
   };
 
-  const dialogStyle: CSSProperties | undefined = width !== undefined ? { width } : undefined;
+  const onGripDown = (edge: PopoverGrip) => (e: ReactPointerEvent<HTMLDivElement>) => {
+    const dialog = dialogRef.current;
+    // Not on a card already leaving (CodeRabbit on #2189): a drag through
+    // the exit fade would save a size nobody meant.
+    if (e.button !== 0 || !dialog || !resize || closing) return;
+    e.preventDefault();
+    e.stopPropagation();
+    // A grip's press is a press inside the card (it stands outside the
+    // dialog's box): a preview with grips pins on it as on any press.
+    popover?.onPressInside?.();
+    if (pinnedRef.current === false) popover?.onPin?.();
+    const r = dialog.getBoundingClientRect();
+    const box = { left: r.left, top: r.top, width: r.width, height: r.height };
+    e.currentTarget.setPointerCapture(e.pointerId);
+    dragStart.current = {
+      x: e.clientX,
+      y: e.clientY,
+      box,
+      pointerId: e.pointerId,
+      edge,
+      el: e.currentTarget,
+      floor: resize.maxBottom?.(box),
+      bounds: resize.bounds?.() ?? null,
+    };
+    dragLast.current = null;
+    setDragBox(box);
+    setGripHeld(edge);
+  };
+  const onGripMove = (e: ReactPointerEvent<HTMLDivElement>) => {
+    const start = dragStart.current;
+    const view = ownerDoc.defaultView;
+    if (!start || start.pointerId !== e.pointerId || !resize) return;
+    let next: PopoverBox & { height: number };
+    if (resize.drag) next = resize.drag(start.edge, start.box, e.clientX - start.x, e.clientY - start.y);
+    else {
+      if (!view || !isPopoverEdge(start.edge)) return;
+      const asked = popoverDrag(
+        start.edge,
+        start.box,
+        e.clientX - start.x,
+        e.clientY - start.y,
+        { width: view.innerWidth, height: view.innerHeight },
+        resize,
+        start.floor,
+        start.bounds ?? undefined,
+      );
+      next = resize.adjust ? resize.adjust(asked, start.edge, start.box) : asked;
+    }
+    dragLast.current = next;
+    setDragBox((was) =>
+      was && was.left === next.left && was.top === next.top && was.width === next.width && was.height === next.height
+        ? was
+        : next,
+    );
+  };
+  const endDrag = () => {
+    const start = dragStart.current;
+    if (!start) return;
+    dragStart.current = null;
+    const last = dragLast.current;
+    dragLast.current = null;
+    if (start.el.hasPointerCapture?.(start.pointerId)) start.el.releasePointerCapture(start.pointerId);
+    setGripHeld(null);
+    setDragBox(null);
+    resize?.onDragEnd?.();
+    if (!last || (last.width === start.box.width && last.height === start.box.height)) return;
+    const size = { width: last.width, height: last.height };
+    setDragged(size);
+    resize?.onResize(size, { width: last.width !== start.box.width, height: last.height !== start.box.height }, last);
+  };
+  const onGripUp = (e: ReactPointerEvent<HTMLDivElement>) => {
+    const start = dragStart.current;
+    if (!start || start.pointerId !== e.pointerId) return;
+    endDrag();
+  };
+
+  // WHERE THE SIZED CARD STANDS (`popover.onBox`): while up and placed.
+  const onBox = popover?.onBox;
+  const shownLeft = dragBox?.left ?? place?.left;
+  const shownTop = dragBox?.top ?? place?.top;
+  const shownWidth = dragBox?.width ?? place?.width;
+  const shownHeight = dragBox?.height ?? place?.height;
+  useEffect(() => {
+    if (!onBox || closing || !sized || shownLeft === undefined || shownTop === undefined) return;
+    if (shownWidth === undefined || shownHeight === undefined) return;
+    onBox({ left: shownLeft, top: shownTop, width: shownWidth, height: shownHeight });
+    return () => onBox(null);
+  }, [onBox, closing, sized, shownLeft, shownTop, shownWidth, shownHeight]);
+
+  const dialogStyle: CSSProperties | undefined = popover
+    ? {
+        // Inline, so no stylesheet's `position`/`left` (schedule.css shifts a
+        // centred card for its side panels) can move it off its anchor.
+        position: "fixed",
+        left: dragBox?.left ?? place?.left ?? 0,
+        top: dragBox?.top ?? place?.top ?? 0,
+        width: dragBox?.width ?? place?.width ?? wantWidth,
+        maxHeight: "calc(100vh - 16px)",
+        ...(dragBox ? { height: dragBox.height } : sized && place?.height !== undefined ? { height: place.height } : {}),
+      }
+    : width !== undefined
+      ? { width }
+      : undefined;
 
   // Portal to <body>: modals mount from arbitrary spots (e.g. AI Models'
   // NewJobModal inside a page's toolbar), and ancestor-scoped `button` rules
   // were leaking into the dialog chrome (a boxed ✕ from just one caller's styles).
+  // THE ✕, drawn at either end of the head (`closeAtStart`); none while busy
+  // (see the note in the head) or when the card says so (`hideClose`).
+  const closeButton = hideClose ? null : (
+    <>
+    {!busy && (
+            <button
+              type="button"
+              className={"modal-close deploy-close" + (confirmClose ? " is-armed" : "")}
+              // The label carries the state for a screen reader, which has no
+              // corner to look at. The footer hint is `role="status"` and is
+              // announced too; this is what the button itself answers to when the
+              // user tabs back to it.
+              aria-label={confirmClose ? "Close and discard changes" : "Close"}
+              title={confirmClose ? "Press again to discard" : (closeTitle ?? "Close")}
+              onClick={attemptClose}
+            >
+              ✕
+            </button>
+    )}
+    </>
+  );
+
   return createPortal(
     <div
-      className={"modal-overlay deploy-overlay" + (closing ? " closing" : "")}
+      className={
+        (popover ? "modal-overlay modal-popover" : "modal-overlay deploy-overlay") +
+        (closing ? " closing" : "") +
+        (popover?.move?.className ?? "")
+      }
+      // The card's left edge, for side panels that stand beside it (Browse,
+      // Custom recurrence — schedule.css `.modal-popover`).
+      {...(popover && place ? { style: { "--modal-pop-left": `${place.left}px` } as CSSProperties } : {})}
+      // A popover card is one of our own floating layers: over the canvas
+      // frame it never refuses the canvas screenshot (canvas-shot-native).
+      {...(popover ? { "data-shot-own": "" } : {})}
       onMouseDown={(e) => {
+        if (popover) return;
         // Only the scrim itself, and not in its first moments: the second press
         // of a double-click on whatever opened this dialog lands here, on the
         // spot the pointer never left (dirty-guard `backdropPressCloses`).
@@ -389,10 +889,23 @@ export function Modal({
     >
       <div
         ref={dialogRef}
-        className={"modal-dialog deploy-dialog" + (dialogClassName ? " " + dialogClassName : "")}
+        className={
+          "modal-dialog deploy-dialog" +
+          (popover && sized ? " is-sized" : "") +
+          // Under a grip's drag (owner, 2026-11-08: "it moves from left and
+          // right both sides"): schedule.css glides the dialog's `left` for
+          // its side panels, and a glide under a drag let the right edge
+          // wobble while the width snapped — `.is-resizing` turns it off.
+          (gripHeld ? " is-resizing" : "") +
+          (dialogClassName ? " " + dialogClassName : "")
+        }
         style={dialogStyle}
         role="dialog"
-        aria-modal="true"
+        // BUSY, SAID ON THE CARD ITSELF (CodeRabbit on #2220): a caller that
+        // must not close a card mid-save reads this, not the ✕ — which a card
+        // may hide for its own reasons (`hideClose`).
+        {...(busy ? { "data-busy": "" } : {})}
+        {...(popover ? {} : { "aria-modal": "true" as const })}
         {...(ariaLabel
           ? // An explicit name WINS over `aria-labelledby`, so the two are
             // mutually exclusive rather than both set — leaving the heading
@@ -402,8 +915,37 @@ export function Modal({
           : { "aria-labelledby": titleId })}
         tabIndex={-1}
         onMouseDown={(e) => e.stopPropagation()}
+        {...(popover
+          ? {
+              // The reader acting inside a preview pins it (header of
+              // `popover.pinned`). React's own events, so a pill's menu
+              // portaled out of the card still counts as inside it.
+              onPointerDownCapture: () => {
+                popover.onPressInside?.();
+                if (pinnedRef.current === false) popover.onPin?.();
+              },
+              onFocusCapture: () => {
+                if (pinnedRef.current === false) popover.onPin?.();
+              },
+              onPointerEnter: () => popover.onPointerEnter?.(),
+              onPointerLeave: () => popover.onPointerLeave?.(),
+              ...(popover.move ? { onPointerDown: popover.move.onPointerDown, onDoubleClick: popover.move.onDoubleClick } : {}),
+            }
+          : {})}
       >
-        <div className="modal-head deploy-head">
+        {head ? (
+          <div className="modal-head-slot">
+            {head({
+              titleId,
+              close: attemptClose,
+              busy,
+              armed: confirmClose,
+              parts: { title, titleLead, titleAside, headActions },
+            })}
+          </div>
+        ) : (
+        <div className={"modal-head deploy-head" + (closeAtStart ? " has-close-start" : "")}>
+          {closeAtStart && closeButton}
           {titleAside || titleLead ? (
             // The heading and its caption as ONE flex child of the head, so the
             // head is still `[ title | ✕ ]` and `justify-content: space-between`
@@ -448,22 +990,9 @@ export function Modal({
               it would strand). So the corner is empty for those seconds rather
               than occupied by something inert. */}
           {headActions && <div className="modal-head-actions">{headActions}</div>}
-          {!busy && (
-            <button
-              type="button"
-              className={"modal-close deploy-close" + (confirmClose ? " is-armed" : "")}
-              // The label carries the state for a screen reader, which has no
-              // corner to look at. The footer hint is `role="status"` and is
-              // announced too; this is what the button itself answers to when the
-              // user tabs back to it.
-              aria-label={confirmClose ? "Close and discard changes" : "Close"}
-              title={confirmClose ? "Press again to discard" : (closeTitle ?? "Close")}
-              onClick={attemptClose}
-            >
-              ✕
-            </button>
-          )}
+          {!closeAtStart && closeButton}
         </div>
+        )}
         <div className={"modal-body " + (plainBody ? "modal-body-plain" : "deploy-body")}>{children}</div>
         {(footer || confirmClose) && (
           <div
@@ -498,6 +1027,40 @@ export function Modal({
           </div>
         )}
       </div>
+      {popover && resize && sized && (
+        // THE GRIPS (header of `popover.resize`): hit areas on the card's two
+        // left corners and its left, top and bottom edges, in a frame laid
+        // over the card's box — OUTSIDE the dialog, whose callers clip their
+        // overflow (`.new-task-dialog`), so a grip half off the card's edge
+        // is never cut. The frame takes no pointer; the grips do.
+        // `aria-hidden`: a pointer-only affordance, the card's size is a
+        // preference, not a control the keyboard needs.
+        <div
+          className="modal-popover-frame"
+          aria-hidden="true"
+          style={{
+            left: dragBox?.left ?? place?.left ?? 0,
+            top: dragBox?.top ?? place?.top ?? 0,
+            width: dragBox?.width ?? place?.width ?? wantWidth,
+            height: dragBox?.height ?? place?.height ?? 0,
+          }}
+        >
+          {(resize.grips ?? POPOVER_GRIPS).map((edge) => (
+            <div
+              key={edge}
+              className={"modal-popover-grip is-" + edge + (gripHeld === edge ? " is-active" : "")}
+              onPointerDown={onGripDown(edge)}
+              onPointerMove={onGripMove}
+              onPointerUp={onGripUp}
+              onPointerCancel={onGripUp}
+              onLostPointerCapture={() => dragStart.current && endDrag()}
+            />
+          ))}
+          {(resize.grips ?? POPOVER_GRIPS).map((e) => (
+            <div key={"ring-" + e} className={"rail-grip-ring is-" + e} />
+          ))}
+        </div>
+      )}
     </div>,
     container,
   );

@@ -1,10 +1,11 @@
 // Left column (OpenBot index.html section.bots + chat.js render()'s list half): header (usage meter, +, collapse),
-// search, the list (pinned → waiting-unread → your last message), the hidden group, and the Builds / Apps footer
-// (plus a Preferences gear at its right edge under Fused Bot, which has no shell sidebar to carry one).
+// search, the list (pinned → waiting-unread → your last message), the hidden group, and the Builds / Apps footer.
 // Rows that change slot glide (FLIP, lib/layout glideRows); new rows fade in. Right-click hands off to the menu.
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
+import { useBotsMissing } from "@platform/lib/bots-available";
+import { isLanHost } from "@platform/lib/host";
 import type { Bot, BotEvent } from "../lib/api";
-import { activeHandoff, lastBotMsg, lastTs, lastUserTs, routineGlyph, routineNote, statusLabel } from "../lib/derive";
+import { activeHandoff, lastBotMsg, lastTs, previewLine, lastUserTs, routineGlyph, routineNote, statusLabel } from "../lib/derive";
 import { fmtAgo, fmtWhen } from "../lib/format";
 import { glideRows, rowOffsets, toggleLeft } from "../lib/layout";
 import { botOrder } from "../lib/order";
@@ -24,37 +25,53 @@ export interface BotListProps {
   onOpenBuilds: () => void;
   /** #apps: the Apps gallery. */
   onOpenApps: () => void;
-  /** #prefs: the Preferences panel (bot flavor only — Render's sidebar has its own gear). Absent: no gear. */
-  onOpenPrefs?: () => void;
   /** Right-click on a row, at the pointer (OpenBot openMenu(id, x, y)). */
   onContextMenu: (id: string, x: number, y: number) => void;
 }
 
 const EMPTY: BotEvent[] = [];
 
-function Row({ b, S, onContextMenu }: { b: Bot; S: BotsState; onContextMenu: BotListProps["onContextMenu"] }) {
-  const evs = S.events[b.id] || EMPTY, n = unreadCount(b), sel = b.id === S.sel;
-  const msg = lastBotMsg(evs), ts = lastTs(evs), glyph = routineGlyph(b), note = b.status === "idle" ? routineNote(b) : null;
+export interface RowProps {
+  b: Bot;
+  S: BotsState;
+  /** Right-click, at the pointer (the page's BotMenu). Absent — the rail's Bots card (shell/claude-rail BotsPeek),
+   *  which mounts no menu — and the row has no context menu. */
+  onContextMenu?: BotListProps["onContextMenu"];
+  /** Drawn as the selected row. Default: the store's selection (the page); the card passes its own open chat. */
+  sel?: boolean;
+  /** A press on the row. Default: `openBot` — select, write the URL, tell the server (the page); the card passes
+   *  its own opener and the store's selection is left alone. */
+  onOpen?: (id: string) => void;
+}
+
+export function Row({ b, S, onContextMenu, sel: selProp, onOpen }: RowProps) {
+  const evs = S.events[b.id] || EMPTY, spec = b.expert, sel = selProp ?? b.id === S.sel;
+  const n = spec ? Number(spec.new) : unreadCount(b);
+  const msg = spec ? previewLine(spec.last?.text || spec.about) : lastBotMsg(evs), ts = spec ? spec.last?.at || 0 : lastTs(evs), glyph = routineGlyph(b), note = b.status === "idle" ? routineNote(b) : null;
   // Super Bot with a hand-off in flight (docs §11): that outranks its last message, which is "I asked <Bot>…" anyway.
   const ho = b.kind === "super" ? activeHandoff(b) : null;
+  // The selected row's avatar opens Settings, like the header avatar; on any other row it just selects. Only on the
+  // page (`onContextMenu` present): the card mounts no dialogs.
+  const settings = sel && !!onContextMenu;
   return (
-    <div className={`bot${sel ? " sel" : ""}`} data-id={b.id} title="Right-click for options"
-      onClick={() => openBot(b.id)}
-      onContextMenu={(e) => { e.preventDefault(); onContextMenu(b.id, e.clientX, e.clientY); }}>
-      {/* The selected row's avatar opens Settings, like the header avatar; on any other row it just selects. */}
-      <span className={`av${sel ? " settings" : ""}`} title={sel ? "Settings" : undefined}
-        onClick={sel ? (e) => { e.stopPropagation(); openDialog({ kind: "settings", id: b.id }); } : undefined}>
+    <div className={`bot${sel ? " sel" : ""}`} data-id={b.id} title={onContextMenu ? "Right-click for options" : undefined}
+      onClick={() => (onOpen ?? openBot)(b.id)}
+      onContextMenu={onContextMenu ? (e) => { e.preventDefault(); onContextMenu(b.id, e.clientX, e.clientY); } : undefined}>
+      <span className={`av${settings ? " settings" : ""}`} title={settings ? "Settings" : undefined}
+        onClick={settings ? (e) => { e.stopPropagation(); openDialog({ kind: "settings", id: b.id }); } : undefined}>
         <Face b={b} svgId={sel ? "lface" : undefined} />
         {/* Amber "needs you in the browser" (a bot-initiated hand-over) replaces the status colour; red stays "needs an answer". */}
         {needsYou(b) ? <span className="dot needsyou" title="Needs you in the browser" />
           : <span className={`dot ${b.status}${n ? " unread" : ""}`} />}</span>
       <div className="name">
-        {b.pinned ? <span className="pin">📌</span> : null}{b.name}
+        {/* The name alone truncates (.nm); the pin and the badges never shrink, so a badge is never clipped. */}
+        {b.pinned ? <span className="pin">📌</span> : null}<span className="nm">{b.name}</span>
         {b.kind === "super" ? <span className="super" title="Super Bot: Claude Code's own tools on this Mac">SUPER</span> : null}
+        {spec ? <span className="expert" title={`Expert: ${spec.about}`}>EXPERT</span> : null}
         {glyph ? <span className={`rt ${glyph.warn ? "warn" : ""}`} title={glyph.title}>{MI.routines}</span> : null}
       </div>
       <div className="meta">
-        {n ? <span className={`badge ${b.status === "waiting" ? "q" : ""}`} title={`${n} new message${n > 1 ? "s" : ""}`} /> : null}
+        {n ? <span className={`badge ${b.status === "waiting" ? "q" : ""}`} title={spec ? "Something new" : `${n} new message${n > 1 ? "s" : ""}`} /> : null}
         <span className="time" title={fmtWhen(ts)}>{fmtAgo(ts)}</span>
       </div>
       <div className="sub">
@@ -68,7 +85,24 @@ function Row({ b, S, onContextMenu }: { b: Bot; S: BotsState; onContextMenu: Bot
   );
 }
 
-export function BotList({ onAddBot, onOpenUsage, onOpenBrowsers, onOpenBuilds, onOpenApps, onOpenPrefs, onContextMenu }: BotListProps) {
+/** THE LIST'S ROWS (the page's and the rail's Bots card's): pinned first, then bots waiting on you that you haven't
+ *  looked at yet, then by your own last message (newest first); hidden bots apart, under a toggle. Opening a waiting
+ *  bot marks its events seen, so it drops back into the normal order instead of sitting at the top until answered.
+ *  `q` filters both by name, task and title. */
+export function listRows(S: BotsState, q: string): { shown: Bot[]; hidden: Bot[]; query: string } {
+  const recency = (b: Bot) => lastUserTs(S.events[b.id] || EMPTY) || b.created || 0;
+  const waiting = (b: Bot) => waitingUnread(b, S.seen[b.id], unreadCount(b));
+  const order = botOrder(waiting, recency);
+  const query = q.trim().toLowerCase();
+  const match = (b: Bot) => !query || `${b.name} ${b.task || ""} ${b.title || ""}`.toLowerCase().includes(query);
+  return {
+    shown: S.bots.filter((b) => !b.hidden && match(b)).sort(order),
+    hidden: S.bots.filter((b) => b.hidden && match(b)).sort(order),
+    query,
+  };
+}
+
+export function BotList({ onAddBot, onOpenUsage, onOpenBrowsers, onOpenBuilds, onOpenApps, onContextMenu }: BotListProps) {
   const S = useBots();
   const [q, setQ] = useState("");
   const listRef = useRef<HTMLDivElement>(null);
@@ -98,29 +132,25 @@ export function BotList({ onAddBot, onOpenUsage, onOpenBrowsers, onOpenBuilds, o
     return () => ro.disconnect();
   }, []);
 
-  // Pinned first, then bots waiting on you that you haven't looked at yet, then by your own last message (newest first). Hidden bots collapse under a toggle.
-  // Opening a waiting bot marks its events seen, so it drops back into the normal order instead of sitting at the top until answered.
-  const recency = (b: Bot) => lastUserTs(S.events[b.id] || EMPTY) || b.created || 0;
-  const waiting = (b: Bot) => waitingUnread(b, S.seen[b.id], unreadCount(b));
-  const order = botOrder(waiting, recency);
-  const query = q.trim().toLowerCase();
-  const match = (b: Bot) => !query || `${b.name} ${b.task || ""} ${b.title || ""}`.toLowerCase().includes(query);
-  const shown = S.bots.filter((b) => !b.hidden && match(b)).sort(order);
-  const hidden = S.bots.filter((b) => b.hidden && match(b)).sort(order);
+  const { shown, hidden, query } = listRows(S, q);
 
   const u = S.usage, chip = S.buildsChip;
+  // No bots on this server (Windows): the list is the experts alone, so the bots' own doors — the usage meter,
+  // Browsers, Builds, Apps, all `/api/bots*` — are left out, and + makes an expert (Dialogs).
+  const botsOff = useBotsMissing();
   return (
     <section className="bots">
       <header>
         <h1>Bots</h1>
-        <button id="usage" onClick={onOpenUsage}
+        {botsOff ? null : <button id="usage" onClick={onOpenUsage}
           title={u ? `${u.hour} in the last hour · ${u.errors} failed · click for details` : "Model calls made today · click for details"}>
           {u ? `${u.today} call${u.today === 1 ? "" : "s"} today` : "…"}
-        </button>
-        <button id="browsers" className="ptog" title="Browsers · the logins your bots share" onClick={onOpenBrowsers}>
+        </button>}
+        {/* The Browsers dialog reads /api/bots/browsers and /profiles: the Mac's, a 404 on the LAN door. */}
+        {isLanHost() || botsOff ? null : <button id="browsers" className="ptog" title="Browsers · the logins your bots share" onClick={onOpenBrowsers}>
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="9" /><path d="M3 12h18M12 3c2.5 2.6 3.8 5.6 3.8 9s-1.3 6.4-3.8 9c-2.5-2.6-3.8-5.6-3.8-9S9.5 5.6 12 3Z" /></svg>
-        </button>
-        <button id="add" title="New bot" onClick={onAddBot}>
+        </button>}
+        <button id="add" title={botsOff ? "New expert" : "New bot"} onClick={onAddBot}>
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" aria-hidden="true"><path d="M12 5v14M5 12h14" /></svg>
         </button>
         <button id="lcol" className="ptog" title="Collapse or expand the bot list" onClick={toggleLeft}>
@@ -135,7 +165,9 @@ export function BotList({ onAddBot, onOpenUsage, onOpenBrowsers, onOpenBuilds, o
       </label>
       <div className="listwrap">
       <div className="botlist" id="botlist" ref={listRef} onScroll={syncBar}>
-        {!S.bots.length ? <div className="empty">No bots yet.<br />Add one and give it a task.</div> : (<>
+        {!S.bots.length ? (botsOff
+          ? <div className="empty">No experts yet.<br />Add one with + and teach it a subject.</div>
+          : <div className="empty">No bots yet.<br />Add one and give it a task.</div>) : (<>
           {shown.map((b) => <Row key={b.id} b={b} S={S} onContextMenu={onContextMenu} />)}
           {!shown.length && query ? <div className="empty">No bot matches.</div> : null}
           {hidden.length ? <div className="group" id="hiddentoggle" onClick={() => setShowHidden(!S.showHidden)}>{S.showHidden ? "▾" : "▸"} Hidden ({hidden.length})</div> : null}
@@ -145,6 +177,10 @@ export function BotList({ onAddBot, onOpenUsage, onOpenBrowsers, onOpenBuilds, o
       <div className="railbar" ref={barRef} aria-hidden="true" />
       </div>
       <footer className="botfoot">
+        {/* Why + only makes an expert here: said once, where the bots' own doors would stand. */}
+        {botsOff ? <p className="botsoff">Bots do not run on Windows yet, only experts. To use bots, run Fused Render inside WSL.</p> : null}
+        {/* Builds and Apps are the Mac's pages (a tasks iframe, /api/bot-apps); the LAN door 404s them (lan.py). */}
+        {isLanHost() || botsOff ? null : <>
         <button id="builds" className={`ptog${chip.live ? " live" : ""}${chip.warn ? " warn" : ""}${chip.fresh ? " fresh" : ""}`} title={chip.title}
           style={chip.hidden ? { display: "none" } : undefined} onClick={onOpenBuilds}>
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="m3 17 2 2 4-4" /><path d="m3 7 2 2 4-4" /><path d="M13 6h8" /><path d="M13 12h8" /><path d="M13 18h8" /></svg>
@@ -153,11 +189,7 @@ export function BotList({ onAddBot, onOpenUsage, onOpenBrowsers, onOpenBuilds, o
         <button id="apps" className="ptog" title="Apps · everything the builds have made" onClick={onOpenApps}>
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinejoin="round" aria-hidden="true"><rect x="3" y="3" width="7" height="7" rx="1.5" /><rect x="14" y="3" width="7" height="7" rx="1.5" /><rect x="3" y="14" width="7" height="7" rx="1.5" /><rect x="14" y="14" width="7" height="7" rx="1.5" /></svg>
         </button>
-        {onOpenPrefs && (
-          <button id="prefs" className="ptog" title="Preferences" aria-label="Preferences" onClick={onOpenPrefs}>
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="3" /><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-1.8-.3 1.7 1.7 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1a1.7 1.7 0 0 0-1.1-1.5 1.7 1.7 0 0 0-1.8.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.7 1.7 0 0 0 .3-1.8 1.7 1.7 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1a1.7 1.7 0 0 0 1.5-1.1 1.7 1.7 0 0 0-.3-1.8l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.7 1.7 0 0 0 1.8.3H9a1.7 1.7 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.7 1.7 0 0 0 1 1.5 1.7 1.7 0 0 0 1.8-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0-.3 1.8V9a1.7 1.7 0 0 0 1.5 1H21a2 2 0 1 1 0 4h-.1a1.7 1.7 0 0 0-1.5 1z" /></svg>
-          </button>
-        )}
+        </>}
       </footer>
     </section>
   );

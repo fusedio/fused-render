@@ -144,7 +144,7 @@ export interface AvailablePlugins {
 
 // One thing a plugin contributes to a session — a skill, a command, an agent,
 // a hook event, an MCP server. `path` is the absolute file that declares it,
-// which is what makes the entry clickable: the panel opens it in FusedRender
+// which is what makes the entry clickable: the panel opens it in Fused Render
 // rather than paraphrasing it.
 export interface PluginComponent {
   name: string;
@@ -260,7 +260,7 @@ export const memory = {
 // -- skills -------------------------------------------------------------------
 
 /** The coding agents whose skills directories the page reads. */
-export type CliId = "claude" | "copilot" | "codex" | "gemini";
+export type CliId = "claude" | "copilot" | "codex" | "gemini" | "opencode";
 
 export interface Skill {
   slug: string;
@@ -394,7 +394,7 @@ export const skills = {
 
 // -- mcp ----------------------------------------------------------------------
 
-export type McpStatus = "connected" | "needs-auth" | "failed" | "pending" | "unknown";
+export type McpStatus = "connected" | "needs-auth" | "failed" | "pending" | "disabled" | "unknown";
 export type McpKind = "user" | "connector" | "plugin";
 
 export interface McpServer {

@@ -33,7 +33,7 @@ import {
 } from "react";
 import { createPortal } from "react-dom";
 
-import { confirmLeave, currentUrl, navigateUrl } from "@platform/lib/router";
+import { IS_EMBED, confirmLeave, currentUrl, navigateUrl } from "@platform/lib/router";
 import { registerChatComposer } from "@platform/lib/chat-focus";
 import { CHAT_ACTIVITY_KEY } from "@platform/lib/tasksChanged";
 import {
@@ -44,12 +44,14 @@ import {
 } from "@platform/lib/drafts";
 import { TaskPrChip } from "@platform/ui/TaskPrChip";
 import { draftUpdatedAt, isDraftTask } from "@shell/tasks-lib";
+import { COMPOSER_DRAFT_EVENT, buildBreakoutContext, exchangeKeys, liveKeys, type BreakoutExpert, type ComposerDraftDetail } from "@platform/lib/breakouts";
+import { listExperts } from "@platform/lib/experts";
 
 import { createUrlParamsStore, type ParamsStore } from "./params/store";
 import { useChatParam } from "./params/useChatParams";
 import { fetchHistory, sharedHistoryCache } from "./protocol/history";
-import type { SendOptions, StrandedLine, UserTurn } from "./protocol/controller-api";
-import type { PermissionMode } from "./protocol/types";
+import type { BreakoutContext, BreakoutRequest, SendOptions, StrandedLine, Turn, UserTurn } from "./protocol/controller-api";
+import type { PermissionMode, TaskRecord } from "./protocol/types";
 import { watchStreamTeardown, watchTopOrigin } from "./shots";
 import type { Attachment, Receipt } from "./shots/types";
 import { enhanceCodeBlocks } from "./protocol/markdown";
@@ -85,7 +87,7 @@ import {
 } from "./ann";
 import { captureAudio, captureSources } from "@platform/lib/capture-audio";
 import { terminalHint } from "@platform/lib/terminalFocus";
-import { composeOutgoing, formatAnnotations, isInterruptMark, type AnnotationWire } from "./protocol/wire";
+import { breakoutContextIn, composeOutgoing, formatAnnotations, isInterruptMark, type AnnotationWire } from "./protocol/wire";
 import { getStream, isNativeOff, noteSourcesProbe, shotsDir } from "./shots";
 import {
   AppPane,
@@ -103,12 +105,20 @@ import {
   type PaneSrcFlags,
   type TargetNoun,
 } from "./pane";
-import { setSideMaximized, useSideMaximized } from "@platform/lib/side-maximized-store";
+import {
+  setSideMaximized,
+  subscribeSideMaximizedRequest,
+  takeSideMaximizedRequest,
+  useSideMaximized,
+} from "@platform/lib/side-maximized-store";
+import { TASK_ICON_EXIT_FULL_SCREEN } from "@platform/ui/TaskActionIcons";
 import {
   AnnStrip,
   ArtStrip,
   AttachTray,
+  BreakoutContextChip,
   Kebab,
+  knownTaskId,
   CardPolicyProvider,
   Composer,
   createCardPolicy,
@@ -147,6 +157,9 @@ import {
   AgentProvider,
 } from "./ui";
 import { ComposerGate, waitingKind } from "./ui/WaitingBar";
+import { BreakoutSelectionBar } from "./ui/BreakoutSelectionBar";
+import { EXPERT_BREAKOUT_TOOL } from "./experts/tool-labels";
+import { pickDefault, pickPlan } from "./ui/TurnPick";
 import { AGENT_PREFS_URL, agentLabel, capsOf, isBackendEnabled, useAgentBackends } from "@platform/lib/agent-backends";
 import { debugSentEnabled } from "./ui/debug-sent";
 import { sessionSeed } from "./ui/useRecentTasks";
@@ -157,27 +170,42 @@ import { planLocalCommand } from "./ui/local-commands";
 import { REMOTE_CONTROL_CONNECTING, RemoteControlConfirm, RemoteControlNote, useRemoteControl } from "./ui/RemoteControl";
 import { notify } from "@platform/lib/notifications";
 import { ScreenshotSeat } from "./ui/AnnStrip";
-import { useCanvasShotResponder } from "./pane/useCanvasShotResponder";
 import type { CanvasShot, CanvasShotWhat } from "./shots/canvas-shot";
 import { CanvasShotSeat } from "./ui/CanvasShotSeat";
 import { WorktreeMenu, paneChatUrl, type WorktreeRequest } from "./ui";
-import { WorktreeHintChip, visibleWorktreeHint } from "./ui/WorktreeHintChip";
-import { TasksContext, TasksPanel, tasksPanelScope, useTasksOpen } from "./ui";
+import { isLanHost } from "@platform/lib/host";
+import { WorktreeHintChip, breakoutCwdFor, shownWorktreeHint } from "./ui/WorktreeHintChip";
+import { PlaceTags } from "@shell/claude-rail/PlaceTags";
+// THE ONE TASK HEAD (shell/TaskHead; design.md "One task head, everywhere"):
+// the strip and the identity line below are one head — the same one every
+// other task view draws.
+import { TaskHead } from "@shell/TaskHead";
+import { openInTasksItem, openInTasksProps } from "@platform/ui/openInTasks";
+import { TaskPeekProject } from "@shell/TaskPeekWho";
+import { StatusIcon } from "@shell/ScheduleTaskViews";
+import { shortTaskId } from "@shell/tasks-lib";
+import { AgentMark } from "@platform/ui/AgentMark";
+import { queueCaption } from "@platform/lib/queue";
+import { hasWhereTag, ownPlace, railScope } from "@shell/claude-rail/claude-rail-lib";
+import { AllowDeniedContext, TasksContext, TasksPanel, tasksPanelScope, useTasksOpen } from "./ui";
 import { FilePreviewProvider } from "./ui/filePreview";
 import { DockRow } from "./ui/DockRow";
-import { summarizeTasks, taskIndex } from "./protocol/tasks";
+import { QueuedStrip } from "./ui/QueuedStrip";
+import { agentModelLabel, statusLabel, summarizeTasks, taskIndex } from "./protocol/tasks";
 import { recapAnchor } from "./protocol/recap";
 import {
   queueEnabled,
   queueFlagReady,
   useProjectQueueEnabled,
-  useTaskRecapTitlesEnabled,
+  useChatRecapEnabled,
+  useBreakoutEnabled,
 } from "./feature-flag";
 import { WaitingCard, WaitingRow } from "./ui/Waiting";
 import { copyToTaskShots } from "./ui/SchedButton";
 import type { DraftAttachment } from "@platform/lib/drafts";
 import { troubleFromError } from "./protocol/trouble";
 import { useSchedule } from "./sched/useSchedule";
+import { schedIsComeback } from "./sched/scheduled";
 import type { QueueFacts } from "@platform/lib/queue";
 import { PENDING_KEY_PREFIX, QUEUED_PARAM } from "@platform/lib/queue";
 import {
@@ -192,10 +220,14 @@ import {
 } from "./sched/waiting";
 import type { WaitingSeed } from "./sched/waiting";
 import { leaderSession, useQueuedLeader } from "./sched/queue-leader";
-import { inboxBubbles } from "./protocol/inbox";
+import { queuedLines } from "./protocol/queued-lines";
 import { createLiveWatch } from "./live/watch";
 import {
   type OutboxEntry,
+  type PendingLine,
+  loadPending,
+  savePending,
+  splitPending,
   popNewest,
   pushBack,
   pushFront,
@@ -208,10 +240,12 @@ import {
   cancelScheduledMessage,
   forceStart,
   getClaudeSessionLiveness,
+  retryAfterLimit,
   type Task,
 } from "@platform/lib/api";
+import { hasAgentPeeks, openAgentPeek, publishPeekTurns, useAgentPeeks } from "./agent-peeks";
 import { GATE_FALLBACK_MS, useFallbackAfter } from "@platform/lib/clock";
-import PanelIcon from "@platform/ui/PanelIcon";
+import { X } from "lucide-react";
 import "./styles/ann.css";
 import "./styles/chat.css";
 import "./styles/hljs.css";
@@ -243,6 +277,12 @@ export const ASK_DETECTION_TIMEOUT_MS = 1500;
  *  twice a second. */
 export const HOST_PANE_POLL_MS = 500;
 
+export interface BreakoutControl {
+  available: boolean;
+  picking: boolean;
+  toggle: () => void;
+}
+
 export interface ClaudeChatProps {
   /** `_file`: folder | file | null. */
   file: string | null;
@@ -257,6 +297,12 @@ export interface ClaudeChatProps {
   headerInPeek?: boolean;
   /** Host-supplied node for the slim header's right-hand seat (a PR chip). */
   headerExtra?: ReactNode;
+  /** The host head's chip seat (ChatMount `headChipsHost`): the worktree menu
+   *  or hint and `headerExtra` portal there, and no Topbar is drawn. */
+  headChipsHost?: HTMLElement | null;
+  /** The host head's status seat (ChatMount `headStatusHost`): the usage-limit
+   *  word portals there instead of into the chips. */
+  headStatusHost?: HTMLElement | null;
   /** Draw `TaskPrChip` for the open task in the header, ahead of any
    *  `headerExtra` (the explorer's pane; TaskPeek passes its own chip). */
   prChip?: boolean;
@@ -264,6 +310,13 @@ export interface ClaudeChatProps {
    *  folder name) when the strip has no annotate seats. The explorer's folder
    *  sidebar opts in. */
   mergedHead?: boolean;
+  /** THE PLACE TAGS' facts (shell/claude-rail PlaceTags; owner,
+   *  2026-11-06): the page's own place (claude-rail-lib `placeRoot`) and
+   *  the page's way to select a node in place (null: deselect everything
+   *  and fit the canvas). With either given the head draws the tags in
+   *  place of the project's name. */
+  pageRoot?: string | null;
+  onSelectNode?: (udfName: string | null, sessionId?: string | null) => void;
   params: ChatParamsSource;
   /** A HOST stated this conversation's model/effort through `ChatMount`'s
    *  `model`/`effort` props, so the `model`/`effort` params on this mount's
@@ -305,6 +358,40 @@ export interface ClaudeChatProps {
    *  sidebar's SideCloseButton, same glyph, same place (the header's left
    *  end, on the seam the pane collapses toward). Absent: no button. */
   onHidePane?: () => void;
+  /** BREAKOUT POSTURE: this chat is a research-only side chat that starts as a
+   *  fresh session (see `ControllerDeps.breakout`). It never joins the folder
+   *  queue and never shows the fork notice. */
+  breakout?: boolean;
+  /** With `breakout`: the parent messages it was opened from. A chip above the
+   *  composer shows them until the first send carries them. */
+  breakoutContext?: BreakoutContext;
+  /** With `breakout`: the first message, auto-sent once on mount. */
+  breakoutPrompt?: string;
+  /** Called once the prompt has gone out, so the card forgets it. */
+  onBreakoutPromptSent?: () => void;
+  /** "Breakout from here" / the composer's Breakout button: hand the request
+   *  to the shell, which opens the card. Absent: no Breakout seats. */
+  onBreakout?: (req: BreakoutRequest) => void;
+  /** Hosts whose own head hides the chat's ⋮ (the Tasks peek) offer Breakout
+   *  from THEIR menu: this reports whether it is available and whether pick
+   *  mode is on, with a stable `toggle`; null on unmount. */
+  onBreakoutControl?: (ctl: BreakoutControl | null) => void;
+  /** With `breakout`: the card's window onto this chat — its own session id
+   *  (minted by the first send) and transcript, for Send back. */
+  onBreakoutState?: (s: {
+    sessionId: string;
+    turns: readonly Turn[];
+    running?: boolean;
+    stop?: () => void;
+    /** Send `text` as a new message in this chat, the way a typed one goes. */
+    send?: (text: string) => void;
+  }) => void;
+  /** Fields merged into every `start` body (an expert's chat:
+   *  `{expert: "<id>:main"}`). Such a chat opens as a chat and has no
+   *  Schedule seat. */
+  extraParams?: Record<string, string>;
+  /** `/clear` calls this instead of going back to Chats. */
+  onClear?: () => void;
   /** `_noopen=1` — this mount must not record the app it frames as OPENED
    *  (D622, the listing pane). Unlike `preview` it is not display-only: the
    *  pane is fully interactive, so it carries the no-open stamp WITHOUT the
@@ -344,6 +431,9 @@ export interface ClaudeChatProps {
    * how this bug arrived. (.claude-design/session-recap.md, "Trigger".)
    */
   recap?: boolean;
+  /** The rail cards' composer (ComposerCard `smallCard`). */
+  smallCard?: boolean;
+  smallCardShown?: boolean;
   /**
    * `/tasks` (SPEC C-1): toggle the background-tasks panel. Optional — the
    * panel's host fills it; absent, the command is answered and does nothing.
@@ -356,7 +446,8 @@ const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
 /** WHETHER A WORKTREE MENU IS MOUNTED for this target: any file or folder the
  *  pane has named — the menu then hides itself unless its list says repo. */
 export function worktreeMenuTarget(file: string | null, noun: TargetNoun): boolean {
-  return !!file && !!noun;
+  // Not on the phone: worktree create/remove are Mac-disk operations the LAN door 404s (lan.py `_DOORS`).
+  return !!file && !!noun && !isLanHost();
 }
 
 // `/model` and `/effort` parsing moved to `ui/local-commands.ts`; re-exported.
@@ -458,6 +549,11 @@ export function annotationsForTests(): AnnotationsApi | null {
   return annForTests;
 }
 
+/** How many more times, and how far apart, the capture probe is asked after a
+ *  failure (see `probeTry`). */
+const PROBE_RETRIES = 3;
+const PROBE_RETRY_MS = 4000;
+
 /**
  * Resolve the param store before the chat itself mounts, so the body's hook
  * list never has to branch. A missing target is the one hard stop: with no
@@ -538,6 +634,45 @@ export function ClaudeChat(props: ClaudeChatProps) {
 /** What the page outbox keeps beside a parked line's words (ui/outbox.ts):
  *  the send options it was typed with, its optimistic bubble's key (the real
  *  send adopts that row), and the tray pictures taken for it when it was parked. */
+/** A fresh durable id for a sent line (`SendOptions.clientId`): always a
+ *  canonical v4-shaped uuid, so the controller's `CLIENT_ID_RE` and the server's
+ *  `_CANONICAL_UUID_RE` treat it as an id. `crypto.randomUUID` is missing on a
+ *  non-secure origin (http on a LAN host); the fallback fills the same shape
+ *  from `getRandomValues`, else `Math.random`. */
+export function newClientId(): string {
+  try {
+    if (typeof crypto !== "undefined" && typeof crypto.randomUUID === "function") return crypto.randomUUID();
+  } catch {
+    /* fall through */
+  }
+  const bytes = new Uint8Array(16);
+  try {
+    if (typeof crypto !== "undefined" && typeof crypto.getRandomValues === "function") crypto.getRandomValues(bytes);
+    else for (let i = 0; i < 16; i++) bytes[i] = Math.floor(Math.random() * 256);
+  } catch {
+    for (let i = 0; i < 16; i++) bytes[i] = Math.floor(Math.random() * 256);
+  }
+  bytes[6] = (bytes[6]! & 0x0f) | 0x40;
+  bytes[8] = (bytes[8]! & 0x3f) | 0x80;
+  const hex = Array.from(bytes, (b) => b.toString(16).padStart(2, "0")).join("");
+  return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`;
+}
+
+/**
+ * IS A LIVE STATUS THIS PANE'S OWN RUN? (the flag-independent rule for a line
+ * typed mid-turn.) `openSession` does not reset `status` when the pane switches
+ * conversations, so a stale "running" from the previous chat must not read as
+ * this one's. The controller's session and the URL's agree when both are known;
+ * while a brand-new chat is still starting NEITHER is known yet, and right after
+ * the first reply the URL can still be behind the controller. Both are this
+ * chat's own run. A controller that knows no session while the URL names one is
+ * the other chat.
+ */
+export function ownSession(controllerSid: string | null, urlSid: string): boolean {
+  if (!controllerSid) return !urlSid;
+  return !urlSid || controllerSid === urlSid;
+}
+
 interface OutboxPayload {
   opts: SendOptions;
   bubble: string;
@@ -565,6 +700,9 @@ interface ChatBodyProps extends ClaudeChatProps {
 function ChatBody(props: ChatBodyProps) {
   const { params, file, chatOnly, compact, peek } = props;
   const showHead = !compact && (!peek || !!props.headerInPeek);
+  // THE SHARED HEAD replaces the strip and the identity line wherever the chat
+  // draws its own head (not compact, not a host's peek).
+  const headUnified = !compact && !peek;
   const rootRef = useRef<HTMLDivElement | null>(null);
   const columnRef = useRef<HTMLDivElement | null>(null);
   const ownBox = useRef<HTMLTextAreaElement | null>(null);
@@ -606,7 +744,7 @@ function ChatBody(props: ChatBodyProps) {
   // Natively that frame arrives as `annotateTarget`, a getter the host owns
   // (Preview.tsx looks its own mark up; CanvasWorkspace hands over its workbench
   // frame). Without it `hasPane` was false in the sidebar, no block was pushed,
-  // `has_pane:"0"` took `mcp__fused_approvals__app_state` out of the run's
+  // `has_pane:"0"` took `mcp__fused_render__app_state` out of the run's
   // roster — and, because `agent.py`'s `_pane_file` reads the pane off the
   // LEADING app-state block, every chat had in that layout was recorded as a
   // FOLDER chat and vanished from the file's Recent list (R3-1/R3-3).
@@ -838,7 +976,7 @@ function ChatBody(props: ChatBodyProps) {
   //
   // `has_pane` is what agent.py builds the session's MCP roster off, once, at
   // spawn: `pane=False` writes an `mcp.json` with no app-state channel and an
-  // `--allowed-tools` without `mcp__fused_approvals__app_state`, and there is
+  // `--allowed-tools` without `mcp__fused_render__app_state`, and there is
   // no way back — `_send` never touches argv, and `host.json` does not even
   // record the pane, so nothing can respawn for one appearing. A first message
   // typed before `statPath`/`runAppEntry` landed therefore cost the WHOLE
@@ -1031,6 +1169,10 @@ function ChatBody(props: ChatBodyProps) {
   /** Force start is in flight: the card's one button is dead for its
    *  duration. */
   const [forcing, setForcing] = useState(false);
+  /** Retry now (usage limit) is in flight, and what its last press said when
+   *  it did not simply go — the banner's note line. */
+  const [limitRetrying, setLimitRetrying] = useState(false);
+  const [limitRetryNote, setLimitRetryNote] = useState("");
   /**
    * RUN NEXT WAS ACCEPTED, AND NO ROW HAS ANSWERED SINCE — the row generation as
    * it stood at the press (`useSchedule.recGen`), or null for "no claim".
@@ -1064,6 +1206,9 @@ function ChatBody(props: ChatBodyProps) {
   // flag owns outright: the waiting rows, and the composer's own follow-up note,
   // which the flag takes away (see the Composer's `queueOn`).
   const queueOn = useProjectQueueEnabled();
+  // Breakout is an opt-in beta: off, neither the composer button nor the
+  // per-turn "Breakout from here" renders.
+  const breakoutOn = useBreakoutEnabled();
   /**
    * THE PAGE OUTBOX (ui/outbox.ts) — lines typed while the latch above was
    * shut.
@@ -1096,6 +1241,75 @@ function ChatBody(props: ChatBodyProps) {
     setOutboxCount(next.length - notSent);
     setNotSentCount(notSent);
   }, []);
+  /**
+   * THE PENDING JOURNAL (ui/outbox.ts): every line sent and not yet
+   * acknowledged by the server, mirrored into sessionStorage under its
+   * session, so a reload cannot lose it. Added when the line is sent or
+   * parked; dropped on the server's acknowledgement (`onSendDelivered`), on a
+   * hand-back (`onSendReturned`, a Stop's strand) and when the reader pulls it
+   * back. A line sent before its session has an id waits in memory and is
+   * written the moment the id appears. The server project queue is not
+   * involved: this works the same with the flag on or off.
+   */
+  const journal = useRef<Map<string, { text: string; sid: string; hold?: true }>>(new Map());
+  const journalSid = useCallback(
+    () => controllerRef.current?.getState().sessionId || params.get("session_id") || "",
+    [params],
+  );
+  /**
+   * WHERE A LINE IS KEPT BEFORE ITS SESSION HAS AN ID: under the run this chat
+   * started (`run` in the URL, which a reload boots from) — `run:<id>`. A brand-new
+   * chat has no session id until the CLI's first rows land, and the journal
+   * keyed by session alone lost any line sent in that window on a reload. It is
+   * rekeyed to the session id the moment one exists (the effect below), the way
+   * the held-line storage follows the first session id.
+   */
+  const journalRunKey = useCallback(() => {
+    const run = controllerRef.current?.getState().runId || params.get("run") || "";
+    return run ? "run:" + run : "";
+  }, [params]);
+  const journalOwner = useCallback(
+    (e: { sid: string }) => e.sid || journalRunKey(),
+    [journalRunKey],
+  );
+  const journalWarned = useRef(false);
+  const journalFlush = useCallback(
+    (owner: string) => {
+      if (!owner) return;
+      const lines: PendingLine[] = [];
+      for (const [id, e] of journal.current) {
+        if (journalOwner(e) === owner) lines.push({ id, text: e.text, ...(e.hold ? { hold: true as const } : {}) });
+      }
+      if (savePending(owner, lines)) journalWarned.current = false;
+      else if (!journalWarned.current) {
+        journalWarned.current = true;
+        controllerRef.current?.addNote(
+          "Couldn't keep your queued message in this browser. If you reload before it is sent, it is lost.",
+          "◆",
+        );
+      }
+    },
+    [journalOwner],
+  );
+  const journalAdd = useCallback(
+    (id: string, text: string, hold?: true) => {
+      if (!id || !text) return;
+      const entry = { text, sid: journalSid(), ...(hold ? { hold } : {}) };
+      journal.current.set(id, entry);
+      journalFlush(journalOwner(entry));
+    },
+    [journalSid, journalFlush, journalOwner],
+  );
+  const journalDrop = useCallback(
+    (id: string) => {
+      const e = journal.current.get(id);
+      if (!e) return;
+      const owner = journalOwner(e);
+      journal.current.delete(id);
+      journalFlush(owner);
+    },
+    [journalFlush, journalOwner],
+  );
   /** The drain, as a ref: `releaseSend` is declared before `dispatchSend` (a
    *  dep of the drain) and has to call it without a hook cycle. */
   const drainRef = useRef<() => void>(() => {});
@@ -1104,10 +1318,6 @@ function ChatBody(props: ChatBodyProps) {
    *  must leave the tray alone — those pictures belong to the send that is
    *  still photographing (Bugbot, PR #1323). */
   const trayTakenRef = useRef(false);
-  /** "SEND NOW" IS IN FLIGHT: the ordinary drain stands down until it has
-   *  dispatched its own line, so nothing goes out as a follow-up into a run
-   *  that is still stopping (Bugbot, PR #1323). */
-  const sendNowInFlight = useRef(false);
   const releaseSend = useCallback((id: string) => {
     if (sendHolder.current !== id) return;
     sendHolder.current = "";
@@ -1207,6 +1417,7 @@ function ChatBody(props: ChatBodyProps) {
       if (!controllerRef.current) return;
       const entries: OutboxEntry<OutboxPayload>[] = [];
       for (const line of lines) {
+        if (line.clientId) journalDrop(line.clientId);
         if (!line.text) continue;
         // ALREADY POSTED, BY ID: `onSendReturned` took this send back earlier
         // (its `send` failed on its own) and posted its row then.
@@ -1227,7 +1438,7 @@ function ChatBody(props: ChatBodyProps) {
       }
       if (entries.length) setOutbox(pushFrontAll(outboxRef.current, entries));
     },
-    [setOutbox, postNotSent],
+    [setOutbox, postNotSent, journalDrop],
   );
 
   // One collapse policy per MOUNT, not per module: six compact mounts on the
@@ -1241,6 +1452,9 @@ function ChatBody(props: ChatBodyProps) {
       createChatController({
         file,
         params,
+        ...(props.breakout ? { breakout: true } : {}),
+        ...(props.breakout && props.breakoutContext ? { breakoutContext: props.breakoutContext.block } : {}),
+        ...(props.extraParams ? { extraStartParams: props.extraParams } : {}),
         // The transcript restore takes its own road (owner E2E R1, F5):
         // `/api/claude-sessions/history`. See `fetchHistory`.
         history: (f, s) => fetchHistory(f, s),
@@ -1319,7 +1533,11 @@ function ChatBody(props: ChatBodyProps) {
         // The agent saw none of it, so the pictures come back to the tray —
         // never revoked on this road, because those very thumbnails are what the
         // returned chips show (T:16693-16720).
-        onSendReturned: ({ attachments, sendId, text, refused }) => {
+        onSendDelivered: (clientId) => journalDrop(clientId),
+        onSendReturned: ({ attachments, sendId, text, refused, clientId }) => {
+          // Handed back to the reader: it is theirs now, not the page's to
+          // re-send after a reload.
+          if (clientId) journalDrop(clientId);
           // A REFUSED SEND OWES THE WORDS BACK. The composer cleared its box on
           // the keystroke and the controller turned the message away before it
           // ever reached `addUser`, so there is no bubble and no queue entry
@@ -1371,7 +1589,7 @@ function ChatBody(props: ChatBodyProps) {
           attachBack.current?.(back);
         },
       }),
-    [file, params, strand, strandAll],
+    [file, params, strand, strandAll, journalDrop],
   );
   // For `strand`, which the controller itself calls (see `controllerRef`).
   controllerRef.current = controller;
@@ -1384,6 +1602,15 @@ function ChatBody(props: ChatBodyProps) {
   );
   // The task registry by id, for the agent / monitor chips (`ui/tasksContext`).
   const tasksById = useMemo(() => taskIndex(state.tasks), [state.tasks]);
+  // The Allow button on a refused call needs an agent whose classifier refused
+  // it (Claude) and a conversation a send would resume or start: its session id,
+  // which a restored chat has without ever having had a run this page. A
+  // `_preview=1` thumbnail is display-only, so it offers no button.
+  const allowDenied = useMemo(
+    () =>
+      !props.preview && (state.backend || "claude") === "claude" && state.sessionId ? controller.allowDenied : null,
+    [props.preview, state.backend, state.sessionId, controller],
+  );
 
   /**
    * THE DOOR OPENS WHEN THE RUN IS LIVE, not when the controller took the
@@ -1763,9 +1990,19 @@ function ChatBody(props: ChatBodyProps) {
    * (`shots/noteSourcesProbe`).
    */
   const [micShown, setMicShown] = useState(true);
+  // THE COMPOSER'S OWN MIC (dictation, `ui/MicButton`) reads the same probe,
+  // on the Bots composer's stricter rule: the button exists only once the
+  // machine has said it can record — never on a probe that has not answered.
+  const [dictate, setDictate] = useState(false);
+  // A PROBE THAT FAILED IS ASKED AGAIN (Bugbot, PR #2372): `dictate` only ever
+  // turns on from an answer, so a chat that loaded before the capture route
+  // was up would otherwise never draw the mic. Three more asks, a few seconds
+  // apart, then it waits for the next arm like before.
+  const [probeTry, setProbeTry] = useState(0);
   const annArmed = ann.mode !== "off";
   useEffect(() => {
     let live = true;
+    let retry = 0;
     void captureSources()
       .then((sources) => {
         // BEFORE the `live` gate and outside it: this is module state about the
@@ -1776,6 +2013,7 @@ function ChatBody(props: ChatBodyProps) {
         if (!live) return;
         const audio = sources.audio;
         setMicShown(audio?.available !== false);
+        setDictate(audio?.available === true);
         // AND SAY WHY THE SEAT WENT (T:7801). The reason string is CP-11's, and
         // it names a browser that CAN record — so a reader with no seat and no
         // explanation at least has the console to go on. Swallowing it left
@@ -1786,12 +2024,16 @@ function ChatBody(props: ChatBodyProps) {
         }
       })
       .catch(() => {
-        /* no answer is not a NO: the seat stays */
+        /* no answer is not a NO: the walkthrough's seat stays */
+        if (live && probeTry < PROBE_RETRIES) {
+          retry = window.setTimeout(() => setProbeTry((n) => n + 1), PROBE_RETRY_MS);
+        }
       });
     return () => {
       live = false;
+      window.clearTimeout(retry);
     };
-  }, [annArmed]);
+  }, [annArmed, probeTry]);
 
   /**
    * The recorder's state, told to the mode machine (T:8114's `.busy` seat) and
@@ -1839,6 +2081,13 @@ function ChatBody(props: ChatBodyProps) {
 
   // ── the three pills ────────────────────────────────────────────────────────
   const defaults = useComposerDefaults(file, params, !!props.hostSeededSettings, state.backend);
+  // AGENT PEEK feed: a floating peek of one of this chat's subagents reads the
+  // Agent call's `children` out of these turns, so hand them over whenever they
+  // (or the set of open peeks) change. Free when no peek is open.
+  const peekCount = useAgentPeeks().length;
+  useEffect(() => {
+    if (state.sessionId && hasAgentPeeks(state.sessionId)) publishPeekTurns(state.sessionId, state.turns);
+  }, [state.turns, state.sessionId, peekCount]);
   // WHICH AGENT THIS CHAT IS ABOUT (docs/COPILOT_BACKEND.md D2/D18): the
   // conversation's own once the wire has said, else the pill's pick, else the
   // catalog's default — `useComposerDefaults` resolves exactly that. Every
@@ -1906,15 +2155,9 @@ function ChatBody(props: ChatBodyProps) {
     // `useAppStateResponder.test.tsx` for the seam.
   });
 
-  // ── the canvas-screenshot pull channel (`canvas_screenshot` tool) ──────────
-  // Every chat polls its run, so every chat sees the rows; only a canvas page
-  // (`canvasShot`) can take the picture, the rest answer "open the canvas"
-  // after giving it its chance (`useCanvasShotResponder`).
-  useCanvasShotResponder({
-    rows: state.canvasShot,
-    shot: props.canvasShot ?? null,
-    answer: controller.answerCanvasShot,
-  });
+  // The `canvas_screenshot` tool is answered by the canvas PAGE, whichever
+  // surface holds the chat (D1471, apps/canvases/canvas-page-shot-responder);
+  // a chat only draws the open-canvas ask, as a card (OpenCanvasCard).
 
   // ── the ask, LATCHED PER MOUNT ─────────────────────────────────────────────
   //
@@ -1960,6 +2203,10 @@ function ChatBody(props: ChatBodyProps) {
   const [entered, setEntered] = useState(
     () =>
       !!(
+        // A BREAKOUT CARD IS A CHAT FROM ITS FIRST FRAME: it has no landing to
+        // show, and a Home row would load another conversation into it.
+        props.breakout ||
+        props.extraParams ||
         params.get("session_id") ||
         // A CHAT THAT HAS NEVER RUN IS STILL A CHAT (`QUEUED_PARAM`): it has a
         // waiting bubble, a task number and a line to be in, and landing on the
@@ -2136,8 +2383,11 @@ function ChatBody(props: ChatBodyProps) {
         // A bare `run` has nothing to restore, and a restored session is on
         // screen by now: either way this is the moment the host may uncover us.
         markReady();
-        if (runId) await controller.resumeRun(runId);
-        else if (sessionId) {
+        // …AND A RUN BESIDE A SESSION MUST BE THAT SESSION'S (`ownSession`):
+        // a `run=` another conversation left on this page is written off,
+        // not adopted over the transcript just restored.
+        if (runId) await controller.resumeRun(runId, sessionId ? { ownSession: sessionId } : {});
+        else if (sessionId && !props.breakout) {
           // NO `run` ON THE URL and a session that may well be busy: ask the
           // session itself. `openSession` above already started this watch, so
           // this covers the one path that skips it — a boot handed a
@@ -2341,6 +2591,11 @@ function ChatBody(props: ChatBodyProps) {
       }
       annRef.current?.onEscape(ev);
       if (ev.defaultPrevented) return;
+      if (pickingRef.current) {
+        setPicking(false);
+        ev.preventDefault();
+        return;
+      }
       // 4. nothing of the chat's own was open, so the press reaches the host —
       //    which is how TaskPeek closes. Never a stop: Escape has no claim on a
       //    run (T:15947-15978).
@@ -2912,20 +3167,31 @@ function ChatBody(props: ChatBodyProps) {
        *  when it was parked. */
       parked?: OutboxPayload,
     ): void => {
+      // THE LINE'S DURABLE ID, minted once: a parked line keeps the one it was
+      // parked under (it rides `opts`), a direct send mints it here. Journalled
+      // (sessionStorage) until the server acknowledges it, so a reload in
+      // between re-sends it instead of losing it.
+      if (!opts.clientId) opts = { ...opts, clientId: newClientId() };
+      const clientId = opts.clientId!;
+      if (text && !parked) journalAdd(clientId, text);
       // THE DOOR IS SHUT — PARK THE LINE, NEVER REFUSE IT (ui/outbox.ts). The
       // bubble goes up now with a "queued" tag, the tray's pictures go with THIS
       // line, and `releaseSend` drains it the moment the door opens. This used
       // to `return`, and the composer read the same ref and kept the words in
       // the box with no sign: the reader typed on and the next Enter sent two
       // messages as one (multi-send QA 2026-09-19).
-      if (sendBusy.current) {
+      // A RUN THAT IS STOPPING takes nothing either: a line into it is refused
+      // or lost. It parks the same way and the idle transition sends it as a
+      // new turn.
+      const stoppingRun = !parked && !!text && !sendBusy.current && controller.getState().status === "stopping";
+      if (sendBusy.current || stoppingRun) {
         const bubble = text ? controller.postOptimisticUser(text, "queued") : "";
         // THE TRAY IS ONLY THIS LINE'S ONCE THE SEND IN FLIGHT HAS TAKEN ITS
         // OWN. Before that (`beginSend` still awaiting the notes' photograph),
         // reading it here would steal the pictures the reader attached to the
         // line that is going out (Bugbot, PR #1323); the parked line reads the
         // tray at its own dispatch instead (`takeLater`).
-        const took = trayTakenRef.current;
+        const took = stoppingRun || trayTakenRef.current;
         const mine = took ? takeAttachments() : NO_TAKEN;
         const entryId = `o${++outboxSeq.current}`;
         setOutbox(
@@ -2945,9 +3211,24 @@ function ChatBody(props: ChatBodyProps) {
       // bubble is the markers `stripBlocks` builds out of the composed wire,
       // and only the controller can write those. A PARKED line's bubble is
       // already up: adopt it rather than post a second.
-      const optimisticKey = parked ? parked.bubble : text ? controller.postOptimisticUser(text) : "";
+      //
+      // A FOLLOW-UP INTO A LIVE RUN IS IN THE QUEUE FROM THE KEYPRESS ("sending").
+      // Its row used to be a plain transcript bubble until the controller had
+      // it — after the queue's admission, the pane's photograph and the
+      // app-state read, which is seconds on a busy page — and only THEN moved
+      // into the strip above the box. A reader who pressed Enter looked at the
+      // queue, saw nothing, and could not tell the message had been taken
+      // ("my msg took like 10 sec to show up in the queue"). The tag comes off
+      // when the send's own bubble adopts the row (`addUser`), by which time the
+      // controller names it as queued (`queuedKeys`): one row, never moved.
+      const optimisticKey = parked
+        ? parked.bubble
+        : text
+          ? controller.postOptimisticUser(text, followUp ? "sending" : undefined)
+          : "";
       void (async () => {
         let taken = false;
+        let counted = false;
         dispatchingParked.current = parked ?? null;
         if (parked) parkedBySendId.current.set(sendId, parked);
         try {
@@ -3004,12 +3285,8 @@ function ChatBody(props: ChatBodyProps) {
           // different folder (review): the controller's own session has to
           // name the one on this pane's URL.
           const liveNow = controller.getState();
-          const ownRunLive =
-            followUp &&
-            liveNow.status !== "idle" &&
-            !!liveNow.sessionId &&
-            liveNow.sessionId === (params.get("session_id") || "");
-          if (queueEnabled() && !ownRunLive) {
+          const ownRunLive = followUp && liveNow.status !== "idle" && ownSession(liveNow.sessionId, params.get("session_id") || "");
+          if (queueEnabled() && !ownRunLive && !props.breakout) {
             // READ ONCE, and read HERE: the session can arrive while the copies
             // below are uploading, and a body whose `session_id` and
             // `follow_of` were asked a round trip apart could carry both — a
@@ -3300,6 +3577,7 @@ function ChatBody(props: ChatBodyProps) {
               },
             };
             controller.setOptimisticPending(parked.bubble, "notSent");
+            journalDrop(clientId);
             setOutbox(
               pushFront(outboxRef.current, {
                 id: parked.entryId,
@@ -3317,6 +3595,7 @@ function ChatBody(props: ChatBodyProps) {
             sendId,
             ...(optimisticKey ? { optimisticKey } : {}),
             ...(queueClaim ? { queueClaim } : {}),
+            clientId,
             // A drained line was typed to be said whatever the run does: if
             // the run it waited behind has ended by now, it opens a fresh turn
             // rather than coming back "no run to attach" (`orStart`).
@@ -3324,6 +3603,10 @@ function ChatBody(props: ChatBodyProps) {
           };
           let ok = true;
           try {
+            if (followUp) {
+              followUpsInFlight.current++;
+              counted = true;
+            }
             const sent = followUp
               ? controller.sendFollowUp(text, wire)
               : controller.sendMessage(text, wire);
@@ -3341,6 +3624,18 @@ function ChatBody(props: ChatBodyProps) {
           } catch {
             ok = false;
           }
+          // THE "sending" TAG NEVER OUTLIVES ITS SEND. Every road through the
+          // controller either adopts the row (the tag comes off with it) or
+          // drops it; this is for the one that does neither — a throw before
+          // the controller's own bubble went up. Left tagged, the row would sit
+          // in the queue for ever, hidden from the transcript. Untagged it is
+          // what it was before this tag existed: a plain bubble.
+          if (
+            optimisticKey
+            && controller.getState().turns.some((t) => t.key === optimisticKey && t.role === "user" && t.pending === "sending")
+          ) {
+            controller.setOptimisticPending(optimisticKey, undefined);
+          }
           // MY send, asked of my own id — and spent, whichever way it went.
           done(ok && !returnedSends.current.delete(sendId));
         } finally {
@@ -3351,13 +3646,21 @@ function ChatBody(props: ChatBodyProps) {
           // live status for the effect above to read. Owned by `sendId`, so a
           // turn ending cannot open the door on a LATER send's window.
           if (!taken && optimisticKey) controller.dropOptimisticUser(optimisticKey);
+          // Never handed to the controller (the capture threw, or a Stop took
+          // it back): nothing was sent, so nothing is owed after a reload.
+          if (!taken) journalDrop(clientId);
           // OWNED (Bugbot 4122227276): a later parked send may already hold
           // the slot while this one's turn runs out, and clearing it here
           // would leave that send's admission road reading "not parked".
           if (dispatchingParked.current === parked) dispatchingParked.current = null;
           if (parked?.entryId) dispatching.current.delete(parked.entryId);
           parkedBySendId.current.delete(sendId);
+          if (counted) followUpsInFlight.current--;
           releaseSend(sendId);
+          // THE TURN THIS SEND OPENED IS OVER and the controller's own gate is
+          // free again: the next held line may go. The status effect saw
+          // `idle` a moment earlier, while that gate was still shut.
+          drainRef.current();
         }
       })();
     },
@@ -3374,6 +3677,8 @@ function ChatBody(props: ChatBodyProps) {
       setOutbox,
       leader,
       params,
+      journalAdd,
+      journalDrop,
     ],
   );
 
@@ -3397,31 +3702,186 @@ function ChatBody(props: ChatBodyProps) {
   /** …and the ones a Stop asked to abort while they were in that gap:
    *  `dispatchSend` reads this right before the controller call. */
   const cancelledDispatch = useRef<Set<string>>(new Set());
-  const drainOutbox = useCallback(() => {
-    // Not while "send now" is between its stop and its own dispatch: a line
-    // drained here would go out as a follow-up into a run that is still
-    // stopping and be refused (Bugbot, PR #1323). `onSendNow` drains itself
-    // once its line is out. And NEVER into a run that is `stopping` or still
-    // `starting` (Bugbot 4121249279): a follow-up into a stopping run is
-    // refused; the status effect below drains again once it settles.
+  const drainRetry = useRef<ReturnType<typeof setTimeout> | null>(null);
+  useEffect(
+    () => () => {
+      if (drainRetry.current) clearTimeout(drainRetry.current);
+    },
+    [],
+  );
+  /** CTRL+X IS OWED ITS INTERRUPT: pressed with lines still parked or in flight,
+   *  the one `send_now` interrupt waits until every one of them has landed in
+   *  the run's inbox (`settleSendNow`), so it can name a line the CLI holds. */
+  const sendNowOwed = useRef(false);
+  /** Follow-ups handed to the controller whose `send` has not answered yet. */
+  const followUpsInFlight = useRef(0);
+  /**
+   * THE ONE INTERRUPT OF A CTRL+X, sent when nothing is left to deliver: the
+   * outbox holds no line that can go, none is in the gap before the controller
+   * or on the wire. Every line then sits in the run's inbox, and the CLI merges
+   * them all into the turn that runs next. A run that is no longer running has
+   * no turn to end, so the interrupt is dropped (the lines went out as a normal
+   * turn); one still starting keeps it owed.
+   */
+  const settleSendNow = useCallback(() => {
+    if (!sendNowOwed.current) return;
     const status = controller.getState().status;
-    if (sendBusy.current || sendNowInFlight.current) return;
+    if (status === "starting") return;
+    if (status !== "running") {
+      sendNowOwed.current = false;
+      return;
+    }
+    if (sendBusy.current || dispatching.current.size || followUpsInFlight.current) return;
+    if (outboxRef.current.some((e) => !e.hold && !e.notSent)) return;
+    sendNowOwed.current = false;
+    void controller.sendQueuedNow();
+  }, [controller]);
+  const drainOutbox = useCallback(() => {
+    settleSendNow();
+    // NEVER into a run that is `stopping` or still `starting` (Bugbot
+    // 4121249279): a follow-up into a stopping run is refused; the status
+    // effect below drains again once it settles.
+    const status = controller.getState().status;
+    if (sendBusy.current) return;
     if (status === "stopping" || status === "starting") return;
-    const { entry: next, rest } = shiftOldestSendable(outboxRef.current);
+    // A HELD line is sendable only when the session is done: idle, nothing the
+    // live run still holds, and no restore still deciding whether a live run
+    // exists (`status` reads idle until the adoption watch lands). `isBusy`
+    // below covers the beat after idle.
+    const now = controller.getState();
+    const { entry: next, rest } = shiftOldestSendable(
+      outboxRef.current,
+      status === "idle" && now.queuedKeys.length === 0 && !now.adopting && !now.adoptingRun && !now.historyLoading,
+    );
     if (!next) return;
+    // `status` reads idle a beat before the controller's own send gate opens: a
+    // new turn drained in that beat is refused and comes back "not sent", with
+    // nothing to retry it. Look again shortly instead.
+    if (status === "idle" && controller.isBusy()) {
+      if (!drainRetry.current) {
+        drainRetry.current = setTimeout(() => {
+          drainRetry.current = null;
+          drainRef.current();
+        }, 50);
+      }
+      return;
+    }
     setOutbox(rest);
     dispatching.current.add(next.id);
+    // Out of the page's hands now: a reload before the ack re-sends it as an
+    // ordinary line, not a held one.
+    if (next.hold && next.payload.opts.clientId) journalAdd(next.payload.opts.clientId, next.text);
     const followUp = status !== "idle";
     dispatchSend(next.text, next.payload.opts, followUp, { ...next.payload, entryId: next.id });
-  }, [controller, dispatchSend, setOutbox]);
+  }, [controller, dispatchSend, setOutbox, journalAdd, settleSendNow]);
   useEffect(() => {
     drainRef.current = drainOutbox;
   }, [drainOutbox]);
   // A run that settled (idle after a stop, or a fresh turn now live) is one the
-  // drain may send into again.
+  // drain may send into again. A held line also waits on the live run's queue
+  // and on the restore, so those re-check it too.
   useEffect(() => {
     if (state.status === "idle" || state.status === "running") drainRef.current();
-  }, [state.status]);
+  }, [state.status, state.queuedKeys, state.adopting, state.adoptingRun, state.historyLoading]);
+  // A SESSION ID THAT ARRIVES AFTER THE LINE WAS SENT (a brand-new chat's first
+  // turn): the lines kept under the run (`run:<id>`) or in memory only are
+  // written under the session now, and the run's copy goes. A run id that
+  // arrives first moves the in-memory lines onto its key.
+  useEffect(() => {
+    const sid = state.sessionId;
+    const runKey = journalRunKey();
+    if (!sid) {
+      // ONLY WHEN THIS PAGE HOLDS LINES FOR IT: a reloaded page has an empty
+      // journal, and flushing would wipe the lines the reload exists to re-send.
+      if (runKey && [...journal.current.values()].some((e) => journalOwner(e) === runKey)) journalFlush(runKey);
+      return;
+    }
+    let changed = false;
+    for (const e of journal.current.values()) {
+      if (!e.sid) {
+        e.sid = sid;
+        changed = true;
+      }
+    }
+    if (changed) {
+      journalFlush(sid);
+      if (runKey) journalFlush(runKey);
+    }
+  }, [state.sessionId, state.runId, journalFlush, journalRunKey, journalOwner]);
+  /**
+   * A RELOAD'S UNACKNOWLEDGED LINES ARE SENT AGAIN, ONCE (ui/outbox.ts, the
+   * pending journal). When this page restored a session from the URL and its
+   * history has landed (and the live-run adoption has settled, so `status` is
+   * true), every line the previous page left in sessionStorage is looked up BY
+   * ID in what the server shows — the inbox rows and the transcript's user
+   * turns. Found: the server has it, forget it. Not found: it never got there,
+   * so it goes out now — as a follow-up into the live run, or as a new turn when
+   * the chat is idle — with the same id, in the order it was typed. A line this
+   * page itself has in flight is left alone.
+   */
+  const reconciledFor = useRef("");
+  useEffect(() => {
+    const sid = state.sessionId;
+    if (!sid || !bootDispatched.current || state.historyLoading || state.adopting) return;
+    if (reconciledFor.current === sid) return;
+    reconciledFor.current = sid;
+    // THE RUN'S KEY TOO: a line a brand-new chat sent before its session had an
+    // id was kept under `run:<id>` (`journalRunKey`); this is the first moment a
+    // reload knows the session, so both lists are read and the run's goes.
+    const runKey = journalRunKey();
+    const fromRun = runKey ? loadPending(runKey) : [];
+    if (runKey) savePending(runKey, []);
+    const seenIds = new Set<string>();
+    const stored = [...loadPending(sid), ...fromRun].filter((l) => {
+      if (journal.current.has(l.id) || seenIds.has(l.id)) return false;
+      seenIds.add(l.id);
+      return true;
+    });
+    if (!stored.length) return;
+    const known = new Set<string>();
+    for (const t of state.turns) {
+      const u = (t as { uuid?: string }).uuid;
+      if (u) known.add(u);
+    }
+    for (const m of state.inbox) if (m.uuid) known.add(m.uuid);
+    // An id seen ONLY as a CLI receipt (`command_lifecycle`, the `isReplay`
+    // echo) is known too: the turn row can carry another uuid, and a landed
+    // line must not be sent again.
+    for (const u of state.taken ?? []) known.add(u);
+    const { resend, drop } = splitPending(stored, known);
+    if (drop.length) {
+      const keep = loadPending(sid).filter((l) => !drop.some((d) => d.id === l.id));
+      savePending(sid, keep);
+    }
+    // The storage copy is superseded by the in-memory journal entry
+    // `dispatchSend` writes for each re-sent line.
+    // ALL of them are journalled before the first goes out: each write rewrites
+    // the session's whole list, and a reload in between must not lose the rest.
+    for (const l of resend) journalAdd(l.id, l.text, l.hold);
+    const heldBack: OutboxEntry<OutboxPayload>[] = [];
+    for (const l of resend) {
+      if (l.hold) {
+        // Still held: back in the outbox with its bubble, waiting for the
+        // session to be done — never a follow-up into a live run.
+        const id = `o${++outboxSeq.current}`;
+        const bubble = controller.postOptimisticUser(l.text, "held");
+        heldBack.push({
+          id,
+          text: l.text,
+          hold: true,
+          payload: { opts: { clientId: l.id }, bubble, entryId: id, taken: NO_TAKEN },
+        });
+        continue;
+      }
+      dispatchSend(l.text, { clientId: l.id }, controller.getState().status !== "idle");
+    }
+    if (heldBack.length) {
+      setOutbox([...outboxRef.current, ...heldBack]);
+      // The drain's own gate decides: a live run, a queue it still holds or an
+      // unsettled restore keeps them held until the session is done.
+      drainRef.current();
+    }
+  }, [state.sessionId, state.historyLoading, state.adopting, state.turns, state.inbox, state.taken, controller, dispatchSend, journalAdd, setOutbox]);
   /**
    * PARKED PICTURES GO BACK TO THE TRAY when the outbox is emptied by a
    * navigation (Bugbot 4121249270): Back and Open session used to drop the
@@ -3433,8 +3893,9 @@ function ChatBody(props: ChatBodyProps) {
   const emptyOutbox = useCallback(() => {
     const items = outboxRef.current.flatMap((e) => e.payload.taken.items);
     if (items.length) attachBack.current?.(items);
+    for (const e of outboxRef.current) if (e.payload.opts.clientId) journalDrop(e.payload.opts.clientId);
     setOutbox([]);
-  }, [setOutbox]);
+  }, [setOutbox, journalDrop]);
 
   /**
    * ↑ IN AN EMPTY BOX, and a click on a queued bubble: the line comes back to
@@ -3447,12 +3908,13 @@ function ChatBody(props: ChatBodyProps) {
       const got = id ? takeById(outboxRef.current, id) : popNewest(outboxRef.current);
       if (!got.entry) return null;
       setOutbox(got.rest);
+      if (got.entry.payload.opts.clientId) journalDrop(got.entry.payload.opts.clientId);
       const { bubble, taken } = got.entry.payload;
       if (bubble) controller.dropOptimisticUser(bubble);
       if (taken.items.length) attachBack.current?.(taken.items);
       return got.entry.text;
     },
-    [controller, setOutbox],
+    [controller, setOutbox, journalDrop],
   );
   /** The composer's ↑: newest line back into the box. */
   const onPullQueued = useCallback((): string | null => pullOutbox(), [pullOutbox]);
@@ -3485,85 +3947,160 @@ function ChatBody(props: ChatBodyProps) {
     [controller],
   );
 
-  /**
-   * SEND NOW — Claude Code's Ctrl+Enter (`chat:sendNow`): stop the turn, then
-   * the typed line goes FIRST, ahead of anything parked, and the outbox drains
-   * behind it once the run has settled to idle.
-   *
-   * The wait is a poll on the controller's status: `stopRun` resolves when the
-   * cancel is acknowledged, not when `pollLoop` has exited, and a `sendMessage`
-   * into a `stopping` run is refused. Bounded — a stop that never settles is a
-   * run the reader can still Stop again; the line stays parked with its tag.
-   */
-  const onSendNow = useCallback(
-    (text: string) => {
-      const bubble = text ? controller.postOptimisticUser(text, "queued") : "";
-      // The same tray rule as parking: only once the send in flight has taken
-      // its own pictures is the tray this line's (Bugbot, PR #1323).
-      const took = trayTakenRef.current;
-      const entryId = `o${++outboxSeq.current}`;
-      const payload: OutboxPayload = {
-        opts: { model: defaults.model, effort: defaults.effort, permission: defaults.permission },
-        bubble,
-        entryId,
-        taken: took ? takeAttachments() : NO_TAKEN,
-        ...(took ? {} : { takeLater: true }),
-      };
-      // IN THE OUTBOX FROM THE FIRST PAINT (Bugbot 4121249288): its "queued"
-      // tag is a door like any parked line's, and a click during the stop
-      // must find the entry. At the tail for now; it moves to the front once
-      // the stop has settled and it is about to go first.
-      setOutbox(pushBack(outboxRef.current, { id: entryId, text, payload }));
-      // THE ORDINARY DRAIN STANDS DOWN from here until this line is out, or
-      // has given up: `releaseSend` fires when the stopped send's latch opens,
-      // and a drain then would send a parked line into a run still stopping.
-      sendNowInFlight.current = true;
-      void (async () => {
-        let settled = false;
-        try {
-          await controller.stopRun();
-          // BOUNDED: `stopRun` resolves on the cancel's acknowledgement, not on
-          // `pollLoop` exiting, and a send into a `stopping` run is refused.
-          for (let i = 0; i < 80 && controller.getState().status !== "idle"; i++) {
-            await new Promise((r) => setTimeout(r, 100));
-          }
-          settled = controller.getState().status === "idle" && !sendBusy.current;
-          // Pulled back meanwhile (a click, ↑)? Then it is the reader's again.
-          // STOPPED meanwhile (Bugbot 4122407431)? The stop retagged the line
-          // "not sent" in place; a stop wins over a send-now, so it stays.
-          const mine = takeById(outboxRef.current, entryId);
-          if (!mine.entry || mine.entry.notSent) return;
-          if (!settled) {
-            // The run never settled. NOTHING IS DROPPED: this line waits as a
-            // "not sent" bubble the reader can pull, ahead of the rest.
-            if (bubble) controller.setOptimisticPending(bubble, "notSent");
-            setOutbox(pushFront(mine.rest, { ...mine.entry, notSent: true }));
-            return;
-          }
-          // THIS LINE FIRST, straight through the send road — a fresh turn,
-          // since the run is idle — and the outbox drains behind it when this
-          // send's latch opens (`releaseSend` → `drainRef`).
-          setOutbox(mine.rest);
-          dispatching.current.add(entryId);
-          dispatchSend(text, payload.opts, false, payload);
-        } finally {
-          sendNowInFlight.current = false;
-          // Only a SETTLED run takes the rest (Bugbot 4121249279): after a
-          // timed-out wait the lines stay parked as "not sent" and the status
-          // effect drains once the run is idle again.
-          if (settled && !sendBusy.current) drainRef.current();
-        }
-      })();
+  /** SEND BACK lands here: a breakout card's summary arrives as a window event
+   *  addressed to this chat's session + folder, and goes through the same seat a
+   *  stranded line uses (appended to what the reader has typed, draft in step). */
+  useEffect(() => {
+    if (props.breakout) return;
+    const on = (e: Event) => {
+      const d = (e as CustomEvent<ComposerDraftDetail>).detail;
+      if (!d || !d.text) return;
+      const sid = controller.getState().sessionId || params.get("session_id") || "";
+      if (!sid || d.sessionId !== sid || d.file !== file) return;
+      strandSeq.current += 1;
+      setStranded({ text: d.text, seq: strandSeq.current });
+      // Handled: the breakout must not also write the persisted draft.
+      e.preventDefault();
+    };
+    window.addEventListener(COMPOSER_DRAFT_EVENT, on);
+    return () => window.removeEventListener(COMPOSER_DRAFT_EVENT, on);
+  }, [props.breakout, controller, params, file]);
+
+  /** A breakout card reads this chat's session + transcript through
+   *  `onBreakoutState` (Send back builds its draft from it). */
+  const { onBreakoutState } = props;
+  /** Set once `onFollowUp` exists (it is defined further down this body). */
+  const breakoutSendRef = useRef<((text: string) => void) | null>(null);
+  useEffect(() => {
+    if (props.breakout && onBreakoutState) {
+      onBreakoutState({
+        sessionId: state.sessionId || "",
+        turns: state.turns,
+        // Closing a card mid-run must end the run (it is the card's own research run).
+        running: state.status !== "idle",
+        stop: () => void controller.stopRun(),
+        send: (text: string) => breakoutSendRef.current?.(text),
+      });
+    }
+  }, [props.breakout, onBreakoutState, controller, state.sessionId, state.turns, state.status]);
+
+  /** The title this chat's header names it by, for the breakout chip. Written
+   *  where the header's task row is read. */
+  const breakoutTitle = useRef<string | undefined>(undefined);
+  /** Open a breakout seeded with the turns under `keys`. Unlike the fork it is
+   *  allowed while a run is active: the breakout is its own session. */
+  const breakoutCwdRef = useRef<string | undefined>(undefined);
+  const openBreakoutFor = useCallback(
+    (keys: readonly string[], prompt?: string, expert?: BreakoutExpert) => {
+      const st = controller.getState();
+      const sid = st.sessionId || params.get("session_id") || "";
+      if (!props.onBreakout || !sid || !file) return;
+      const context = buildBreakoutContext(st.turns, keys, breakoutTitle.current);
+      if (!context.count) return;
+      props.onBreakout({
+        sessionId: sid,
+        file,
+        ...(breakoutCwdRef.current ? { cwd: breakoutCwdRef.current } : {}),
+        context,
+        forkKey: [...keys].sort().join("|"),
+        ...(prompt?.trim() ? { prompt: prompt.trim() } : {}),
+        ...(expert ? { expert } : {}),
+      });
     },
-    [
-      controller,
-      dispatchSend,
-      takeAttachments,
-      setOutbox,
-      defaults.model,
-      defaults.effort,
-      defaults.permission,
-    ],
+    [controller, params, file, props.onBreakout],
+  );
+  /** Breakout pick mode: the top-bar button turns it on, Escape, Start, Cancel,
+   *  the button again and a session change turn it off. */
+  const [picking, setPicking] = useState(false);
+  const pickingRef = useRef(false);
+  /** The composer's submit, for the selection bar's Start (it owns the typed words). */
+  const pickStartRef = useRef<(() => void) | null>(null);
+  pickingRef.current = picking;
+  /** The turns picked for the next breakout (whole exchanges). */
+  const [pickedKeys, setBreakoutSel] = useState<ReadonlySet<string>>(new Set());
+  /** The pick bar's "With": the expert the breakout runs with, or none. */
+  const [withExpert, setWithExpert] = useState<BreakoutExpert>();
+  // Only keys of turns still on screen count: a re-keyed transcript or another
+  // session leaves the old keys behind, and they must not size the selection
+  // or reach the context.
+  const breakoutSel = useMemo(() => liveKeys(state.turns, pickedKeys), [pickedKeys, state.turns]);
+  useEffect(() => {
+    setPicking(false);
+    setBreakoutSel((sel) => (sel.size ? new Set() : sel));
+  }, [state.sessionId]);
+  /** A click on an exchange in pick mode toggles all of its turns. */
+  const onPickTurn = useCallback(
+    (turnKey: string) => {
+      const pair = exchangeKeys(controller.getState().turns, turnKey);
+      setBreakoutSel((sel) => {
+        const next = new Set(sel);
+        if (pair.every((k) => sel.has(k))) for (const k of pair) next.delete(k);
+        else for (const k of pair) next.add(k);
+        return next;
+      });
+    },
+    [controller],
+  );
+  /** Right-click on a message: pick mode opens with THAT exchange picked (or,
+   *  already picking, the exchange toggles). False leaves the native menu: not
+   *  under the gate, or the exchange is still streaming or pending. */
+  const gateRef = useRef(false);
+  const onContextTurn = useCallback(
+    (turnKey: string): boolean => {
+      if (!gateRef.current) return false;
+      const turns = controller.getState().turns;
+      if (pickPlan(turns, new Set(), () => {}).get(turnKey)?.locked !== false) return false;
+      if (pickingRef.current) {
+        onPickTurn(turnKey);
+        return true;
+      }
+      setBreakoutSel(new Set(exchangeKeys(turns, turnKey)));
+      setPicking(true);
+      return true;
+    },
+    [controller, onPickTurn],
+  );
+  const pickProp = useMemo(
+    () => (picking ? { keys: breakoutSel, onToggle: onPickTurn } : undefined),
+    [picking, breakoutSel, onPickTurn],
+  );
+
+  /**
+   * HOLD UNTIL DONE — Ctrl+Enter while a run is live (D1462): the line is NOT
+   * written into the run. It waits in the outbox as a held line (bubble tag
+   * "queued until this turn is done") until the turn is over and every ordinary
+   * line ahead of it has been sent and answered, then goes as its own turn;
+   * several go one per turn, in typed order (`shiftOldestSendable`, the drain).
+   */
+  const onSendHeld = useCallback(
+    (text: string) => {
+      const bubble = text ? controller.postOptimisticUser(text, "held") : "";
+      const took = trayTakenRef.current || !sendBusy.current;
+      const entryId = `o${++outboxSeq.current}`;
+      const clientId = text ? newClientId() : "";
+      if (clientId) journalAdd(clientId, text, true);
+      setOutbox(
+        pushBack(outboxRef.current, {
+          id: entryId,
+          text,
+          hold: true,
+          payload: {
+            opts: {
+              model: defaults.model,
+              effort: defaults.effort,
+              permission: defaults.permission,
+              ...(clientId ? { clientId } : {}),
+            },
+            bubble,
+            entryId,
+            taken: took ? takeAttachments() : NO_TAKEN,
+            ...(took ? {} : { takeLater: true }),
+          },
+        }),
+      );
+      drainRef.current();
+    },
+    [controller, takeAttachments, setOutbox, defaults.model, defaults.effort, defaults.permission, journalAdd],
   );
 
   const rc = useRemoteControl(state.sessionId ?? "", file ?? "", () => {
@@ -3610,20 +4147,42 @@ function ChatBody(props: ChatBodyProps) {
     },
     [dispatchSend, rcSay],
   );
+  /** A follow-up into the live run. Remote Control takes the words either way. */
   const onFollowUp = useCallback(
     (text: string) => {
       if (rcSay) return rcSay(text);
       dispatchSend(
         text,
-        {
-          model: defaults.model,
-          effort: defaults.effort,
-          permission: defaults.permission,
-        },
+        { model: defaults.model, effort: defaults.effort, permission: defaults.permission },
         true,
       );
     },
     [dispatchSend, defaults.model, defaults.effort, defaults.permission, rcSay],
+  );
+  // SEND BACK routes like the composer: a fresh turn when the chat is idle (the
+  // card only offers it once the breakout has stopped, so there is no run to
+  // follow up into), a follow-up when a run is live.
+  breakoutSendRef.current = (text: string) => {
+    if (controller.getState().status === "idle") {
+      onSend(text, { model: defaults.model, effort: defaults.effort, permission: defaults.permission });
+    } else {
+      onFollowUp(text);
+    }
+  };
+  /**
+   * CTRL+X WITH WORDS: Claude Code's send-now. The line goes in behind
+   * whatever is queued, as an ordinary follow-up, and ONE interrupt follows once
+   * they have all landed (`settleSendNow`): it ends the MAIN agent's turn, and
+   * the CLI runs every queued line next. Background subagents, Bash and
+   * Monitors keep running and the run is not stopped. The intent survives a
+   * busy door: a parked line drains first, then the interrupt goes.
+   */
+  const onSendNow = useCallback(
+    (text: string) => {
+      if (!rcSay) sendNowOwed.current = true;
+      onFollowUp(text);
+    },
+    [onFollowUp, rcSay],
   );
   /**
    * STOP MEANS STOP, THE OUTBOX INCLUDED (Akshil's R2-12 rule, kept over Claude
@@ -3636,6 +4195,8 @@ function ChatBody(props: ChatBodyProps) {
     if (outboxRef.current.some((e) => !e.notSent)) {
       const next = outboxRef.current.map((e) => {
         if (e.notSent) return e;
+        // "Not sent" is the reader's to resend: a reload must not do it for them.
+        if (e.payload.opts.clientId) journalDrop(e.payload.opts.clientId);
         if (e.payload.bubble) controller.setOptimisticPending(e.payload.bubble, "notSent");
         return { ...e, notSent: true as const };
       });
@@ -3645,12 +4206,18 @@ function ChatBody(props: ChatBodyProps) {
     // on neither list yet, so it is named here and `dispatchSend` puts it back
     // as "not sent" before the controller ever sees it.
     for (const id of dispatching.current) cancelledDispatch.current.add(id);
-    // …AND A SEND-NOW STILL WAITING FOR THE RUN TO SETTLE (Bugbot 4122407431):
-    // its line was just retagged above and `onSendNow` steps back from a
-    // "not sent" entry; the drain may look again as soon as the run settles.
-    sendNowInFlight.current = false;
     void controller.stopRun();
-  }, [controller, setOutbox]);
+  }, [controller, setOutbox, journalDrop]);
+  /**
+   * CTRL+X WITH AN EMPTY BOX (or a click on the queued bubble): send the lines
+   * that are waiting NOW, the way a typed Ctrl+X does — never Stop, which ends
+   * background subagents too. Lines the outbox still holds drain as ordinary
+   * follow-ups, then the single `send_now` interrupt goes out.
+   */
+  const onSendQueuedNow = useCallback(() => {
+    sendNowOwed.current = true;
+    drainRef.current();
+  }, []);
   /**
    * `sched.reset` — declared HERE, ahead of the hook that fills it, because
    * `onBack` is one of its two callers and is itself declared before the PR4
@@ -3845,6 +4412,15 @@ function ChatBody(props: ChatBodyProps) {
       }
       switch (plan.do) {
         case "clear":
+          // A breakout has nowhere to go "back" to: its card is the only door.
+          if (props.breakout) {
+            notify({ title: "Breakout chats cannot be cleared; close the card instead", tone: "info" });
+            return false;
+          }
+          if (props.onClear) {
+            props.onClear();
+            return true;
+          }
           // THE SAME DOOR AS `← Chats`: a new conversation in this folder.
           onBack();
           return true;
@@ -3867,7 +4443,7 @@ function ChatBody(props: ChatBodyProps) {
       }
     },
     [onBack, setModelPick, setEffortPick, worktreeTarget, onToggleTasks, state.sessionId, rcAsk,
-     defaults.model],
+     defaults.model, props.breakout, props.onClear],
   );
   /** SWITCHING WORKTREE IS OPENING THAT FOLDER'S CHAT, FRESH — the URL the Home
    *  lists open a folder chat on (`paneChatUrl`), with no session, through the
@@ -3992,20 +4568,43 @@ function ChatBody(props: ChatBodyProps) {
 
   const actions = useMemo(
     () => ({
-      decidePermission: controller.decidePermission,
+      // Allowing a task's expert_breakout opens the breakout it asked for,
+      // seeded with the task's last exchange, with its reason as the question,
+      // once the allow has landed.
+      decidePermission: (...a: Parameters<typeof controller.decidePermission>) => {
+        return controller.decidePermission(...a).then(() => {
+          // The row as the server answered (a held or failed decision is not an allow).
+          const row = controller.getState().permissions.find((p) => p.id === a[0]);
+          if (row?.tool !== EXPERT_BREAKOUT_TOOL || row.decision !== "allow" || row.queuedAhead !== undefined) return;
+          const { expert, reason } = row.input as { expert?: string; reason?: string };
+          // By id, or by name ignoring case and spacing, as the server's `store.find`.
+          const key = (expert || "").split(/\s+/).filter(Boolean).join(" ");
+          void listExperts().then((all) => {
+            const s = all.find((x) => x.id === key || x.name.toLowerCase() === key.toLowerCase());
+            const turns = controller.getState().turns;
+            const last = turns[turns.length - 1];
+            if (s && last) openBreakoutFor(exchangeKeys(turns, last.key), reason, { id: s.id, name: s.name, home: s.home });
+          }, () => {});
+        });
+      },
       answerQuestion: controller.answerQuestion,
       decidePlan: controller.decidePlan,
       dismissCard: controller.dismissCard,
       stopRun: controller.stopRun,
       addNote: controller.addNote,
+      navigate: onNavigate,
     }),
-    [controller],
+    [controller, onNavigate, openBreakoutFor],
   );
 
   const name = file ? file.split(/[\\/]/).filter(Boolean).pop() || file : agentLabel(chatBackend);
   const running =
     state.status === "running" || state.status === "starting" || state.status === "stopping";
   // Worktrees are Claude's (§7 `worktrees`): no menu for an agent without them.
+  const shownHint = shownWorktreeHint(state.worktreeHint, state.tasks, chatWorkdir(file, pane.noun) ?? undefined);
+  // A breakout starts in the worktree the header chip names: only an absolute
+  // path (an `enter` hint that carried just a name, or an `agent` hint, has none).
+  breakoutCwdRef.current = breakoutCwdFor(shownHint);
   const worktreeMenu = worktreeTarget && agentCaps.worktrees ? (
     <WorktreeMenu
       key={file as string}
@@ -4112,6 +4711,13 @@ function ChatBody(props: ChatBodyProps) {
     // that happens to cover it. (`onSend`/`onFollowUp` still move every render,
     // through `dispatchSend`, so `card` is not yet a memo that holds — which is
     // why no test can fail on the missing dep alone. One mask at a time.)
+    [attach.addFiles],
+  );
+  // THE PAPERCLIP'S PICKS (ui/AttachButton): the paste's and the drop's road.
+  const onAttachFiles = useCallback(
+    (files: File[]) => {
+      void attach.addFiles(files);
+    },
     [attach.addFiles],
   );
 
@@ -4298,30 +4904,28 @@ function ChatBody(props: ChatBodyProps) {
    * already accepted.
    */
   /**
-   * FOLLOW-UPS THE LIVE RUN IS STILL HOLDING — the bubbles a reload used to lose.
-   *
-   * A line typed into a running chat is absorbed by the live host: it sits in the
-   * CLI's own queue until the current turn ends. For that window the only copy on
-   * screen was this page's optimistic bubble, which is client memory — so a
-   * reload, or the standing watch's four-a-minute `refreshHistory`, replaced the
-   * transcript with a JSONL that does not have the message either (nothing has
-   * consumed it) and the reader's own words simply vanished (Akshil,
-   * 2026-09-12). The RUN knows, and now says so (`PollResponse.inbox`).
-   *
-   * DEDUPED HERE rather than in the controller, because "does this still need a
-   * bubble" is a question about what is on screen: the optimistic list and the
-   * turns both answer it, and both move without the inbox moving. One entry
-   * leaves for one of three reasons, all of them somebody else drawing the same
-   * message — see `protocol/inbox`.
+   * THE QUEUED LINES, drawn in the strip above the composer and never in the
+   * transcript: lines typed while a turn runs, until the CLI echoes them. The
+   * run's own inbox (`state.inbox`, reported by every poll and history read) is
+   * the source for a line this page did not mint, so a reload or another tab
+   * shows the same queue; `protocol/queued-lines` merges it with this page's
+   * outbox and in-flight lines, one row per line id. The bubbles it lifts out
+   * of `state.turns` return to the transcript the moment nothing names them as
+   * queued.
    */
-  const inboxRows = useMemo(
+  const queuedView = useMemo(
+    () => queuedLines({ turns: state.turns, queuedKeys: state.queuedKeys, inbox: state.inbox }),
+    [state.turns, state.queuedKeys, state.inbox],
+  );
+  // A line still on its way to the run ("sending") is not yet something to send
+  // now or pull back: the composer's queue verbs wait until it has landed.
+  const hasQueued = queuedView.lines.some((l) => l.pending !== "held" && l.pending !== "sending");
+  const transcriptState = useMemo(
     () =>
-      inboxBubbles(
-        state.inbox,
-        state.queued,
-        state.turns.filter((t) => t.role === "user").map((t) => t.text),
-      ),
-    [state.inbox, state.queued, state.turns],
+      queuedView.hiddenKeys.size
+        ? { ...state, turns: state.turns.filter((t) => !queuedView.hiddenKeys.has(t.key)) }
+        : state,
+    [state, queuedView],
   );
   /**
    * THE COMPOSER'S ↑ HISTORY: this session's own prompts, oldest first, as
@@ -4421,6 +5025,45 @@ function ChatBody(props: ChatBodyProps) {
       setForcing(false);
     }
   }, [controller, schedRefresh, sched.rec, waiting]);
+
+  /**
+   * RETRY NOW, on a chat the plan's usage limit paused (Akshil, 2026-11-23:
+   * "I can switch Claude accounts and then the limit-reset wait is gone").
+   * The server sends the continue prompt now and keeps the booked comeback
+   * until a reply retires it (`POST /api/tasks/limit/retry`), so a press that
+   * is still limited leaves exactly one comeback behind. The run it starts is
+   * adopted like any other run on this session (`sched/scheduled` tick), and
+   * the schedule poll is asked for a lap at once so the banner reads it.
+   */
+  /** The banner over the composer is showing the usage-limit comeback — the
+   *  Retry now seat. Without it (cancelled, never booked) the limit card in
+   *  the log carries the press instead, so it is on screen exactly once. */
+  const comebackBanner = schedIsComeback(sched.blockers[0]);
+  const limitRetryLive = useRef(false);
+  const retryLimitNow = useCallback(async () => {
+    const sid = state.sessionId;
+    // One press at a time: the card's button cannot be disabled, so a second
+    // press while the first is out is swallowed here.
+    if (!sid || limitRetryLive.current) return;
+    limitRetryLive.current = true;
+    setLimitRetrying(true);
+    setLimitRetryNote("");
+    try {
+      const res = await retryAfterLimit(sid);
+      setLimitRetryNote(res.note || "");
+      // The limit card has no note line of its own: a press from it that did
+      // not simply go says so in the log, where the card is.
+      if (res.note && !comebackBanner) controller.addNote(res.note);
+      schedRefresh();
+    } catch (err) {
+      const said = "Could not retry: " + (err instanceof Error ? err.message : String(err));
+      setLimitRetryNote(said);
+      if (!comebackBanner) controller.addNote(said);
+    } finally {
+      limitRetryLive.current = false;
+      setLimitRetrying(false);
+    }
+  }, [comebackBanner, controller, schedRefresh, state.sessionId]);
 
   /**
    * DELETE, from a waiting row: the words are dropped and nothing runs.
@@ -4612,6 +5255,18 @@ function ChatBody(props: ChatBodyProps) {
   );
   artTick.current = art.poll;
   const [snapNonce, setSnapNonce] = useState(0);
+  // The seeded parent messages, as a chip above the composer until the first
+  // send carries them into the transcript.
+  const breakoutWire = useMemo(
+    () => (props.breakout && props.breakoutContext ? breakoutContextIn(props.breakoutContext.block) : null),
+    [props.breakout, props.breakoutContext],
+  );
+  const breakoutChip =
+    breakoutWire && !state.turns.some((t) => t.role === "user") ? (
+      <div className="annsum annsum-composer">
+        <BreakoutContextChip context={breakoutWire} />
+      </div>
+    ) : null;
   snapInvalidate.current = () => setSnapNonce((n) => n + 1);
 
   /**
@@ -4671,12 +5326,13 @@ function ChatBody(props: ChatBodyProps) {
       sessionId: state.sessionId ?? "",
       controls,
       status: state.status,
-      queued: [...state.queued, ...inboxRows.map((r) => r.text)],
       // HOW FULL THE WINDOW IS, for the composer's context meter. Straight off
       // the controller — it moves with the transcript and with nothing else, so
       // the landing composer (no conversation) and a brand-new chat both get
       // `null` and draw no meter.
       context: state.context,
+      // Whose live host the context popover asks for `/context`'s split.
+      runId: state.runId ?? state.lastRunId,
       onSend,
       onFollowUp,
       onStop,
@@ -4698,6 +5354,7 @@ function ChatBody(props: ChatBodyProps) {
       // prop: no focus on the landing, focus the moment a conversation is
       // entered, which is `enterChat` exactly.
       autoFocus: props.autoFocus && inChat,
+      ...(props.smallCard ? { smallCard: true, smallCardShown: !!props.smallCardShown } : {}),
       columnRef,
       back: currentUrl(),
       onNavigate,
@@ -4771,6 +5428,8 @@ function ChatBody(props: ChatBodyProps) {
       // (`shotBusy`/`shotAttachPane`); `capturing` is that flag.
       attachPending: attach.capturing || attach.items.some((a: Attachment) => a.pending),
       chips: (
+        <>
+        {breakoutChip}
         <AttachTray
           items={attach.items}
           paneNoun={pane.paneNoun}
@@ -4783,6 +5442,7 @@ function ChatBody(props: ChatBodyProps) {
               same ✕ (T:927). The tray renders them first. */}
           <AnnChips items={ann.chips} onEdit={ann.editNote} onRemove={ann.removeNote} />
         </AttachTray>
+        </>
       ),
       // T:8505 — whichever composer is mounted hands its send in, for the
       // walkthrough's auto-submit and for ✓ Done.
@@ -4791,13 +5451,18 @@ function ChatBody(props: ChatBodyProps) {
       // it is shut is PARKED by `dispatchSend`, never refused.
       sendBusy: sendLocked,
       // THE OUTBOX'S SEAT IN THE COMPOSER: the count for the hint line, ↑ to
-      // pull the newest parked line back, Ctrl+Enter to stop and send now.
+      // pull the newest parked line back, Ctrl+X to stop and send now, Ctrl+Enter to hold.
       queuedCount: outboxCount,
       notSentCount,
       onPullQueued,
       history: promptHistory,
       onSendNow,
+      onSendHeld,
+      onSendQueuedNow,
+      hasQueued,
       onPaste,
+      onAttachFiles,
+      dictate,
       // The chip row is ABOVE the control row and changes the composer's height,
       // never the row's width — but T re-measures on exactly this kind of change
       // (its MutationObserver watches the rows' subtree), and the footnote's
@@ -4810,6 +5475,20 @@ function ChatBody(props: ChatBodyProps) {
       // worse state than the one this feature prevents.
       // …AND FOR AN AGENT SWITCHED OFF IN PREFERENCES (D17): same closed box,
       // its own sentence, and the link to the switch under it.
+      ...(picking
+        ? {
+            pickPlaceholder: "Ask the breakout · Enter starts it",
+            pickSubmit: {
+              canStart: breakoutSel.size > 0,
+              onStart: (text: string) => {
+                openBreakoutFor([...breakoutSel], text, withExpert);
+                setPicking(false);
+                setBreakoutSel(new Set());
+              },
+            },
+            pickStartRef,
+          }
+        : {}),
       blocked: sched.blocked || agentOff || rcConnecting,
       blockedPlaceholder: agentOff
         ? `${agentLabel(state.backend)} is turned off in Preferences.`
@@ -4827,19 +5506,20 @@ function ChatBody(props: ChatBodyProps) {
       ) : rcOn ? (
         <RemoteControlNote view={rc.view} onStop={rc.stop} />
       ) : undefined,
-      // THE FLAG TAKES THE FOLLOW-UP FOOTNOTE AWAY (see `ComposerCardProps`):
-      // under the queue this pane says "waiting" about messages that really are,
-      // and a count of follow-ups the live host will drain in seconds is the one
-      // waiting state with nothing to act on.
-      queueOn,
       slashCommands,
       onLocalCommand,
       // ONLY INSIDE A CONVERSATION. `card` is spread into `Home`'s composer as
       // well as the chat's, and a hand-back is about the turn that was running
       // — the landing has none.
       ...(stranded && entered ? { restore: stranded } : {}),
+      ...(props.extraParams ? { noSchedule: true } : {}),
     }),
     [
+      props.extraParams,
+      picking,
+      breakoutSel,
+      withExpert,
+      openBreakoutFor,
       file,
       state.sessionId,
       state.backend,
@@ -4847,14 +5527,16 @@ function ChatBody(props: ChatBodyProps) {
       rc.view,
       rc.stop,
       state.status,
-      state.queued,
-      inboxRows,
       state.context,
+      state.runId,
+      state.lastRunId,
       controls,
       onSend,
       onFollowUp,
       onStop,
       props.autoFocus,
+      props.smallCard,
+      props.smallCardShown,
       // The enter transition IS the focus trigger (see `autoFocus` above).
       inChat,
       onNavigate,
@@ -4867,6 +5549,9 @@ function ChatBody(props: ChatBodyProps) {
       onPullQueued,
       promptHistory,
       onSendNow,
+      onSendHeld,
+      onSendQueuedNow,
+      hasQueued,
       urlTick,
       attach.items,
       attach.remove,
@@ -4877,6 +5562,8 @@ function ChatBody(props: ChatBodyProps) {
       // depending on the whole `attach` object — a coincidence, not a dep.
       attach.capturing,
       onPaste,
+      onAttachFiles,
+      dictate,
       pane.paneNoun,
       ann.chips,
       ann.hasSendable,
@@ -4893,7 +5580,6 @@ function ChatBody(props: ChatBodyProps) {
       sched.blocked,
       sched.placeholder,
       sched.reason,
-      queueOn,
       slashCommands,
       onLocalCommand,
     ],
@@ -4955,10 +5641,11 @@ function ChatBody(props: ChatBodyProps) {
    *  the ref is null on the render that binds the listeners and only the check
    *  runs late enough to have it. */
   const recapRoot = useCallback(() => rootRef.current, [rootRef]);
-  // With the Tasks recap titles on, the fold also shows on open (see
-  // `useAwayRecap` `eager`); off, only after an absence. Subscribed, so
-  // toggling it in Preferences reaches an open chat (storage broadcast).
-  const recapEager = useTaskRecapTitlesEnabled();
+  // The chat recap switch (default on): off means no fold anywhere and no
+  // endpoint call; on, the fold also shows on open (see `useAwayRecap`
+  // `eager`), not only after an absence. Subscribed, so toggling it in
+  // Preferences reaches an open chat (storage broadcast).
+  const recapOn = useChatRecapEnabled();
   const away = useAwayRecap({
     file,
     sessionId: state.sessionId,
@@ -4967,10 +5654,9 @@ function ChatBody(props: ChatBodyProps) {
     hasDraft,
     // TWO facts: this mount being a conversation rather than the landing, and
     // the host having said this is the chat the reader opened (`recap`,
-    // above). The Preferences switch that used to sit in front of these left
-    // on 2026-09-21 — the recap is simply on.
-    enabled: inChat && !!props.recap,
-    eager: recapEager,
+    // above), plus the Preferences switch (default on).
+    enabled: inChat && !!props.recap && recapOn,
+    eager: recapOn,
     root: recapRoot,
   });
   // Heads-up notes (server: claude_agent/headsup.py): a side check polled while
@@ -4987,6 +5673,17 @@ function ChatBody(props: ChatBodyProps) {
     }),
     [onFollowUp, onSend, defaults.model, defaults.effort, defaults.permission],
   );
+  // A BREAKOUT CARD'S FIRST MESSAGE: typed while picking, sent once on mount
+  // (the context rides on it, as on any first send). The ref holds it across a
+  // strict-mode replay; the store forgets it so a remount cannot resend.
+  const breakoutPromptSent = useRef(false);
+  useEffect(() => {
+    const text = props.breakout ? props.breakoutPrompt : undefined;
+    if (!text || breakoutPromptSent.current) return;
+    breakoutPromptSent.current = true;
+    props.onBreakoutPromptSent?.();
+    onSend(text, { model: defaults.model, effort: defaults.effort, permission: defaults.permission });
+  }, [props.breakout, props.breakoutPrompt, props.onBreakoutPromptSent, onSend, defaults.model, defaults.effort, defaults.permission]);
   const headsup = useHeadsUp({
     runId: state.runId || state.lastRunId || "",
     running,
@@ -5036,7 +5733,11 @@ function ChatBody(props: ChatBodyProps) {
    *  comeback's own POST rings), floored at five seconds. */
   // Only where the header is drawn, and only under the flag: the read is one
   // listing per hook instance, and a cards wall mounts a dozen.
-  const limitWord = useLimitWord(queueOn && showHead ? taskKey : "");
+  // …or where a host's head seats it (`headChipsHost`): the paused word rides
+  // the chips there, as it rode the slim line.
+  const limitWord = useLimitWord(
+    queueOn && (showHead || !!props.headChipsHost || !!props.headStatusHost) ? taskKey : "",
+  );
   /**
    * THE LISTING'S ROW FOR THE CONVERSATION ON SCREEN, for the header
    * (`ui/Topbar.tsx` draws the task side peek's identity block from it).
@@ -5062,9 +5763,46 @@ function ChatBody(props: ChatBodyProps) {
     inChat && showHead ? (state.sessionId ?? null) : null,
     file,
   );
+  breakoutTitle.current = head.task?.title || undefined;
   // The header's last seat: the task's PR chip when the host asked for it (the
   // chip draws nothing for a task that names no pull request), then the
   // host's own node.
+  // THE PLACE TAGS (shell/claude-rail PlaceTags): the identity row's right
+  // end, for a host that said where it stands — the same tags the rail's
+  // small window wears.
+  const placeTag =
+    head.task && (props.pageRoot !== undefined || props.onSelectNode) ? (
+      <PlaceTags
+        scope={railScope(head.task, ownPlace(head.task))}
+        at={ownPlace(head.task)}
+        pageRoot={props.pageRoot ?? null}
+        sessionId={head.task.session_id ?? null}
+        {...(props.onSelectNode ? { onSelectNode: props.onSelectNode } : {})}
+        // The merged head leaves the folder's own name off: a tag that goes
+        // nowhere would put it back (reviewer).
+        onlyDoor={!!props.mergedHead}
+        secondaryOnly
+      />
+    ) : null;
+  // THE UNIFIED HEAD SEATS THE TAGS APART (Akshil, 2026-11-16): a pane IS
+  // its place, so the place's own name is not drawn; where in it — Canvas,
+  // the node, the file — stands at the head's right end, before the count
+  // slot, with its icon (TaskHead `where`). A place with no where-tag (a
+  // whole folder, a file) draws none.
+  const whereTag =
+    placeTag && head.task && hasWhereTag(railScope(head.task, ownPlace(head.task)), ownPlace(head.task)) ? (
+      <PlaceTags
+        scope={railScope(head.task, ownPlace(head.task))}
+        at={ownPlace(head.task)}
+        pageRoot={props.pageRoot ?? null}
+        sessionId={head.task.session_id ?? null}
+        {...(props.onSelectNode ? { onSelectNode: props.onSelectNode } : {})}
+        // No `onlyDoor` here: that rule keeps the folder's own name off the
+        // merged head, and the where-tag never carries it — one with no door
+        // is plain text, as on every other head (CodeRabbit on #2287).
+        part="where"
+      />
+    ) : null;
   const headerExtra =
     props.prChip && head.task ? (
       <>
@@ -5114,7 +5852,7 @@ function ChatBody(props: ChatBodyProps) {
           aria-disabled={ann.locked ? "true" : "false"}
           onClick={onBack}
         >
-          ← Chats
+          ←<span className="c-back-word"> Chats</span>
         </button>
   );
   // A canvas chat whose strip draws no seats — the node pane (`noAnnTools`),
@@ -5146,10 +5884,119 @@ function ChatBody(props: ChatBodyProps) {
       )}
     </div>
   ) : null;
-  const kebabEl = (
+  // BREAKOUT PICK MODE: the composer-side door toggles it, open while a run is
+  // going too (the breakout is its own run). Entering pre-selects the latest
+  // exchange that is neither streaming nor pending. Placed by the strip, or as
+  // the merged head row's tail (that layout has no strip).
+  const togglePicking = () => {
+    if (picking) {
+      setPicking(false);
+      setBreakoutSel(new Set());
+      return;
+    }
+    const pre = pickDefault(controller.getState().turns);
+    setBreakoutSel(new Set(pre));
+    setWithExpert(undefined);
+    setPicking(true);
+  };
+  const startBreakout = () => {
+    if (!breakoutSel.size) return;
+    // The composer spends its words into the breakout's first message.
+    if (pickStartRef.current) pickStartRef.current();
+    else {
+      openBreakoutFor([...breakoutSel], undefined, withExpert);
+      setPicking(false);
+      setBreakoutSel(new Set());
+    }
+  };
+  // The same gate the bar's old button had: the kebab item and the right-click
+  // on a message both start a breakout under it.
+  const breakoutGate = !!(
+    breakoutOn && props.onBreakout && inChat && chatBackend === "claude" && state.sessionId && file
+  );
+  gateRef.current = breakoutGate;
+  const togglePickingRef = useRef(togglePicking);
+  togglePickingRef.current = togglePicking;
+  const stableToggle = useCallback(() => togglePickingRef.current(), []);
+  const { onBreakoutControl } = props;
+  useEffect(() => {
+    onBreakoutControl?.({ available: breakoutGate, picking, toggle: stableToggle });
+  }, [onBreakoutControl, breakoutGate, picking, stableToggle]);
+  useEffect(() => () => onBreakoutControl?.(null), [onBreakoutControl]);
+  // ESCAPE WHILE PICKING cancels the pick and nothing else: captured on window
+  // so no outer Escape handler (peek, side pane, sidebar) sees it first.
+  useEffect(() => {
+    if (!picking) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key !== "Escape" || e.defaultPrevented) return;
+      const a = document.activeElement as Element | null;
+      if (a?.closest?.("[role='menu'], [role='listbox'], [role='dialog'], [role='alertdialog']")) return;
+      e.preventDefault();
+      e.stopPropagation();
+      e.stopImmediatePropagation();
+      setPicking(false);
+      setBreakoutSel(new Set());
+    };
+    window.addEventListener("keydown", onKey, true);
+    return () => window.removeEventListener("keydown", onKey, true);
+  }, [picking]);
+  // A FULL SCREEN ASKED FOR BY A RAIL CARD (side-maximized-store): taken here,
+  // once this chat is mounted in a side pane on that session — after the new
+  // page's pane has settled its tab, so its "not the chat tab" guard cannot
+  // undo it. A frame later for the same reason: the pane's own effects run
+  // after this child's. A TAKEN request is spent, so its frame is not
+  // cancelled with this instance: the store is the window's, and the pane on
+  // that session that replaces this one (the hop's remount) is the one it fills.
+  const paneSessionId = state.sessionId ?? "";
+  useEffect(() => {
+    if (!inSidePane || !paneSessionId) return;
+    const take = () => {
+      if (!takeSideMaximizedRequest(paneSessionId)) return;
+      // …unless the pane closed in that frame: a closed pane dropped full
+      // screen on purpose, and the flag must not come back for its reopen.
+      requestAnimationFrame(() => {
+        if (document.querySelector(".preview-side .chat-root, .listing-pane-slot .chat-root")) {
+          setSideMaximized(true);
+        }
+      });
+    };
+    take();
+    return subscribeSideMaximizedRequest(take);
+  }, [inSidePane, paneSessionId]);
+  // The ⋮'s seat in three pieces — the canvas camera, the exit-full-screen
+  // button and the menu itself — because the shared head seats the first two
+  // with the host's tools and the menu at the row's end (`unifiedHead`).
+  const exitFsBtn = (
     <>
-      {canvasShotSeat}
+      {/* EXIT FULL SCREEN, ON THE BAR (Akshil, 2026-11-09: "in full screen on
+          top left have a exit fullscreen button outside kebab menu"): the
+          menu's item stays, this is the one-press way back beside it. Only
+          while this side pane is full screen. */}
+      {inSidePane && sideMaximized ? (
+        <button
+          type="button"
+          className="c-kebabbtn c-exitfs"
+          aria-label="Exit full screen"
+          title="Exit full screen"
+          onClick={() => setSideMaximized(false)}
+        >
+          {TASK_ICON_EXIT_FULL_SCREEN}
+        </button>
+      ) : null}
+    </>
+  );
+  const kebabMenu = (
       <Kebab
+        {...(breakoutGate ? { breakout: { picking, onToggle: togglePicking } } : {})}
+        // OPEN IN TASKS (off the Tasks page): only a chat with a task
+        // row — the landing and a never-run chat have none to open.
+        {...openInTasksProps(
+          openInTasksItem({
+            on: headUnified,
+            taskKey: inChat ? (head.task?.key ?? null) : null,
+            onOpen: (href) => void navigateUrl(href),
+          }),
+        )}
         file={file}
         sessionId={inChat ? (state.sessionId ?? "") : ""}
         btnRef={kebabBtn}
@@ -5190,8 +6037,177 @@ function ChatBody(props: ChatBodyProps) {
             : undefined
         }
       />
+  );
+  const kebabEl = (
+    <>
+      {canvasShotSeat}
+      {exitFsBtn}
+      {kebabMenu}
     </>
   );
+  /**
+   * THE SHARED HEAD (shell/TaskHead): the strip and the identity line
+   * as ONE row, in every task view's order —
+   *
+   *   [× hide pane][← Back to chats] │ ring ★ TASK-nnn title [queue][paused]
+   *   [place] │ [worktree · PR][seats: picker · toggle · camera · exit-fs][⋮]
+   *
+   * The lead is the hide-pane × on the landing (when the host gives one) and
+   * ← in a chat; a pane that has no other close keeps its × BEFORE the ← there.
+   * The identity is the full block — ring, star, number — in the explorer's
+   * pane too (`bare` is the old head's). Every seat is the node the strip
+   * draws, under the strip's own conditions; full screen portals the whole
+   * head into the pane header's `.side-header-lead`, as it did the strip.
+   */
+  const hidePaneBtn = props.onHidePane ? (
+    <button
+      type="button"
+      className="task-head-btn c-hide-pane"
+      aria-label="Hide the Claude panel"
+      data-hint="Hide the Claude panel"
+      onClick={props.onHidePane}
+    >
+      <X size={14} aria-hidden="true" />
+    </button>
+  ) : null;
+  // The queue facts the identity reads (Topbar's `queue`), and their line.
+  const headQueue =
+    inChat && queueOn
+      ? headerQueue(sched.row, waitFacts, waitCount, running || sched.row?.status === "in_progress")
+      : null;
+  const headLine = headQueue ? queueCaption(headQueue) : null;
+  /**
+   * A CHAT WITH NO TASK ROW YET still says what it is (Topbar's fallback line,
+   * same words): the agent's mark — or, waiting in a line, the queued ring —
+   * its name, the target's name, and the task number or the session hash
+   * until the number lands; "running" while a turn is live and no pause word
+   * is said. Not while nobody has answered (`pending`, the skeleton) — unless
+   * a queued line is the answer.
+   */
+  const fallbackSid = state.sessionId ?? "";
+  const fallbackLabel =
+    shortTaskId(taskId || knownTaskId(fallbackSid) || "") || (fallbackSid ? fallbackSid.slice(0, 8) : "");
+  const fallbackTitle =
+    inChat && !head.task && (!head.pending || headLine) ? (
+      <span className="c-tb-fallback" title={fallbackSid || undefined}>
+        {headLine ? (
+          <span className="task-side-peek-status" title="Queued">
+            <StatusIcon status="queued" />
+          </span>
+        ) : (
+          <AgentMark backend={chatBackend} className="c-spark" />
+        )}
+        <span className="c-tb-title">{agentLabel(chatBackend)}</span>
+        {props.mergedHead ? null : (
+          <span className="c-tb-file" title={name || undefined}>
+            {name}
+          </span>
+        )}
+        {fallbackLabel ? (
+          <span className="c-session" title={fallbackSid || undefined}>
+            {fallbackLabel}
+          </span>
+        ) : null}
+        {!limitWord && running ? (
+          <span className="c-tb-run" aria-live="polite">
+            running
+          </span>
+        ) : null}
+      </span>
+    ) : null;
+  // THE PR TAG STANDS WHOLE BESIDE A PANE'S TOOLS TOO (Akshil, 2026-11-19:
+  // "PR should have higher priority on visibility in all these views") —
+  // `headerExtra`, the same chip the slim line draws. It was folded behind
+  // one "+N" wherever a worktree tag was up (2026-11-17, "one tag then +x");
+  // the branch tag gives instead now — it is shown whole or not at all, and
+  // leaves before the PR tag does (TaskHead, row-fit `TASK_HEAD_PANEL_DROPS`).
+  const unifiedHead = headUnified ? (
+    <TaskHead
+      className="c-task-head"
+      {...(inChat && hidePaneBtn ? { preLead: hidePaneBtn } : {})}
+      lead={
+        inChat
+          ? {
+              kind: "back",
+              label: "Back to chats",
+              hint: "Back to chats",
+              onPress: onBack,
+              disabled: ann.locked,
+              reason: NAV_LOCKED_REASON,
+            }
+          : props.onHidePane
+            ? { kind: "close", label: "Hide the Claude panel", onPress: props.onHidePane }
+            : null
+      }
+      task={inChat ? head.task : null}
+      // Two lines, the rail window's layout (Akshil, 2026-11-17) — but one row
+      // in full screen, where the head is a seat inside the pane's own header.
+      twoLine={inChat && !leadHost}
+      star
+      {...(fallbackTitle ? { title: fallbackTitle } : {})}
+      pending={inChat && head.pending && !headLine}
+      running={running}
+      queue={headQueue}
+      status={inChat ? limitWord : ""}
+      place={
+        inChat && head.task
+          ? (placeTag || props.mergedHead ? null : <TaskPeekProject task={head.task} />)
+          : null
+      }
+      {...(inChat && whereTag ? { where: whereTag } : {})}
+      chips={
+        inChat ? (
+          <>
+            {shownHint ? null : worktreeMenu}
+            <WorktreeHintChip hint={shownHint} currentPath={chatWorkdir(file, pane.noun) ?? undefined} />
+            {headerExtra}
+          </>
+        ) : null
+      }
+      seats={
+        <>
+          <AnnStrip
+            paneNoun={pane.paneNoun}
+            shown={annTarget && !props.noAnnTools}
+            commentShown={!(paneShown && narrowView.narrow && narrowView.view === "chat")}
+            capable={ann.capable}
+            mode={ann.mode}
+            armed={ann.armed}
+            capturing={attach.capturing}
+            blocked={sched.blocked}
+            onScreenshot={() => void attach.capture()}
+            onComment={ann.onCommentSeat}
+            recSeat={
+              <RecControls
+                rec={recSnap}
+                shown={micShown}
+                commentArmed={ann.mode === "comment"}
+                blocked={sched.blocked}
+                discardable={false}
+                onBegin={() => void recorder.begin()}
+                onEnd={() => void recorder.end()}
+                onDiscard={() => void recorder.discard()}
+              />
+            }
+          />
+          {host === "anntools" ? (
+            <LeftModePicker modes={pane.decision?.leftModes ?? []} params={params} leftMode={leftMode} />
+          ) : null}
+          {narrowView.narrow && !props.noAnnTools ? <ViewToggle narrowView={narrowView} /> : null}
+          {canvasShotSeat}
+          {exitFsBtn}
+        </>
+      }
+      kebab={kebabMenu}
+      // The ring's Archive leaves through the ⋮'s door (`onBack`, the
+      // landing); an Unarchive stays on the chat.
+      onFiled={(kind) => {
+        if (kind === "archive") onBack();
+      }}
+      // The seat labels fold the way they did on the strip (`.tight`).
+      seatsRef={stripRef}
+    />
+  ) : null;
   return (
    <AgentProvider backend={chatBackend}>
    <CardPolicyProvider value={cardPolicy}>
@@ -5251,6 +6267,10 @@ function ChatBody(props: ChatBodyProps) {
       <div
         className={"c-chat" + (dropping ? " dropping" : "")}
         ref={columnRef}
+        // The chat column is the head's window: the pointer anywhere on it
+        // shows the head's star and Open (TaskHead `is-hot`), whatever the
+        // layout was when the head mounted.
+        data-task-window=""
         // DRAG AND DROP ON THE WHOLE COLUMN rather than on the textarea: a
         // target the size of a one-line input is a target people miss, and
         // everything in this column is part of the same message (T:11745-11751).
@@ -5259,7 +6279,7 @@ function ChatBody(props: ChatBodyProps) {
         onDragLeave={onDragLeave}
         onDrop={onDrop}
       >
-        {!compact && !peek && !mergedHeadRow ? inLead(
+        {unifiedHead ? inLead(unifiedHead) : !compact && !peek && !mergedHeadRow ? inLead(
           // ONE HEADER ROW, WHICH IS WHAT T HAS (T:3934-4010, P2-1). `#anntools`
           // is a real layout row above both views and it carries FIVE things:
           // `← Chats` at its left end, then the picker, the three preview seats,
@@ -5289,7 +6309,7 @@ function ChatBody(props: ChatBodyProps) {
                 aria-label="Hide the Claude panel"
                 onClick={props.onHidePane}
               >
-                <PanelIcon side="right" />
+                <X size={16} strokeWidth={2} aria-hidden="true" />
               </button>
             ) : null}
             {/* The way back, at the strip's left end (T:3941). Absent on the
@@ -5391,15 +6411,19 @@ function ChatBody(props: ChatBodyProps) {
             {/* Taken away by the compact and peek cuts: the card's own head and
                 the popup's own head already say which task this is
                 (T:1412-1438). */}
-            {showHead ? (
+            {headUnified ? null : showHead ? (
               <Topbar
                 slim={peek}
-                {...(mergedHeadRow ? { lead: backBtn, tail: kebabEl, noProject: true } : {})}
+                {...(inSidePane ? { bare: true } : {})}
+                {...(mergedHeadRow
+                  ? { lead: backBtn, tail: kebabEl, noProject: true }
+                  : {})}
                 {...(headerExtra ? { extra: headerExtra } : {})}
-                worktree={worktreeMenu}
-                worktreeHint={
-                  <WorktreeHintChip hint={visibleWorktreeHint(state.worktreeHint, state.tasks)} currentPath={chatWorkdir(file, pane.noun) ?? undefined} />
-                }
+                {...(placeTag ? { placeTag } : {})}
+                // The hint names where the work is; the menu would only repeat the
+                // original checkout's branch.
+                worktree={shownHint ? undefined : worktreeMenu}
+                worktreeHint={<WorktreeHintChip hint={shownHint} currentPath={chatWorkdir(file, pane.noun) ?? undefined} />}
                 sessionId={state.sessionId ?? ""}
                 subtitle={name}
                 {...(taskId ? { taskId } : {})}
@@ -5437,15 +6461,54 @@ function ChatBody(props: ChatBodyProps) {
                     : null
                 }
               />
+            ) : props.headChipsHost || props.headStatusHost ? (
+              // THE HOST'S HEAD IS THE ONE LINE (ChatMount `headChipsHost`):
+              // the worktree pieces the slim line used to seat — the same
+              // menu-or-hint rule — and the host's extra, portaled into the
+              // host's chip seat, and no top bar of the chat's own.
+              <>
+                {props.headChipsHost
+                  ? createPortal(
+                      <>
+                        {shownHint ? null : worktreeMenu}
+                        <WorktreeHintChip hint={shownHint} currentPath={chatWorkdir(file, pane.noun) ?? undefined} />
+                        {/* THE PLAN'S PAUSE, the slim line's own span — here only
+                            when the host gave it no seat of its own (below). */}
+                        {limitWord && !props.headStatusHost ? (
+                          <span className="c-tb-paused" aria-live="polite">
+                            {limitWord}
+                          </span>
+                        ) : null}
+                        {props.headerExtra}
+                      </>,
+                      props.headChipsHost,
+                    )
+                  : null}
+                {/* …AND IN ITS OWN SEAT when the host has one (ChatMount
+                    `headStatusHost`): beside the identity, on no rung of the
+                    head's ladder — the chips fold first, and "paused · resumes
+                    4:00 AM" is the one fact the ring cannot carry. */}
+                {props.headStatusHost && limitWord
+                  ? createPortal(
+                      <span className="c-tb-paused" aria-live="polite">
+                        {limitWord}
+                      </span>,
+                      props.headStatusHost,
+                    )
+                  : null}
+              </>
             ) : null}
             <TasksContext.Provider value={tasksById}>
+            <AllowDeniedContext.Provider value={allowDenied}>
             <Transcript
               followRef={transcriptFollow}
               onOpenCardVisible={setOpenCardVisible}
               jumpRef={jumpToCard}
               cwd={chatWorkdir(file, pane.noun)}
-              state={state}
+              state={transcriptState}
               comebackPending={sched.blocked}
+              {...(state.sessionId && !comebackBanner ? { onLimitRetry: () => void retryLimitNow() } : {})}
+              limitRetrying={limitRetrying}
               actions={actions}
               liveMode={state.permissionMode}
               tail={tail}
@@ -5454,7 +6517,9 @@ function ChatBody(props: ChatBodyProps) {
               onAnchorSpent={onAnchorSpent}
               {...(debugSent ? { onShowSent: setSent } : {})}
               onPullPending={onPullPending}
-              {...(chatBackend === "claude" && !running ? { onFork } : {})}
+              {...(chatBackend === "claude" && !running && !props.breakout ? { onFork } : {})}
+              {...(chatBackend === "claude" && breakoutOn && props.onBreakout && pickProp ? { pick: pickProp } : {})}
+              {...(breakoutGate ? { onBreakoutContext: onContextTurn } : {})}
               onOpenShot={openShot}
               paneNoun={pane.paneNoun}
               what={file ? "using the chat on " + file : "using the chat"}
@@ -5473,28 +6538,6 @@ function ChatBody(props: ChatBodyProps) {
               }
               trailing={
                 <>
-                {/* FOLLOW-UPS THE LIVE RUN IS HOLDING, in the transcript's own user
-                    bubble and in its own column. Ordinary bubbles, with no line
-                    under them and no chrome of any kind: the message is not queued,
-                    it is not behind anything, and the host will drain it in seconds
-                    — a caption saying so would be this feature narrating the app's
-                    normal behaviour back at the reader (design.md, UI).
-
-                    THEY ARE DRAWN FROM THE RUN (`state.inbox`), which is what makes
-                    a reload paint the same picture: the optimistic bubble above them
-                    is this document's memory and does not survive one, and the
-                    transcript cannot help because nothing has consumed the message
-                    yet. Deduped against both (`inboxRows`), so no message is ever
-                    two bubbles. DRAWN WHATEVER THE QUEUE FLAG SAYS: the server
-                    reports the inbox either way, and with the flag off these rows
-                    also feed the composer's "queued" line (`card.queued`). */}
-                {inboxRows.map((row) => (
-                  <div className="c-inbox" key={row.id}>
-                    <div className="turn user c-inbox-turn">
-                      <div className="bubble">{row.text}</div>
-                    </div>
-                  </div>
-                ))}
                 {/* THE MESSAGES THIS CHAT HAS NOT SENT YET, at their place in the
                     conversation. They are the LAST rows of the transcript by
                     construction — the scheduler sends in `due` order, which for a
@@ -5529,11 +6572,14 @@ function ChatBody(props: ChatBodyProps) {
                          thing the reader actually meant — and it posts the TEMPLATE
                          id the row carries, which is the only id that stops it. */
                       onStopRepeat={() => void deleteWaiting(row.entryId, row.stopId)}
+                      {...(state.sessionId && row.comeback ? { onRetry: () => void retryLimitNow() } : {})}
+                      retrying={limitRetrying}
                     />
                   ))}
                 </>
               }
             />
+            </AllowDeniedContext.Provider>
             </TasksContext.Provider>
             {/* THE RUN'S BACKGROUND TASKS (SPEC T-5), between the transcript and
                 the box: one line until opened. Not in the compact cut — a tile
@@ -5549,6 +6595,23 @@ function ChatBody(props: ChatBodyProps) {
                       open={tasksOpen}
                       onToggle={toggleTasksPanel}
                       parentModel={defaults.model}
+                      // The peek is drawn by the shell's overlay (App's
+                      // `BreakoutCards`), which an embed and the phone page
+                      // do not mount: there the row opens its output inline.
+                      {...(!props.breakout && !IS_EMBED && !isLanHost()
+                        ? {
+                            onPeekAgent: (t: TaskRecord) =>
+                              void openAgentPeek({
+                                sessionId: state.sessionId ?? "",
+                                file: file ?? "",
+                                toolUseId: t.tool_use_id,
+                                title: t.description || "Agent",
+                                subtitle: [t.subagent_type, agentModelLabel(t, defaults.model), statusLabel(t.status)]
+                                  .filter(Boolean)
+                                  .join(" · "),
+                              }),
+                          }
+                        : {})}
                     />
                   ) : null
                 }
@@ -5581,10 +6644,13 @@ function ChatBody(props: ChatBodyProps) {
               tick={sched.tick}
               onStop={sched.onStop}
               cardRef={sched.cardRef}
+              {...(state.sessionId ? { onRetry: () => void retryLimitNow() } : {})}
+              retrying={limitRetrying}
+              retryNote={limitRetryNote}
             />
             {/* FORK NOTICE: the next send starts a NEW session from the message
                 above; Cancel puts the hidden turns back. */}
-            {state.fork ? (
+            {state.fork && !props.breakout ? (
               <div className="fork-notice" role="status">
                 <span>Forking from an earlier message</span>
                 <button type="button" className="fork-notice-cancel" onClick={() => controller.cancelFork()}>
@@ -5592,12 +6658,33 @@ function ChatBody(props: ChatBodyProps) {
                 </button>
               </div>
             ) : null}
+            {/* BREAKOUT PICK MODE: the picked exchanges, above the composer. */}
+            {breakoutGate && picking ? (
+              <BreakoutSelectionBar
+                count={state.turns.filter((t) => t.role === "user" && breakoutSel.has(t.key)).length}
+                expert={withExpert}
+                onExpert={setWithExpert}
+                onStart={startBreakout}
+                onCancel={() => {
+                  setPicking(false);
+                  setBreakoutSel(new Set());
+                }}
+              />
+            ) : null}
             {/* A card is READ, not typed into: compact is the one cut that takes
                 the composer away, which is the whole difference from peek
                 (T:1412-1422). The strip rides INSIDE the composer's own block
                 (between the box and the footnote, T:4203) when there is one,
                 and stands alone in the compact tile that has none. */}
             {/* The artifacts strip is Claude's (§7 `artifacts`). */}
+            <QueuedStrip
+              lines={queuedView.lines}
+              running={running}
+              onSendNow={onSendQueuedNow}
+              onPull={onPullPending}
+              compact={compact}
+              ready={!state.historyLoading && !state.adopting}
+            />
             {!compact ? (
               <ComposerGate
                 kind={waitKind}

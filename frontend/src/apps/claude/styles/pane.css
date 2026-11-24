@@ -103,7 +103,7 @@
   max-width: 160px;
   padding: 0 6px;
   font: inherit;
-  font-size: 12px;
+  font-size: calc(12px * var(--c-zoom, 1));
   line-height: 1;
   border: 0;
   border-radius: 6px;
@@ -130,7 +130,7 @@
   white-space: nowrap;
 }
 .chat-root .c-mode-chev {
-  font-size: 9px;
+  font-size: calc(9px * var(--c-zoom, 1));
   flex-shrink: 0;
 }
 
@@ -169,7 +169,7 @@
   background-color: transparent;
   border: 1px solid var(--c-border-strong);
   border-radius: 3px;
-  font-size: 9px;
+  font-size: calc(9px * var(--c-zoom, 1));
   font-weight: 600;
 }
 
@@ -193,7 +193,7 @@
   width: 100%;
   padding: 7px 9px;
   font: inherit;
-  font-size: 12px;
+  font-size: calc(12px * var(--c-zoom, 1));
   line-height: 1;
   border: 0;
   border-radius: 7px;
@@ -229,7 +229,7 @@
   height: 26px;
   padding: 0 8px;
   font: inherit;
-  font-size: 12px;
+  font-size: calc(12px * var(--c-zoom, 1));
   line-height: 1;
   white-space: nowrap;
   border: 1px solid var(--c-border);

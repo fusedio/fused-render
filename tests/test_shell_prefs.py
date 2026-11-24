@@ -764,7 +764,9 @@ def test_registry_view_lists_builtin_bindings(tmp_path, monkeypatch):
     by_key = {e["key"]: e for e in body["entries"]}
     html = by_key[".html"]
     # Pin the contract, not the whole shipped list: rendered-first default.
-    assert _names(html)[:2] == ["_render", "code"]
+    # `canvas_widget` (a canvas node template, SPEC §53.2 NT-1) rides second:
+    # it is conditional, so the default stays the rendered page.
+    assert _names(html)[:3] == ["_render", "canvas_widget", "code"]
     assert html["resolvedSource"] == "core"
     assert html["overridesCore"] is False
     assert html["keyKind"] == "simple"
@@ -800,7 +802,7 @@ def test_registry_view_shows_user_bindings_and_overrides(tmp_path, monkeypatch):
     assert html["overridesCore"] is True
     assert _names(html) == ["code"]
     assert html["userValue"] == ["code"]
-    assert html["coreTemplates"][:2] == ["_render", "code"]  # what a reset restores
+    assert html["coreTemplates"][:3] == ["_render", "canvas_widget", "code"]  # what a reset restores
 
     xyz = by_key[".xyz"]
     assert xyz["resolvedSource"] == "user"
@@ -1633,27 +1635,49 @@ def test_project_queue_junk_value_reads_as_off(tmp_path, monkeypatch):
     assert prefs_mod.project_queue_enabled() is False
 
 
-# -- task recap titles (beta) flag ---------------------------------------------
+# -- chat recap flag ----------------------------------------------------------
 
 
-def test_task_recap_titles_defaults_off_toggles_and_rejects_junk(tmp_path, monkeypatch):
-    """Same opt-in idiom as `project_queue_enabled`: only a stored `true` is on,
-    and the PUT takes booleans only."""
+def test_chat_recap_defaults_on_toggles_and_rejects_junk(tmp_path, monkeypatch):
+    """Default ON: only a stored `false` is off; the PUT takes booleans only; the
+    old `task_recap_titles_enabled` key is ignored."""
     client, home = _client(tmp_path, monkeypatch)
-    assert client.get("/api/prefs").json()["task_recap"] == {"enabled": False}
-    body = client.put("/api/prefs", json={"task_recap_titles_enabled": True},
+    assert client.get("/api/prefs").json()["chat_recap"] == {"enabled": True}
+    assert prefs_mod.chat_recap_enabled() is True
+    body = client.put("/api/prefs", json={"chat_recap_enabled": False},
                       headers=FUSED).json()
-    assert body["task_recap"]["enabled"] is True
+    assert body["chat_recap"]["enabled"] is False
     stored = json.loads((home / "prefs.json").read_text(encoding="utf-8"))
-    assert stored["task_recap_titles_enabled"] is True
-    assert prefs_mod.task_recap_titles_enabled() is True
-    bad = client.put("/api/prefs", json={"task_recap_titles_enabled": "yes"},
+    assert stored["chat_recap_enabled"] is False
+    assert prefs_mod.chat_recap_enabled() is False
+    bad = client.put("/api/prefs", json={"chat_recap_enabled": "yes"},
                      headers=FUSED)
     assert bad.status_code == 400
-    assert "task_recap_titles_enabled" in bad.json()["error"]
-    (home / "prefs.json").write_text(json.dumps({"task_recap_titles_enabled": 1}),
+    assert "chat_recap_enabled" in bad.json()["error"]
+    (home / "prefs.json").write_text(json.dumps({"chat_recap_enabled": 0}),
                                      encoding="utf-8")
-    assert prefs_mod.task_recap_titles_enabled() is False
+    assert prefs_mod.chat_recap_enabled() is True
+    (home / "prefs.json").write_text(
+        json.dumps({"task_recap_titles_enabled": True}), encoding="utf-8")
+    assert prefs_mod.chat_recap_enabled() is True
+    (home / "prefs.json").write_text(
+        json.dumps({"task_recap_titles_enabled": False}), encoding="utf-8")
+    assert prefs_mod.chat_recap_enabled() is True
+
+
+def test_breakout_defaults_off_toggles_and_rejects_junk(tmp_path, monkeypatch):
+    client, home = _client(tmp_path, monkeypatch)
+    assert client.get("/api/prefs").json()["breakout"] == {"enabled": False}
+    body = client.put("/api/prefs", json={"breakout_enabled": True},
+                      headers=FUSED).json()
+    assert body["breakout"]["enabled"] is True
+    stored = json.loads((home / "prefs.json").read_text(encoding="utf-8"))
+    assert stored["breakout_enabled"] is True
+    assert prefs_mod.breakout_enabled() is True
+    bad = client.put("/api/prefs", json={"breakout_enabled": "yes"},
+                     headers=FUSED)
+    assert bad.status_code == 400
+    assert "breakout_enabled" in bad.json()["error"]
 
 
 def test_canvas_shot_slow_fallback_defaults_off_toggles_and_rejects_junk(tmp_path, monkeypatch):
@@ -1676,36 +1700,64 @@ def test_canvas_shot_slow_fallback_defaults_off_toggles_and_rejects_junk(tmp_pat
     assert prefs_mod.canvas_shot_slow_fallback_enabled() is False
 
 
-def test_canvas_rail_peek_defaults_off_toggles_and_rejects_junk(tmp_path, monkeypatch):
-    """The collapsed Claude rail's hover preview card (Settings › Canvases):
-    same opt-in idiom — only a stored `true` is on, the PUT takes booleans."""
+def test_rail_extras_defaults_off_toggles_and_rejects_junk(tmp_path, monkeypatch):
+    """The rail's extras (mode doors, the expandable rail, free pins): one
+    switch, same opt-in idiom — only a stored `true` is on."""
     client, home = _client(tmp_path, monkeypatch)
-    # The payload is the switch alone: the trigger choice of 2026-10-31 is
-    # gone (a hover previews, a click pins).
-    assert client.get("/api/prefs").json()["canvas_rail_peek"] == {"enabled": False}
-    body = client.put("/api/prefs", json={"canvas_rail_peek_enabled": True},
+    assert client.get("/api/prefs").json()["rail_extras"] == {"enabled": False}
+    body = client.put("/api/prefs", json={"rail_extras_enabled": True},
                       headers=FUSED).json()
-    assert body["canvas_rail_peek"]["enabled"] is True
+    assert body["rail_extras"]["enabled"] is True
     stored = json.loads((home / "prefs.json").read_text(encoding="utf-8"))
-    assert stored["canvas_rail_peek_enabled"] is True
-    assert prefs_mod.canvas_rail_peek_enabled() is True
-    bad = client.put("/api/prefs", json={"canvas_rail_peek_enabled": "yes"},
+    assert stored["rail_extras_enabled"] is True
+    assert prefs_mod.rail_extras_enabled() is True
+    bad = client.put("/api/prefs", json={"rail_extras_enabled": "yes"},
                      headers=FUSED)
     assert bad.status_code == 400
-    assert "canvas_rail_peek_enabled" in bad.json()["error"]
-    (home / "prefs.json").write_text(json.dumps({"canvas_rail_peek_enabled": 1}),
+    assert "rail_extras_enabled" in bad.json()["error"]
+    (home / "prefs.json").write_text(json.dumps({"rail_extras_enabled": 1}),
                                      encoding="utf-8")
-    assert prefs_mod.canvas_rail_peek_enabled() is False
-    # The retired trigger key: ignored on disk, refused in a PUT.
-    (home / "prefs.json").write_text(json.dumps({"canvas_rail_peek_trigger": "hover"}),
-                                     encoding="utf-8")
-    assert client.get("/api/prefs").json()["canvas_rail_peek"] == {"enabled": False}
-    assert client.put("/api/prefs", json={"canvas_rail_peek_trigger": "hover"},
-                      headers=FUSED).status_code == 400
+    assert prefs_mod.rail_extras_enabled() is False
+
+
+def test_retired_rail_extras_and_task_icons_switches_are_ignored(tmp_path, monkeypatch):
+    """Task icons are always on, and the three rail switches folded into
+    `rail_extras_enabled` (no migration): their old keys left in prefs.json
+    are ignored — even `true` does not turn Rail extras on — the payload no
+    longer names them, and a PUT of one alone names nothing known."""
+    client, home = _client(tmp_path, monkeypatch)
+    retired = {"rail_mode_doors_enabled": True, "rail_expand_enabled": True,
+               "rail_free_pins_enabled": True, "task_icons_enabled": False}
+    home.mkdir(parents=True, exist_ok=True)
+    (home / "prefs.json").write_text(json.dumps(retired), encoding="utf-8")
+    got = client.get("/api/prefs")
+    assert got.status_code == 200
+    for name in ("rail_mode_doors", "rail_expand", "rail_free_pins", "task_icons"):
+        assert name not in got.json()
+    assert got.json()["rail_extras"] == {"enabled": False}
+    for key in retired:
+        assert client.put("/api/prefs", json={key: True}, headers=FUSED).status_code == 400
+
+
+def test_retired_rail_and_task_head_switches_are_ignored(tmp_path, monkeypatch):
+    """The rail preview card, favourite chats and the unified task header are
+    always on now: their old keys left in prefs.json are ignored, the payload
+    no longer names them, and a PUT of one alone names nothing known."""
+    client, home = _client(tmp_path, monkeypatch)
+    retired = {"canvas_rail_peek_enabled": False, "canvas_rail_peek_trigger": "hover",
+               "task_favourites_enabled": True, "task_head_unified_enabled": "junk"}
+    home.mkdir(parents=True, exist_ok=True)
+    (home / "prefs.json").write_text(json.dumps(retired), encoding="utf-8")
+    got = client.get("/api/prefs")
+    assert got.status_code == 200
+    for name in ("canvas_rail_peek", "task_favourites", "task_head_unified"):
+        assert name not in got.json()
+    for key in retired:
+        assert client.put("/api/prefs", json={key: True}, headers=FUSED).status_code == 400
 
 
 def test_task_summary_titles_defaults_off_toggles_and_rejects_junk(tmp_path, monkeypatch):
-    """Same opt-in idiom as the recap flag: only a stored `true` is on."""
+    """Same opt-in idiom as `project_queue_enabled`: only a stored `true` is on."""
     client, home = _client(tmp_path, monkeypatch)
     assert client.get("/api/prefs").json()["task_summary_titles"] == {"enabled": False}
     body = client.put("/api/prefs", json={"task_summary_titles_enabled": True},
@@ -1859,6 +1911,101 @@ def test_fused_render_indexing_env_overrides_both_the_pref_and_the_dev_default(
     assert prefs_mod.indexing_enabled() is expect
 
 
+# -- per-model engine pins (D1456) ----------------------------------------------
+#
+# The sibling of the per-capability preference above: `model_engines` maps a
+# cached repo id to a runner code. Same store/validate/degrade rules; what a pin
+# does to RESOLUTION is `tests/test_ai_runtime.py`'s.
+
+
+def _fake_cache(monkeypatch, models):
+    """`models`: {repo_id: capability}. Patches the two readers prefs uses."""
+    from fused_render.ai import hub_cache
+
+    def reading(repo_id):
+        cap = models.get(repo_id)
+        if cap is None:
+            return hub_cache.CacheReading(False, None, None)
+        return hub_cache.CacheReading(True, cap, None)
+
+    monkeypatch.setattr(hub_cache, "cached_capability", reading)
+    monkeypatch.setattr(
+        hub_cache, "cached_models",
+        lambda: [hub_cache.CachedModel(i, c, 1) for i, c in models.items()])
+
+
+def test_a_model_engine_pin_round_trips_and_persists(tmp_path, monkeypatch):
+    _fake_cache(monkeypatch, {"acme/chat": "text-generation"})
+    client, home = _client(tmp_path, monkeypatch)
+    body = client.put("/api/prefs",
+                      json={"model_engines": {"acme/chat": "llamacpp-text"}},
+                      headers=FUSED).json()
+
+    rows = {m["id"]: m for m in body["engines"]["models"]}
+    assert rows["acme/chat"]["selected"] == "llamacpp-text"
+    assert rows["acme/chat"]["capability"] == "text-generation"
+    assert json.loads((home / "prefs.json").read_text())["model_engines"] == {
+        "acme/chat": "llamacpp-text"}
+    # Per-capability engines are untouched by a model pin.
+    assert "engines" not in json.loads((home / "prefs.json").read_text())
+
+
+def test_a_model_pin_set_back_to_auto_is_removed(tmp_path, monkeypatch):
+    _fake_cache(monkeypatch, {"acme/chat": "text-generation"})
+    client, home = _client(tmp_path, monkeypatch)
+    client.put("/api/prefs", json={"model_engines": {"acme/chat": "llamacpp-text"}},
+               headers=FUSED)
+    body = client.put("/api/prefs", json={"model_engines": {"acme/chat": "auto"}},
+                      headers=FUSED).json()
+
+    assert json.loads((home / "prefs.json").read_text())["model_engines"] == {}
+    assert body["engines"]["models"][0]["selected"] == "auto"
+
+
+def test_a_model_pin_for_an_uncached_or_mismatched_model_is_refused(tmp_path, monkeypatch):
+    _fake_cache(monkeypatch, {"acme/chat": "text-generation"})
+    client, home = _client(tmp_path, monkeypatch)
+
+    gone = client.put("/api/prefs", json={"model_engines": {"acme/gone": "llamacpp-text"}},
+                      headers=FUSED)
+    assert gone.status_code == 400
+    assert "not downloaded" in gone.json()["error"]
+
+    wrong = client.put("/api/prefs", json={"model_engines": {"acme/chat": "mlx-whisper"}},
+                       headers=FUSED)
+    assert wrong.status_code == 400
+    assert "does not serve" in wrong.json()["error"]
+
+    notmap = client.put("/api/prefs", json={"model_engines": ["acme/chat"]}, headers=FUSED)
+    assert notmap.status_code == 400
+    assert not (home / "prefs.json").exists() or "model_engines" not in json.loads(
+        (home / "prefs.json").read_text())
+
+
+def test_a_model_pin_naming_a_withdrawn_engine_still_reports_with_a_reason(
+        tmp_path, monkeypatch):
+    """Written to disk directly (the endpoint would refuse it), like the
+    per-capability sibling: the READ path degrades, never rewrites."""
+    _fake_cache(monkeypatch, {"acme/chat": "text-generation"})
+    client, home = _client(tmp_path, monkeypatch)
+    home.mkdir(parents=True, exist_ok=True)
+    (home / "prefs.json").write_text(
+        json.dumps({"model_engines": {"acme/chat": "transformers-text"}}))
+
+    row = client.get("/api/prefs").json()["engines"]["models"][0]
+    assert row["selected"] == "transformers-text"
+    assert "not a runner this build knows" in row["ignoredReason"]
+    assert json.loads((home / "prefs.json").read_text())["model_engines"] == {
+        "acme/chat": "transformers-text"}
+
+
+def test_the_models_block_lists_every_cached_model_with_a_capability(tmp_path, monkeypatch):
+    _fake_cache(monkeypatch, {"acme/chat": "text-generation", "acme/none": None})
+    client, _ = _client(tmp_path, monkeypatch)
+    rows = client.get("/api/prefs").json()["engines"]["models"]
+    assert [r["id"] for r in rows] == ["acme/chat"]
+    assert rows[0]["selected"] == "auto"
+    assert rows[0]["choices"], "the same choices the capability row carries"
 def test_claude_default_permission_defaults_auto_and_validates(tmp_path, monkeypatch):
     client, home = _client(tmp_path, monkeypatch)
     assert client.get("/api/prefs").json()["claude_default_permission"] == "auto"

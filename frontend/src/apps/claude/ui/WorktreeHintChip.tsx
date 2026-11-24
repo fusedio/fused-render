@@ -27,12 +27,32 @@ export function isSameFolder(hintPath: string, currentPath?: string): boolean {
   return rel !== "" && (rel === base(c) || c.endsWith("/" + rel));
 }
 
-/** A `via: "agent"` hint is true only while an isolated agent is running:
- *  hidden once no task with `isolation === "worktree"` is live. */
+/** A `via: "agent"` hint is true only while an isolated agent is running; once
+ *  no task with `isolation === "worktree"` is live it falls back to the main
+ *  agent's own worktree (`prev`), or nothing. */
 export function visibleWorktreeHint(hint: WorktreeHint | null | undefined, tasks: TaskRecord[] | undefined): WorktreeHint | null {
   if (!hint) return null;
   if (hint.via !== "agent") return hint;
-  return (tasks ?? []).some((t) => t.isolation === "worktree" && isLive(t.status)) ? hint : null;
+  return (tasks ?? []).some((t) => t.isolation === "worktree" && isLive(t.status)) ? hint : (hint.prev ?? null);
+}
+
+/** The hint the chip will actually draw: live, not the chat's own folder, not a
+ *  left worktree. The top bar asks it to hide the worktree menu meanwhile. */
+export function shownWorktreeHint(
+  hint: WorktreeHint | null | undefined,
+  tasks: TaskRecord[] | undefined,
+  currentPath?: string,
+): WorktreeHint | null {
+  const h = visibleWorktreeHint(hint, tasks);
+  if (!h || isSameFolder(h.path, currentPath) || h.via === "exit") return null;
+  return h;
+}
+
+/** Where a breakout should start: the shown hint's folder when it is an
+ *  absolute path, else undefined (the chat's own folder). */
+export function breakoutCwdFor(shown: WorktreeHint | null | undefined): string | undefined {
+  if (!shown || shown.via === "exit") return undefined;
+  return shown.path.startsWith("/") ? shown.path : undefined;
 }
 
 const HOW: Record<WorktreeHint["via"], string> = {
@@ -53,7 +73,16 @@ export function WorktreeHintChip({ hint, currentPath }: { hint: WorktreeHint | n
   return (
     <span className="chat-worktree-btn chat-worktree-hint" title={title}>
       <GitBranch size={12} aria-hidden="true" />
-      <span>{name ? "worktree · " + name : "worktree"}</span>
+      <span className="c-wt-name">
+        {name ? (
+          <>
+            <span className="c-wt-word">worktree · </span>
+            {name}
+          </>
+        ) : (
+          "worktree"
+        )}
+      </span>
     </span>
   );
 }

@@ -60,7 +60,13 @@ import { ModelSelect } from "./ModelSelect";
 import { PermissionSelect } from "./PermissionSelect";
 import { agentLabel, modelLabelsOf, useAgentBackends } from "@platform/lib/agent-backends";
 import { copyToTaskShots, SchedButton } from "./SchedButton";
+import { AttachButton } from "./AttachButton";
+import { MicButton } from "./MicButton";
+import { insertAt, useDictation } from "@platform/lib/dictation";
 import { outboxHint } from "./outbox";
+
+/** The send button's tooltip, while a run is live. */
+export const SEND_NOW_TITLE = "Send now (Ctrl+X) · Queue until done (Ctrl+Enter)";
 
 /** T:4227 / T:4156 — the box's own placeholder, verbatim. The chat one names
  *  who is being replied to; the landing one names the errand. */
@@ -75,6 +81,8 @@ export const homePlaceholderForAgent = (agent: string) => `Ask ${agent}…`;
  *  real sentence is `schedBlockReason`'s, threaded through `blockedReason`; this
  *  is the floor, so a dead control is never a dead control with nothing to say. */
 export const BLOCKED_SEND_TITLE = "Waiting on a scheduled message";
+/** Why Schedule is off while a dictation is recording or being transcribed. */
+export const MIC_HOLDS_SCHEDULE = "Finish or discard the dictation first";
 
 /** Where the composer's own controls open: shadcn/Base UI popovers and menus
  *  (`platform/shadcn/ui/popover`, `dropdown-menu`) and any dialog. Focus
@@ -122,10 +130,11 @@ function applyFit(row: HTMLElement, fit: RowFit): void {
   const flags = fitFlags(fit);
   row.classList.toggle("is-compact", flags.compact);
   row.classList.toggle("is-tight", flags.tight);
-  // The two seat-dropping rungs are classes because what they drop is a
+  // The seat-dropping rungs are classes because what they drop is a
   // `display: none` the stylesheet owns — `readRow` then prices the hidden
   // seat at nothing, gap included, and the measurement is of THAT row.
   row.classList.toggle("is-slim", flags.slim);
+  row.classList.toggle("is-lean", flags.lean);
   row.classList.toggle("is-bare", flags.bare);
   row.classList.toggle("is-stack", flags.stack);
   for (const select of Array.from(
@@ -224,26 +233,6 @@ export interface ComposerCardProps {
   sessionId: string;
   controls: ComposerControls;
   status: RunStatus;
-  /** Follow-ups typed while a run is live that have not been acknowledged. */
-  queued?: string[];
-  /**
-   * THE PROJECT QUEUE IS ON (prefs `queue.enabled`), which TAKES THE NOTE BELOW
-   * AWAY.
-   *
-   * A follow-up typed into this chat's own running turn is held by the live host
-   * for the seconds the turn has left. Under the queue that is the ONE waiting
-   * state with nothing to say about it: there is no scheduler entry, so nothing
-   * to be behind, nothing to run next and nothing to delete — and the bubbles are
-   * already in the transcript above, in order, exactly where the reader put them.
-   * A footnote counting them is a third piece of chrome for a state that resolves
-   * itself, in a pane that now says "waiting" about messages that genuinely are
-   * (Akshil, 2026-09-12).
-   *
-   * FLAG OFF THE NOTE STAYS, untouched: there is no other ink in that build
-   * saying a follow-up went somewhere, and a line that has gone invisible is
-   * worse than 24px of composer card (the note's own original argument).
-   */
-  queueOn?: boolean;
   /**
    * HOW FULL THE MODEL'S CONTEXT WINDOW IS for the conversation on screen
    * (`ChatState.context` — the latest reply's own `usage`, raw). `null`/absent,
@@ -255,16 +244,31 @@ export interface ComposerCardProps {
    * and the model has two possible answers — see `ctxModel` below.
    */
   context?: ContextUsage | null;
+  /** The run the context popover asks for `/context`'s split (its live host).
+   *  Null/absent: the popover's one-row view only. */
+  runId?: string | null;
   /** A fresh turn. */
   onSend(text: string, opts: SendOptions): void;
   /** Into the live run's inbox (T:16024). Falls back to `onSend` when absent. */
   onFollowUp?(text: string): void;
   /**
-   * SEND NOW — Claude Code's Ctrl+Enter (`chat:sendNow`): stop the running
-   * turn and send this line at once, ahead of anything parked. Only asked while
-   * `running`; otherwise Ctrl/Cmd+Enter is the plain send it always was.
+   * SEND NOW — Ctrl+X with words: interrupt the running turn (the main agent
+   * only) and send this line at once. Only asked while `running`; otherwise
+   * Ctrl+X is the plain send.
    */
   onSendNow?(text: string): void;
+  /**
+   * HOLD UNTIL DONE — Ctrl+Enter with words while a run is live: the line waits
+   * until this turn is finished and every other queued line has been answered,
+   * then goes as the next turn. Idle, Ctrl+Enter is the plain send; with no
+   * seat it is the follow-up road.
+   */
+  onSendHeld?(text: string): void;
+  /** Ctrl+X on an EMPTY box while a run is live and a line is queued: stop and
+   *  send the queued line(s) now. */
+  onSendQueuedNow?(): void;
+  /** A queued bubble exists (gates the empty-box Ctrl+X). */
+  hasQueued?: boolean;
   onStop(): void;
   /**
    * THE PAGE OUTBOX (ui/outbox.ts): how many lines this page is holding because
@@ -316,6 +320,14 @@ export interface ComposerCardProps {
   /** A pending scheduled message closes the composer (`schedBlocked`, PR4). */
   blocked?: boolean;
   blockedPlaceholder?: string;
+  /** Breakout pick mode: the box's hint while exchanges are being picked. */
+  pickPlaceholder?: string;
+  /** BREAKOUT PICK MODE: Send (Enter or the button) starts the breakout instead
+   *  of sending. `canStart` false (nothing picked) refuses and keeps the words;
+   *  `onStart` gets the trimmed words, spent like a sent message. */
+  pickSubmit?: { canStart: boolean; onStart(text: string): void };
+  /** Filled with a function that submits the box, for the selection bar's Start. */
+  pickStartRef?: { current: (() => void) | null };
   /** ONE LINE UNDER THE BOX while `blocked`, for a block the placeholder
    *  cannot say alone — "Copilot is turned off in Preferences." plus the link
    *  (D17). The schedule's block has its own card and passes nothing. */
@@ -341,6 +353,22 @@ export interface ComposerCardProps {
    *  Bugbot #1046 closed on the Back button's twin. */
   navLockedReason?: string;
   autoFocus?: boolean;
+  /**
+   * THE RAIL CARDS' COMPOSER (Akshil, 2026-11-07: "only for small windows …
+   * it should let me type without expanding, and it will not expand unless we
+   * click on model and effort, and then we don't close it after that unless
+   * the window changes; and after typing more than the space it will expand
+   * and not close"). The rail's list card and the favourite's card are too
+   * short for the shelf to come and go under the reader's hands, so here
+   * FOCUS NEVER OPENS THE CARD: the reader types in the one-line box. Two
+   * things open it — a press on the model · effort label beside Send, or a
+   * draft that no longer fits the line — and once open it STAYS open (no fold
+   * on blur, on an outside press, or on a send) until the card shows another
+   * chat (`smallCardShown` going false).
+   */
+  smallCard?: boolean;
+  /** With `smallCard`: the card is showing THIS chat. False folds it back. */
+  smallCardShown?: boolean;
   // `focusRequest` IS GONE (Bugbot review of caef75eb1, LOW). It was the seat
   // for "a never-sent chat's row was pressed, put the caret in the box", and
   // that road went with the draft MOVE out of the Recent list — a press now
@@ -350,6 +378,8 @@ export interface ComposerCardProps {
   /** The landing card's kind-dependent placeholder (`homePlaceholderFor`,
    *  T:5392). Unset keeps the markup's own kind-free wording. */
   placeholder?: string;
+  /** No "Schedule this as a task" seat (an expert's chat). */
+  noSchedule?: boolean;
   /**
    * Follow-ups the CLI never delivered, handed BACK to the box they were typed
    * in (`still_queued`, T:15911). `seq` is what re-delivers the same text (two
@@ -448,6 +478,20 @@ export interface ComposerCardProps {
    * be a far worse bug than never having had the feature.
    */
   onPaste?: React.ClipboardEventHandler<HTMLTextAreaElement>;
+  /**
+   * THE PAPERCLIP (AttachButton; owner, 2026-11-09): files picked from the
+   * system picker, handed to the same road as a paste or a drop. Absent: no
+   * button (a host with no attachment tray).
+   */
+  onAttachFiles?(files: File[]): void;
+  /**
+   * THE MIC (MicButton; owner, 2026-11-19: "add mic to task exactly like the
+   * bots"): this machine can record, so the box takes dictation — a press
+   * records, a second press stops, and the words land at the caret for
+   * review. Absent or false: no button ("absent beats dead", the rule the
+   * paperclip and the camera seat follow).
+   */
+  dictate?: boolean;
   /**
    * THE CAMERA'S OLD SEAT, immediately left of Schedule (T:4166-4171). The
    * screenshot button lived here as a pill and moved into the `#anncta` strip on
@@ -556,12 +600,14 @@ export function ComposerCard({
   sessionId,
   controls,
   status,
-  queued,
-  queueOn,
   context,
+  runId,
   onSend,
   onFollowUp,
   onSendNow,
+  onSendHeld,
+  onSendQueuedNow,
+  hasQueued,
   onStop,
   queuedCount,
   notSentCount,
@@ -572,12 +618,16 @@ export function ComposerCard({
   attachPending,
   blocked,
   blockedPlaceholder,
+  pickPlaceholder,
+  pickSubmit,
+  pickStartRef,
   blockedNote,
   blockedReason,
   navLocked,
   navLockedReason,
   autoFocus,
   placeholder,
+  noSchedule = false,
   restore,
   boxRef: hostBoxRef,
   submitRef,
@@ -588,6 +638,8 @@ export function ComposerCard({
   onRestoreAttachments,
   onDiscardAttachments,
   onPaste,
+  onAttachFiles,
+  dictate,
   camera,
   fitRevision,
   back,
@@ -597,7 +649,13 @@ export function ComposerCard({
   onHeldGone,
   slashCommands,
   onLocalCommand,
+  smallCard: smallCardProp = false,
+  smallCardShown = false,
 }: ComposerCardProps) {
+  // THE LABEL IS THE DOOR, so the mode needs one: a settled chat with no model
+  // to name (no label drawn) falls back to the ordinary focus-opens card.
+  // While the pills are still settling the line stays folded — briefly.
+  const smallCard = smallCardProp && (controls.ready === false || !!controls.model);
   // WHAT IS IN THE BOX DEPENDS ON WHETHER THERE IS A CONVERSATION BEHIND IT —
   // the one fork this file has, and every rule below hangs off it (see "THE
   // DRAFT, AND THE TWO BOXES THAT KEEP ONE DIFFERENTLY").
@@ -658,13 +716,20 @@ export function ComposerCard({
    * Listened on the document only WHILE the card is open, and a press inside
    * the form or inside a surface the form opened does not count.
    */
-  const active = variant === "chat" && within;
+  // THE RAIL CARDS (`smallCard`): `opened` is the whole of "in it" there —
+  // set by the label or by a draft past the line, cleared only when the card
+  // stops showing this chat.
+  const [opened, setOpened] = useState(false);
+  useEffect(() => {
+    if (smallCard && !smallCardShown) setOpened(false);
+  }, [smallCard, smallCardShown]);
+  const active = variant === "chat" && (smallCard ? opened : within);
   /** A pointer is down somewhere in the document / a fold was decided during
    *  that press and waits for its click — see the effect below. */
   const pressRef = useRef(false);
   const foldPendingRef = useRef(false);
   useEffect(() => {
-    if (!active) return;
+    if (!active || smallCard) return;
     const form = formRef.current;
     if (!form) return;
     const doc = form.ownerDocument;
@@ -708,7 +773,7 @@ export function ComposerCard({
       doc.removeEventListener("pointerup", onDocPointerUp, true);
       doc.removeEventListener("pointercancel", onDocPointerUp, true);
     };
-  }, [active]);
+  }, [active, smallCard]);
   const onFormBlur = useCallback((ev: React.FocusEvent<HTMLFormElement>) => {
     // Focus moving BETWEEN the form's own controls is a blur too; only one
     // that leaves the form is a leave.
@@ -1681,6 +1746,84 @@ export function ComposerCard({
   const ctxUsage = context && contextInput(context) > 0 ? context : null;
   const ctxWarn = ctxUsage ? warnLine(ctxModel, ctxUsage) : "";
 
+  // ---- DICTATION (MicButton; `@platform/lib/dictation`) ---------------------
+  //
+  // The Bots composer's flow on this box: the words land AT THE CARET (or over
+  // the selection), never sent on their own. They are the reader's words, so
+  // they take the road a keystroke takes — the stale-render latch stands down
+  // (`spent`), a ↑ walk ends, the sentence is theirs (`typedRef`) — and the
+  // caret is put after them once the render that paints them has landed.
+  const caretAfter = useRef<number | null>(null);
+  const onDictated = useCallback(
+    (words: string) => {
+      const box = boxRef.current;
+      const held = box ? box.value : textRef.current;
+      const from = box ? (box.selectionStart ?? held.length) : held.length;
+      const to = box ? (box.selectionEnd ?? from) : from;
+      const next = insertAt(held, from, to, words);
+      spent.current = null;
+      typedRef.current = true;
+      histIdx.current = null;
+      caretAfter.current = next.caret;
+      setText(next.value);
+    },
+    [boxRef],
+  );
+  useLayoutEffect(() => {
+    const at = caretAfter.current;
+    if (at === null) return;
+    caretAfter.current = null;
+    try {
+      boxRef.current?.setSelectionRange(at, at);
+    } catch {
+      /* a box that is not in a document refuses the call */
+    }
+  }, [text, boxRef]);
+  const mic = useDictation({
+    requester: "shell:chat-composer",
+    onText: onDictated,
+    onMessage: (title, tone) => notify({ title, tone }),
+    // The reader reviews what landed: the box takes the keyboard back, which
+    // also opens a folded card over the words — UNLESS THEY HAVE GONE TO TYPE
+    // SOMEWHERE ELSE. A first transcription can take minutes (the speech
+    // model's install), and a caret pulled out of another field mid-word is
+    // worse than a box that waits to be clicked.
+    onSettled: () => {
+      const box = boxRef.current;
+      if (!box || box.disabled) return;
+      const doc = box.ownerDocument;
+      const at = doc.activeElement;
+      if (at && at !== doc.body && at !== box) return;
+      box.focus({ preventScroll: true });
+    },
+    doc: () => boxRef.current?.ownerDocument,
+  });
+  // A TAKE BELONGS TO THE CHAT IT WAS STARTED IN. This card outlives a switch
+  // of conversation (the pane re-points at another session, or another file),
+  // and words that came back after it would land in — and autosave under —
+  // the other chat's draft. So the switch throws the take away. A new chat
+  // being given its session id ("" → id) is the same conversation, not a
+  // switch.
+  const micCancel = mic.cancel;
+  // A LAYOUT effect: it runs inside the commit that re-points the card, so no
+  // transcript can be delivered between that commit and the cancel.
+  const micChat = useRef({ sessionId, file });
+  useLayoutEffect(() => {
+    const was = micChat.current;
+    micChat.current = { sessionId, file };
+    if (was.file !== file || (!!was.sessionId && was.sessionId !== sessionId)) micCancel();
+  }, [sessionId, file, micCancel]);
+  /** A take being recorded or transcribed. The card stays open through it, so
+   *  the one seat that shows the clock and stops the take is always in view.
+   *
+   *  AND A TAKE AND A SCHEDULE HOP NEVER OVERLAP (Bugbot, PR #2372). The hop
+   *  files the words the box held when Continue was pressed and then leaves
+   *  for the task card, so words still on their way back from a take would be
+   *  in neither place. One set of words, one gesture at a time: the mic is off
+   *  while a hop is out (`hopping`), and Schedule is off — its open confirm
+   *  taken down — while a take is live. */
+  const micLive = !!dictate && (mic.rec || mic.busy);
+
   const fit = useRowFit(
     rowRef,
     columnRef,
@@ -1693,7 +1836,11 @@ export function ComposerCard({
     // `composerRowNeed` and "9%" → "100%" does not.
     `${controls.model}|${controls.effort}|${controls.permission}|${
       controls.ready === false ? 0 : 1
-    }|${blocked ? 1 : 0}|${camera ? 1 : 0}|${ctxUsage ? 1 : 0}|${String(fitRevision ?? "")}`,
+    }|${blocked ? 1 : 0}|${camera ? 1 : 0}|${ctxUsage ? 1 : 0}|${
+      // THE MIC IS IN THE KEY TOO: the seat arriving is a control plus a gap,
+      // and a take widens it by its clock.
+      dictate ? (mic.rec ? 2 : mic.busy ? 3 : 1) : 0
+    }|${String(fitRevision ?? "")}`,
   );
 
   // THIS IS THE NATIVE `initialFocus`, and it has to be, because a modal's
@@ -1901,7 +2048,7 @@ export function ComposerCard({
     [boxRef, grow],
   );
 
-  const submit = useCallback((seed?: string, now = false): boolean => {
+  const submit = useCallback((seed?: string, mode?: "now" | "hold"): boolean => {
     // Nothing leaves this composer while a scheduled message is pending — not a
     // typed line, not a follow-up (T:17871).
     if (blocked) return false;
@@ -1931,6 +2078,12 @@ export function ComposerCard({
     // single newline ran the reader's draft into the walkthrough's intro and
     // changed what the model reads.
     const message = extra ? (typed ? typed.replace(/\s*$/, "") + "\n\n" + extra : extra) : typed;
+    // PICK MODE: Enter starts the breakout; it never reaches the main session.
+    if (pickSubmit && !pickSubmit.canStart) return false;
+    if (pickSubmit && !message) {
+      pickSubmit.onStart("");
+      return true;
+    }
     // …EXCEPT A WORDLESS ONE. Notes or pictures alone cannot be parked: the
     // notes' photograph is taken at the moment of sending (`beginSend`) and a
     // parked round would photograph a pane that has moved on, and the tray
@@ -1945,7 +2098,7 @@ export function ComposerCard({
     if (!message && !hasAttachments && !hasAttachmentsNow?.()) return false;
     // A LOCAL SLASH COMMAND IS ANSWERED HERE AND NEVER SENT (SPEC C-3). Only a
     // typed line: a programmatic send's seed is never a command.
-    const local = onLocalCommand && !extra ? classifyCommand(message) : null;
+    const local = onLocalCommand && !extra && !pickSubmit ? classifyCommand(message) : null;
     if (local && local.kind === "local") {
       const words = textRef.current;
       clearWords();
@@ -2009,8 +2162,12 @@ export function ComposerCard({
       // draft's key (review, 2026-09-17).
       if (!hasSessionRef.current) onHeldGoneRef.current?.();
     }
-    // SEND NOW (Ctrl+Enter while live): stop the turn and this line goes first.
-    if (now && running && onSendNow) onSendNow(message);
+    // PICK MODE: the words are the breakout's first message.
+    if (pickSubmit) pickSubmit.onStart(message);
+    // SEND NOW (Ctrl+X while live): the turn is interrupted and this line runs next.
+    else if (mode === "now" && running && onSendNow) onSendNow(message);
+    // HOLD (Ctrl+Enter while live): the line waits for the session to be done.
+    else if (mode === "hold" && running && onSendHeld) onSendHeld(message);
     // A live run gets this message DIRECTLY instead of parking it in a
     // page-side array (T:17889-17899).
     else if (running && onFollowUp) onFollowUp(message);
@@ -2039,12 +2196,21 @@ export function ComposerCard({
     running,
     onFollowUp,
     onSendNow,
+    onSendHeld,
     onSend,
     controls,
     boxRef,
     onLocalCommand,
     clearWords,
+    pickSubmit,
   ]);
+  useEffect(() => {
+    if (!pickStartRef) return;
+    pickStartRef.current = () => void submit();
+    return () => {
+      pickStartRef.current = null;
+    };
+  }, [pickStartRef, submit]);
 
   // The seat for the programmatic send. In an EFFECT so a render React throws
   // away (StrictMode's double invoke, a concurrent attempt that loses) cannot
@@ -2150,20 +2316,50 @@ export function ComposerCard({
         }
         return;
       }
+      // CTRL+X is the second send-now chord. Ctrl ONLY, and only with words and
+      // no selection: on Win/Linux Ctrl+X still CUTS a selection, so a selected
+      // range, an IME composition or an empty box leaves the key to the browser.
+      // Idle, it is the plain send.
+      if (
+        (ev.key === "x" || ev.key === "X") &&
+        ev.ctrlKey && !ev.metaKey && !ev.altKey && !ev.shiftKey &&
+        !ev.nativeEvent?.isComposing &&
+        !text.trim() && running && hasQueued && onSendQueuedNow
+      ) {
+        const t = ev.currentTarget as HTMLTextAreaElement | undefined;
+        if (t && t.selectionStart !== t.selectionEnd) return;
+        ev.preventDefault();
+        onSendQueuedNow();
+        return;
+      }
+      if (
+        (ev.key === "x" || ev.key === "X") &&
+        ev.ctrlKey && !ev.metaKey && !ev.altKey && !ev.shiftKey &&
+        !ev.nativeEvent?.isComposing &&
+        text.trim()
+      ) {
+        const t = ev.currentTarget as HTMLTextAreaElement | undefined;
+        if (t && t.selectionStart !== t.selectionEnd) return;
+        ev.preventDefault();
+        submit(undefined, "now");
+        return;
+      }
       if (ev.key !== "Enter") return;
       // Shift+Enter is a newline. Enter never STOPS a run — a user drafting the
       // next message mid-run must not kill the turn with a keystroke meant to
-      // queue text (T:17915). CTRL+Enter while a run is LIVE is Claude Code's
-      // "send now" (`chat:sendNow`, the same chord): stop it and send this line
-      // first. Ctrl ONLY, never Cmd: ⌘↩ is the annotation round's ✓ Done chord
-      // (`pressDoneChord`, ClaudeChat's `autoSubmit`) and must not be shadowed
-      // by a stop. Cmd/Ctrl+Enter idle is the same send it always was, for the
-      // hands that learned it in every other composer in this app.
+      // queue text (T:17915). CTRL+Enter while a run is LIVE holds the line
+      // until the session is done (D1462): it is not written into the run.
+      // Ctrl ONLY, never Cmd: ⌘↩ is the annotation round's ✓ Done chord
+      // (`pressDoneChord`, ClaudeChat's `autoSubmit`) and must not be shadowed.
+      // Cmd/Ctrl+Enter idle is the same send it always was, for the hands that
+      // learned it in every other composer in this app.
       if (ev.shiftKey) return;
+      // AN IME'S Enter COMMITS ITS CANDIDATE; it never sends.
+      if (ev.nativeEvent?.isComposing || ev.keyCode === 229) return;
       ev.preventDefault();
-      submit(undefined, ev.ctrlKey && !ev.metaKey);
+      submit(undefined, ev.ctrlKey && !ev.metaKey ? "hold" : undefined);
     },
-    [submit, onPullQueued, queuedCount, notSentCount, text, grow, history, recall, menuOpen, menuActive, menuRows, menuQ, pickCommand],
+    [submit, running, hasQueued, onSendQueuedNow, onPullQueued, queuedCount, notSentCount, text, grow, history, recall, menuOpen, menuActive, menuRows, menuQ, pickCommand],
   );
 
   const draft = useCallback(() => text, [text]);
@@ -2172,8 +2368,44 @@ export function ComposerCard({
     [boxRef],
   );
 
-  const count = queued?.length ?? 0;
-  const collapsed = variant === "chat" && !active && !blocked;
+  const collapsed = variant === "chat" && !active && !blocked && !micLive;
+  // The chat text zoom reaches the textarea only while the card is OPEN
+  // (chat.css), so folding/unfolding changes its line height with no new
+  // value or width for the auto-grow hook to hear: re-fit on the flip, or a
+  // draft unfolded at 150 % keeps its 1× height and clips (Bugbot, #2233).
+  useLayoutEffect(() => {
+    grow();
+  }, [collapsed, grow]);
+  // …AND A DRAFT PAST THE LINE OPENS IT (`smallCard`): the folded box is one
+  // line tall with its overflow hidden, so the moment the words need a second
+  // line the card opens to show them, and stays open. The words can outgrow
+  // the line without a keystroke too — a card dragged narrower rewraps them —
+  // so the box's width is watched while folded. Only the chat the card SHOWS,
+  // and only WITH THE READER IN IT (Akshil, 2026-11-07: "a draft that is two
+  // lines — on hover show me the compressed one, but if I click it should
+  // open the expanded view"): a hover leaves a long draft folded; the press
+  // that puts the caret in the box opens it.
+  useLayoutEffect(() => {
+    if (!smallCard || !smallCardShown || !within || !collapsed) return;
+    const box = boxRef.current;
+    if (!box) return;
+    const check = () => {
+      // A box with no width yet (mid-mount) wraps everything: not a reading.
+      if (box.clientWidth > 0 && box.scrollHeight > box.clientHeight + 1) setOpened(true);
+    };
+    check();
+    if (typeof ResizeObserver === "undefined") return;
+    const ro = new ResizeObserver(check);
+    ro.observe(box);
+    return () => ro.disconnect();
+  }, [smallCard, smallCardShown, within, collapsed, text, boxRef]);
+  const openSmallCard = useCallback(() => {
+    setOpened(true);
+    boxRef.current?.focus({ preventScroll: true });
+  }, [boxRef]);
+  // THE FOLDED MIC'S PRESS OPENS THE CARD: the take's clock and its stop are
+  // the shelf seat's, and the words land in the box the card is opening on.
+  const openForMic = smallCard ? openSmallCard : focusBox;
   // WHICH AGENT THE BOX SPEAKS TO (D18): the pill's answer, else the catalog's
   // default. Subscribed, so the first read and a Preferences switch repaint.
   const agents = useAgentBackends();
@@ -2210,7 +2442,7 @@ export function ComposerCard({
           // The submit event is the send BUTTON's path (Enter in the box never
           // reaches here): while a run is live the button is a stop button
           // (T:17909-17914).
-          if (running) {
+          if (running && !pickSubmit) {
             onStop();
             return;
           }
@@ -2225,27 +2457,76 @@ export function ComposerCard({
             to its corner, so the label is seated against Send). It fades as the
             shelf opens and the pills take over saying the same thing, and it
             says nothing while the pills are still settling. */}
-        {variant === "chat" ? (
-          <div
-            className={
-              collapsed && controls.ready !== false && controls.model
-                ? "c-composer-meta"
-                : "c-composer-meta is-hidden"
-            }
-            aria-hidden={!collapsed}
-            data-testid="composer-meta"
-          >
-            <span>{modelLabelsOf(controls.backend)[controls.model] ?? MODEL_LABELS[controls.model] ?? controls.model}</span>
-            {/* No effort to say for a model that takes none (the pill is
-                hidden too): the model alone, without a dangling dot. */}
-            {controls.effort ? (
-              <>
-                <span className="c-composer-meta-dot" aria-hidden="true" />
-                <span>{controls.effort}</span>
-              </>
-            ) : null}
-          </div>
-        ) : null}
+        {variant === "chat" ? (() => {
+          const metaShown = collapsed && controls.ready !== false && !!controls.model;
+          const metaClass = metaShown ? "c-composer-meta" : "c-composer-meta is-hidden";
+          const words = (
+            <>
+              <span>{modelLabelsOf(controls.backend)[controls.model] ?? MODEL_LABELS[controls.model] ?? controls.model}</span>
+              {/* No effort to say for a model that takes none (the pill is
+                  hidden too): the model alone, without a dangling dot. */}
+              {controls.effort ? (
+                <>
+                  <span className="c-composer-meta-dot" aria-hidden="true" />
+                  <span>{controls.effort}</span>
+                </>
+              ) : null}
+            </>
+          );
+          // THE RAIL CARDS' DOOR INTO THE SHELF (`smallCard`): the label is a
+          // button there, and the one press that opens the card.
+          const meta = smallCard ? (
+            <button
+              type="button"
+              className={metaClass + " is-opener"}
+              data-testid="composer-meta"
+              aria-label="Show model and effort"
+              title="Show model and effort"
+              tabIndex={metaShown ? 0 : -1}
+              aria-hidden={!metaShown}
+              onClick={openSmallCard}
+            >
+              {words}
+            </button>
+          ) : (
+            <div className={metaClass} aria-hidden={!collapsed} data-testid="composer-meta">
+              {words}
+            </div>
+          );
+          // THE PAPERCLIP WHILE FOLDED (owner, 2026-11-09: "the clip icon also
+          // shows up in the collapsed composer … left of model and effort"):
+          // the shelf's clip is gone with the shelf, so the folded card has
+          // its own, leading the label in Send's seat (`.c-composer-idle-end`).
+          // It fades as the card opens and the shelf's clip takes over, as the
+          // label does for the pills.
+          return (
+            <div className="c-composer-idle-end">
+              {onAttachFiles ? (
+                <AttachButton
+                  onFiles={onAttachFiles}
+                  className="c-attach-idle"
+                  hidden={!collapsed}
+                  skipTab
+                  disabled={!!navLocked}
+                  {...(navLocked && navLockedReason ? { disabledReason: navLockedReason } : {})}
+                />
+              ) : null}
+              {/* THE MIC WHILE FOLDED, right of the clip as in the shelf. */}
+              {dictate ? (
+                <MicButton
+                  mic={mic}
+                  className="c-mic-idle"
+                  hidden={!collapsed}
+                  skipTab
+                  disabled={!!navLocked || hopping}
+                  {...(navLocked && navLockedReason ? { disabledReason: navLockedReason } : {})}
+                  onPress={openForMic}
+                />
+              ) : null}
+              {meta}
+            </div>
+          );
+        })() : null}
         {menuOpen ? (
           <CommandMenu
             id={menuId}
@@ -2261,7 +2542,12 @@ export function ComposerCard({
           placeholder={
             blocked && blockedPlaceholder
               ? blockedPlaceholder
-              : variant === "home"
+              : micLive && mic.busy
+                ? // What the transcription is doing, where the words will land.
+                  mic.note || "Transcribing…"
+              : pickPlaceholder
+                ? pickPlaceholder
+                : variant === "home"
                 ? // `homePlaceholderFor` names the KIND once the pane has decided
                   // it ("Ask Claude about this project…"); the markup's own
                   // kind-free wording stands until then (T:5392).
@@ -2340,20 +2626,13 @@ export function ComposerCard({
           }}
           {...(onPaste ? { onPaste } : {})}
         />
-        {/* A DIVERGENCE FROM T, RECORDED (visual pass 3, FIX-27). T has no
-            queued line at all: its own queue handling (T:15905-15917) puts the
-            stranded text back INTO the box, so the reader learns about it by
-            finding their words there. This line is kept — a follow-up that has
-            gone somewhere invisible is worse than 24px of composer card — but
-            it is the one thing in this file that adds a box T does not draw
-            (91 → 115 while a follow-up is pending), so it is written down here
-            rather than left for a fourth visual pass to find again. */}
-        {count > 0 && !queueOn ? (
-          <div className="c-queued">
-            {count === 1
-              ? "1 follow-up is queued for this turn."
-              : `${count} follow-ups are queued for this turn.`}
-          </div>
+        {/* WHAT THE TRANSCRIPTION IS DOING, SAID ALOUD: the placeholder only
+            shows in an empty box, and the mic's tooltip needs a pointer. A
+            polite live region, outside the measured row. */}
+        {dictate ? (
+          <span className="sr-only" role="status">
+            {mic.busy ? mic.note || "Transcribing…" : ""}
+          </span>
         ) : null}
         {/* THE AGENT IS OFF (D17): the placeholder says so; this is the link. */}
         {blockedNote ? <div className="c-queued c-blocked-note">{blockedNote}</div> : null}
@@ -2408,13 +2687,45 @@ export function ComposerCard({
               FIRST seat the ladder drops (`.is-slim`): the number is one hover
               away in the pills' own tooltip world, and a row that wraps to keep
               a ring is the wrong trade. */}
-          <ContextMeter usage={ctxUsage} model={ctxModel} />
+          <ContextMeter
+            usage={ctxUsage}
+            model={ctxModel}
+            runId={runId ?? null}
+            sessionId={sessionId || null}
+          />
           <span className="c-spacer" />
           {camera}
+          {/* THE PAPERCLIP, first of the draft's own group (attach, schedule,
+              send) — what goes in the message, then how it leaves. Off when
+              the box itself is (the schedule block, a comment round). */}
+          {onAttachFiles ? (
+            <AttachButton
+              onFiles={onAttachFiles}
+              disabled={(variant === "chat" && !!blocked) || !!navLocked}
+              {...(navLocked && navLockedReason
+                ? { disabledReason: navLockedReason }
+                : variant === "chat" && blocked && blockedReason
+                  ? { disabledReason: blockedReason }
+                  : {})}
+            />
+          ) : null}
+          {/* THE MIC, right of the clip (the Bots order: attach, then mic). Off
+              when the box is, and while a schedule hop holds the words. */}
+          {dictate ? (
+            <MicButton
+              mic={mic}
+              disabled={(variant === "chat" && !!blocked) || !!navLocked || hopping}
+              {...(navLocked && navLockedReason
+                ? { disabledReason: navLockedReason }
+                : variant === "chat" && blocked && blockedReason
+                  ? { disabledReason: blockedReason }
+                  : {})}
+            />
+          ) : null}
           {/* IMMEDIATELY LEFT OF SEND, and that seat is the whole idea: these two
               are the ways this draft leaves the box — now, or as a task
               (T:4174-4183). The landing card's copy is never blocked. */}
-          <SchedButton
+          {noSchedule ? null : <SchedButton
             file={file}
             sessionId={sessionId}
             draft={draft}
@@ -2436,12 +2747,14 @@ export function ComposerCard({
             // The block reads the SAME `blocked` the box does — never a second
             // read of the schedule, because a parallel notion of "is this session
             // blocked" is two answers to one question (T:17233-17236).
-            disabled={(variant === "chat" && !!blocked) || !!navLocked}
+            disabled={(variant === "chat" && !!blocked) || !!navLocked || micLive}
             {...(navLocked && navLockedReason
               ? { disabledReason: navLockedReason }
               : variant === "chat" && blocked && blockedReason
                 ? { disabledReason: blockedReason }
-                : {})}
+                : micLive
+                  ? { disabledReason: MIC_HOLDS_SCHEDULE }
+                  : {})}
             onCancel={focusBox}
             onNavigate={onNavigate}
             // THE HOP EMPTIES A SESSION-LESS BOX, and only that one. Continue
@@ -2463,11 +2776,11 @@ export function ComposerCard({
             // place.
             episode={readEpisode}
             onHopChange={setHopping}
-          />
+          />}
           <button
             className="c-send"
             type="submit"
-            aria-label={running ? "Stop" : "Send"}
+            aria-label={pickSubmit ? "Start breakout" : running ? "Stop" : "Send"}
             // AND THE SHUTTER WINDOW SAYS SO TOO (Bugbot, PR #1074). With the
       // `disabled` attribute gone (T:4187), the `title` is the one place to
       // say what the window IS — `sendBusy` can run to SECONDS on a large
@@ -2476,7 +2789,11 @@ export function ComposerCard({
       // the window closes (ClaudeChat's outbox), so the tooltip names the
       // wait, not a refusal.
       title={
-        running
+        pickSubmit
+          ? "Start breakout"
+          : running && (onSendNow || onSendHeld) && text.trim()
+          ? SEND_NOW_TITLE
+          : running
           ? // T:4187's own string, not the shorter one this shipped with
             // (visual pass 3, FIX-27). `aria-label` is `Stop` on both sides —
             // that is the control's NAME — and the tooltip is where legacy says
@@ -2540,7 +2857,7 @@ export function ComposerCard({
             // hop is carrying (Bugbot 4034977395).
             {...(sendBlocked || hopFrozen ? { disabled: true } : {})}
           >
-            {running ? (
+            {running && !pickSubmit ? (
               <svg
                 width="14"
                 height="14"

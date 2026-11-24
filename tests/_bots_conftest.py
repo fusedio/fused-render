@@ -5,9 +5,10 @@ Each bots test module does `from _bots_conftest import *` so pytest registers
 these in that module only; nothing here leaks into the rest of the suite
 (the one suite-wide bots fixture, `_no_bots_threads`, is in conftest.py).
 
-* `app_home` (autouse): a per-test FUSED_RENDER_HOME. fused-render's conftest
-  redirects the home once per session; the bots tests list and count bots, so
-  they need a fresh one each. HOME is a per-test empty tree too, as in
+* `app_home` (autouse): a per-test FUSED_RENDER_HOME and FUSED_RENDER_DIR.
+  fused-render's conftest redirects both once per session; the bots tests list
+  and count bots (whose folders live under <workspace>/bots/), so they need a
+  fresh pair each, with the registry's Bot cache and paths' folder map reset. HOME is a per-test empty tree too, as in
   FusedBot (Chrome profiles, ~/Library/Messages and ~/.claude are read off it),
   and FUSED_RENDER_CLAUDE_BIN points at a missing file so no test spawns the
   developer's real `claude` (a test that wants one installs a stub).
@@ -48,11 +49,28 @@ def app_home(tmp_path, tmp_path_factory, monkeypatch):
     from fused_render.shell import storage
 
     monkeypatch.setenv("FUSED_RENDER_HOME", str(tmp_path / "home"))
+    # Per-test workspace too: since bots v3 a bot's folder lives at <workspace>/bots/<folder>/, and these tests
+    # list bots (store.list_ids scans that root), so the session-wide FUSED_RENDER_DIR would leak bots between
+    # tests on one xdist worker. A test's own `ws` fixture may point it elsewhere again.
+    monkeypatch.setenv("FUSED_RENDER_DIR", str(tmp_path / "ws"))
     fake_home = tmp_path_factory.mktemp("bots-user-home")
     (fake_home / ".claude").mkdir()
     monkeypatch.setenv("HOME", str(fake_home))
     monkeypatch.setenv("FUSED_RENDER_CLAUDE_BIN", str(tmp_path / "no-such-claude"))
-    return storage.home_dir()
+    reset_bots_caches()
+    yield storage.home_dir()
+    reset_bots_caches()
+
+
+def reset_bots_caches():
+    """Forget every Bot the registry holds and the id -> folder map paths caches: both are keyed by id, and the
+    tests reuse fixed ids across tests, so a Bot (or folder) from the previous test's home must never answer
+    for this one's. Call it right after redirecting FUSED_RENDER_HOME / FUSED_RENDER_DIR."""
+    from fused_render.bots import paths as bpaths
+    from fused_render.bots import registry
+
+    registry.reset_for_tests()
+    bpaths._reset_folders()
 
 
 class Client:
@@ -144,4 +162,4 @@ def v1_fused(tmp_path):
     return str(out)
 
 
-__all__ = ["app_home", "client", "v1_fused", "v2_fused", "Client", "ENTRY_HTML", "CALC_PY"]
+__all__ = ["app_home", "client", "v1_fused", "v2_fused", "Client", "ENTRY_HTML", "CALC_PY", "reset_bots_caches"]

@@ -1,28 +1,35 @@
-// Phone access: sharing your apps with phones on the same Wi-Fi (lan.py).
-// Off by default and this is the only place it turns on. While the listener
-// is up the row shows the QR code a phone scans to pair — the ONLY way in: no
-// PIN, no approval dialog — and the devices that have, each revocable.
+// Phone access: sharing your apps with the Fused Render app on a phone on the
+// same Wi-Fi (lan.py). Off by default and this is the only place it turns on.
+// While the listener is up the row shows the QR code the app scans to pair —
+// the ONLY way in: no PIN, no approval dialog — the devices that have, each
+// revocable, and whatever the computer itself can see that would keep a phone
+// from reaching it (lan_doctor.py: no address, a VPN, the firewall, the local
+// name not resolving, a rename since pairing). While a code is on screen and
+// no phone arrives, a short checklist unfolds: that is the one moment the
+// computer knows a phone is trying and failing.
 import { useEffect, useState } from "react";
 import qrcode from "qrcode-generator";
-import { getLanDevices, getLanPairToken, putLanEnabled, revokeAllLanDevices, revokeLanDevice, type LanDevice } from "@platform/lib/api";
+import { getLanDevices, getLanPairToken, getPrefs, putLanEnabled, revokeAllLanDevices, revokeLanDevice, type LanDevice, type LanWarning } from "@platform/lib/api";
 import { ErrorBanner } from "@platform/ui/ErrorBanner";
 import { Button } from "@platform/shadcn/ui/button";
 import { RowSwitch, SettingRow, type PrefControlProps } from "./SettingRow";
 
+/** How long a code may sit on screen with no pairing before the checklist
+ *  unfolds. Long enough to find the phone and open the app; short enough
+ *  that someone stuck gets a hint before giving up. */
+export const PAIRING_HINT_AFTER_MS = 45_000;
+
 export function LanControl({ prefs, onChange }: PrefControlProps) {
   // What the click asked for, held until the PUT answers. Turning sharing on
-  // binds the listener, issues a certificate and announces two mDNS names
-  // before the response comes back — seconds in which a switch that sat still
-  // read as a dead page.
+  // binds the listener and issues a certificate before the response comes
+  // back — a second or two in which a switch that sat still read as a dead page.
   const [pending, setPending] = useState<boolean | null>(null);
   const busy = pending !== null;
   const [error, setError] = useState<string | null>(null);
   const lan = prefs.lan;
   const enabled = lan?.enabled ?? false;
   const running = enabled && !!lan?.running;
-  // Enough of the listener is up to pair a device: the http one (browsers and
-  // the app) or, on its own, the https one (the app alone).
-  const pairable = enabled && ((running && !!lan?.url) || !!lan?.https_url);
+  const pairable = running && !!lan?.url;
   const [devices, setDevices] = useState<LanDevice[]>(lan?.devices ?? []);
   // The page may mount on a cached snapshot and receive the fresh GET after;
   // the list follows whatever prefs the page now holds.
@@ -46,16 +53,28 @@ export function LanControl({ prefs, onChange }: PrefControlProps) {
     }
   };
 
-  // While the QR is on screen, watch for the phone to pair: the list grows,
-  // and the spent code is replaced with a fresh one (tokens are single-use).
+  // While the QR is on screen, watch for the phone to pair: the list grows
+  // (and each row's last-seen moves), and the spent code is replaced with a
+  // fresh one (tokens are single-use). Every fourth tick re-reads prefs too,
+  // so the computer-side warnings and the name follow a firewall or network
+  // fix without reopening the panel.
   useEffect(() => {
     if (!pairable) return;
     let alive = true;
+    let ticks = 0;
     const tick = async () => {
+      ticks += 1;
       try {
+        if (ticks % 4 === 0) {
+          const next = await getPrefs();
+          if (!alive) return;
+          onChange(next);
+          setDevices(next.lan?.devices ?? []);
+          return;
+        }
         const { devices: next } = await getLanDevices();
         if (!alive) return;
-        setDevices((prev) => (prev.length === next.length && prev.every((d, i) => d.id === next[i].id) ? prev : next));
+        setDevices(next);
       } catch {
         /* the next tick retries */
       }
@@ -65,7 +84,7 @@ export function LanControl({ prefs, onChange }: PrefControlProps) {
       alive = false;
       window.clearInterval(id);
     };
-  }, [pairable]);
+  }, [pairable, onChange]);
 
   const revoke = async (id: string | null) => {
     setError(null);
@@ -77,6 +96,8 @@ export function LanControl({ prefs, onChange }: PrefControlProps) {
     }
   };
 
+  const warnings = (enabled && lan?.warnings) || [];
+
   return (
     <SettingRow
       id="lan"
@@ -84,54 +105,56 @@ export function LanControl({ prefs, onChange }: PrefControlProps) {
         busy ? (
           <span className="lan-working" role="status">
             <span className="lan-spinner" aria-hidden="true" />
-            {pending
-              ? "Starting the listener and announcing this computer on the Wi-Fi…"
-              : "Stopping and taking this computer off the Wi-Fi…"}
+            {pending ? "Starting the listener…" : "Stopping…"}
           </span>
-        ) : enabled ? (
-          "Plain http: on iPhone the live microphone and clipboard paste stay off, and on an open (password-less) network the pairing cookie travels in the clear."
+        ) : enabled && lan?.hostname ? (
+          `Reachable as ${lan.hostname}; the phone keeps that name through Wi-Fi changes and reconnects on its own.`
         ) : undefined
       }
       // The switch follows the click, not the round trip.
       control={<RowSwitch id="lan" checked={pending ?? enabled} disabled={busy} onChange={(v) => void toggle(v)} />}
     >
-      {/* A code as long as SOMETHING is listening: with http down but https
-          up, a browser cannot get in but the iPhone app still pairs. */}
-      {pairable && <LanPairing url={lan!.url ?? lan!.https_url!} deviceCount={devices.length} />}
+      {pairable && <LanPairing url={lan!.url!} deviceCount={devices.length} warnings={warnings} />}
       {pairable && <LanDevices devices={devices} onRevoke={revoke} />}
-      {enabled && !lan?.running && lan?.https_url && (
-        <ErrorBanner>
-          {`Browsers can't reach this computer${lan.error ? `: ${lan.error}` : " (the http listener is down)"}. ` +
-            "The iPhone app can still pair with the code above."}
-        </ErrorBanner>
-      )}
-      {enabled && !lan?.running && !lan?.https_url && (
-        <ErrorBanner>{lan?.error ? `Not sharing: ${lan.error}` : "Starting…"}</ErrorBanner>
-      )}
-      {/* Up while a piece of it failed (no zeroconf, no address, https down):
-          that must not hide behind a working QR. */}
-      {enabled && lan?.running && lan.error && <ErrorBanner>{`Sharing, but: ${lan.error}`}</ErrorBanner>}
-      {enabled && lan?.running && !lan.error && lan.tls_error && (
-        <ErrorBanner>{`The app's https listener is down (browsers unaffected): ${lan.tls_error}`}</ErrorBanner>
-      )}
+      {enabled && !running && <ErrorBanner>{lan?.error ? `Not sharing: ${lan.error}` : "Starting…"}</ErrorBanner>}
+      {/* Up while a piece of it is off (no address): that must not hide
+          behind a working QR. */}
+      {running && lan?.error && <ErrorBanner>{`Sharing, but: ${lan.error}`}</ErrorBanner>}
+      {running && <LanWarnings warnings={warnings} />}
       {error && <ErrorBanner>{error}</ErrorBanner>}
     </SettingRow>
+  );
+}
+
+// What the computer can see on its own side (lan_doctor.py), one banner each.
+function LanWarnings({ warnings }: { warnings: LanWarning[] }) {
+  if (!warnings.length) return null;
+  return (
+    <div className="lan-warnings">
+      {warnings.map((w) => (
+        <ErrorBanner key={w.code}>{w.message}</ErrorBanner>
+      ))}
+    </div>
   );
 }
 
 // The QR code: a pairing URL good for five minutes and ONE device. A new one
 // replaces it the moment a pairing lands (the device count changes) and when
 // the old one runs out.
-function LanPairing({ url, deviceCount }: { url: string; deviceCount: number }) {
+function LanPairing({ url, deviceCount, warnings }: { url: string; deviceCount: number; warnings: LanWarning[] }) {
   const [svg, setSvg] = useState<string | null>(null);
-  const [ipUrl, setIpUrl] = useState<string | null>(null);
+  const [link, setLink] = useState<string | null>(null);
   // Why there is no code, when there is none: the mint can answer 503
   // (nothing is listening), which is worth reading.
   const [problem, setProblem] = useState<string | null>(null);
   const [nonce, setNonce] = useState(0);
+  // A code has been on screen this long with no phone arriving: unfold the
+  // checklist (reset by every pairing, i.e. every device-count change).
+  const [stuck, setStuck] = useState(false);
 
   useEffect(() => {
     setNonce((n) => n + 1);
+    setStuck(false);
   }, [deviceCount]);
 
   useEffect(() => {
@@ -145,13 +168,14 @@ function LanPairing({ url, deviceCount }: { url: string; deviceCount: number }) 
         qr.addData(t.url);
         qr.make();
         setSvg(qr.createSvgTag({ cellSize: 4, margin: 0, scalable: true }));
-        setIpUrl(t.ip_url);
+        setLink(t.url);
         // Rotate just before the server forgets this one.
         timer = window.setTimeout(() => alive && setNonce((n) => n + 1), Math.max(5, t.ttl_s - 5) * 1000);
       })
       .catch((e) => {
         if (!alive) return;
         setSvg(null);
+        setLink(null);
         setProblem((e as Error).message || "No pairing code — the listener did not answer.");
       });
     return () => {
@@ -159,6 +183,11 @@ function LanPairing({ url, deviceCount }: { url: string; deviceCount: number }) 
       if (timer !== null) window.clearTimeout(timer);
     };
   }, [nonce]);
+
+  useEffect(() => {
+    const id = window.setTimeout(() => setStuck(true), PAIRING_HINT_AFTER_MS);
+    return () => window.clearTimeout(id);
+  }, [deviceCount]);
 
   return (
     <div className="lan-pair">
@@ -172,23 +201,36 @@ function LanPairing({ url, deviceCount }: { url: string; deviceCount: number }) 
       <div className="lan-pair-text">
         {problem && <ErrorBanner>{problem}</ErrorBanner>}
         <p>
-          <b>Scan from the Fused Render app</b> (or the iPhone's Camera app — not the Control Center scanner, whose
-          in-app browser can't pair Safari). Each code pairs one device; a new code appears right after, and every
-          five minutes. A paired phone then opens{" "}
-          <a href={url} target="_blank" rel="noreferrer">
-            {url}
-          </a>
-          .
+          <b>Scan from the Fused Render app</b> on the phone (Pair, then point the camera at this code). Each code
+          pairs one phone; a new code appears right after, and every five minutes. The phone then opens{" "}
+          <code className="break-all">{url}</code>.
         </p>
         <Button variant="outline" size="sm" onClick={() => setNonce((n) => n + 1)}>
           New code
         </Button>
-        {ipUrl && (
+        {link && (
           <p className="settings-row-desc mt-2">
-            If the phone can't resolve the name, open this once instead: <code className="break-all">{ipUrl}</code>
+            Or paste this link into the app's Pair screen: <code className="break-all">{link}</code>
           </p>
         )}
+        {stuck && <PairingChecklist warnings={warnings} />}
       </div>
+    </div>
+  );
+}
+
+// Shown after PAIRING_HINT_AFTER_MS with no pairing: the phone-side causes the
+// computer cannot see, plus a pointer at its own warnings when it has any.
+function PairingChecklist({ warnings }: { warnings: LanWarning[] }) {
+  return (
+    <div className="lan-checklist settings-row-desc mt-2" role="status">
+      <b>Phone not getting through?</b>
+      <ul>
+        <li>Both on the same Wi-Fi (guest and hotel networks often keep devices from seeing each other).</li>
+        <li>On the phone: Settings → Fused Render → Local Network must be on.</li>
+        <li>The app shows its own reason under the top bar when it cannot reach this computer.</li>
+        {warnings.length > 0 && <li>This computer reports {warnings.length === 1 ? "a problem" : "problems"} of its own, listed below.</li>}
+      </ul>
     </div>
   );
 }
@@ -201,28 +243,35 @@ function agoLabel(ts: number): string {
   return `${Math.floor(s / 86400)} d ago`;
 }
 
+/** A phone seen within this window is getting through right now. */
+const REACHABLE_WITHIN_S = 15 * 60;
+
 function LanDevices({ devices, onRevoke }: { devices: LanDevice[]; onRevoke: (id: string | null) => void }) {
-  if (!devices.length) return <p className="settings-row-desc">No paired devices yet.</p>;
+  if (!devices.length) return <p className="settings-row-desc">No paired phones yet.</p>;
   return (
     <div className="lan-devices">
       <div className="lan-devices-head">
-        <b>Paired devices</b>
+        <b>Paired phones</b>
         <Button variant="outline" size="sm" onClick={() => onRevoke(null)}>
           Forget all
         </Button>
       </div>
       <ul>
-        {devices.map((d) => (
-          <li key={d.id}>
-            <span className="lan-device-name">{d.name}</span>
-            <span className="deploy-muted">
-              paired {agoLabel(d.paired_at)} · seen {agoLabel(d.last_seen)}
-            </span>
-            <Button variant="outline" size="sm" onClick={() => onRevoke(d.id)}>
-              Revoke
-            </Button>
-          </li>
-        ))}
+        {devices.map((d) => {
+          const reachable = Date.now() / 1000 - d.last_seen < REACHABLE_WITHIN_S;
+          return (
+            <li key={d.id}>
+              <span className="lan-device-name">{d.name}</span>
+              <span className="deploy-muted">
+                {reachable ? `reachable, seen ${agoLabel(d.last_seen)}` : `last seen ${agoLabel(d.last_seen)}`} · paired{" "}
+                {agoLabel(d.paired_at)}
+              </span>
+              <Button variant="outline" size="sm" onClick={() => onRevoke(d.id)}>
+                Revoke
+              </Button>
+            </li>
+          );
+        })}
       </ul>
     </div>
   );

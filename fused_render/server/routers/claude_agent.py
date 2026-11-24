@@ -62,7 +62,7 @@ from fused_render import calls as shell_calls
 from fused_render import jobs as shell_jobs
 from fused_render import netlog
 from fused_render import claude_agent, claude_remote
-from fused_render import tasks_watch
+from fused_render import tasks_store, tasks_watch
 from fused_render._binding import ParamError, bind_params
 from fused_render.claude_agent import gate, pool
 from fused_render.executor import dumps_result
@@ -79,8 +79,11 @@ ACTIONS: dict[str, str] = {
     "start": "_start",
     "poll": "_poll",
     "decide": "_decide",
+    "allow_denied": "_allow_denied",
     "app_state": "_answer_app_state",
     "canvas_shot": "_answer_canvas_shot",
+    "canvas_shot_inbox": "_canvas_shot_inbox",
+    "canvas_shot_claim": "_canvas_shot_claim",
     "sessions": "_sessions",
     "live_run": "_live_run",
     "cards": "_cards",
@@ -95,13 +98,17 @@ ACTIONS: dict[str, str] = {
     "cancel": "_cancel",
     "live_host": "_live_host",
     "send": "_send",
+    "send_now": "_send_now_queued",
     "set_mode": "_set_mode",
     "commands": "_commands",
     "task_output": "_task_output",
+    "context_usage": "_context_breakdown",
     "task_stop": "_task_stop",
     "task_background": "_task_background",
     "tasks": "_run_tasks",
 }
+# Actions that never change what git reports (see `agent_dispatch`).
+_NO_GIT_ACTIONS = frozenset({"canvas_shot_inbox", "canvas_shot_claim"})
 
 #: The engine name the call log records for these routes. `/api/run` wrote
 #: "builtin" or "fused"; neither is true here, and the Calls page only shows it.
@@ -319,6 +326,36 @@ async def api_claude_agent(request: Request, body: dict = Body(default={}),
     return await agent_dispatch(body, getattr(request.state, "fused_call", None))
 
 
+def _mark_breakout(params: dict, envelope: dict) -> None:
+    """File the session a breakout `start` just made in `breakouts.json`, so
+    the Tasks scan never lists it. Best-effort: a failed mark shows an extra
+    row, it must never fail the start."""
+    try:
+        if params.get("action") != "start" or \
+                str(params.get("breakout") or "") not in ("1", "resume"):
+            return
+        result = envelope.get("result") if isinstance(envelope, dict) else None
+        sid = str(result.get("session_id") or "") if isinstance(result, dict) \
+            and not result.get("error") else ""
+        if sid:
+            tasks_store.mark_breakout(sid)
+    except Exception:  # noqa: BLE001
+        logger.exception("claude agent: could not mark the breakout")
+
+
+def _expert_after(params: dict, envelope: dict) -> None:
+    """An expert's main chat or breakout (`expert: "<id>:<kind>"`)
+    started: record its session, for the pane's chat and the breakout's inbox
+    file (experts/chat.py)."""
+    res = envelope.get("result")
+    if params.get("action") == "start" and params.get("expert") \
+            and isinstance(res, dict) and res.get("session_id"):
+        from fused_render.experts import chat
+
+        spec_id, _, kind = str(params["expert"]).partition(":")
+        chat.record_start(spec_id, kind, str(res["session_id"]))
+
+
 async def agent_dispatch(body: dict, call: dict | None) -> Response:
     """Everything after the transport's guard: the POST route's body, shared
     with the `/api/claude/agent/ws` socket (whose guard is its origin check).
@@ -383,6 +420,8 @@ async def agent_dispatch(body: dict, call: dict | None) -> Response:
         # as before — it is the folder's own session continuing.
         gate._file_owner(params, _envelope_of(fut), body,
                          late=(action == "start"))
+        _mark_breakout(params, _envelope_of(fut))
+        _expert_after(params, _envelope_of(fut))
         git_status.invalidate_status_cache()
 
     def _on_cancel(fut):
@@ -429,6 +468,8 @@ async def agent_dispatch(body: dict, call: dict | None) -> Response:
         # handler never ran, so it is filed now as the failure it is (the
         # placeholder dropped, a send's spent claim restored) with no `_late`.
         gate._file_owner(params, envelope, body)
+        _mark_breakout(params, envelope)
+        _expert_after(params, envelope)
     if action == "cancel" and status == 200:
         # THE TASKS PAGE HEARS THE STOP NOW. Its own readers (the CLI's
         # registry row, the transcript tail) only notice a stop once the CLI
@@ -444,8 +485,11 @@ async def agent_dispatch(body: dict, call: dict | None) -> Response:
             tasks_watch.notify({session_id})
     # A turn writes files (and `_poll` commits them at turn end), so the git
     # status cache is dropped after every call, success or failure — the same
-    # unconditional drop /api/run made after every script.
-    git_status.invalidate_status_cache()
+    # unconditional drop /api/run made after every script. Not for a canvas
+    # page's 1 s inbox poll and claim: they touch no repo, and would keep the
+    # cache from ever holding.
+    if action not in _NO_GIT_ACTIONS:
+        git_status.invalidate_status_cache()
     # The call log's record (calls.py): attributed to agent.py, with the page's
     # params and — on failure — the error a user has since clicked away from.
     # A record exists only when the page sent `X-Fused-Page`
@@ -616,7 +660,7 @@ async def api_claude_agent_ws(ws: WebSocket):
             shell_calls.finish(call, status=500, elapsed_ms=dur, outcome="error",
                                err_id=err_id)
             await reply(frame(rid, 500, json.dumps({
-                "error": f"fused-render internal error on WS {route} "
+                "error": f"Fused Render internal error on WS {route} "
                          f"(err_id {err_id}):\n\n{tb}",
             })))
             return

@@ -1618,4 +1618,839 @@
 .lidar-chart-popup-resize:hover {
   background: linear-gradient(135deg, transparent 50%, var(--lidar-resize-grip-hover) 50%, var(--lidar-resize-grip-hover) 60%, transparent 60%, transparent 70%, var(--lidar-resize-grip-hover) 70%, var(--lidar-resize-grip-hover) 80%, transparent 80%);
 }
+/*$vite$:1*//**
+ * MapLibre GL Vector Control Styles
+ *
+ * Colors are driven by custom properties with light defaults and a
+ * prefers-color-scheme dark override, so the panel renders properly in
+ * both themes. The variables are defined on both roots because the
+ * panel element is appended to the map container, outside the control.
+ */
+
+.vector-control,
+.vector-control-panel,
+.vector-control-popup,
+.vector-control-layer-picker {
+  --vc-bg: #fff;
+  --vc-text: #333;
+  --vc-text-strong: #1f2a37;
+  --vc-text-soft: #475467;
+  --vc-muted: #98a2b3;
+  --vc-border: #e0e0e0;
+  --vc-border-soft: #e9edf2;
+  --vc-item-bg: #fafbfc;
+  --vc-hover: rgba(0, 0, 0, 0.05);
+  --vc-accent: #4a90d9;
+  --vc-accent-hover: #3a7bc8;
+  --vc-accent-soft: rgba(74, 144, 217, 0.06);
+  --vc-accent-text: #fff;
+  --vc-error: #d9534a;
+  --vc-input-bg: #fff;
+  --vc-input-border: #d0d5dd;
+  --vc-scrollbar: #ccc;
+  --vc-scrollbar-hover: #aaa;
+  --vc-shadow: 0 0 0 2px rgba(0, 0, 0, 0.1);
+}
+
+@media (prefers-color-scheme: dark) {
+  .vector-control,
+  .vector-control-panel,
+  .vector-control-popup,
+  .vector-control-layer-picker {
+    --vc-bg: #1f2937;
+    --vc-text: #e5e7eb;
+    --vc-text-strong: #f3f4f6;
+    --vc-text-soft: #cbd5e1;
+    --vc-muted: #8b96a5;
+    --vc-border: #374151;
+    --vc-border-soft: #2c3543;
+    --vc-item-bg: #273141;
+    --vc-hover: rgba(255, 255, 255, 0.08);
+    --vc-accent: #5ba0e8;
+    --vc-accent-hover: #6fb0f2;
+    --vc-accent-soft: rgba(91, 160, 232, 0.12);
+    --vc-accent-text: #fff;
+    --vc-error: #f08c85;
+    --vc-input-bg: #111827;
+    --vc-input-border: #4b5563;
+    --vc-scrollbar: #4b5563;
+    --vc-scrollbar-hover: #6b7280;
+    --vc-shadow: 0 0 0 2px rgba(0, 0, 0, 0.35);
+  }
+}
+
+/* Container - matches maplibregl-ctrl styling.
+   The doubled class selector outranks maplibre-gl's own
+   `.maplibregl-ctrl-group { background: #fff }` regardless of
+   stylesheet order, so the button follows the system theme too -
+   otherwise dark mode renders a light icon on a white button. */
+.vector-control,
+.vector-control.maplibregl-ctrl-group {
+  background: var(--vc-bg);
+  border-radius: 4px;
+  box-shadow: var(--vc-shadow);
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+}
+
+/* Toggle button - 29x29 to match navigation control */
+.vector-control-toggle {
+  background: none;
+  border: none;
+  padding: 0;
+  width: 29px;
+  height: 29px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  outline: none;
+  color: var(--vc-text-strong);
+}
+
+.vector-control-toggle:hover {
+  background-color: var(--vc-hover);
+}
+
+.vector-control-toggle .vector-control-icon {
+  width: 100%;
+  height: 100%;
+  position: relative;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  line-height: 0;
+}
+
+.vector-control-toggle .vector-control-icon svg {
+  width: 22px;
+  height: 22px;
+  display: block;
+  stroke: currentcolor;
+  fill: none;
+}
+
+/* Panel - positioned dynamically by JavaScript for floating behavior.
+   A flex column so the header stays put and the content scrolls when
+   the JS-computed max-height kicks in on small screens. */
+.vector-control-panel {
+  position: absolute;
+  /* Position and max-height/max-width are set by _updatePanelPosition() */
+  background: var(--vc-bg);
+  border-radius: 4px;
+  box-shadow: var(--vc-shadow);
+  min-width: 240px;
+  max-width: 420px;
+  max-height: 500px;
+  z-index: 1000;
+  padding: 8px;
+  font-size: 12px;
+  line-height: 1.4;
+  color: var(--vc-text);
+  display: none;
+  flex-direction: column;
+  box-sizing: border-box;
+}
+
+.vector-control-panel.expanded {
+  display: flex;
+}
+
+/* Resize handles (only rendered when the `resizable` option is set) */
+.vector-control-resize-handle {
+  position: absolute;
+  bottom: 0;
+  width: 16px;
+  height: 16px;
+  z-index: 1;
+  touch-action: none;
+}
+
+.vector-control-resize-handle::after {
+  content: '';
+  position: absolute;
+  bottom: 3px;
+  width: 7px;
+  height: 7px;
+  border-color: var(--vc-muted);
+  border-style: solid;
+  opacity: 0.7;
+}
+
+.vector-control-resize-handle:hover::after {
+  border-color: var(--vc-accent);
+  opacity: 1;
+}
+
+.vector-control-resize-right {
+  right: 0;
+  cursor: nwse-resize;
+}
+
+.vector-control-resize-right::after {
+  right: 3px;
+  border-width: 0 2px 2px 0;
+}
+
+.vector-control-resize-left {
+  left: 0;
+  cursor: nesw-resize;
+}
+
+.vector-control-resize-left::after {
+  left: 3px;
+  border-width: 0 0 2px 2px;
+}
+
+/* Panel header */
+.vector-control-header {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  font-weight: 600;
+  color: var(--vc-text);
+  padding: 4px 0 8px 0;
+  border-bottom: 1px solid var(--vc-border);
+  margin-bottom: 8px;
+}
+
+.vector-control-title {
+  flex: 1 1 auto;
+  font-size: 13px;
+}
+
+.vector-control-close {
+  width: 20px;
+  height: 20px;
+  border: none;
+  background: transparent;
+  color: var(--vc-muted);
+  font-size: 18px;
+  line-height: 1;
+  cursor: pointer;
+  padding: 0;
+  transition: color 0.2s ease;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.vector-control-close:hover {
+  color: var(--vc-text);
+}
+
+/* Content - the scrolling region of the panel */
+.vector-control-content {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+}
+
+/* Only while the content overflows: clear room for the (overlay) scrollbar
+   so it does not paint over the inputs/buttons. Toggled from JS so the
+   right margin matches the left whenever there is no scrollbar. */
+.vector-control-content.vector-control-has-scrollbar {
+  padding-right: 8px;
+}
+
+/* Scrollbar styling */
+.vector-control-content::-webkit-scrollbar {
+  width: 6px;
+}
+
+.vector-control-content::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.vector-control-content::-webkit-scrollbar-thumb {
+  background: var(--vc-scrollbar);
+  border-radius: 3px;
+}
+
+.vector-control-content::-webkit-scrollbar-thumb:hover {
+  background: var(--vc-scrollbar-hover);
+}
+
+/* Form elements */
+.vector-control-group {
+  margin-bottom: 12px;
+}
+
+.vector-control-group:last-child {
+  margin-bottom: 0;
+}
+
+.vector-control-label {
+  display: block;
+  margin-bottom: 4px;
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--vc-text-soft);
+}
+
+.vector-control-input {
+  width: 100%;
+  padding: 8px 10px;
+  font-size: 14px;
+  border: 1px solid var(--vc-input-border);
+  border-radius: 4px;
+  outline: none;
+  background: var(--vc-input-bg);
+  color: var(--vc-text);
+  transition: border-color 0.15s, box-shadow 0.15s;
+  box-sizing: border-box;
+}
+
+.vector-control-input::placeholder {
+  color: var(--vc-muted);
+}
+
+.vector-control-input:focus {
+  border-color: var(--vc-accent);
+  box-shadow: 0 0 0 3px var(--vc-accent-soft);
+}
+
+.vector-control-button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 8px 16px;
+  font-size: 14px;
+  font-weight: 500;
+  color: var(--vc-accent-text);
+  background: var(--vc-accent);
+  border: none;
+  border-radius: 4px;
+  cursor: pointer;
+  transition: background-color 0.15s;
+}
+
+.vector-control-button:hover {
+  background: var(--vc-accent-hover);
+}
+
+.vector-control-button:focus {
+  outline: 2px solid var(--vc-accent);
+  outline-offset: 2px;
+}
+
+.vector-control-button:disabled {
+  background: var(--vc-muted);
+  cursor: not-allowed;
+}
+
+/* Utility classes */
+.vector-control-flex {
+  display: flex;
+  gap: 8px;
+}
+
+.vector-control-flex-col {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.vector-control-divider {
+  height: 1px;
+  background: var(--vc-border);
+  margin: 12px 0;
+  flex: 0 0 auto;
+}
+
+/* ------------------------------------------------------------------ */
+/* Vector data UI                                                      */
+/* ------------------------------------------------------------------ */
+
+/* Drop zone */
+.vector-control-dropzone {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  padding: 14px 10px;
+  border: 1.5px dashed var(--vc-input-border);
+  border-radius: 6px;
+  color: var(--vc-text-soft);
+  font-size: 12px;
+  cursor: pointer;
+  transition: border-color 0.15s, background-color 0.15s, color 0.15s;
+  margin-bottom: 8px;
+  user-select: none;
+}
+
+.vector-control-dropzone:hover,
+.vector-control-dropzone.dragover {
+  border-color: var(--vc-accent);
+  background: var(--vc-accent-soft);
+  color: var(--vc-accent);
+}
+
+.vector-control-svg-icon {
+  display: inline-flex;
+  align-items: center;
+  line-height: 0;
+}
+
+/* URL row */
+.vector-control-url-row {
+  margin-bottom: 8px;
+}
+
+.vector-control-url-row .vector-control-input {
+  flex: 1 1 auto;
+  min-width: 0;
+  padding: 6px 8px;
+  font-size: 12px;
+}
+
+.vector-control-url-row .vector-control-button {
+  flex: 0 0 auto;
+  padding: 6px 12px;
+  font-size: 12px;
+}
+
+/* Sample data dropdown - a custom (non-native) dropdown so the menu is
+   fully themeable in dark mode. */
+.vector-control-sample-row {
+  position: relative;
+  margin-bottom: 8px;
+}
+
+.vector-control-sample-trigger {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 6px 8px;
+  font-size: 12px;
+  font-family: inherit;
+  color: var(--vc-muted);
+  background: var(--vc-input-bg);
+  border: 1px solid var(--vc-input-border);
+  border-radius: 4px;
+  cursor: pointer;
+  box-sizing: border-box;
+  text-align: left;
+}
+
+.vector-control-sample-trigger:hover,
+.vector-control-sample-trigger.open,
+.vector-control-sample-trigger:focus-visible {
+  outline: none;
+  border-color: var(--vc-accent);
+}
+
+.vector-control-sample-trigger-label {
+  flex: 1 1 auto;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.vector-control-sample-trigger .vector-control-svg-icon {
+  flex: 0 0 auto;
+  display: flex;
+}
+
+.vector-control-sample-menu {
+  position: absolute;
+  top: calc(100% + 2px);
+  left: 0;
+  right: 0;
+  z-index: 10;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 4px;
+  background: var(--vc-bg);
+  border: 1px solid var(--vc-border);
+  border-radius: 4px;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.18);
+  max-height: 220px;
+  overflow-y: auto;
+  box-sizing: border-box;
+}
+
+.vector-control-sample-menu[hidden] {
+  display: none;
+}
+
+.vector-control-sample-option {
+  width: 100%;
+  padding: 6px 8px;
+  font-size: 12px;
+  font-family: inherit;
+  text-align: left;
+  color: var(--vc-text);
+  background: none;
+  border: none;
+  border-radius: 3px;
+  cursor: pointer;
+}
+
+.vector-control-sample-option:hover,
+.vector-control-sample-option:focus-visible {
+  outline: none;
+  background: var(--vc-hover);
+}
+
+/* Streaming toggle */
+.vector-control-stream-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 11px;
+  color: var(--vc-text-soft);
+  margin-bottom: 8px;
+  cursor: pointer;
+  user-select: none;
+}
+
+/* Status line */
+.vector-control-status {
+  font-size: 11px;
+  color: var(--vc-accent);
+  padding: 4px 2px;
+  overflow-wrap: break-word;
+}
+
+.vector-control-status.error {
+  color: var(--vc-error);
+}
+
+/* Section title */
+.vector-control-section-title {
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--vc-muted);
+  margin-bottom: 6px;
+}
+
+/* Layer list */
+.vector-control-layer-list {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.vector-control-empty {
+  font-size: 12px;
+  color: var(--vc-muted);
+  text-align: center;
+  padding: 10px 0;
+}
+
+.vector-control-layer-item {
+  border: 1px solid var(--vc-border-soft);
+  border-radius: 6px;
+  padding: 6px;
+  background: var(--vc-item-bg);
+}
+
+.vector-control-layer-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.vector-control-layer-name-wrap {
+  flex: 1 1 auto;
+  min-width: 0;
+  cursor: pointer;
+}
+
+.vector-control-layer-name {
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--vc-text);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.vector-control-layer-meta {
+  font-size: 10px;
+  color: var(--vc-muted);
+}
+
+.vector-control-layer-actions {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  flex: 0 0 auto;
+}
+
+.vector-control-icon-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  border: none;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--vc-text-soft);
+  cursor: pointer;
+  padding: 0;
+  transition: background-color 0.15s, color 0.15s;
+}
+
+.vector-control-icon-btn:hover {
+  background: var(--vc-hover);
+  color: var(--vc-text-strong);
+}
+
+/* Style editor */
+.vector-control-style-editor {
+  margin-top: 6px;
+  padding-top: 6px;
+  border-top: 1px solid var(--vc-border-soft);
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.vector-control-style-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 11px;
+  color: var(--vc-text-soft);
+}
+
+.vector-control-style-label {
+  flex: 0 0 44px;
+}
+
+.vector-control-color {
+  width: 36px;
+  height: 22px;
+  padding: 0;
+  border: 1px solid var(--vc-input-border);
+  border-radius: 4px;
+  background: none;
+  cursor: pointer;
+}
+
+.vector-control-range {
+  flex: 1 1 auto;
+  min-width: 0;
+  accent-color: var(--vc-accent);
+}
+
+.vector-control-range-value {
+  flex: 0 0 28px;
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+  color: var(--vc-text-soft);
+}
+
+.vector-control-select {
+  flex: 1 1 auto;
+  font-size: 11px;
+  padding: 3px 6px;
+  border: 1px solid var(--vc-input-border);
+  border-radius: 4px;
+  background: var(--vc-input-bg);
+  color: var(--vc-text);
+}
+
+/* Attribute picker popup */
+.vector-control-popup {
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+  font-size: 12px;
+  color: var(--vc-text);
+  max-height: 240px;
+  overflow-y: auto;
+}
+
+.vector-control-popup-title {
+  font-weight: 600;
+  font-size: 12px;
+  margin-bottom: 4px;
+  color: var(--vc-text-strong);
+}
+
+.vector-control-popup-table {
+  border-collapse: collapse;
+  width: 100%;
+}
+
+.vector-control-popup-table td {
+  padding: 2px 8px 2px 0;
+  vertical-align: top;
+  border-bottom: 1px solid var(--vc-border-soft);
+  overflow-wrap: anywhere;
+}
+
+.vector-control-popup-table tr:last-child td {
+  border-bottom: none;
+}
+
+.vector-control-popup-key {
+  font-weight: 500;
+  color: var(--vc-text-soft);
+  white-space: nowrap;
+}
+
+.vector-control-popup-empty {
+  color: var(--vc-muted);
+}
+
+/* Theme the MapLibre popup chrome around our content in dark mode */
+@media (prefers-color-scheme: dark) {
+  .maplibregl-popup:has(.vector-control-popup) .maplibregl-popup-content {
+    background: #1f2937;
+    box-shadow: 0 1px 6px rgba(0, 0, 0, 0.5);
+  }
+
+  .maplibregl-popup:has(.vector-control-popup) .maplibregl-popup-close-button {
+    color: #8b96a5;
+  }
+
+  .maplibregl-popup-anchor-top:has(.vector-control-popup) .maplibregl-popup-tip,
+  .maplibregl-popup-anchor-top-left:has(.vector-control-popup) .maplibregl-popup-tip,
+  .maplibregl-popup-anchor-top-right:has(.vector-control-popup) .maplibregl-popup-tip {
+    border-bottom-color: #1f2937;
+  }
+
+  .maplibregl-popup-anchor-bottom:has(.vector-control-popup) .maplibregl-popup-tip,
+  .maplibregl-popup-anchor-bottom-left:has(.vector-control-popup) .maplibregl-popup-tip,
+  .maplibregl-popup-anchor-bottom-right:has(.vector-control-popup) .maplibregl-popup-tip {
+    border-top-color: #1f2937;
+  }
+
+  .maplibregl-popup-anchor-left:has(.vector-control-popup) .maplibregl-popup-tip {
+    border-right-color: #1f2937;
+  }
+
+  .maplibregl-popup-anchor-right:has(.vector-control-popup) .maplibregl-popup-tip {
+    border-left-color: #1f2937;
+  }
+}
+
+.vector-control-checkbox {
+  width: 14px;
+  height: 14px;
+  margin: 0;
+  accent-color: var(--vc-accent);
+  cursor: pointer;
+}
+
+/* Multi-layer container picker.
+ *
+ * Rendered into the map container (not the panel), so it stays visible when
+ * the panel is collapsed or the host keeps the control hidden and drives
+ * addData programmatically. It is modal, so its z-index sits one above the
+ * panel's 1000 (itself above MapLibre's own controls). */
+.vector-control-layer-picker {
+  position: absolute;
+  inset: 0;
+  z-index: 1001;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 16px;
+  background: rgba(15, 23, 42, 0.45);
+  font-family:
+    -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;
+}
+
+.vector-control-layer-picker-dialog {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  width: min(360px, 100%);
+  max-height: 100%;
+  padding: 16px;
+  color: var(--vc-text);
+  background: var(--vc-bg);
+  border: 1px solid var(--vc-border);
+  border-radius: 8px;
+  box-shadow: 0 10px 30px rgba(0, 0, 0, 0.25);
+}
+
+.vector-control-layer-picker-title {
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--vc-text-strong);
+}
+
+.vector-control-layer-picker-subtitle {
+  font-size: 12px;
+  color: var(--vc-text-soft);
+  overflow-wrap: anywhere;
+}
+
+.vector-control-layer-picker-all,
+.vector-control-layer-picker-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 13px;
+  cursor: pointer;
+}
+
+.vector-control-layer-picker-all {
+  padding: 6px 8px;
+  font-weight: 500;
+  color: var(--vc-text-strong);
+  background: var(--vc-item-bg);
+  border: 1px solid var(--vc-border-soft);
+  border-radius: 4px;
+}
+
+.vector-control-layer-picker-list {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-height: 0;
+  max-height: 240px;
+  overflow-y: auto;
+  padding: 4px;
+  border: 1px solid var(--vc-border-soft);
+  border-radius: 4px;
+}
+
+.vector-control-layer-picker-item {
+  padding: 5px 6px;
+  border-radius: 4px;
+}
+
+.vector-control-layer-picker-item:hover {
+  background: var(--vc-hover);
+}
+
+.vector-control-layer-picker-name {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.vector-control-layer-picker-footer {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+.vector-control-layer-picker-footer .vector-control-button {
+  padding: 6px 14px;
+  font-size: 13px;
+}
+
+.vector-control-button-secondary {
+  color: var(--vc-text);
+  background: transparent;
+  border: 1px solid var(--vc-input-border);
+}
+
+.vector-control-button-secondary:hover {
+  background: var(--vc-hover);
+}
 /*$vite$:1*/

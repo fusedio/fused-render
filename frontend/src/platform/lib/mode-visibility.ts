@@ -42,11 +42,28 @@ import type { TemplateEntry } from "@platform/lib/api";
 export type ConditionVerdicts = Record<string, boolean> | null;
 
 // Gated and no verdict yet — the entry shows, but is not selectable.
+// A canvas node template is never pending: a preferred one goes ahead on the
+// path check alone (below), any other is not listed until its yes.
 export function isModePending(entry: TemplateEntry, verdicts: ConditionVerdicts): boolean {
+  if (isNodeEntry(entry)) return false;
   return !!entry.conditional && verdicts === null;
 }
 
+// THE ONE EXCEPTION TO "a missing verdict shows": the canvas node templates
+// (`node` entries, SPEC §53.2). Their gates answer yes for a handful of files
+// behind an opt-in feature and no for every other `.py`/`.json`/`.html`/`.md`,
+// so reading a failed conditions call as "visible" would offer — and, where it
+// is the default candidate, open — a node's page on files that are not nodes.
+// Such an entry needs an explicit YES — except where stat marked it the
+// default candidate (`prefer`): the path is shaped like a canvas node file and
+// Canvases is on. That path check is enough. The entry is listed and opened at
+// once, without waiting for the gate (which reads canvas.toml), and a later no
+// does not take it away: the node page itself says when the file is not a node
+// of a canvas. Anywhere else it is not listed until the yes.
 export function isModeVisible(entry: TemplateEntry, verdicts: ConditionVerdicts): boolean {
+  if (isNodeEntry(entry)) {
+    return isPreferred(entry) || (verdicts !== null && verdicts[entry.mode] === true);
+  }
   if (!entry.conditional) return true;
   if (verdicts === null) return true; // in flight — pending, not denied
   return verdicts[entry.mode] !== false; // absent verdict (failed call) shows
@@ -123,6 +140,35 @@ export function unavailableReason(mode: string): string {
   return UNAVAILABLE_REASONS[mode] ?? "Not available here";
 }
 
+// A canvas node template's entry (SPEC §53.2): one of the built-in gated
+// folders that draw a node file of a cloned canvas (`canvas_widget`,
+// `canvas_note`, `canvas_udf`). The server says which entries those are
+// (`node`), so a user folder of the same name is an ordinary template.
+export function isNodeEntry(entry: Pick<TemplateEntry, "node">): boolean {
+  return entry.node === true;
+}
+
+// The modes a pane may offer while it previews a git snapshot (`_snapshot`):
+// every one but the canvas node templates, which are live by nature — they
+// draw the node as it stands now (the saved canvas, a run of the file on
+// disk), never as of a commit, so under "Showing this file as of commit …"
+// they would show the wrong era. Without a snapshot the list is returned as
+// is.
+export function modesUnderSnapshot<T extends Pick<TemplateEntry, "node">>(
+  entries: T[],
+  snapshotSha: string | null | undefined
+): T[] {
+  return snapshotSha ? entries.filter((e) => !isNodeEntry(e)) : entries;
+}
+
+// The default CANDIDATE although gated (SPEC PT-8's one exception): a canvas
+// node template's entry where stat marked it `prefer` — a path shaped like a
+// canvas node file, Canvases on. Never any other entry, whatever the server
+// sends.
+function isPreferred(entry: TemplateEntry): boolean {
+  return isNodeEntry(entry) && !!entry.conditional && entry.prefer === true;
+}
+
 export function isSidebarMode(mode: string): boolean {
   return SIDEBAR_MODE_SET.has(mode);
 }
@@ -181,8 +227,13 @@ export function visibleModes(
 // The default entry among an ALREADY-VISIBLE list: the first UNCONDITIONAL one
 // (CT-12 — a gated template is never the default while a normal one exists);
 // only an all-conditional list falls back to its first entry.
+//
+// Except a PREFERRED entry (a node template on a node-shaped path, `prefer`;
+// SPEC PT-8): it is the default whenever it is in the visible list, which by
+// `isModeVisible` is always — the path check decides, no verdict is waited
+// for and none removes it.
 export function defaultMode(visible: TemplateEntry[]): TemplateEntry | null {
-  return visible.find((e) => !e.conditional) ?? visible[0] ?? null;
+  return visible.find(isPreferred) ?? visible.find((e) => !e.conditional) ?? visible[0] ?? null;
 }
 
 // The entry a surface should actually show for a requested `_mode`: the

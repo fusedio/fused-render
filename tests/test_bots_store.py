@@ -1,6 +1,8 @@
-"""fused_render.bots.store: bot.json, events.jsonl, the usage ledger and
-summary, the Markdown export, builds.json. conftest points FUSED_RENDER_HOME
-at a tmp dir, so every path here lands under it."""
+"""fused_render.bots.store: bot.json + state.json (the public/private split),
+events.jsonl, the usage ledger and summary, the Markdown export, builds.json.
+_bots_conftest points FUSED_RENDER_HOME and FUSED_RENDER_DIR at tmp dirs, so
+every path here lands under one of them: a bot's folder under <ws>/bots/, the
+ledgers under <home>/bots/."""
 from _bots_conftest import *  # noqa: F401,F403 — FusedBot's conftest fixtures (app_home, client, …)
 import json
 import os
@@ -21,36 +23,250 @@ def _fresh_usage_cache():
 
 
 # ------------------------------------------------------------------- meta ---
-def test_paths_live_under_app_home(app_home):
-    # The OpenBot `.fused/` layout, one-to-one, so a copy of that folder migrates.
-    assert store.bot_dir("b1") == os.path.join(str(app_home), "bots", "data", "bots", "b1")
-    assert bpaths.bot_cache_dir("b1") == os.path.join(str(app_home), "bots", "cache", "bots", "b1")
+B1, B2 = "b1b1b1b1", "b2b2b2b2"  # ids are 8 hex (paths._ID_RE); a bot must be place()d before it is written
+
+
+def test_paths_split_between_workspace_and_app_home(app_home):
+    # Per-bot files live in the bot's folder under <workspace>/bots/ (public root, private .fused/); the
+    # machine-wide ledgers stay under the app home (docs/bots.md §1).
+    ws = os.environ["FUSED_RENDER_DIR"]
+    with pytest.raises(LookupError):
+        bpaths.bot_folder(B1)  # not placed yet
+    folder = bpaths.place(B1, "Bot One")
+    assert folder == os.path.join(ws, "bots", "bot-one") == bpaths.bot_folder(B1)
+    assert store.meta_path(B1) == os.path.join(folder, "bot.json")
+    assert store.bot_dir(B1) == bpaths.bot_private(B1) == os.path.join(folder, ".fused")
+    assert store.state_path(B1) == os.path.join(folder, ".fused", "state.json")
+    assert store.events_path(B1) == os.path.join(folder, ".fused", "events.jsonl")
+    assert bpaths.bot_cache_dir(B1) == os.path.join(folder, ".fused", "cache")
+    assert bpaths.bot_inbox(B1) == os.path.join(folder, ".fused", "inbox")
+    with open(os.path.join(folder, ".gitignore"), encoding="utf-8") as f:
+        assert f.read() == ".fused/\n"
+    assert bpaths.legacy_data_dir() == os.path.join(str(app_home), "bots", "data", "bots")
+    assert bpaths.legacy_cache_dir() == os.path.join(str(app_home), "bots", "cache", "bots")
     assert bpaths.usage_path() == os.path.join(str(app_home), "bots", "data", "usage.jsonl")
     assert bpaths.builds_path() == os.path.join(str(app_home), "bots", "data", "builds.json")
     assert bpaths.slow_log_path() == os.path.join(str(app_home), "bots", "cache", "slow.jsonl")
 
 
+def _tmp_files(bid):
+    return [n for d in (bpaths.bot_folder(bid), store.bot_dir(bid)) for n in os.listdir(d) if n.endswith(".tmp")]
+
+
 def test_meta_round_trip_and_list_ids():
     assert store.list_ids() == []
-    store.write_meta("b2", {"id": "b2", "name": "Two"})
-    store.write_meta("b1", {"id": "b1", "name": "Ünï", "n": [1, 2]})
-    os.makedirs(store.bot_dir("no-meta"))  # a folder without bot.json is not a bot
-    assert store.read_meta("b1") == {"id": "b1", "name": "Ünï", "n": [1, 2]}
-    assert store.list_ids() == ["b1", "b2"]
-    store.write_meta("b1", {"id": "b1", "name": "Renamed"})
-    assert store.read_meta("b1")["name"] == "Renamed"
-    assert [n for n in os.listdir(store.bot_dir("b1")) if n.endswith(".tmp")] == []
+    bpaths.place(B2, "Two")
+    assert store.list_ids() == []  # placed but not written yet: not a bot
+    store.write_meta(B2, {"id": B2, "name": "Two"})
+    bpaths.place(B1, "Ünï")
+    store.write_meta(B1, {"id": B1, "name": "Ünï", "n": [1, 2]})
+    os.makedirs(os.path.join(bpaths.bots_root(), "no-meta"))  # a folder without bot.json is not a bot
+    assert store.read_meta(B1) == {"id": B1, "name": "Ünï", "n": [1, 2]}
+    assert store.list_ids() == [B1, B2]
+    store.write_meta(B1, {"id": B1, "name": "Renamed"})
+    assert store.read_meta(B1)["name"] == "Renamed"
+    assert _tmp_files(B1) == []
     with pytest.raises(OSError):
         store.read_meta("missing")
+    with pytest.raises(OSError):
+        store.read_meta("deadbeef")  # 8 hex, but no folder carries it
+
+
+def test_write_meta_splits_public_and_private_halves():
+    """bot.json (public, PUBLIC_KEYS) is a git-facing file: indented, sorted, newline-terminated, and rewritten
+    only when its text changes; everything else lands in .fused/state.json; routines split by id the same way."""
+    bpaths.place(B1, "Split")
+    routine = {"id": "r1", "task": "check", "kind": "every", "minutes": 30, "enabled": True, "created": 1.0,
+               "last": 5.0, "runs": 2, "fails": 0}
+    meta = {"id": B1, "name": "Split", "model": "sonnet", "status": "idle", "browser_id": B1, "created": 1.0,
+            "routines": [routine], "apps": []}
+    store.write_meta(B1, meta)
+    with open(store.meta_path(B1), encoding="utf-8") as f:
+        text = f.read()
+    public = json.loads(text)
+    gen = public[store.GEN_KEY]
+    assert set(public) == {k for k in meta if k in store.PUBLIC_KEYS} | {store.GEN_KEY}
+    assert {"id", "name", "routines"} <= set(public)
+    assert set(public["routines"][0]) <= store.ROUTINE_PUBLIC_KEYS and "last" not in public["routines"][0]
+    assert text == store._file_text(public, gen) and text.endswith("\n") and "\n  " in text  # indent=2, sorted
+    assert store.GEN_KEY not in store.public_json(public)  # the export text never carries the save stamp
+    with open(store.state_path(B1), encoding="utf-8") as f:
+        private = json.load(f)
+    priv_row = {"id": "r1", **{k: v for k, v in routine.items() if k not in store.ROUTINE_PUBLIC_KEYS},
+                store.SCHED_REV_KEY: store._sched_rev(public["routines"][0])}
+    priv_keys = {k: v for k, v in meta.items() if k not in store.PUBLIC_KEYS}
+    assert private == {**priv_keys, "routines": [priv_row], store.PUBLIC_GEN_KEY: gen}
+    assert "last" in priv_row and "status" in priv_keys
+    assert store.read_meta(B1) == meta  # merged back into ONE dict, routine run state included
+    # a runtime save that changes only private keys leaves bot.json untouched (git-clean folder)
+    before = os.stat(store.meta_path(B1))
+    store.write_meta(B1, {**meta, "status": "working", "step": 3})
+    after = os.stat(store.meta_path(B1))
+    assert (after.st_ino, after.st_mtime_ns) == (before.st_ino, before.st_mtime_ns)
+    assert store.read_meta(B1)["status"] == "working"
+    # a private routine row whose public twin is gone is dropped on read
+    store.write_meta(B1, {**meta, "routines": []})
+    assert store.read_meta(B1)["routines"] == []
+    # the public file always carries the id it is saved under
+    store.write_meta(B1, {"name": "No id"})
+    assert json.load(open(store.meta_path(B1), encoding="utf-8"))["id"] == B1
+
+
+def _routine_meta(bid, minutes=30):
+    return {"id": bid, "name": "Gen", "browser_id": "feedf00d",
+            "routines": [{"id": "r1", "task": "t", "kind": "every", "minutes": minutes, "created": 1.0,
+                          "enabled": True, "next": 1234.0, "last": 99.0, "fails": 1}]}
+
+
+_REAL_WRITE_JSON_ATOMIC = store.write_json_atomic
+
+
+def test_pre_upgrade_rows_without_sched_rev_keep_the_gen_rule_alone():
+    """A state.json from before sched_rev beside a torn bot.json whose schedule changed: only `next` drops."""
+    bpaths.place(B1, "Gen")
+    folder = bpaths.bot_folder(B1)
+    public, private = store.split_meta(_routine_meta(B1, minutes=30))
+    for r in private["routines"]:
+        del r[store.SCHED_REV_KEY]
+    public["routines"][0]["minutes"] = 5
+    _touch(os.path.join(folder, "bot.json"), store._file_text(public, "new"))
+    _touch(os.path.join(folder, ".fused", "state.json"), json.dumps({**private, store.PUBLIC_GEN_KEY: "old"}))
+    row = store.read_meta(B1)["routines"][0]
+    assert row["minutes"] == 5 and "next" not in row and row["last"] == 99.0 and row["enabled"] is True
+
+
+def test_write_meta_stamps_both_halves_with_one_gen():
+    bpaths.place(B1, "Gen")
+    store.write_meta(B1, _routine_meta(B1))
+    pub = json.load(open(store.meta_path(B1), encoding="utf-8"))
+    priv = json.load(open(store.state_path(B1), encoding="utf-8"))
+    assert isinstance(pub[store.GEN_KEY], str) and priv[store.PUBLIC_GEN_KEY] == pub[store.GEN_KEY]
+    m = store.read_meta(B1)
+    assert m == _routine_meta(B1)  # stamps never reach the merged meta; nothing dropped
+    # a private-only save keeps the gen (bot.json untouched); a public change mints a new one in both halves
+    store.write_meta(B1, {**m, "status": "working"})
+    assert json.load(open(store.meta_path(B1), encoding="utf-8"))[store.GEN_KEY] == pub[store.GEN_KEY]
+    store.write_meta(B1, {**m, "name": "Renamed"})
+    pub2 = json.load(open(store.meta_path(B1), encoding="utf-8"))
+    priv2 = json.load(open(store.state_path(B1), encoding="utf-8"))
+    assert pub2[store.GEN_KEY] != pub[store.GEN_KEY] == priv[store.PUBLIC_GEN_KEY] != priv2[store.PUBLIC_GEN_KEY]
+    assert priv2[store.PUBLIC_GEN_KEY] == pub2[store.GEN_KEY]
+    # split_meta never routes a stamp into either half, even when a meta dict carries one
+    pub_half, priv_half = store.split_meta({**m, store.GEN_KEY: "x", store.PUBLIC_GEN_KEY: "y"})
+    assert store.GEN_KEY not in pub_half and store.GEN_KEY not in priv_half and store.PUBLIC_GEN_KEY not in priv_half
+
+
+def test_torn_save_drops_next_and_keeps_the_rest(monkeypatch):
+    """A crash between bot.json (new public half) and state.json (old run state) that left the schedule alone:
+    the pair's gens differ, so the load drops `next` (the scheduler recomputes it) and keeps enabled/last/fails
+    (the routine's sched_rev still matches its schedule)."""
+    bpaths.place(B1, "Gen")
+    store.write_meta(B1, _routine_meta(B1, minutes=30))
+
+    def crash(path, obj):
+        raise OSError("power cut")
+    monkeypatch.setattr(store, "write_json_atomic", crash)
+    meta = _routine_meta(B1, minutes=30)
+    meta["name"], meta["routines"][0]["task"] = "Renamed", "t2"  # public, but not schedule
+    with pytest.raises(OSError):
+        store.write_meta(B1, meta)
+    m = store.read_meta(B1)
+    row = m["routines"][0]
+    assert m["name"] == "Renamed" and row["task"] == "t2"  # the new public half landed
+    assert "next" not in row and row["enabled"] is True and row["last"] == 99.0 and row["fails"] == 1
+    assert store.SCHED_REV_KEY not in row
+    assert m["browser_id"] == "feedf00d"  # non-routine private state kept
+
+
+def _two_routine_meta(bid):
+    return {"id": bid, "name": "Gen",
+            "routines": [{"id": "r1", "task": "t", "kind": "interval", "minutes": 30, "anchor": 10.0,
+                          "created": 1.0, "enabled": True, "next": 1234.0, "last": 99.0, "fails": 1},
+                         {"id": "r2", "task": "u", "kind": "daily", "time": "09:00", "weekdays": [0, 1],
+                          "created": 2.0, "enabled": False, "next": 5678.0, "last": 77.0, "fails": 2}]}
+
+
+def test_torn_save_that_changed_a_schedule_drops_that_routines_last(monkeypatch):
+    """An edit flipped r1 to `once` (the edit cleared its `last`), then a crash between the two writes: the OLD
+    private `last` sits beside the NEW once-schedule, and `_next_run` would never fire a once with `last` set.
+    r1's sched_rev no longer matches, so r1 drops `next` AND `last` (keeps `enabled`/`fails`); r2's rev matches,
+    so r2 keeps `last` and loses only `next` (the gen-torn rule, every row)."""
+    bpaths.place(B1, "Gen")
+    store.write_meta(B1, _two_routine_meta(B1))
+    priv = json.load(open(store.state_path(B1), encoding="utf-8"))
+    assert all(isinstance(r[store.SCHED_REV_KEY], str) for r in priv["routines"])
+
+    def crash(path, obj):
+        raise OSError("power cut")
+    monkeypatch.setattr(store, "write_json_atomic", crash)
+    meta = _two_routine_meta(B1)
+    r1 = meta["routines"][0]
+    for k in ("minutes", "anchor"):
+        del r1[k]
+    r1.update(kind="once", at=9e9, last=None, next=9e9)
+    with pytest.raises(OSError):
+        store.write_meta(B1, meta)
+    monkeypatch.setattr(store, "write_json_atomic", _REAL_WRITE_JSON_ATOMIC)
+    got = {r["id"]: r for r in store.read_meta(B1)["routines"]}
+    assert got["r1"]["kind"] == "once" and got["r1"]["at"] == 9e9
+    assert "last" not in got["r1"] and "next" not in got["r1"]
+    assert got["r1"]["enabled"] is True and got["r1"]["fails"] == 1
+    assert got["r2"]["last"] == 77.0 and "next" not in got["r2"]
+    assert got["r2"]["enabled"] is False and got["r2"]["fails"] == 2
+    assert all(store.SCHED_REV_KEY not in r for r in got.values())
+    # the bot's next whole save heals the pair: revs and gens match again, nothing is dropped
+    store.write_meta(B1, meta)
+    assert {r["id"]: r for r in store.read_meta(B1)["routines"]}["r1"]["next"] == 9e9
+
+
+def test_sched_rev_matching_keeps_last_and_mismatch_drops_it_without_a_tear():
+    bpaths.place(B1, "Gen")
+    meta = _two_routine_meta(B1)
+    store.write_meta(B1, meta)
+    assert store.read_meta(B1) == meta  # matching revs, matching gens: everything kept, no rev in the meta
+    # the rev is private: never in bot.json, the public half, or what a package ships
+    pub = json.load(open(store.meta_path(B1), encoding="utf-8"))
+    assert all(store.SCHED_REV_KEY not in r for r in pub["routines"])
+    pub_half, priv_half = store.split_meta({**meta, "routines": [{**r, store.SCHED_REV_KEY: "x"}
+                                                                 for r in meta["routines"]]})
+    assert store.SCHED_REV_KEY not in store.public_json(pub_half)
+    assert all(r[store.SCHED_REV_KEY] != "x" for r in priv_half["routines"])  # recomputed from the schedule
+    # a hand edit / git pull that changed r2's schedule (gens untouched: not a tear) drops r2's next+last only
+    pub["routines"][1]["time"] = "10:30"
+    _touch(store.meta_path(B1), json.dumps(pub))
+    got = {r["id"]: r for r in store.read_meta(B1)["routines"]}
+    assert got["r1"]["next"] == 1234.0 and got["r1"]["last"] == 99.0
+    assert "next" not in got["r2"] and "last" not in got["r2"] and got["r2"]["fails"] == 2
+
+
+def test_old_pair_without_gens_loads_unchanged():
+    bpaths.place(B1, "Gen")
+    folder = bpaths.bot_folder(B1)
+    meta = _routine_meta(B1)
+    public, private = store.split_meta(meta)
+    for r in private["routines"]:
+        del r[store.SCHED_REV_KEY]  # a pre-upgrade state.json: no gens, no sched_rev
+    _touch(os.path.join(folder, "bot.json"), store.public_json(public))
+    _touch(os.path.join(folder, ".fused", "state.json"), json.dumps(private))
+    assert store.read_meta(B1) == meta
+    # the first private-only save keeps the old genless bot.json text (no one-time rewrite) and records that
+    before = open(store.meta_path(B1), encoding="utf-8").read()
+    store.write_meta(B1, {**meta, "status": "idle"})
+    assert open(store.meta_path(B1), encoding="utf-8").read() == before
+    assert json.load(open(store.state_path(B1), encoding="utf-8"))[store.PUBLIC_GEN_KEY] is None
+    assert store.read_meta(B1)["routines"][0]["next"] == 1234.0
 
 
 def test_write_meta_is_safe_under_concurrent_writers():
     errors = []
 
+    c = "cccccccc"
+    bpaths.place(c, "C")
+
     def writer(i):
         try:
             for j in range(30):
-                store.write_meta("c", {"i": i, "j": j})
+                store.write_meta(c, {"i": i, "j": j, "name": f"n{i}"})
         except Exception as e:  # noqa: BLE001
             errors.append(e)
     threads = [threading.Thread(target=writer, args=(i,)) for i in range(6)]
@@ -59,8 +275,8 @@ def test_write_meta_is_safe_under_concurrent_writers():
     for t in threads:
         t.join()
     assert errors == []
-    assert set(store.read_meta("c")) == {"i", "j"}
-    assert [n for n in os.listdir(store.bot_dir("c")) if n.endswith(".tmp")] == []
+    assert set(store.read_meta(c)) == {"id", "i", "j", "name"}  # write_meta stamps the id
+    assert _tmp_files(c) == []
 
 
 def test_write_json_atomic_cleans_up_on_failure(tmp_path):
@@ -73,7 +289,8 @@ def test_write_json_atomic_cleans_up_on_failure(tmp_path):
 
 # ----------------------------------------------------------------- events ---
 def test_events_append_count_and_since_by_line():
-    p = store.events_path("b1")
+    bpaths.place(B1, "One")
+    p = store.events_path(B1)
     assert store.count_events(p) == 0
     assert list(store.iter_events(p)) == []
     assert store.events_since(p, 0) == []
@@ -107,15 +324,17 @@ def _noon_today():
 
 def test_usage_summary_math():
     now = _noon_today()
-    store.write_meta("b1", {"id": "b1", "name": "Alpha"})
-    store.write_meta("idle", {"id": "idle", "name": "Idle"})
+    bpaths.place(B1, "Alpha")
+    store.write_meta(B1, {"id": B1, "name": "Alpha"})
+    bpaths.place("1d1e1d1e", "Idle")
+    store.write_meta("1d1e1d1e", {"id": "1d1e1d1e", "name": "Idle"})
     _ledger([
-        {"ts": now - 60, "bot": "b1", "name": "old name", "model": "sonnet", "origin": "manual", "task": "t1", "ok": True},
-        {"ts": now - 2 * 3600, "bot": "b1", "name": "", "model": "haiku", "origin": "routine", "task": "t1", "ok": False},
-        {"ts": now - 13 * 3600, "bot": "b1", "name": "", "model": "sonnet", "origin": "manual", "task": "t2", "ok": True},
+        {"ts": now - 60, "bot": B1, "name": "old name", "model": "sonnet", "origin": "manual", "task": "t1", "ok": True},
+        {"ts": now - 2 * 3600, "bot": B1, "name": "", "model": "haiku", "origin": "routine", "task": "t1", "ok": False},
+        {"ts": now - 13 * 3600, "bot": B1, "name": "", "model": "sonnet", "origin": "manual", "task": "t2", "ok": True},
         {"ts": now - 30, "bot": "gone", "name": "Old Bot", "model": "opus", "origin": "weird", "task": "t3", "ok": True},
         {"ts": now - 2 * 86400, "bot": "ghost", "model": "opus", "origin": "manual", "task": "t4", "ok": False},
-        {"ts": now - 8 * 86400, "bot": "b1", "model": "opus", "origin": "manual", "task": "stale", "ok": True},
+        {"ts": now - 8 * 86400, "bot": B1, "model": "opus", "origin": "manual", "task": "stale", "ok": True},
     ])
     with open(bpaths.usage_path(), "a") as f:
         f.write("not json\n[1, 2]\n")
@@ -131,21 +350,22 @@ def test_usage_summary_math():
     assert [d["day"] for d in s["days"]][-1] == time.strftime("%Y-%m-%d", time.localtime(now))
     assert len(s["days"]) == 7 and [d["n"] for d in s["days"]][-3:] == [1, 1, 3]
     bots = {b["id"]: b for b in s["bots"]}
-    assert set(bots) == {"b1", "gone", "_deleted"}
-    assert bots["b1"] == {"id": "b1", "name": "Alpha", "today": 2, "week": 3, "models": {"sonnet": 2, "haiku": 1},
-                          "errors": 1, "last": now - 60, "live": True}
+    assert set(bots) == {B1, "gone", "_deleted"}
+    assert bots[B1] == {"id": B1, "name": "Alpha", "today": 2, "week": 3, "models": {"sonnet": 2, "haiku": 1},
+                        "errors": 1, "last": now - 60, "live": True}
     assert bots["gone"]["name"] == "Old Bot" and bots["gone"]["live"] is False and bots["gone"]["today"] == 1
     assert bots["_deleted"]["name"] == "Deleted bots" and bots["_deleted"]["errors"] == 1
-    assert [b["id"] for b in s["bots"]] == ["b1", "gone", "_deleted"]  # by today, then week
+    assert [b["id"] for b in s["bots"]] == [B1, "gone", "_deleted"]  # by today, then week
 
 
 def test_usage_log_writes_line_and_resets_cache():
-    store.write_meta("b1", {"id": "b1", "name": "Alpha"})
+    bpaths.place(B1, "Alpha")
+    store.write_meta(B1, {"id": B1, "name": "Alpha"})
     first = store.usage_summary()
     assert first["today"] == 0
     assert store.usage_summary() is first  # cached
-    store.usage_log("b1", "sonnet", "manual", "x" * 200, True, name="Alpha")
-    store.usage_log("b1", "opus", "routine", "t", False, cost=0.0123, input_tokens=4567)
+    store.usage_log(B1, "sonnet", "manual", "x" * 200, True, name="Alpha")
+    store.usage_log(B1, "opus", "routine", "t", False, cost=0.0123, input_tokens=4567)
     lines = [json.loads(line) for line in open(bpaths.usage_path())]
     assert set(lines[0]) == {"ts", "bot", "name", "model", "origin", "task", "ok"}
     assert len(lines[0]["task"]) == 80 and lines[0]["name"] == "Alpha"
@@ -229,6 +449,8 @@ def test_builds_read_write():
 
 
 # ------------------------------------------------------- 0.11.x layout ---
+# migrate_layout moves a 0.11.x home into the LEGACY per-bot layout (<home>/bots/data/bots/<id>), which is no
+# longer where a bot lives: migrate_v3 (below) lifts it from there. So these tests read the legacy tree directly.
 def _touch(path, text="x"):
     os.makedirs(os.path.dirname(path), exist_ok=True)
     with open(path, "w", encoding="utf-8") as f:
@@ -257,7 +479,8 @@ def test_migrate_layout_moves_a_0_11_home(app_home):
     assert os.path.isfile(os.path.join(base, "dock.json"))
     assert not os.path.exists(os.path.join(base, "imessage.lock"))
     assert not os.path.exists(os.path.join(base, "data", "b1"))
-    assert store.list_ids() == ["b1"]
+    assert os.path.isfile(os.path.join(bpaths.legacy_data_dir(), "b1", "bot.json"))
+    assert store.list_ids() == []  # the legacy tree is not a bot folder: migrate_v3 lifts it into <ws>/bots/
     assert bpaths.migrate_layout() == 0  # idempotent
 
 
@@ -287,7 +510,8 @@ def test_migrate_layout_never_overwrites(app_home):
     _touch(os.path.join(base, "usage.jsonl"), "old\n")
     _touch(os.path.join(base, "data", "usage.jsonl"), "new\n")
     assert bpaths.migrate_layout() == 0
-    assert store.read_meta("b1")["name"] == "new"
+    with open(os.path.join(bpaths.legacy_data_dir(), "b1", "bot.json"), encoding="utf-8") as f:
+        assert json.load(f)["name"] == "new"
     assert os.path.isfile(os.path.join(base, "data", "b1", "bot.json"))
     with open(bpaths.usage_path(), encoding="utf-8") as f:
         assert f.read() == "new\n"
@@ -296,3 +520,639 @@ def test_migrate_layout_never_overwrites(app_home):
 def test_migrate_layout_on_a_fresh_home_is_a_noop(app_home):
     assert bpaths.migrate_layout() == 0
     assert not os.path.exists(os.path.join(str(app_home), "bots"))
+
+
+# ------------------------------------------------------------ migrate_v3 ---
+# BUILD_SPEC §4: the legacy home-side per-bot trees lift into ~/Fused/bots/<folder>/, backup first. The legacy
+# tree is built by hand here (store.write_meta writes the NEW layout, so it cannot seed a legacy fixture).
+from fused_render.bots import migrate_v3  # noqa: E402
+from fused_render.shell import storage as _storage  # noqa: E402
+
+
+@pytest.fixture
+def ws(tmp_path, monkeypatch):
+    """A per-test workspace: conftest sets FUSED_RENDER_DIR once per session, and these tests list ~/Fused/bots."""
+    root = tmp_path / "fused"
+    root.mkdir()
+    monkeypatch.setenv("FUSED_RENDER_DIR", str(root))
+    reset = getattr(bpaths, "_reset_folders", None)
+    if callable(reset):
+        reset()
+    return str(root)
+
+
+def _legacy(app_home, bid, name, inbox=None, **meta):
+    """One legacy bot: data/bots/<id>/{bot.json, events.jsonl, memory.md, skills/, files/, profile/},
+    cache/bots/<id>/shot.png, and optionally an old Inbox folder (pinned as artifacts_dir) with one task."""
+    base = os.path.join(str(app_home), "bots")
+    d = os.path.join(base, "data", "bots", bid)
+    m = {"id": bid, "name": name, "model": "sonnet", "instructions": "be useful", "created": 1.0,
+         "allow_rules": [{"kind": "terminal", "key": "ls"}], **meta}
+    if inbox:
+        m["artifacts_dir"] = inbox
+        _touch(os.path.join(inbox, "t1", "out.txt"), f"{bid} result")
+        _touch(os.path.join(inbox, "index.jsonl"), '{"task": "t1"}\n')
+    _touch(os.path.join(d, "bot.json"), json.dumps(m))
+    _touch(os.path.join(d, "events.jsonl"), '{"kind": "user"}\n')
+    _touch(os.path.join(d, "memory.md"), "remember me")
+    _touch(os.path.join(d, "skills", "greet.md"), "# Greet\ntrigger: hello\n1. wave")
+    _touch(os.path.join(d, "files", "a.txt"), "file")
+    _touch(os.path.join(d, "profile", "Default", "Cookies"), "c")
+    _touch(os.path.join(d, "profile", "x.lock"), "")
+    os.symlink("host-123", os.path.join(d, "profile", "SingletonLock"))
+    _touch(os.path.join(base, "cache", "bots", bid, "shot.png"), "png")
+    return d
+
+
+def _backups():
+    base = os.path.join(_storage.base_home_dir(), "backup", "bot-migration-v3")
+    return sorted(os.listdir(base)) if os.path.isdir(base) else []
+
+
+def _walk_count(top):
+    n = size = 0
+    for dp, dns, fns in os.walk(top):
+        for f in fns:
+            n += 1
+            size += os.lstat(os.path.join(dp, f)).st_size
+        for dn in dns:
+            if os.path.islink(os.path.join(dp, dn)):
+                n += 1
+                size += os.lstat(os.path.join(dp, dn)).st_size
+    return n, size
+
+
+def test_migrate_v3_backs_up_then_moves_into_the_bot_folder(app_home, ws):
+    bid = "a1b2c3d4"
+    inbox = os.path.join(ws, "bots", "daily-digest")
+    _legacy(app_home, bid, "Daily Digest", inbox=inbox)
+    r = migrate_v3.migrate_once()
+    assert r["moved"] == 1 and r["skipped"] == [] and r["stamped"] is True
+
+    # backup: both roots, Chrome's runtime files skipped, a manifest whose counts match what is on disk
+    dest = r["backup"]
+    assert os.path.dirname(dest) == os.path.join(_storage.base_home_dir(), "backup", "bot-migration-v3")
+    with open(os.path.join(dest, "manifest.json"), encoding="utf-8") as f:
+        man = json.load(f)
+    assert man["version"] == 3 and [e["id"] for e in man["entries"]] == [bid]
+    assert man["entries"][0]["src_inbox"] == inbox
+    assert man["entries"][0]["dst_folder"] == inbox
+    files = [_walk_count(os.path.join(dest, s)) for s in ("home-bots", "fused-bots")]
+    assert man["files"] == sum(f[0] for f in files) and man["bytes"] == sum(f[1] for f in files)
+    bk = os.path.join(dest, "home-bots", "data", "bots", bid)
+    assert os.path.isfile(os.path.join(bk, "bot.json")) and os.path.isfile(os.path.join(bk, "profile", "Default", "Cookies"))
+    assert not os.path.lexists(os.path.join(bk, "profile", "SingletonLock"))
+    assert not os.path.exists(os.path.join(bk, "profile", "x.lock"))
+    assert os.path.isfile(os.path.join(dest, "home-bots", "cache", "bots", bid, "shot.png"))
+    assert os.path.isfile(os.path.join(dest, "fused-bots", "daily-digest", "t1", "out.txt"))
+
+    # the folder: public bot.json, skills beside it, everything else under .fused/
+    folder = inbox  # the old Inbox folder of the bot's name is adopted
+    with open(os.path.join(folder, "bot.json"), encoding="utf-8") as f:
+        public = json.load(f)
+    assert set(public) - {store.GEN_KEY} <= store.PUBLIC_KEYS and public["id"] == bid and public["name"] == "Daily Digest"
+    assert public["apps"] == []
+    priv = os.path.join(folder, ".fused")
+    with open(os.path.join(priv, "state.json"), encoding="utf-8") as f:
+        assert "allow_rules" in json.load(f)
+    meta = store.read_meta(bid)
+    assert "artifacts_dir" not in meta and meta["allow_rules"] == [{"kind": "terminal", "key": "ls"}]
+    assert os.path.isfile(os.path.join(folder, "skills", "greet.md"))
+    assert os.path.isfile(os.path.join(folder, ".gitignore"))
+    for rel in ("events.jsonl", "memory.md", os.path.join("files", "a.txt"), os.path.join("profile", "Default", "Cookies"),
+                os.path.join("inbox", "t1", "out.txt"), os.path.join("inbox", "index.jsonl"),
+                os.path.join("cache", "shot.png")):
+        assert os.path.isfile(os.path.join(priv, rel)), rel
+    assert not os.path.exists(os.path.join(folder, "t1")) and not os.path.exists(os.path.join(folder, "index.jsonl"))
+
+    # stamp written, legacy per-bot trees gone, machine-level home state untouched
+    assert os.path.isfile(os.path.join(bpaths.root(), ".layout-v3"))
+    assert not os.path.exists(os.path.join(str(app_home), "bots", "data", "bots"))
+    assert not os.path.exists(os.path.join(str(app_home), "bots", "cache", "bots"))
+    assert store.list_ids() == [bid]
+
+    # second run: a no-op, no second backup
+    assert migrate_v3.migrate_once() == {"moved": 0, "skipped": [], "backup": None, "stamped": True}
+    assert len(_backups()) == 1
+
+
+def test_migrate_v3_fresh_install_stamps_without_backup(app_home, ws):
+    r = migrate_v3.migrate_once()
+    assert r == {"moved": 0, "skipped": [], "backup": None, "stamped": True}
+    assert _backups() == []
+    assert os.path.isfile(os.path.join(bpaths.root(), ".layout-v3"))
+
+
+def test_migrate_v3_skips_an_id_already_placed(app_home, ws):
+    bid, other = "a1b2c3d4", "b1b2c3d4"
+    _touch(os.path.join(ws, "bots", "foo", "bot.json"), json.dumps({"id": bid, "name": "Foo"}))
+    _legacy(app_home, bid, "Foo")
+    _legacy(app_home, other, "Other")
+    r = migrate_v3.migrate_once()
+    assert [x["id"] for x in r["skipped"]] == [bid] and r["moved"] == 1 and r["stamped"] is True
+    assert r["skipped"][0]["reason"].startswith("already at")
+    with open(os.path.join(ws, "bots", "foo", "bot.json"), encoding="utf-8") as f:
+        assert json.load(f) == {"id": bid, "name": "Foo"}  # never overwritten
+    assert os.path.isfile(os.path.join(ws, "bots", "other", "bot.json"))
+    # the skipped bot's legacy copy is in the backup (and removed from the legacy tree with the stamp)
+    assert os.path.isfile(os.path.join(r["backup"], "home-bots", "data", "bots", bid, "bot.json"))
+
+
+def test_migrate_v3_name_clash_gets_an_id_suffix(app_home, ws):
+    _touch(os.path.join(ws, "bots", "helper", "bot.json"), json.dumps({"id": "ffff0000", "name": "Helper"}))
+    _legacy(app_home, "abcd1234", "Helper")
+    r = migrate_v3.migrate_once()
+    assert r["moved"] == 1 and r["stamped"] is True
+    folder = os.path.join(ws, "bots", "helper-abcd")
+    assert json.load(open(os.path.join(folder, "bot.json"), encoding="utf-8"))["id"] == "abcd1234"
+    assert json.load(open(os.path.join(ws, "bots", "helper", "bot.json"), encoding="utf-8"))["id"] == "ffff0000"
+
+
+def test_migrate_v3_pinned_inboxes_stay_with_their_bot(app_home, ws):
+    # "e…" was renamed Bar after pinning foo/; "d…" is named Foo but pinned foo-d000/ (foo was taken then). d sorts
+    # first, so place() adopts foo/ for it while foo/ still holds e's tasks: they must still end up with e.
+    e_inbox = os.path.join(ws, "bots", "foo")
+    d_inbox = os.path.join(ws, "bots", "foo-d000")
+    _legacy(app_home, "e0000001", "Bar", inbox=e_inbox)
+    _legacy(app_home, "d0000001", "Foo", inbox=d_inbox)
+    r = migrate_v3.migrate_once()
+    assert r["moved"] == 2 and r["stamped"] is True
+    d_folder, e_folder = os.path.join(ws, "bots", "foo"), os.path.join(ws, "bots", "bar")
+    with open(os.path.join(d_folder, ".fused", "inbox", "t1", "out.txt"), encoding="utf-8") as f:
+        assert f.read() == "d0000001 result"
+    with open(os.path.join(e_folder, ".fused", "inbox", "t1", "out.txt"), encoding="utf-8") as f:
+        assert f.read() == "e0000001 result"
+    assert not os.path.exists(os.path.join(d_folder, "t1"))
+    assert not os.path.exists(d_inbox)
+
+
+def test_migrate_v3_backup_failure_leaves_everything(app_home, ws, monkeypatch):
+    bid = "a1b2c3d4"
+    inbox = os.path.join(ws, "bots", "daily-digest")
+    d = _legacy(app_home, bid, "Daily Digest", inbox=inbox)
+
+    def boom(*a, **k):
+        raise OSError("disk full")
+    monkeypatch.setattr(migrate_v3.shutil, "copytree", boom)
+    r = migrate_v3.migrate_once()
+    assert r["stamped"] is False and r["moved"] == 0
+    assert not os.path.exists(os.path.join(bpaths.root(), ".layout-v3"))
+    assert os.path.isfile(os.path.join(d, "bot.json")) and os.path.isfile(os.path.join(d, "memory.md"))
+    assert os.path.isfile(os.path.join(str(app_home), "bots", "cache", "bots", bid, "shot.png"))
+    assert os.path.isfile(os.path.join(inbox, "t1", "out.txt"))
+    assert not os.path.exists(os.path.join(inbox, "bot.json")) and not os.path.exists(os.path.join(inbox, ".fused"))
+
+
+def test_migrate_v3_short_backup_moves_nothing(app_home, ws, monkeypatch):
+    d = _legacy(app_home, "a1b2c3d4", "Daily Digest")
+    real = migrate_v3._lenient_copy
+
+    def drop_memory(src, dst, **k):
+        return dst if src.endswith("memory.md") else real(src, dst, **k)
+    monkeypatch.setattr(migrate_v3, "_lenient_copy", drop_memory)
+    r = migrate_v3.migrate_once()
+    assert r["stamped"] is False and r["moved"] == 0 and r["backup"]
+    assert os.path.isfile(os.path.join(d, "memory.md")) and os.path.isfile(os.path.join(d, "bot.json"))
+    assert not os.path.exists(os.path.join(bpaths.root(), ".layout-v3"))
+
+
+def test_migrate_v3_seeds_the_apps_manifest(app_home, ws):
+    apps = bpaths.apps_root()
+    _touch(os.path.join(apps, "my_app", "index.html"), '<meta name="fused-app" />')
+    _touch(os.path.join(apps, "built", "index.html"), '<meta name="fused-app" />')
+    _legacy(app_home, "a1b2c3d4", "Seeded", trusted_apps=["my-app"],
+            builds=[{"dir": os.path.join(apps, "built")}, {"dir": os.path.join(apps, "gone")}])
+    assert migrate_v3.migrate_once()["moved"] == 1
+    rows = store.read_meta("a1b2c3d4")["apps"]
+    assert [r["folder"] for r in rows] == ["my_app", "built"]
+    assert all(set(r) == {"folder", "name", "app_id", "source"} and r["source"].get("kind") for r in rows)
+
+
+def test_migrate_v3_reuses_a_verified_backup_of_the_same_tree(app_home, ws, monkeypatch):
+    _legacy(app_home, "a1b2c3d4", "Daily Digest")
+    real = migrate_v3._move_bot
+
+    def fail(*a, **k):
+        raise RuntimeError("simulated move failure")
+    monkeypatch.setattr(migrate_v3, "_move_bot", fail)
+    first = migrate_v3.migrate_once()
+    assert first["stamped"] is False and first["backup"] and len(_backups()) == 1
+    monkeypatch.setattr(migrate_v3, "_move_bot", real)  # not undo(): that would drop app_home's env too
+    second = migrate_v3.migrate_once()
+    assert second["stamped"] is True and second["moved"] == 1
+    assert second["backup"] == first["backup"] and len(_backups()) == 1
+
+
+def test_migrate_v3_parks_unplaceable_bots_and_stamps(app_home, ws):
+    bad = _legacy(app_home, "a1b2c3d4", "Broken")
+    _touch(os.path.join(bad, "bot.json"), "{not json")
+    _legacy(app_home, "not-hex", "Odd Id")
+    _legacy(app_home, "b1b2c3d4", "Good")
+    r = migrate_v3.migrate_once()
+    assert r["stamped"] is True and r["moved"] == 1
+    reasons = {x["id"]: x["reason"] for x in r["skipped"]}
+    assert reasons == {"a1b2c3d4": "unreadable bot.json", "not-hex": "id is not 8 hex"}
+    park = os.path.join(ws, "bots", ".unmigrated")
+    with open(os.path.join(park, "a1b2c3d4", "bot.json"), encoding="utf-8") as f:
+        assert f.read() == "{not json"
+    assert os.path.isfile(os.path.join(park, "a1b2c3d4", "cache", "shot.png"))
+    assert os.path.isfile(os.path.join(park, "not-hex", "memory.md"))
+    assert os.path.isfile(os.path.join(r["backup"], "home-bots", "data", "bots", "a1b2c3d4", "bot.json"))
+    assert store.list_ids() == ["b1b2c3d4"]  # the dot-folder is invisible to the folder index
+    assert not os.path.exists(os.path.join(str(app_home), "bots", "data", "bots"))
+
+
+def test_migrate_v3_lifts_legacy_bots_that_appear_after_the_stamp(app_home, ws):
+    assert migrate_v3.migrate_once()["stamped"] is True  # fresh install
+    _legacy(app_home, "a1b2c3d4", "Late Import")  # e.g. fusedbot_import on a later start
+    r = migrate_v3.migrate_once()
+    assert r["moved"] == 1 and r["stamped"] is True and r["backup"]
+    assert store.list_ids() == ["a1b2c3d4"]
+    with open(os.path.join(bpaths.root(), ".layout-v3"), encoding="utf-8") as f:
+        assert json.load(f)["moved"] == 1
+    assert not os.path.exists(os.path.join(str(app_home), "bots", "data", "bots"))
+
+
+# ---- the safety model: nothing deleted that is not in a verified backup; a bot counts as moved only when drained
+def test_migrate_v3_backup_is_verified_before_the_first_destination_write(app_home, ws, monkeypatch):
+    _legacy(app_home, "a1b2c3d4", "Daily Digest", inbox=os.path.join(ws, "bots", "daily-digest"))
+    seen = []
+    real_move, real_place = migrate_v3._move_tree, bpaths.place
+
+    def spy_move(*a, **k):
+        seen.append(("move", [b for b in _backups() if os.path.isfile(os.path.join(_storage.base_home_dir(), "backup", "bot-migration-v3", b, "manifest.json"))]))
+        return real_move(*a, **k)
+
+    def spy_place(*a, **k):
+        seen.append(("place", [b for b in _backups() if os.path.isfile(os.path.join(_storage.base_home_dir(), "backup", "bot-migration-v3", b, "manifest.json"))]))
+        return real_place(*a, **k)
+    monkeypatch.setattr(migrate_v3, "_move_tree", spy_move)
+    monkeypatch.setattr(bpaths, "place", spy_place)
+    assert migrate_v3.migrate_once()["stamped"] is True
+    assert seen and all(verified for _, verified in seen)  # a verified manifest existed before every write
+
+
+def test_migrate_v3_clash_goes_to_leftovers_and_legacy_is_drained(app_home, ws):
+    bid = "a1b2c3d4"
+    _legacy(app_home, bid, "Daily Digest")
+    # the destination already holds a memory.md of its own (a half-made folder from an older attempt: place()
+    # wrote its ownership marker, which is what lets adopt=True take it back)
+    _touch(os.path.join(ws, "bots", "daily-digest", ".fused", "memory.md"), "newer")
+    _touch(os.path.join(ws, "bots", "daily-digest", ".fused", ".bot-id"), bid + "\n")
+    r = migrate_v3.migrate_once()
+    assert r["moved"] == 1 and r["stamped"] is True
+    folder = os.path.join(ws, "bots", "daily-digest")
+    with open(os.path.join(folder, ".fused", "memory.md"), encoding="utf-8") as f:
+        assert f.read() == "newer"  # never overwritten
+    with open(os.path.join(folder, ".fused", "legacy-leftovers", "memory.md"), encoding="utf-8") as f:
+        assert f.read() == "remember me"  # the legacy file kept, beside, not deleted
+    assert not os.path.exists(os.path.join(str(app_home), "bots", "data", "bots"))
+
+
+def test_migrate_v3_does_not_reuse_a_backup_of_a_changed_tree(app_home, ws, monkeypatch):
+    d = _legacy(app_home, "a1b2c3d4", "Daily Digest")
+    real = migrate_v3._move_bot
+    monkeypatch.setattr(migrate_v3, "_move_bot", lambda *a, **k: (_ for _ in ()).throw(RuntimeError("stop")))
+    first = migrate_v3.migrate_once()
+    assert first["stamped"] is False and len(_backups()) == 1
+    # same file count and byte sum, different content (a same-size rewrite) -> a new backup, not a reuse
+    with open(os.path.join(d, "memory.md"), "w", encoding="utf-8") as f:
+        f.write("remember YOU")
+    os.utime(os.path.join(d, "memory.md"), ns=(1, 1))
+    monkeypatch.setattr(migrate_v3, "_move_bot", real)  # not undo(): that would drop app_home's env too
+    second = migrate_v3.migrate_once()
+    assert second["stamped"] is True and second["backup"] != first["backup"] and len(_backups()) == 2
+    with open(os.path.join(second["backup"], "home-bots", "data", "bots", "a1b2c3d4", "memory.md"), encoding="utf-8") as f:
+        assert f.read() == "remember YOU"
+
+
+def test_migrate_v3_failed_or_partial_backups_are_never_reused(app_home, ws, monkeypatch):
+    _legacy(app_home, "a1b2c3d4", "Daily Digest")
+    real = migrate_v3.shutil.copytree
+    monkeypatch.setattr(migrate_v3.shutil, "copytree", lambda *a, **k: (_ for _ in ()).throw(OSError("disk full")))
+    first = migrate_v3.migrate_once()
+    assert first["stamped"] is False and os.path.isfile(os.path.join(first["backup"], "failed.json"))
+    monkeypatch.setattr(migrate_v3.shutil, "copytree", real)  # not undo(): that would drop app_home's env too
+    second = migrate_v3.migrate_once()
+    assert second["stamped"] is True and second["backup"] != first["backup"]
+    assert os.path.isdir(first["backup"])  # the failed one is left on disk (never pruned), just not trusted
+
+
+def test_migrate_v3_cross_device_copy_failure_keeps_the_source(app_home, ws, monkeypatch):
+    d = _legacy(app_home, "a1b2c3d4", "Daily Digest")
+    real_rename = os.rename
+
+    def exdev(src, dst, *a, **k):
+        if src.endswith("memory.md"):
+            raise OSError(18, "Cross-device link")  # EXDEV
+        return real_rename(src, dst, *a, **k)
+    monkeypatch.setattr(migrate_v3.os, "rename", exdev)
+    monkeypatch.setattr(migrate_v3.shutil, "copy2", lambda *a, **k: (_ for _ in ()).throw(OSError("I/O error")))
+    r = migrate_v3.migrate_once()
+    assert r["stamped"] is False and r["moved"] == 0
+    assert os.path.isfile(os.path.join(d, "memory.md")) and os.path.isfile(os.path.join(d, "bot.json"))
+    assert os.path.isdir(os.path.join(str(app_home), "bots", "data", "bots"))  # nothing removed
+
+
+def test_migrate_v3_already_placed_bot_keeps_its_legacy_files_as_leftovers(app_home, ws):
+    bid = "a1b2c3d4"
+    _legacy(app_home, bid, "Daily Digest")
+    folder = bpaths.place(bid, "Daily Digest")  # another home sharing ~/Fused migrated it first
+    store.write_meta(bid, {"id": bid, "name": "Daily Digest"})
+    r = migrate_v3.migrate_once()
+    assert r["moved"] == 0 and r["stamped"] is True and r["skipped"][0]["id"] == bid
+    kept = os.path.join(folder, ".fused", "legacy-leftovers")
+    assert any(os.path.isfile(os.path.join(dp, "memory.md")) for dp, _, _ in os.walk(kept))
+    assert not os.path.exists(os.path.join(str(app_home), "bots", "data", "bots"))
+
+
+def test_migrate_v3_shared_pin_leaves_the_inbox_in_place(app_home, ws):
+    shared = os.path.join(ws, "bots", "shared")
+    _legacy(app_home, "a0000001", "Alpha", inbox=shared)
+    _legacy(app_home, "b0000001", "Beta")
+    # Beta pins the same folder by hand (an old rename collision)
+    with open(os.path.join(str(app_home), "bots", "data", "bots", "b0000001", "bot.json"), encoding="utf-8") as f:
+        m = json.load(f)
+    m["artifacts_dir"] = shared
+    with open(os.path.join(str(app_home), "bots", "data", "bots", "b0000001", "bot.json"), "w", encoding="utf-8") as f:
+        json.dump(m, f)
+    r = migrate_v3.migrate_once()
+    assert r["moved"] == 2 and r["stamped"] is True
+    assert os.path.isfile(os.path.join(shared, "t1", "out.txt"))  # nobody's: left where it was
+    assert any("shared with" in x["reason"] for x in r["skipped"])
+
+
+def test_browser_sweep_waits_for_the_v3_stamp(app_home, ws, monkeypatch):
+    from fused_render.bots import browsers, registry
+    calls = []
+    monkeypatch.setattr(browsers, "sweep", lambda bots: calls.append(bots) or 0)
+    monkeypatch.setattr(registry, "all", lambda: [])
+    registry._sweep_browsers()
+    assert calls == []  # no stamp yet: a legacy bot's browser would read as an orphan
+    _touch(os.path.join(bpaths.root(), ".layout-v3"), "{}")
+    registry._sweep_browsers()
+    assert len(calls) == 1
+
+
+def test_migrate_v3_symlinked_legacy_dir_is_parked_not_emptied(app_home, ws, tmp_path):
+    # A symlink where a bot folder should be: the backup would hold the LINK, so moving through it would empty a
+    # tree the backup never copied. It is parked as a link and the target is untouched.
+    _legacy(app_home, "a1b2c3d4", "Real")
+    target = tmp_path / "elsewhere"
+    _touch(str(target / "bot.json"), json.dumps({"id": "b2b2b2b2", "name": "Linked"}))
+    _touch(str(target / "memory.md"), "keep me")
+    os.symlink(str(target), os.path.join(str(app_home), "bots", "data", "bots", "b2b2b2b2"))
+    r = migrate_v3.migrate_once()
+    assert r["moved"] == 1 and r["stamped"] is True
+    assert (target / "memory.md").read_text() == "keep me" and (target / "bot.json").exists()
+    assert store.list_ids() == ["a1b2c3d4"]
+    parked = os.path.join(ws, "bots", ".unmigrated")
+    assert any("b2b2b2b2" in n for dp, dns, fns in os.walk(parked) for n in dns + fns)
+
+
+def test_migrate_v3_never_adopts_a_users_folder(app_home, ws):
+    _legacy(app_home, "a1b2c3d4", "Notes")
+    _touch(os.path.join(ws, "bots", "notes", "my-essay.txt"), "mine")  # not an Inbox: no index.jsonl, not task-shaped
+    r = migrate_v3.migrate_once()
+    assert r["moved"] == 1 and r["stamped"] is True
+    assert sorted(os.listdir(os.path.join(ws, "bots", "notes"))) == ["my-essay.txt"]  # untouched
+    folder = bpaths.bot_folder("a1b2c3d4")
+    assert os.path.basename(folder) == "notes-a1b2"
+
+
+def test_migrate_v3_reserved_names_in_an_inbox_are_kept_as_leftovers(app_home, ws):
+    inbox = os.path.join(ws, "bots", "super-bot")
+    _legacy(app_home, "a1b2c3d4", "Super Bot", inbox=inbox)
+    _touch(os.path.join(inbox, "README.md"), "written by a task")  # pre-v3 Super Bot ran claude in its Inbox
+    r = migrate_v3.migrate_once()
+    assert r["moved"] == 1 and r["stamped"] is True
+    folder = os.path.join(ws, "bots", "super-bot")
+    with open(os.path.join(folder, ".fused", "legacy-leftovers", "inbox", "README.md"), encoding="utf-8") as f:
+        assert f.read() == "written by a task"
+    assert not os.path.exists(os.path.join(folder, "README.md"))
+    assert os.path.isfile(os.path.join(folder, ".fused", "inbox", "t1", "out.txt"))
+
+
+# ------------------------------------------------------- is_bot_workdir ---
+# The Tasks page drops a transcript whose cwd is a bot's own run folder (routers/tasks `_bot_session`): a bot's
+# conversation is a CLI session on disk, not a task. v3 moved those folders under <ws>/bots/<folder>/.fused/.
+def test_is_bot_workdir_hides_v3_runs_and_legacy_cwds_but_not_user_folders(app_home, ws, tmp_path):
+    folder = os.path.join(ws, "bots", "super-bot")
+    _touch(os.path.join(folder, "bot.json"), json.dumps({"id": "abcd1234", "name": "Super Bot"}))
+    os.makedirs(os.path.join(folder, ".fused", "inbox", "20260101-0900-x"))
+    os.makedirs(os.path.join(folder, "skills"))
+    base = _storage.base_home_dir()
+    hidden = [
+        os.path.join(folder, ".fused", "cache"),                       # an ordinary bot's run
+        os.path.join(folder, ".fused", "inbox"),                       # Super Bot's run
+        os.path.join(folder, ".fused", "inbox", "20260101-0900-x"),    # nested under the Inbox
+        os.path.join(base, "bots", "cache", "bots", "abcd1234"),       # legacy cache dir (pre-v3 transcripts)
+        os.path.join(base, "branches", "dev", "bots", "cache", "bots", "abcd1234"),
+        os.path.join(ws, "bots", "old-inbox"),                         # legacy Inbox, folder since moved away
+        # legacy Super Bot Inbox that migrate_v3 adopted as this bot's folder (it has a bot.json now): its
+        # pre-migration transcripts still name it as their cwd and must stay hidden.
+        folder,
+    ]
+    shown = [
+        os.path.join(ws, "canvas", "x"),
+        os.path.join(ws, "app", "x"),
+        os.path.join(ws, "bots"),
+        os.path.join(folder, "skills"),                                # no bot run works in the public half
+        os.path.join(ws, "projects", "bots", "cache", "bots", "x"),    # a substring is never enough
+        "",
+        None,
+    ]
+    assert [p for p in hidden if not bpaths.is_bot_workdir(p)] == []
+    assert [p for p in shown if bpaths.is_bot_workdir(p)] == []
+    # The CLI may record the resolved path: a symlinked workspace still hides the run.
+    link = str(tmp_path / "ws-link")
+    os.symlink(ws, link)
+    assert bpaths.is_bot_workdir(os.path.join(link, "bots", "super-bot", ".fused", "inbox", "20260101-0900-x"))
+    assert not bpaths.is_bot_workdir(os.path.join(link, "canvas", "x"))
+
+
+def test_is_bot_workdir_after_migrate_v3_hides_the_adopted_inbox(app_home, ws):
+    # The end-to-end shape of the regression: a pre-v3 Super Bot ran in ~/Fused/bots/<slug>; migrate_v3 adopts
+    # that folder and writes bot.json into it. Old transcripts naming the old Inbox (and the old cache) stay hidden.
+    bid = "a1b2c3d4"
+    inbox = os.path.join(ws, "bots", "daily-digest")
+    _legacy(app_home, bid, "Daily Digest", inbox=inbox)
+    legacy_cache = os.path.join(str(app_home), "bots", "cache", "bots", bid)
+    assert migrate_v3.migrate_once()["moved"] == 1
+    assert os.path.isfile(os.path.join(inbox, "bot.json")) and not os.path.exists(legacy_cache)
+    assert bpaths.is_bot_workdir(inbox)
+    assert bpaths.is_bot_workdir(legacy_cache)
+    assert bpaths.is_bot_workdir(bpaths.bot_cache_dir(bid)) and bpaths.bot_cache_dir(bid).startswith(inbox + os.sep)
+    assert bpaths.is_bot_workdir(bpaths.bot_inbox(bid))
+
+
+# ------------------------------------------------- place(): ownership marker, .gitignore, state.json ---
+def test_place_writes_the_ownership_marker(app_home, ws):
+    folder = bpaths.place("a1b2c3d4", "Notes")
+    with open(os.path.join(folder, ".fused", ".bot-id"), encoding="utf-8") as f:
+        assert f.read() == "a1b2c3d4\n"
+
+
+def test_place_adopt_never_takes_a_users_folder_with_its_own_fused_dir(app_home, ws):
+    # A user's own ~/Fused/bots/notes/ that happens to hold a .fused/ (an app, a clone): no marker, never adopted,
+    # so a later delete() of the bot cannot rmtree it.
+    mine = os.path.join(ws, "bots", "notes")
+    _touch(os.path.join(mine, ".fused", "data", "x.json"), "{}")
+    _touch(os.path.join(mine, "essay.txt"), "mine")
+    folder = bpaths.place("a1b2c3d4", "Notes", adopt=True)
+    assert os.path.basename(folder) == "notes-a1b2"
+    assert sorted(os.listdir(mine)) == [".fused", "essay.txt"]
+    assert sorted(os.listdir(os.path.join(mine, ".fused"))) == ["data"]
+
+
+def test_place_adopt_takes_its_own_half_made_folder(app_home, ws):
+    # A run that died after place() but before bot.json: a fresh process (empty cache) adopts it by its marker.
+    first = bpaths.place("a1b2c3d4", "Notes")
+    bpaths._reset_folders()
+    assert bpaths.place("a1b2c3d4", "Notes", adopt=True) == first
+    bpaths._reset_folders()
+    assert bpaths.place("a1b2c3d4", "Notes") != first  # without adopt=True it is somebody's: next name
+
+
+def test_place_adopt_refuses_another_ids_marker(app_home, ws):
+    other = bpaths.place("b1b2c3d4", "Notes")
+    bpaths._reset_folders()  # a new process: b1b2c3d4 has no bot.json, so only its marker says whose it is
+    folder = bpaths.place("a1b2c3d4", "Notes", adopt=True)
+    assert folder != other and os.path.basename(folder) == "notes-a1b2"
+    with open(os.path.join(other, ".fused", ".bot-id"), encoding="utf-8") as f:
+        assert f.read() == "b1b2c3d4\n"
+
+
+def test_place_failure_after_the_claim_leaves_no_folder(app_home, ws, monkeypatch):
+    def boom(folder, bid):
+        raise OSError("disk full")
+    monkeypatch.setattr(bpaths, "_write_marker", boom)
+    with pytest.raises(OSError):
+        bpaths.place("a1b2c3d4", "Notes")
+    assert not os.path.exists(os.path.join(ws, "bots", "notes"))
+
+
+@pytest.mark.skipif(os.name == "nt" or (hasattr(os, "geteuid") and os.geteuid() == 0),
+                    reason="needs POSIX permissions that bind (not root)")
+def test_unwritable_gitignore_fails_placement_before_private_state(app_home, ws):
+    folder = os.path.join(ws, "bots", "notes")
+    _touch(os.path.join(folder, "bot.json"), json.dumps({"id": "a1b2c3d4", "name": "Notes"}))
+    ignore = os.path.join(folder, ".gitignore")
+    _touch(ignore, "node_modules/\n")
+    os.chmod(ignore, 0o444)
+    try:
+        with pytest.raises(OSError):
+            bpaths.place("a1b2c3d4", "Notes")  # its own folder (bot.json says so), but .fused/ cannot be ignored
+        assert not os.path.exists(os.path.join(folder, ".fused"))
+        with pytest.raises(OSError):
+            bpaths.bot_private("a1b2c3d4")  # the lazy path (a cloned folder) refuses the same way
+        assert not os.path.exists(os.path.join(folder, ".fused"))
+    finally:
+        os.chmod(ignore, 0o644)
+    with open(ignore, encoding="utf-8") as f:
+        assert f.read() == "node_modules/\n"
+
+
+def test_corrupt_state_json_is_moved_aside_not_overwritten(app_home, ws):
+    bpaths.place("a1b2c3d4", "Notes")
+    store.write_meta("a1b2c3d4", {"id": "a1b2c3d4", "name": "Notes", "status": "idle"})
+    spath = store.state_path("a1b2c3d4")
+    _touch(spath, "{torn")
+    meta = store.read_meta("a1b2c3d4")
+    assert meta["name"] == "Notes" and "status" not in meta  # loads, private half empty
+    priv = os.path.dirname(spath)
+    aside = [n for n in os.listdir(priv) if n.startswith("state.json.corrupt-")]
+    assert len(aside) == 1 and not os.path.exists(spath)
+    with open(os.path.join(priv, aside[0]), encoding="utf-8") as f:
+        assert f.read() == "{torn"
+
+
+def test_corrupt_state_json_that_cannot_be_moved_aside_fails_the_load(app_home, ws, monkeypatch):
+    bpaths.place("a1b2c3d4", "Notes")
+    store.write_meta("a1b2c3d4", {"id": "a1b2c3d4", "name": "Notes"})
+    spath = store.state_path("a1b2c3d4")
+    _touch(spath, "[1, 2]")  # valid JSON, not an object: corrupt all the same
+
+    def no_rename(src, dst):
+        raise OSError("read-only")
+    monkeypatch.setattr(os, "replace", no_rename)
+    with pytest.raises(ValueError):
+        store.read_meta("a1b2c3d4")
+    monkeypatch.setattr(os, "replace", os.rename)  # restored for teardown (never monkeypatch.undo())
+    with open(spath, encoding="utf-8") as f:
+        assert f.read() == "[1, 2]"  # untouched: the bot does not load, so nothing saves over it
+
+
+def test_browser_sweep_skips_when_a_parked_bot_json_is_unreadable(app_home, ws):
+    from fused_render.bots import browsers
+    _touch(os.path.join(ws, "bots", ".unmigrated", "a1b2c3d4", "bot.json"), "{not json")
+    orphan = os.path.join(browsers.data_dir(), "cafef00d")
+    _touch(os.path.join(orphan, "browser.json"), "{}")
+    assert browsers._metas_on_disk() is None  # its browser_id may be a shared browser's: not by folder name
+    assert browsers.used_on_disk("cafef00d") is None
+    assert browsers.sweep([]) == 0
+    assert os.path.isdir(orphan)
+
+
+def test_browser_sweep_skips_when_a_parked_bot_json_is_a_dangling_symlink(app_home, ws):
+    """isfile() is False for a dangling link, which read as "no bot.json" and let the sweep call the list complete."""
+    from fused_render.bots import browsers
+    d = os.path.join(ws, "bots", ".unmigrated", "a1b2c3d4")
+    os.makedirs(d)
+    os.symlink(os.path.join(ws, "gone", "bot.json"), os.path.join(d, "bot.json"))
+    orphan = os.path.join(browsers.data_dir(), "cafef00d")
+    _touch(os.path.join(orphan, "browser.json"), "{}")
+    assert browsers._metas_on_disk() is None
+    assert browsers.used_on_disk("cafef00d") is None
+    assert browsers.sweep([]) == 0 and os.path.isdir(orphan)
+    # a dangling bot.json in a bot folder is caught by store.read_all_metas too
+    os.remove(os.path.join(d, "bot.json"))
+    bad = os.path.join(ws, "bots", "dangling")
+    os.makedirs(bad)
+    os.symlink(os.path.join(ws, "gone", "bot.json"), os.path.join(bad, "bot.json"))
+    assert store.read_all_metas() is None and browsers._metas_on_disk() is None
+    assert browsers.sweep([]) == 0 and os.path.isdir(orphan)
+
+
+def test_browser_sweep_skips_when_a_bot_folder_bot_json_is_unreadable(app_home, ws):
+    """A bot folder whose bot.json is torn is invisible to list_ids (the folder index skips it), but its
+    browser_id may name a browser: the sweep must not call that browser an orphan."""
+    from fused_render.bots import browsers
+    bpaths.place(B1, "Good")
+    store.write_meta(B1, {"id": B1, "name": "Good", "browser_id": B1})
+    bad = os.path.join(ws, "bots", "torn")
+    _touch(os.path.join(bad, "bot.json"), "{not json")
+    orphan = os.path.join(browsers.data_dir(), "cafef00d")
+    _touch(os.path.join(orphan, "browser.json"), "{}")
+    assert store.list_ids() == [B1]
+    assert browsers._metas_on_disk() is None
+    assert browsers.sweep([]) == 0 and os.path.isdir(orphan)
+    for text in ("[1, 2]", None):  # valid JSON but not an object; then a symlinked bot.json
+        os.remove(os.path.join(bad, "bot.json"))
+        if text is None:
+            target = os.path.join(ws, "elsewhere.json")
+            _touch(target, json.dumps({"id": "d00dd00d"}))
+            os.symlink(target, os.path.join(bad, "bot.json"))
+        else:
+            _touch(os.path.join(bad, "bot.json"), text)
+        assert browsers._metas_on_disk() is None
+        assert browsers.sweep([]) == 0 and os.path.isdir(orphan)
+    os.remove(os.path.join(bad, "bot.json"))  # repaired (gone): the list is complete and the orphan goes
+    metas = browsers._metas_on_disk()
+    assert [m["id"] for m in metas] == [B1] and metas[0]["browser_id"] == B1
+    assert browsers.sweep([]) == 1 and not os.path.exists(orphan)
+
+
+def test_browser_sweep_keeps_a_browser_named_only_by_an_unindexed_folder(app_home, ws):
+    """Two folders claiming one id resolve to neither (paths._scan), yet each one's state.json names a browser."""
+    from fused_render.bots import browsers
+    bpaths.place(B1, "One")
+    store.write_meta(B1, {"id": B1, "name": "One", "browser_id": "cafef00d"})
+    import shutil
+    shutil.copytree(bpaths.bot_folder(B1), os.path.join(ws, "bots", "one-copy"))
+    bpaths._reset_folders()
+    assert store.list_ids() == []
+    orphan = os.path.join(browsers.data_dir(), "cafef00d")
+    _touch(os.path.join(orphan, "browser.json"), "{}")
+    assert browsers.used_on_disk("cafef00d") is True
+    assert browsers.sweep([]) == 0 and os.path.isdir(orphan)

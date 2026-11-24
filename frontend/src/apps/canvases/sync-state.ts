@@ -57,14 +57,39 @@ export interface DiskToServerLeg extends SyncLeg {
   /** Epoch seconds of the last successful push, or null. */
   last_push_at: number | null;
   push_seq: number;
+  push_changed_at?: Record<string, number>;
+  /** The pending publish waits on a Claude session's turn: the strip offers
+   *  "Publish now". Absent from an older server. */
+  waiting_on_session?: boolean;
+}
+
+/** One file the server changed since the sync point (a held move). */
+export interface ServerChangedFile {
+  path: string;
+  kind: "added" | "removed" | "changed";
+  /** The server's file is already what the clone holds: merging it changes nothing. */
+  identical: boolean;
 }
 
 export interface ServerToDiskLeg {
-  state: "idle" | "stale" | "pulling" | "error";
+  /** `merged`: the watcher just merged a server move into the clone
+   *  (transient; `files` lists them). `leased`: another editor has the canvas
+   *  checked out (`owner`); publishing is held. `stale`: a server move is
+   *  held while a Claude run is live (merged when it ends), or a merge rolled
+   *  back. */
+  state: "idle" | "stale" | "pulling" | "error" | "merged" | "leased";
   since_ms: number | null;
-  /** `slug` is null for the layout entry (`kind: "layout"`). */
-  changed: { slug: string | null; kind: string }[];
+  /** `slug` is null for the layout entry (`kind: "layout"`). `identical`
+   *  when the server's bundle was compared. */
+  changed: { slug: string | null; kind: string; identical?: boolean }[];
   reason: string | null;
+  /** stale: per file, with `identical`; merged: the merged paths. */
+  files?: ServerChangedFile[] | string[];
+  /** stale: every changed file is already identical here — Pull changes nothing. */
+  all_identical?: boolean;
+  /** leased: who has the canvas checked out, and until when (ISO). */
+  owner?: string | null;
+  lease_until?: string | null;
 }
 
 export interface SyncOwner {
@@ -94,6 +119,27 @@ export interface SyncState {
   /** Optional extras (not in the base contract): read when present. */
   watching?: boolean;
   fix_active?: boolean;
+  /** Where a pull's backup of the clone lands: `.sync/trash/<canvas>/`, one
+   *  timestamped folder per pull. The Hard pull's confirm step names it. */
+  trash_root?: string;
+  /** A Claude run is live in the clone (a hard pull over it is allowed but warned). */
+  agent_live?: boolean;
+  /** The revision spine (null on a server without it): the revision the sync
+   *  point describes, and the latest one a probe saw. */
+  base_revision?: number | null;
+  server_revision?: number | null;
+  /** The canvas's edit lease: ours (`mine`) or another editor's. */
+  lease?: { owner: string | null; lease_until: string | null; mine: boolean } | null;
+  /** Epoch seconds when sync stops because no canvas page has it open
+   *  (server IDLE_STOP_S after the last page socket closed); null while one is. */
+  idle_stop_at?: number | null;
+  /** The frame keeps skipping these nodes in delta after delta with no edit
+   *  of its own posted (the disk→canvas leg reads "held" meanwhile); null
+   *  while it takes what it is sent. */
+  embed_skipping?: { names: string[]; since: number; count: number } | null;
+  /** Moves once per such streak: the page answers with a full state for the
+   *  frame (CanvasWorkspace's delta leg). */
+  embed_heal_seq?: number;
 }
 
 /** One sync/log ring entry. */
@@ -270,9 +316,27 @@ function legVerdict(name: LegName, state: SyncState): LegVerdict {
     case "server_to_disk": {
       const l = state.legs.server_to_disk;
       if (l.state === "stale") return { level: "warn", reason: reason ?? serverChangesText(l) };
+      if (l.state === "leased") {
+        return { level: "warn", reason: reason ?? `Checked out by ${l.owner ?? "another editor"}` };
+      }
       return { level: "ok", reason: null };
     }
   }
+}
+
+/** Every file the held server move changed is already what the clone holds:
+ *  the Pull button says "Nothing will change". */
+export function pullChangesNothing(leg: ServerToDiskLeg): boolean {
+  return leg.state === "stale" && leg.all_identical === true;
+}
+
+/** "Merged server changes: a.py, b.py" — the strip's calm line right after
+ *  the watcher merged a server move in. */
+export function mergedText(leg: ServerToDiskLeg): string {
+  const files = (leg.files ?? []).map((f) => (typeof f === "string" ? f : f.path));
+  if (files.length === 0) return "Merged server changes";
+  const shown = files.slice(0, 4).join(", ");
+  return `Merged server changes: ${shown}${files.length > 4 ? ` (+${files.length - 4} more)` : ""}`;
 }
 
 /** "Server changes: a (changed), b (added), the canvas layout" — the
@@ -282,7 +346,9 @@ function legVerdict(name: LegName, state: SyncState): LegVerdict {
 export function serverChangesText(leg: ServerToDiskLeg): string {
   if (leg.changed.length === 0) return "Server changes: the canvas layout";
   const parts = leg.changed.map((u) =>
-    u.kind === "layout" || u.slug === null ? "the canvas layout" : `${u.slug} (${u.kind})`,
+    u.kind === "layout" || u.slug === null
+      ? "the canvas layout"
+      : `${u.slug} (${u.kind}${u.identical ? ", same here" : ""})`,
   );
   return "Server changes: " + parts.join(", ");
 }
@@ -307,6 +373,9 @@ export function worstLeg(state: SyncState): SyncWorst {
   const push = state.legs.disk_to_server;
   if (push.state === "pending" || push.state === "pushing") return { leg: null, level: "ok", text: "Publishing…" };
   if (state.legs.server_to_disk.state === "pulling") return { leg: null, level: "ok", text: "Pulling server changes…" };
+  if (state.legs.server_to_disk.state === "merged") {
+    return { leg: null, level: "ok", text: mergedText(state.legs.server_to_disk) };
+  }
   if (push.last_push_at != null) return { leg: null, level: "ok", text: "Published" };
   return { leg: null, level: "ok", text: "In sync" };
 }
@@ -377,4 +446,25 @@ export function formatClock(t: number): string {
 /** Whether a server state means no watcher runs here (re-arm it). */
 export function noWatcher(s: SyncState): boolean {
   return s.watching === false || s.watcher_epoch == null;
+}
+
+/** What the page last saw of `embed_heal_seq`, per watcher. */
+export interface HealMark {
+  epoch: string | null;
+  seq: number;
+}
+
+/** Whether a sync state's `embed_heal_seq` asks the page to send the frame a
+ *  full state now: it moved past the last value seen from the SAME watcher.
+ *  The first sight of a watcher's value is a baseline, not a move (a page
+ *  that loads mid-streak sends a full state on the frame's hello anyway).
+ *  Returns the decision and the mark to keep. Pure; test surface. */
+export function healWanted(
+  prev: HealMark | null,
+  epoch: string | null,
+  seq: number | undefined,
+): { heal: boolean; mark: HealMark | null } {
+  if (typeof seq !== "number") return { heal: false, mark: prev };
+  const mark = { epoch, seq };
+  return { heal: prev !== null && prev.epoch === epoch && seq > prev.seq, mark };
 }

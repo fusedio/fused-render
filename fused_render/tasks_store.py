@@ -127,17 +127,21 @@ from __future__ import annotations
 import contextlib
 import glob
 import json
+import logging
 import math
 import os
 import re
 import threading
 import time
 import urllib.parse
+from collections.abc import Callable
 from datetime import datetime, timezone
 
 from fused_render import _platform
 from fused_render._view_url_codec import canonical_fs_path
 from fused_render.agent_backends import roots
+
+logger = logging.getLogger(__name__)
 
 # Claude Code's projects dir, read at import (CLAUDE_CONFIG_DIR wins where
 # set — `agent_roots.claude_dir`). Kept module-level under its old name
@@ -234,16 +238,77 @@ def message_number(message_id: str) -> int:
 # ------------------------------------------------------------------ the files
 
 
+def _read_state(filename: str) -> tuple[dict, bool]:
+    """`(data, corrupt)` for one store in STATE_DIR. Missing or EMPTY (0 bytes)
+    is `({}, False)` — nothing saved yet. A file that is there but does not
+    read as a json dict is `({}, True)`: the caller that is about to WRITE must
+    not mistake it for an empty store (`_update` moves it aside first). A read
+    that FAILS (any OSError but FileNotFoundError) raises: a store that could
+    not be read is neither empty nor corrupt."""
+    path = os.path.join(STATE_DIR, filename)
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            text = f.read()
+    except FileNotFoundError:
+        return {}, False
+    except ValueError:
+        # Undecodable bytes (UnicodeDecodeError): corrupt, not unreadable.
+        return {}, True
+    # Any other OSError (PermissionError, EMFILE, EIO) is the read failing,
+    # not the file being bad: it propagates, so `_update` refuses the write
+    # rather than set aside a good store and rewrite it with one entry.
+    if not text.strip():
+        return {}, False
+    try:
+        data = json.loads(text)
+    except ValueError:
+        return {}, True
+    if not isinstance(data, dict):
+        return {}, True
+    return data, False
+
+
 def load_state(filename: str) -> dict:
     """A json dict from STATE_DIR, or {} — missing/corrupt is not an error.
     Same helper, same posture, as claude_sessions._load_state; duplicated here
-    rather than imported so this module keeps its no-server-imports rule."""
+    rather than imported so this module keeps its no-server-imports rule.
+    Reading never touches a corrupt file; only `_update`, about to write over
+    it, moves it aside. A read that fails (PermissionError, EMFILE, EIO)
+    answers {} here too — a listing must not fall over — but `_update`
+    refuses to write on one."""
     try:
-        with open(os.path.join(STATE_DIR, filename), "r", encoding="utf-8") as f:
-            data = json.load(f)
-        return data if isinstance(data, dict) else {}
-    except (OSError, ValueError):
+        return _read_state(filename)[0]
+    except OSError as e:
+        logger.warning("tasks_store: could not read %s (%s); reading it as empty",
+                       filename, e)
         return {}
+
+
+def _set_aside_corrupt(filename: str) -> str | None:
+    """Move a store that exists but does not parse to
+    `<filename>.corrupt-<unix ts>` beside it, and log it. Called under the
+    store's lock by `_update` just before it writes fresh, so a bad file costs
+    the reads in between — never the bytes (2026-11-04: a parse error used to
+    read as {} and the next star overwrote every other one). Once per bad
+    file: after the move the live name is gone or freshly written. Answers the
+    new path, or None when the move itself failed — and then `_update`
+    refuses the write, so the corrupt bytes stay where they are rather than
+    being written over (CodeRabbit, PR #2100)."""
+    path = os.path.join(STATE_DIR, filename)
+    base = f"{path}.corrupt-{int(time.time())}"
+    aside, n = base, 0
+    while os.path.exists(aside):
+        n += 1
+        aside = f"{base}-{n}"
+    try:
+        os.replace(path, aside)
+    except OSError as e:
+        logger.warning("tasks_store: %s does not parse and could not be moved "
+                       "aside (%s); refusing the write", path, e)
+        return None
+    logger.warning("tasks_store: %s did not parse; moved it to %s and started "
+                   "a fresh one", path, aside)
+    return aside
 
 
 def _open_lockfile(path: str):
@@ -297,12 +362,24 @@ def _update(filename: str, mutate):
     marking different messages read is not exotic (the app runs several windows
     against one server, and FastAPI serves sync routes from a threadpool), and
     without the read inside the lock the second writer would persist a snapshot
-    taken before the first one's change and drop it."""
+    taken before the first one's change and drop it.
+
+    A store that exists but does not parse reads as `{}` to `mutate`, but is
+    moved aside (`<filename>.corrupt-<ts>`) before the write lands — never
+    silently overwritten; a move that fails refuses the write (OSError). An empty file is just empty. A read that FAILS
+    (`_read_state` raises) refuses the write: the OSError propagates and the
+    file is left as it was."""
     path = os.path.join(STATE_DIR, filename)
     with locked(filename):
-        data = load_state(filename)
+        data, corrupt = _read_state(filename)
         result, changed = mutate(data)
         if changed:
+            # A file that is there but does not parse is NOT an empty store:
+            # it is set aside, not written over (`_set_aside_corrupt`).
+            # A set-aside that fails refuses the write (the bytes are kept).
+            if corrupt and _set_aside_corrupt(filename) is None:
+                raise OSError(f"tasks_store: {path} does not parse and could "
+                              "not be moved aside; refusing to overwrite it")
             # Atomic: unlocked readers (`load_state` in a listing) must never
             # see a half-written file and read it as `{}`. A tmp file beside
             # it, then `os.replace`.
@@ -457,6 +534,18 @@ def _record(store: dict, key: str) -> dict | None:
         moved_to = rec.get("moved_to")
         if isinstance(moved_to, str) and moved_to:
             out["moved_to"] = moved_to
+    # A PICKED ICON rides along the same way (`set_icon`): the slot the
+    # user chose over the number's own. Anything out of range is dropped, so a
+    # record edited by hand cannot index past the sprite.
+    slot = rec.get("icon_slot")
+    if isinstance(slot, int) and not isinstance(slot, bool) and 0 <= slot < ICON_COUNT:
+        out["icon_slot"] = slot
+    # ...and the user's own WORD on the icon (`icon`, 2026-11-16): "on" (a
+    # pick), "off" (Remove). Anything else reads as absent — follow the star.
+    # Carried here so a rekey moves it with the number (`_apply_rekey`).
+    word = rec.get("icon")
+    if word in (ICON_ON, ICON_OFF):
+        out["icon"] = word
     return out
 
 
@@ -607,6 +696,11 @@ def ensure_ids(items, rekeys=(), reproject=False) -> dict[str, str]:
             _moved, this_changed = _apply_rekey(store, old, new)
             changed = changed or this_changed
 
+        # A draft's icon WORD and pick travel to the number it is re-minted
+        # under (2026-11-16: any task can be given an icon, a draft too): a
+        # new number is the store's bookkeeping, not the user taking back
+        # what they picked or removed.
+        carried: dict[str, dict] = {}
         if reproject:
             for key, project, _order in items:
                 # Never a booked row: `pending:<entry-id>` is a scheduled task
@@ -624,6 +718,9 @@ def ensure_ids(items, rekeys=(), reproject=False) -> dict[str, str]:
                 rec = _record(store, key)
                 if rec is None or _counter(rec["project"]) == _counter(project):
                     continue
+                icon = {f: rec[f] for f in ("icon_slot", "icon") if f in rec}
+                if icon:
+                    carried[key] = icon
                 _spend(store, rec)
                 store.pop(key, None)
                 changed = True
@@ -638,7 +735,7 @@ def ensure_ids(items, rekeys=(), reproject=False) -> dict[str, str]:
             counter = _counter(project)
             n = high.get(counter, 0) + 1
             high[counter] = n
-            store[key] = {"project": project, "n": n}
+            store[key] = {"project": project, "n": n, **carried.get(key, {})}
             changed = True
 
         out = {}
@@ -649,6 +746,182 @@ def ensure_ids(items, rekeys=(), reproject=False) -> dict[str, str]:
         return out, changed
 
     return _update(TASK_IDS_FILE, mutate)
+
+
+# ----------------------------------------------------------------- task icons
+#
+# A task can wear one of ICON_COUNT glyphs (frontend/public/task-icons.svg;
+# the slot order is frontend/src/shell/task-icons.ts), shown in place of the
+# status ring (task icons; an experiment until 2026-11-23, always on since).
+#
+# THE ICON AND THE STAR ARE TWO THINGS (owner, 2026-11-16). Until then only
+# a starred task wore one (2026-11-11: "we will show these icons only for
+# special tasks — when we click fav, and when it is unfav we remove the
+# icon"); now any task can be given one through the picker, and a favourite
+# can have its icon removed and wear the ring. The record keeps the user's
+# own WORD next to the picked slot:
+#
+#     icon_slot: N      the face picked (absent: the number's own, below)
+#     icon: "on"        picked by hand — worn starred or not
+#     icon: "off"       removed by hand — the ring, starred or not
+#     (no `icon`)       FOLLOW THE STAR: worn while starred, the ring
+#                       otherwise — today's rule, so a task nobody touched
+#                       since 2026-11-11 keeps its face (no migration)
+#
+# pick -> `icon_slot = N, icon = "on"`; Remove -> `icon = "off"`, the slot
+# dropped; a STAR drops an "off" (`clear_icon_off`: starring gives the icon
+# back); an UNSTAR writes nothing — an icon that only came with the star
+# leaves with it, a picked one ("on") stays (owner's choice, 2026-11-16).
+# Which tasks wear a face is `worn_icons`; a legacy record with a slot and
+# no word stays a ring unstarred and shows that slot starred, as it did.
+#
+# THE SLOT IS ARITHMETIC ON THE TASK NUMBER, not a hash of the id and not a
+# probe over the project's live tasks: `slot = (n * STRIDE + seed) mod COUNT`,
+# where `n` is the project's own counter (`_next_numbers`: max seen plus one,
+# never recycled) and `seed` is a hash of the project path. STRIDE is coprime
+# with COUNT, so n -> slot is a bijection: the first COUNT tasks of a project
+# wear COUNT different faces, the next one wraps and repeats — and because a
+# deleted task's number is never handed out again, deleting a task moves
+# nobody else's icon (owner, 2026-11-10). The seed makes two projects start
+# at different places in the set so their TASK-001s differ.
+#
+# One exception, persisted: a PICK (`set_icon` — owner, 2026-11-11: "instead
+# of giving a random one, we let user pick") stamps `icon_slot` on the
+# task's record in task_ids.json, and that override wins until the picker's
+# Remove drops it (a star after that gives the number's own face).
+
+ICON_COUNT = 299
+_ICON_STRIDE = 173  # coprime with 299 (= 13 * 23)
+# The user's word on a task's icon (`icon` on its number record, above).
+ICON_ON = "on"
+ICON_OFF = "off"
+
+
+def _fnv1a(text: str) -> int:
+    h = 2166136261
+    for b in text.encode("utf-8"):
+        h = ((h ^ b) * 16777619) & 0xFFFFFFFF
+    return h
+
+
+def icon_seed(project: str) -> int:
+    """Where a project's sequence starts in the set: a hash of its counter
+    name (`_counter`, the canonical path)."""
+    return _fnv1a(_counter(project)) % ICON_COUNT
+
+
+def icon_slot_for(n: int, project: str, override: int | None = None) -> int:
+    """The slot task number `n` of `project` wears — the override when a
+    pick stamped one, the arithmetic slot otherwise."""
+    if (isinstance(override, int) and not isinstance(override, bool)
+            and 0 <= override < ICON_COUNT):
+        return override
+    return (n * _ICON_STRIDE + icon_seed(project)) % ICON_COUNT
+
+
+def icon_slot(number: str, project: str, override: int | None = None) -> int | None:
+    """`icon_slot_for` from a formatted id ("TASK-003"); None for "" (a task
+    the store could not number yet)."""
+    m = re.search(r"(\d+)$", number or "")
+    if not m:
+        return None
+    return icon_slot_for(int(m.group(1)), project, override)
+
+
+def icon_slots() -> dict[str, int]:
+    """`{key: slot}` for every numbered task, worn or not — the face each
+    one HAS (`worn_icons` narrows it to the faces shown). THE RECORD DECIDES, not
+    the row: the slot is computed from the number and the project the number
+    was allocated in (plus a pick's override), so a task whose project the
+    listing spells differently on a later pass — a `pending:` row rekeyed
+    onto its session, a page-origin task whose cwd is read from the
+    transcript next time — keeps the face it was first drawn with. Spent
+    records (an old key after a rekey) are left out."""
+    out: dict[str, int] = {}
+    for key, rec in task_ids().items():
+        if rec.get("spent"):
+            continue
+        out[key] = icon_slot_for(rec["n"], rec["project"], rec.get("icon_slot"))
+    return out
+
+
+def worn_icons(starred) -> dict[str, tuple[int, bool]]:
+    """`{key: (slot, picked)}` for every task that WEARS a face now — the
+    one rule (module note above, 2026-11-16): picked by hand (`icon: "on"`),
+    or starred and not removed by hand (`icon` absent, or anything but
+    "off"). `starred` is a container of the starred keys (`in` is all that is
+    asked of it). `picked` is whether the user's own word holds it there —
+    the shell shows a picked face even with the favourites switch off, a
+    starred one only with it on (ScheduleTaskViews `StatusIcon`). Read once
+    per listing; computed off the number record like `icon_slots`."""
+    out: dict[str, tuple[int, bool]] = {}
+    for key, rec in task_ids().items():
+        if rec.get("spent"):
+            continue
+        word = rec.get("icon")
+        if word == ICON_ON or (word != ICON_OFF and key in starred):
+            out[key] = (icon_slot_for(rec["n"], rec["project"], rec.get("icon_slot")),
+                        word == ICON_ON)
+    return out
+
+
+def icon_overrides() -> dict[str, int]:
+    """`{key: slot}` for every task whose icon was picked (tests, and the
+    one question "was this one picked?")."""
+    out: dict[str, int] = {}
+    for key, rec in task_ids().items():
+        slot = rec.get("icon_slot")
+        if isinstance(slot, int):
+            out[key] = slot
+    return out
+
+
+def set_icon(key: str, slot: int | None) -> dict | None:
+    """The picker's two answers on one task (2026-11-16): a PICK (`slot`)
+    gives it that face, starred or not (`icon_slot = slot, icon = "on"`);
+    REMOVE (`slot=None`) takes the face away, starred or not — the ring
+    again (`icon = "off"`, the slot dropped). Persisted on the task's number
+    record, so it survives listings, restarts and a rekey.
+
+    Answers what the task wears now, `{"icon_slot": int | None, "picked":
+    bool}` — None after a Remove — or None when the task has no number yet
+    (nothing to stamp it on). A slot out of range is the caller's to refuse
+    (routers/tasks.py `api_task_icon`) — here it would read back as no
+    override (`_record`)."""
+    def mutate(store: dict):
+        rec = _record(store, key)
+        raw = store.get(key)
+        if rec is None or rec.get("spent") or not isinstance(raw, dict):
+            return None, False
+        before = (raw.get("icon_slot"), raw.get("icon"))
+        if slot is None:
+            raw.pop("icon_slot", None)
+            raw["icon"] = ICON_OFF
+            worn = None
+        else:
+            raw["icon_slot"] = slot
+            raw["icon"] = ICON_ON
+            worn = icon_slot_for(rec["n"], rec["project"], slot)
+        return ({"icon_slot": worn, "picked": slot is not None},
+                (raw.get("icon_slot"), raw.get("icon")) != before)
+
+    return _update(TASK_IDS_FILE, mutate)
+
+
+def clear_icon_off(key: str) -> bool:
+    """A STAR GIVES THE ICON BACK (owner, 2026-11-16): drop a Remove's "off"
+    so the task follows the star again — the number's own face, or the one
+    picked before. Called by the star route when a task BECOMES starred
+    (routers/tasks.py `api_task_favourite`). A pick ("on") and an untouched
+    record are left as they are. True when the record changed."""
+    def mutate(store: dict):
+        raw = store.get(key)
+        if not isinstance(raw, dict) or raw.get("icon") != ICON_OFF:
+            return False, False
+        raw.pop("icon", None)
+        return True, True
+
+    return bool(_update(TASK_IDS_FILE, mutate))
 
 
 def stored_number(store: dict, key: str) -> str:
@@ -963,6 +1236,45 @@ def mark_deleted(key: str, now: float | None = None) -> None:
     _update(DELETED_FILE, mutate)
 
 
+# ----------------------------------------------------------- breakouts.json
+#
+#     {"<session-id>": {"at": 1755300000.0}}
+#
+# A BREAKOUT is a research-only side chat opened from selected chat messages
+# (agent.py `_start(breakout=...)`). It is a real Claude session with a real transcript,
+# and that transcript stays, but it is not a task: the Tasks scan drops these
+# sessions (`_breakout` in routers/tasks.py). Marked by the router from the
+# start's answer, keyed by session like `deleted.json` and for the same
+# reasons, and with no revival rule: a breakout that is marked stays one.
+
+BREAKOUTS_FILE = "breakouts.json"
+
+
+def breakout_state() -> dict:
+    """The breakout store, as saved. Missing/corrupt reads as {} — nothing is
+    a breakout — so degrading shows an extra row and never hides a task."""
+    return load_state(BREAKOUTS_FILE)
+
+
+def is_breakout(key: str) -> bool:
+    return bool(key) and isinstance(breakout_state().get(str(key)), dict)
+
+
+def mark_breakout(key: str, now: float | None = None) -> None:
+    """Record one session as a breakout. Idempotent; an empty key is ignored."""
+    if not key:
+        return
+    stamp = time.time() if now is None else float(now)
+
+    def mutate(state: dict):
+        if isinstance(state.get(str(key)), dict):
+            return None, False
+        state[str(key)] = {"at": stamp}
+        return None, True
+
+    _update(BREAKOUTS_FILE, mutate)
+
+
 # ------------------------------------------------------------ archived.json
 #
 #     {"<task-key>": {"at": 1755300000.0}}
@@ -1029,6 +1341,128 @@ def clear_archived(key: str) -> bool:
         return had, had
 
     return bool(_update(ARCHIVED_FILE, mutate))
+
+
+# ---------------------------------------------------------- favourites.json
+#
+#     {"<task key>": {"at": 1755300000.0, "open": false}}
+#
+# THE STAR ON THE RAIL'S PREVIEW CARD. Global (one list for the whole machine,
+# not per canvas) and server-side, keyed by task key exactly as `archived.json`
+# is, and for the same reason: it is a fact about a task that no transcript can
+# carry. `open` is whether the favourite sits expanded in the rail, and AT MOST
+# ONE does — `set_favourite` closes every other record when one opens, under the
+# same lock, so two windows cannot leave two expanded cards behind. A plain star
+# (no `open` asked) opens its card — a star you just pressed is a card you want
+# to see — and so closes whichever was open (Akshil, 2026-11-04: the "open only
+# onto an empty rail" rule of the same day was reverted).
+#
+# ONLY A STARTED CHAT can be starred (the route refuses a key with no
+# session): a `pending:` key rekeys on dispatch (`_apply_rekey`) and a record
+# under it would be orphaned, like a key-keyed archive filing. Erase and
+# delete drop the record with the row.
+
+FAVOURITES_FILE = "favourites.json"
+
+
+def favourites_state() -> dict:
+    """The favourites, as saved. Missing/corrupt reads as {} — nothing starred —
+    so a bad file costs a star, never a row (and the next write moves the bad
+    file aside rather than over it: `_update`)."""
+    return load_state(FAVOURITES_FILE)
+
+
+def favourite_of(state: dict, key: str) -> tuple[bool, bool]:
+    """`(starred, open)` for this key. A record that is not a dict reads as not
+    starred; a starred record with an unreadable `open` reads as closed — a
+    bad record can neither hide a task nor hold a card open."""
+    rec = state.get(str(key))
+    if not isinstance(rec, dict):
+        return False, False
+    return True, rec.get("open") is True
+
+
+def favourite_at(state: dict, key: str) -> float | None:
+    """When this key was starred (the record's `at`, kept across re-stars
+    and open/close writes), or None for a key that is not starred or whose
+    record has no readable stamp. The rail's favourites sort by it, newest
+    star first (Akshil, 2026-11-05)."""
+    rec = state.get(str(key))
+    if not isinstance(rec, dict):
+        return None
+    try:
+        at = float(rec.get("at"))
+    except (TypeError, ValueError):
+        return None
+    # NaN / inf would pass `float()` and break the JSON the pulse answers
+    # with (CodeRabbit): unreadable, like a missing stamp.
+    return at if math.isfinite(at) else None
+
+
+def set_favourite(key: str, on: bool | None, open: bool | None = None,
+                  now: float | None = None,
+                  force_closed: bool | Callable[[], bool] = False) -> dict:
+    """Star or unstar one task key.
+
+    `on=True` creates the record (an existing one keeps its original `at`) and
+    sets `open`. Given explicitly, `open=True` opens this card and closes every
+    other; `open=False` records it closed. NOT given, the star opens its card
+    (and closes every other): a star you just pressed is a card you want to
+    see (Akshil, 2026-11-04 — the "open only onto an empty rail" rule tried
+    the same day is reverted).
+
+    `on=False` deletes the record. `on=None` touches ONLY `open`, and only on a
+    key that is starred — the card's × and its swaps say "closed" without ever
+    re-starring a task another window just unstarred.
+
+    `force_closed` records `open` False whatever was asked: an archived task
+    keeps or gets its star, never an open card (`archive_task`). The route
+    passes a CALLABLE (is the task archived?), asked inside `mutate` — under
+    the favourites lock — so an archive filed after the route's own checks
+    still lands closed: either it filed before this check, or its own close
+    (`archive_task`, same lock) comes after this write.
+
+    Answers `{"starred", "open", "changed"}`; `changed` lists every key whose
+    record flipped, so the caller can wake the watcher for each."""
+    key = str(key)
+    stamp = time.time() if now is None else float(now)
+
+    def mutate(state: dict):
+        changed: list[str] = []
+        if on is False:
+            if key in state:
+                del state[key]
+                changed.append(key)
+            return ({"starred": False, "open": False, "changed": changed},
+                    bool(changed))
+        before = state.get(key)
+        if on is None and not isinstance(before, dict):
+            return ({"starred": False, "open": False, "changed": changed}, False)
+        if force_closed() if callable(force_closed) else force_closed:
+            want_open = False
+        else:
+            # `on=True` with `open` not given opens (`on=None` always carries
+            # `open`).
+            want_open = True if open is None else bool(open)
+        at = stamp
+        if isinstance(before, dict):
+            try:
+                at = float(before.get("at"))
+            except (TypeError, ValueError):
+                at = stamp
+        record = {"at": at, "open": want_open}
+        if before != record:
+            state[key] = record
+            changed.append(key)
+        if want_open:
+            for other, rec in state.items():
+                if other != key and isinstance(rec, dict) and rec.get("open") is True:
+                    state[other] = {**rec, "open": False}
+                    changed.append(other)
+        return ({"starred": True, "open": want_open, "changed": changed},
+                bool(changed))
+
+    return _update(FAVOURITES_FILE, mutate)
 
 
 # -------------------------------------------------- session_settings.json
@@ -1164,58 +1598,6 @@ def record_settings(session_id: str, model: str = "", effort: str = "",
     return _update(SETTINGS_FILE, mutate)
 
 
-# THE TURN RECAP rides on the same per-session record (Akshil, 2026-10-15:
-# "just add a field in json"), under its own key so `session_settings` and
-# `record_settings` never see it:
-#
-#     {"<session-id>": {"model": …, "recap": {"text": "…", "for_uuid": "…", "at": …}}}
-#
-# `for_uuid` is the turn the recap is about — the same key the away fold's
-# `/api/claude-sessions/recap` takes — so the fold and the Tasks row title share
-# one haiku call. `text: ""` is a stored FAILURE: the turn was tried and haiku
-# said nothing usable, and the listing does not ask again. One recap per
-# session: a newer turn's replaces it. Written only while
-# `task_recap_titles_enabled` is on (claude_sessions `_recap`).
-
-
-def session_recap(state: dict, session_id: str) -> dict | None:
-    """The stored recap for one session — `{"text", "for_uuid", "at"}` — or
-    None when there is none (or the record is not that shape)."""
-    rec = state.get(str(session_id or ""))
-    recap = rec.get("recap") if isinstance(rec, dict) else None
-    if not isinstance(recap, dict) or not isinstance(recap.get("for_uuid"), str):
-        return None
-    return {"text": str(recap.get("text") or ""),
-            "for_uuid": recap["for_uuid"],
-            "at": float(recap.get("at") or 0.0),
-            "empty": recap.get("empty") is True}
-
-
-def record_recap(session_id: str, for_uuid: str, text: str,
-                 now: float | None = None, empty: bool = False) -> dict:
-    """Store one turn's recap (or `""` for a failed one) on the session's
-    record, beside whatever model/effort it already holds. Nothing for an empty
-    session id or turn uuid — there is nothing to key it on."""
-    session_id = str(session_id or "").strip()
-    for_uuid = str(for_uuid or "").strip()
-    if not session_id or not for_uuid:
-        return {}
-    recap = {"text": str(text or ""), "for_uuid": for_uuid,
-             "at": time.time() if now is None else float(now)}
-    if empty:
-        # Claude said nothing in prose anywhere: not a failure, so not retried.
-        recap["empty"] = True
-
-    def mutate(state: dict):
-        rec = state.get(session_id)
-        rec = dict(rec) if isinstance(rec, dict) else {}
-        rec["recap"] = recap
-        state[session_id] = rec
-        return recap, True
-
-    return _update(SETTINGS_FILE, mutate)
-
-
 # THE STABLE AI TITLE (prefs `task_summary_titles_enabled`) is one more field
 # on the same record, under `ai_title`:
 #
@@ -1224,8 +1606,11 @@ def record_recap(session_id: str, for_uuid: str, text: str,
 #
 # `turns` is how many of the reader's prompts the session had when the title
 # was written (even when haiku repeated the old one), so the next refresh waits
-# for more prompts. `failed_at` is the last failed attempt; it never blanks
-# `text`, because the row is already showing that title.
+# for more prompts. `at` is stamped on every success too, and a turn that ENDED
+# after `at` is re-titled once it has settled a minute (tasks `_title_candidate`),
+# so the title follows the finished work without waiting three prompts.
+# `failed_at` is the last failed attempt; it never blanks `text`, because the
+# row is already showing that title.
 
 
 def session_ai_title(state: dict, session_id: str) -> dict | None:
@@ -1243,10 +1628,16 @@ def session_ai_title(state: dict, session_id: str) -> dict | None:
 
 
 def record_ai_title(session_id: str, text: str, turns: int,
-                    now: float | None = None) -> dict:
+                    now: float | None = None,
+                    started_at: float | None = None) -> dict:
     """Store a title (or, for an empty `text`, a failed attempt) on the
     session's record. A failure keeps the previous text/at/turns and only sets
-    `failed_at`; a success clears it. Nothing for an empty session id."""
+    `failed_at`; a success clears it. Nothing for an empty session id.
+
+    `started_at` (when the job began) guards a success against a stale
+    overwrite: if the stored title was written after the job started, a newer
+    job finished first and this write is dropped. Fewer turns is NOT grounds to
+    drop (a scan reset legitimately restarts the count)."""
     session_id = str(session_id or "").strip()
     if not session_id:
         return {}
@@ -1257,6 +1648,8 @@ def record_ai_title(session_id: str, text: str, turns: int,
         rec = state.get(session_id)
         rec = dict(rec) if isinstance(rec, dict) else {}
         old = rec.get("ai_title") if isinstance(rec.get("ai_title"), dict) else {}
+        if text and started_at is not None and float(old.get("at") or 0.0) > started_at:
+            return dict(old), False
         if text:
             title = {"text": text, "at": stamp, "turns": int(turns), "failed_at": 0.0}
         else:
@@ -2217,6 +2610,35 @@ def _row_after(line: bytes, at: float, floor: float) -> bool | None:
     if ts > at and obj.get("type") == "user" and _said_something(obj):
         return True
     return None
+
+
+def holds_conversation(path: str) -> bool:
+    """Does this transcript carry at least one conversation row (a row with a
+    `uuid`)?
+
+    The bookkeeping rows Claude Code appends on exit (`cost-state`,
+    `last-prompt`, `ai-title`, `mode`, `atis-latch`, `bridge-session`) carry
+    none, and the CLI writes them under the session's ORIGINAL cwd even after
+    EnterWorktree moved the conversation into a worktree's project dir. That
+    leaves two `<sid>.jsonl` files, one of them a handful of lines with nothing
+    to show; this is how a reader tells them apart. Stops at the first hit,
+    which in a real transcript is a few lines in. `agent.py` keeps its own copy
+    (`_holds_conversation`): it is loaded by path and imports nothing of
+    fused_render."""
+    try:
+        with open(path, "r", encoding="utf-8", errors="ignore") as fh:
+            for line in fh:
+                if '"uuid"' not in line:
+                    continue
+                try:
+                    obj = json.loads(line)
+                except ValueError:
+                    continue
+                if isinstance(obj, dict) and obj.get("uuid"):
+                    return True
+    except OSError:
+        pass
+    return False
 
 
 def user_row_after(path: str, at: float) -> bool:

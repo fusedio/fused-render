@@ -235,7 +235,7 @@ def _menu_layout(login_enabled: bool, port: int) -> tuple[int, list]:
             {"label": f"Running on port {port}", "enabled": False, "visible": True},
         ),
         _item(_ID_SEP1, {"type": "separator", "visible": True}),
-        _item(_ID_OPEN, {"label": "Open FusedRender", "enabled": True, "visible": True}),
+        _item(_ID_OPEN, {"label": "Open Fused Render", "enabled": True, "visible": True}),
         _item(_ID_OPEN_FILE, {"label": "Open file...", "enabled": True, "visible": True}),
         _item(_ID_OPEN_LOGS, {"label": "Open app logs", "enabled": True, "visible": True}),
         _item(
@@ -251,7 +251,7 @@ def _menu_layout(login_enabled: bool, port: int) -> tuple[int, list]:
         _item(_ID_SEP2, {"type": "separator", "visible": True}),
         _item(
             _ID_UNINSTALL,
-            {"label": "Uninstall FusedRender…", "enabled": True, "visible": True},
+            {"label": "Uninstall Fused Render…", "enabled": True, "visible": True},
         ),
         _item(_ID_EXIT, {"label": "Exit", "enabled": True, "visible": True}),
     ]
@@ -344,11 +344,11 @@ def _make_interfaces(port, state, handle, paths, set_enabled, revision_ref, pixm
 
         @dbus_property(access=PropertyAccess.READ)
         def Id(self) -> "s":  # noqa: N802,F821
-            return "FusedRender"
+            return "Fused Render"
 
         @dbus_property(access=PropertyAccess.READ)
         def Title(self) -> "s":  # noqa: N802,F821
-            return "FusedRender"
+            return "Fused Render"
 
         @dbus_property(access=PropertyAccess.READ)
         def Status(self) -> "s":  # noqa: N802,F821
@@ -371,7 +371,7 @@ def _make_interfaces(port, state, handle, paths, set_enabled, revision_ref, pixm
 
         @dbus_property(access=PropertyAccess.READ)
         def ToolTip(self) -> "(sa(iiay)ss)":  # noqa: N802,F821
-            return ["", [], "FusedRender", f"Running on port {port}"]
+            return ["", [], "Fused Render", f"Running on port {port}"]
 
         @dbus_property(access=PropertyAccess.READ)
         def ItemIsMenu(self) -> "b":  # noqa: N802,F821

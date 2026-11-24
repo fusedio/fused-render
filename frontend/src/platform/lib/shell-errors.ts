@@ -34,6 +34,11 @@ export interface ShellErrorFields {
   message: string;
   stack?: string;
   source?: string;
+  /** React's component chain at the throw (`componentDidCatch`'s second
+   *  argument). Component names survive minification; the file stack does
+   *  not. A "Maximum update depth exceeded" names no file at all, so this is
+   *  the one line that says WHICH component looped. */
+  componentStack?: string;
 }
 
 export function reportShellError(fields: ShellErrorFields): void {

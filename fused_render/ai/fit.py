@@ -689,9 +689,15 @@ def footprint_bytes(capability: str, model_id: str, size_gb: float | None = None
                     head_dim: int | None = None,
                     hidden_size: int | None = None,
                     layer_types: list | None = None,
-                    kv_dtype: str | None = None) -> tuple[float | None, str | None]:
+                    kv_dtype: str | None = None,
+                    context_tokens: int | None = None) -> tuple[float | None, str | None]:
     """The best footprint available for `<capability>/<model_id>`, and which
     rung of the ladder it came from — `(bytes, basis)`, or `(None, None)`.
+
+    `context_tokens` is the context window the KV term is sized for
+    (docs/LOCAL_MODEL_GATEWAY.md §2): the catalog row's `context` when a
+    caller has one, else `KV_CACHE_CONTEXT_TOKENS` — the same default as
+    before this knob existed, so nothing not passing it moves.
 
     Precedence: measured (this machine, this run) > declared (a curator's
     `resident_gb`) > download (SPEC AI-19: `params x bytes-per-param` +
@@ -747,6 +753,8 @@ def footprint_bytes(capability: str, model_id: str, size_gb: float | None = None
         "hidden_size": hidden_size,
         "layer_types": layer_types,
         "kv_dtype": kv_dtype,
+        "context_tokens": (int(context_tokens) if context_tokens and context_tokens > 0
+                           else KV_CACHE_CONTEXT_TOKENS),
     })
     if download is not None:
         return download, "download"
@@ -874,7 +882,8 @@ def verdict(capability: str, model_id: str, size_gb: float | None = None,
            head_dim: int | None = None,
            hidden_size: int | None = None,
            layer_types: list | None = None,
-           kv_dtype: str | None = None) -> dict | None:
+           kv_dtype: str | None = None,
+           context_tokens: int | None = None) -> dict | None:
     """`{verdict, basis, footprintBytes, score, runMode}`, or `None` when
     nothing is known — SPEC AI-16, AI-16c, AI-19.
 
@@ -937,7 +946,8 @@ def verdict(capability: str, model_id: str, size_gb: float | None = None,
         footprint_store=footprint_store, quantization=quantization, params=params,
         num_hidden_layers=num_hidden_layers, num_key_value_heads=num_key_value_heads,
         num_attention_heads=num_attention_heads, head_dim=head_dim,
-        hidden_size=hidden_size, layer_types=layer_types, kv_dtype=kv_dtype)
+        hidden_size=hidden_size, layer_types=layer_types, kv_dtype=kv_dtype,
+        context_tokens=context_tokens)
     if footprint is None:
         return None
     ram_gb = machine_ram_gb()

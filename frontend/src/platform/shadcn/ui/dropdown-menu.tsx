@@ -1,3 +1,4 @@
+import { railCollisionPadding } from "@platform/lib/rail-gutter"
 import * as React from "react"
 "use client"
 
@@ -34,6 +35,9 @@ function DropdownMenuContent({
       {/* Must sit above the full-screen side pane (950), modal overlays (1000) and the file-preview overlay (1100), like popover.tsx. */}
       <MenuPrimitive.Positioner
         className="isolate z-[1200] outline-none"
+        // Off the Claude rail (platform/lib/rail-gutter): the right-edge
+        // padding grows by the rail's width while one stands.
+        collisionPadding={railCollisionPadding()}
         align={align}
         alignOffset={alignOffset}
         side={side}

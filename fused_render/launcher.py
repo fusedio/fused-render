@@ -13,34 +13,16 @@ is an installer, not an app (AF-14), and is not listed — and, by typing only,
 every bot (`_bot_registry`, ``kind: "bot"``, opened on the Bots page as the
 Dock opens one). Under the app rows, a non-empty query also lists files
 and folders from the file index (``file_results``): the home search box's
-engine, a handful of rows, opened in the explorer. The bottom rows
-(`home_rows`: the shell home, and under Render the Bots page) sit under the
-list when the query is empty and rank with everything else when it is not.
+engine, a handful of rows, opened in the explorer — and, with Canvases on,
+a few objects from the public ``fused-asset`` bucket (``remote_results``,
+``kind: "s3"``: the Home search's "Fused assets" group), opened in the
+explorer at their ``s3://`` address. The bottom rows
+(`home_rows`: the shell home and the Bots page) sit under the list when the
+query is empty and rank with everything else when it is not.
 
-Under Fused Bot (``_flavor.is_bot()``) the same panel lists BOTS instead:
-the bots page's list, read through ``dock._bot_rows`` (the menu-bar Dock's
-reader, so bot.json is read one way only), pinned bots first by name, then
-the rest most recently updated first, every one in the empty-query list. No
-workspace walk, no desk, no recents store, no files: a bot is not a folder,
-and the Bot app has no explorer to open a file in. A pick selects the bot in
-a Bots window (``app.py``'s ``_open_bot_native``, the Dock's door too).
+Settings live in ``prefs.json`` (shell/prefs.py), two keys::
 
-Settings live in ``prefs.json`` (shell/prefs.py), two keys per flavor::
-
-    Fused Render  {"launcher_hotkey": "alt+space",
-                   "launcher_row_modifier": "alt"}
-    Fused Bot     {"bot_launcher_hotkey": "alt+shift+space",
-                   "bot_launcher_row_modifier": "alt+shift"}
-
-Both apps share ONE prefs.json (one tree, owner's call) and run side by
-side, so the bot launcher stores under its own keys (``hotkey_key()`` /
-``row_modifier_key()``) and defaults to combinations Render does not hold:
-Carbon's ``RegisterEventHotKey`` refuses a combo another process already
-registered, so equal defaults would leave whichever app started second with
-no shortcut. The WIRE names on ``PUT /api/prefs`` stay ``launcher_hotkey`` /
-``launcher_row_modifier`` in both apps (the page never knows the flavor);
-the server maps them to the flavor's key, so the bot keys are stored but
-never surfaced under Render.
+    {"launcher_hotkey": "alt+space", "launcher_row_modifier": "alt"}
 
 The hotkey opens the launcher (``hotkey.py`` spec syntax). The row
 modifier is the modifier (or ``+``-joined modifiers) that,
@@ -49,8 +31,7 @@ shortcuts, resolved at press time — the Nth recently opened app, the desk
 behind them); while the launcher is up, the Nth row shown. The SAME list
 when the query is empty, by design (owner, 2026-10-03). ``<modifier>+0``
 opens the shell home. One knob from the user's point of view. Missing or
-corrupt → the flavor's defaults (``default_hotkey()`` /
-``default_row_modifier()``).
+corrupt → the defaults (``hotkey.DEFAULT_SPEC`` / ``DEFAULT_ROW_MODIFIER``).
 
 ``search`` is pure and ranks by match quality then by registry order: a
 name that starts with the query, then a word inside the name that does,
@@ -83,10 +64,6 @@ logger = logging.getLogger(__name__)
 
 MAX_RESULTS = 9  # one <modifier>-digit each
 DEFAULT_ROW_MODIFIER = "alt"
-#: The bot flavor's defaults: one modifier more than Render's, so both apps'
-#: shortcuts bind when they run side by side (see the module docstring).
-BOT_DEFAULT_HOTKEY = "alt+shift+space"
-BOT_DEFAULT_ROW_MODIFIER = "alt+shift"
 
 #: Filled by app.py on macOS once the panel exists. See the module docstring.
 native_hooks: dict = {}
@@ -100,31 +77,13 @@ def _read_prefs() -> dict:
     return read_prefs()
 
 
-def hotkey_key() -> str:
-    """The prefs.json key THIS flavor's launcher hotkey is stored under."""
-    return "bot_launcher_hotkey" if _flavor.is_bot() else "launcher_hotkey"
-
-
-def row_modifier_key() -> str:
-    """The prefs.json key THIS flavor's row modifier is stored under."""
-    return "bot_launcher_row_modifier" if _flavor.is_bot() else "launcher_row_modifier"
-
-
-def default_hotkey() -> str:
-    return BOT_DEFAULT_HOTKEY if _flavor.is_bot() else hotkey.DEFAULT_SPEC
-
-
-def default_row_modifier() -> str:
-    return BOT_DEFAULT_ROW_MODIFIER if _flavor.is_bot() else DEFAULT_ROW_MODIFIER
-
-
 def get_hotkey() -> str:
     """The stored shortcut spec, canonical; the default when absent or invalid."""
-    raw = _read_prefs().get(hotkey_key())
+    raw = _read_prefs().get("launcher_hotkey")
     try:
-        return hotkey.canonical(raw) if isinstance(raw, str) else default_hotkey()
+        return hotkey.canonical(raw) if isinstance(raw, str) else hotkey.DEFAULT_SPEC
     except hotkey.SpecError:
-        return default_hotkey()
+        return hotkey.DEFAULT_SPEC
 
 
 def canonical_hotkey(spec) -> str:
@@ -147,11 +106,11 @@ def canonical_modifiers(spec) -> str:
 
 
 def get_row_modifier() -> str:
-    raw = _read_prefs().get(row_modifier_key())
+    raw = _read_prefs().get("launcher_row_modifier")
     try:
-        return canonical_modifiers(raw) if isinstance(raw, str) else default_row_modifier()
+        return canonical_modifiers(raw) if isinstance(raw, str) else DEFAULT_ROW_MODIFIER
     except hotkey.SpecError:
-        return default_row_modifier()
+        return DEFAULT_ROW_MODIFIER
 
 
 def pinned_specs(modifier: str) -> list[str]:
@@ -175,15 +134,12 @@ def settings() -> dict:
     panel exists in THIS process (the packaged macOS app installs the
     hooks; a `fused-render serve` on a Mac has no panel, so the Preferences
     section stays hidden there), whether the system accepted the
-    bindings (None = nothing has tried), and ``kind``, what the rows are
-    (``"bots"`` under Fused Bot, else ``"apps"``), so the pages word
-    themselves without knowing the flavor."""
+    bindings (None = nothing has tried)."""
     spec, row = get_hotkey(), get_row_modifier()
     bound = native_hooks.get("hotkey_bound")
     pinned = native_hooks.get("pinned_bound")
     return {
         "available": sys.platform == "darwin" and "rebind" in native_hooks,
-        "kind": "bots" if _flavor.is_bot() else "apps",
         "hotkey": spec,
         "display": hotkey.display(spec),
         "row_modifier": row,
@@ -204,7 +160,7 @@ def notify_settings_changed(hotkey_spec: str | None) -> None:
 
 # ---- registry ------------------------------------------------------------------------
 
-#: The Bots page's row under Fused Render: a second bottom row beside Home
+#: The Bots page's row: a second bottom row beside Home
 #: (`home_rows`). ``kind: "bots"`` is what the native side dispatches on
 #: (app.py ``_open_bots_native``): no key, the page itself.
 BOTS_ROW = {"home": True, "path": "", "url": "/bots", "name": "Fused Bot",
@@ -214,14 +170,11 @@ BOTS_ROW = {"home": True, "path": "", "url": "/bots", "name": "Fused Bot",
 
 def home_rows() -> list[dict]:
     """The bottom rows: the shell home (``kind: "home"``, ``<modifier>+0``)
-    and, under Fused Render, the Bots page (`BOTS_ROW`) after it. Under
-    Fused Bot the home IS the bots page, so only the one row. Computed per
-    call: the display name is the flavor's, and the flavor can change under
-    a test."""
+    and the Bots page (`BOTS_ROW`) after it."""
     name = _flavor.display_name()
     home = {"home": True, "path": "", "url": "/", "name": name, "title": name, "kind": "home",
             "pinned": False, "recent": False, "running": False, "icon": None}
-    return [home] if _flavor.is_bot() else [home, dict(BOTS_ROW)]
+    return [home, dict(BOTS_ROW)]
 
 _CACHE_TTL_S = 2.0
 _cache_lock = threading.Lock()
@@ -266,9 +219,8 @@ def _appfile_row(a: dict, *, recent: bool = False) -> dict:
 
 
 def canvas_page_for(clone_dir: str) -> str | None:
-    """The shell URL PATH a canvas row opens at — the canvas's PROJECT page
-    (`/canvases-project/<env>/<name>`, the sidebar's canvas-row door, owner
-    2026-10-20: the tabbed read-only view, not the editor), or None when
+    """The shell URL PATH a canvas row opens at — the canvas's editor
+    (`/canvases/<env>/<name>`, the sidebar's canvas-row door), or None when
     ``clone_dir`` is not a clone. The native side (app.py
     ``_open_from_launcher``) resolves the row's key through this, the way
     `window_policy.shell_path_for` resolves an app folder's."""
@@ -278,13 +230,13 @@ def canvas_page_for(clone_dir: str) -> str | None:
     if clone is None:
         return None
     env, name, _dir = clone
-    return f"/canvases-project/{env}/{name}"
+    return f"/canvases/{env}/{name}"
 
 
 def _canvas_row(env: str, name: str, clone_dir: str, *, pinned: bool) -> dict:
-    """A cloned canvas (`~/Fused/canvas/<env>/<name>`): ``kind: "canvas"``,
+    """A cloned canvas (`~/Fused/canvas/<env>/user/<name>`): ``kind: "canvas"``,
     ``path`` the clone dir (the key the open callback receives, and what
-    `file_results` dedupes against), ``url`` the project page, ``env`` so
+    `file_results` dedupes against), ``url`` the canvas editor, ``env`` so
     the panel can say which Fused a same-named prod/unstable pair belongs
     to. Never ``running``: a window's key (`window_policy.window_key_of`)
     names /apps and /explorer URLs only, so no window is ever keyed on a
@@ -292,7 +244,7 @@ def _canvas_row(env: str, name: str, clone_dir: str, *, pinned: bool) -> dict:
     path = canonical_fs_path(os.path.abspath(clone_dir)).rstrip("/") or clone_dir
     return {
         "path": path,
-        "url": f"/canvases-project/{env}/{name}",
+        "url": f"/canvases/{env}/{name}",
         "name": name,
         "title": name,
         "kind": "canvas",
@@ -308,7 +260,7 @@ def _canvases_offered() -> bool:
     """Whether canvas rows exist at all: the `canvases_enabled` preference
     (D427). Off, the launcher lists no canvas — not even one on the desk,
     which the sidebar hides too (its Canvases section is behind the same
-    switch). The flag alone, not the account: the project page answers
+    switch). The flag alone, not the account: the canvas editor answers
     signed out, as every canvases route does."""
     from fused_render.shell.prefs import canvases_enabled
 
@@ -367,7 +319,7 @@ def desk_rows() -> list[dict]:
         canvas = a.get("canvas")
         if canvas:
             # A canvas clone on the desk (its Canvases section): a canvas
-            # row to its project page, never an app row to an app page the
+            # row to its editor, never an app row to an app page the
             # clone does not have. Dropped outright while the feature is
             # off, as the sidebar drops the section.
             if offered:
@@ -379,15 +331,13 @@ def desk_rows() -> list[dict]:
     return rows
 
 
-def _bot_registry(*, listed: bool = True) -> list[dict]:
+def _bot_registry() -> list[dict]:
     """The bot rows: every listed bot (``dock._bot_rows``, the one bot.json
     reader the Dock uses too), pinned first by name (casefold, the Dock's
-    order), then the rest most recently updated first. Under Fused Bot
-    (``listed``) they are marked ``recent``/``pinned`` so the empty query
-    lists them all (`search`'s one-list rule, so ``nth_pinned`` and the
-    panel agree). Under Fused Render (``listed=False``) neither flag is set:
-    bots are found by TYPING only — the empty list, and so the nine global
-    digit shortcuts, stay the recently opened apps. ``path`` is the bot id:
+    order), then the rest most recently updated first. Neither ``recent``
+    nor ``pinned`` is set: bots are found by TYPING only — the empty list,
+    and so the nine global digit shortcuts, stay the recently opened apps.
+    ``path`` is the bot id:
     the key the open callback receives. Never raises: a bots store that
     cannot be read is zero rows."""
     from fused_render import dock
@@ -400,18 +350,16 @@ def _bot_registry(*, listed: bool = True) -> list[dict]:
     pinned = sorted((b for b in bots if b["pinned"]), key=lambda b: (b["name"].casefold(), b["id"]))
     rest = sorted((b for b in bots if not b["pinned"]), key=lambda b: -b["updated"])
 
-    def row(b: dict, *, pinned: bool) -> dict:
+    def row(b: dict) -> dict:
         return {"kind": "bot", "id": b["id"], "path": b["id"], "url": dock.bot_view_path(b["id"]),
                 "name": b["name"], "title": b["name"], "icon": None, "face": b["face"],
                 "status": b["status"], "running": b["running"],
-                "pinned": pinned and listed, "recent": listed and not pinned}
+                "pinned": False, "recent": False}
 
-    return [row(b, pinned=True) for b in pinned] + [row(b, pinned=False) for b in rest]
+    return [row(b) for b in pinned + rest]
 
 
 def _registry_uncached() -> list[dict]:
-    if _flavor.is_bot():
-        return _bot_registry()
     from fused_render import app_listing, registered_apps
     from fused_render.shell.seed import fused_dir
 
@@ -467,7 +415,7 @@ def _registry_uncached() -> list[dict]:
             rows.append(_canvas_row(env, name, clone_dir, pinned=False))
     # Bots last, search-only (`_bot_registry`): a bot id is not a path, so it
     # is not run through the realpath dedupe above.
-    rows.extend(_bot_registry(listed=False))
+    rows.extend(_bot_registry())
     return rows
 
 
@@ -482,9 +430,9 @@ def registry(running=frozenset()) -> list[dict]:
     never-opened one with the same match.
 
     Rows: ``{path, url, name, title, kind, pinned, recent, running, icon}``.
-    Under Fused Bot the rows are bots (`_bot_registry`, plus ``id``,
-    ``face``, ``status``); their ``running`` is the bot's own status, not a
-    window, so ``running`` (window paths) is not applied to them.
+    Bot rows (`_bot_registry`) add ``id``, ``face``, ``status``; their
+    ``running`` is the bot's own status, not a window, so ``running``
+    (window paths) is not applied to them.
     """
     global _cache
     now = time.monotonic()
@@ -571,7 +519,7 @@ def results(query: str, running=frozenset()) -> list[dict]:
     against the limit — the shell itself on ``<modifier>+0``, the Bots page
     beside it. A typed query: the bottom rows take part in the search like
     any row, ranked by `_score` and counted against the limit, so "fus"
-    finds Fused Bot where it ranks rather than pinning it last; they come
+    finds the Bots row where it ranks rather than pinning it last; they come
     after the registry in the scored list, so an app with the same match
     outranks them on the index tiebreak."""
     if not str(query or "").strip():
@@ -652,3 +600,103 @@ def file_results(query: str, limit: int = FILE_RESULTS, exclude=()) -> dict:
         if len(rows) >= limit:
             break
     return {"files": rows, "reason": str(out.get("reason") or "")}
+
+
+# ---- the fused-asset bucket ---------------------------------------------------------
+
+#: Bucket objects shown under the file rows for a non-empty query — the Home
+#: search's "Fused assets" group, smaller: a bonus answer, as it is there.
+REMOTE_RESULTS = 4
+
+
+def remote_page_for(url: str) -> str | None:
+    """The shell URL PATH an `s3://` row opens at — the explorer on that
+    address (`/explorer/view/s3%3A/<bucket>/<key>`, the frontend's
+    `rootedFsPath` reads it back), or None for anything that is not an
+    `s3://` address. The native side (app.py ``_open_from_launcher``)
+    resolves an ``s3`` row's key through this, as a canvas row's goes
+    through `canvas_page_for`."""
+    if not isinstance(url, str) or not url.startswith("s3://"):
+        return None
+    segments = [urllib.parse.quote(seg, safe="!*'()")
+                for seg in ["s3:", *url[5:].split("/")] if seg]
+    return "/explorer/view/" + "/".join(segments)
+
+
+def _remote_row(hit: dict) -> dict:
+    """One `remote_index.rank` hit as a launcher row: ``kind: "s3"``, ``path``
+    the `s3://` address (the key the open callback receives), ``url`` its
+    explorer page. The bucket's own hit (key "") is named after the bucket."""
+    url = hit["url"]
+    key = str(hit.get("key") or "").rstrip("/")
+    name = key.rsplit("/", 1)[-1] if key else url[5:].rstrip("/")
+    return {
+        "path": url,
+        "url": remote_page_for(url),
+        "name": name,
+        "title": name,
+        "kind": "s3",
+        "is_dir": bool(hit.get("is_dir")),
+        "pinned": False,
+        "recent": False,
+        "running": False,
+        "icon": None,
+    }
+
+
+def remote_results(query: str, limit: int = REMOTE_RESULTS) -> list[dict]:
+    """Objects and folders in the public `fused-asset` bucket matching
+    ``query``, from its index (`remote_index.rank`, the Home search's
+    "Fused assets" engine — `s3://…` spellings included). Gated on the
+    canvases preference, as that group and every remote route are. Like
+    `file_results`, never raises: an index still loading, a missing extra
+    or a failed query all read as no rows."""
+    q = str(query or "").strip()
+    if not q or limit <= 0:
+        return []
+    try:
+        from fused_render import remote_index
+        from fused_render.shell.prefs import canvases_enabled
+
+        if not canvases_enabled():
+            return []
+        remote_index.retry_if_needed()
+        out = remote_index.rank(q, limit, True)
+    except Exception:  # noqa: BLE001 — see docstring
+        logger.debug("launcher remote search failed", exc_info=True)
+        return []
+    if not out.get("ready"):
+        return []
+    # A key with an empty segment (`a//b`, `/a`) has no explorer address: the URL
+    # codec drops empty segments (path-url.ts rootedFsPath), so its row would
+    # open a different key. Left out rather than shown and mis-opened.
+    def addressable(key: str) -> bool:
+        # A folder key ends in exactly one "/" of its own; strip only that.
+        body = key[:-1] if key.endswith("/") else key
+        return "//" not in body and not body.startswith("/") and not body.endswith("/")
+
+    hits = [h for h in (out.get("hits") or []) if addressable(str(h.get("key") or ""))]
+    return [_remote_row(h) for h in hits[:limit]]
+
+
+# ---- the panel beside the Claude rail ---------------------------------------------
+
+BESIDE_GAP = 8.0  # the rail's own window A gap (shell/claude-rail rail-peek-lib PEEK_GAP)
+
+
+def beside_frame(anchor_x: float, anchor_top: float, width: float, height: float,
+                 visible: tuple[float, float, float, float]) -> tuple[float, float]:
+    """Where the launcher panel stands when the Claude rail's Search door
+    summons it (POST /api/launcher/show with an anchor): like the rail's
+    window A card — its right edge a gap left of the rail (``anchor_x``, the
+    rail's left edge on screen), its top level with the door (``anchor_top``,
+    the door's top edge on screen) — kept inside the screen's visible frame
+    (``(x, y, w, h)``, AppKit's y-up). Returns the panel's ``(x, y)`` origin
+    for ``width`` × ``height``; the panel grows downward from that top as
+    its rows come, so a height change never moves its top."""
+    vx, vy, vw, vh = visible
+    x = anchor_x - BESIDE_GAP - width
+    x = max(vx, min(x, vx + vw - width))
+    top = min(anchor_top, vy + vh)
+    y = max(vy, top - height)
+    return round(x), round(y)

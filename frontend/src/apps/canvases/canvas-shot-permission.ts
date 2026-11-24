@@ -13,6 +13,14 @@
 //     behind a switch in Settings (`slowFallbackEnabled`), off by default.
 //   - Windows / Linux: native when the backend has a still, else the slow
 //     road, automatically — there is no grant to point at.
+//   - An AGENT's capture (D1472): the slow road automatically, on every
+//     platform. Nobody clicked: the user is not at the window to bring it
+//     front or grant anything, and a refusal naming a Settings switch ends
+//     the agent's look at the canvas with no picture at all — which is how
+//     an agent that had just redone a canvas told the user to reload it
+//     instead of seeing the ghost folders itself. The sentence naming the
+//     grant was written for the user's own click, and that is where it
+//     stays.
 //
 // Pure helpers here so the decision and the sentences are testable without
 // the page.
@@ -42,13 +50,31 @@ export function slowFallbackEnabled(
  *  a native still at all (macOS 11–12, `GET /api/capture` → `screenshot.
  *  available: false`) has no grant to point at, so it falls back like any
  *  other platform. */
-export function slowRoadAllowed(g: { mac: boolean; fallbackOn: boolean; nativeAvailable?: boolean }): boolean {
-  return !g.mac || g.fallbackOn || g.nativeAvailable === false;
+export function slowRoadAllowed(g: {
+  mac: boolean;
+  fallbackOn: boolean;
+  nativeAvailable?: boolean;
+  /** The agent's gesture-less capture: always allowed (D1472). */
+  agent?: boolean;
+}): boolean {
+  return !g.mac || g.fallbackOn || g.nativeAvailable === false || g.agent === true;
 }
 
-export async function slowRoadAllowedHere(nativeAvailable?: boolean): Promise<boolean> {
-  // Off a Mac the answer needs no round trip.
-  if (!detectedMac) return true;
+/** Whether an AGENT's capture may take a native road (D1472): on a Mac only
+ *  once the OS says Screen Recording is granted. Nobody clicked, and the
+ *  first native still is what raises the macOS prompt — over whatever app
+ *  the user is in. Off a Mac there is no prompt to raise. */
+export function agentNativeAllowed(g: { mac: boolean; granted?: boolean | null }): boolean {
+  return !g.mac || g.granted === true;
+}
+
+export function agentNativeAllowedHere(granted?: boolean | null): boolean {
+  return agentNativeAllowed({ mac: detectedMac, granted });
+}
+
+export async function slowRoadAllowedHere(nativeAvailable?: boolean, agent = false): Promise<boolean> {
+  // Off a Mac — or for the agent — the answer needs no round trip.
+  if (!detectedMac || agent) return true;
   if (nativeAvailable === false) return true;
   return slowRoadAllowed({ mac: true, fallbackOn: await slowFallbackEnabled(), nativeAvailable });
 }

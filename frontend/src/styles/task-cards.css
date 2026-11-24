@@ -628,3 +628,64 @@
 .task-card-title.is-unread {
   font-weight: 600;
 }
+
+/* -- The a/b tile (owner, 2026-11-16; `task-card--ab`) ------------------------
+   "In card view we are missing the archive button thing on task id, and click
+   to change icon in status ring": the List a/b row's two (tasks.css "The a/b
+   row"), on the tile's head, behind the same switch — every rule here is
+   scoped to the modifier, so off the tile is today's.
+
+   THE ID SLOT: TASK-nnn at rest, Archive / Unarchive over it while the tile is
+   pointed at, in the same box. NOTHING MOVES: the button is out of flow over
+   the number, so the head row keeps its height and every chip its place. The
+   reveal is the tile's `:hover` (the List row's is the row's) or the button's
+   own `:focus-visible` — never `:focus-within`. */
+.task-card--ab .tasks-idslot {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 auto;
+}
+.task-card--ab .tasks-idslot:has(.tasks-act) {
+  min-width: 22px;
+}
+.task-card--ab .tasks-idslot .tasks-act,
+.prefs-section .task-card--ab .tasks-idslot .tasks-act {
+  position: absolute;
+  top: 50%;
+  left: 0;
+  right: 0;
+  width: auto;
+  transform: translateY(-50%);
+}
+.task-card--ab .tasks-idslot .tasks-id {
+  transition: opacity 0.08s ease;
+}
+.task-card--ab:hover .tasks-idslot .tasks-act,
+.task-card--ab .tasks-idslot .tasks-act:focus-visible {
+  opacity: 1;
+  pointer-events: auto;
+}
+/* Only where there IS a button: a tile whose filing cannot change (a run in
+   flight) keeps its number under the pointer. */
+.task-card--ab:hover .tasks-idslot:has(.tasks-act) .tasks-id,
+.task-card--ab .tasks-idslot:has(.tasks-act:focus-visible) .tasks-id {
+  opacity: 0;
+}
+/* THE RING IS A BUTTON (TaskIconPick): its own skin (schedule.css), restated
+   against `.prefs-section button`, whose padded, bordered box would otherwise
+   push the face off the head row — the List a/b row's rule. */
+.task-card--ab .task-card-head-row .task-icon-pick {
+  margin: -4px;
+  padding: 4px;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  align-self: center;
+}
+.task-card--ab .task-card-head-row .task-icon-pick:hover,
+.task-card--ab .task-card-head-row .task-icon-pick[aria-expanded="true"] {
+  background: var(--row-hover, var(--bg-alt));
+  border: 0;
+}

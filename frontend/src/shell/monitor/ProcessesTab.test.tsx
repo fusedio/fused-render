@@ -31,7 +31,7 @@ function proc(over: Partial<MachineProc> & { pid: number }): MachineProc {
 }
 
 const PROCS: MachineProc[] = [
-  proc({ pid: 100, command: "python", fused: true, kind: "app", label: "fused-render", cpuPct: 3, memBytes: GB }),
+  proc({ pid: 100, command: "python", fused: true, kind: "app", label: "Fused Render", cpuPct: 3, memBytes: GB }),
   proc({ pid: 201, command: "claude", fused: true, kind: "claude", label: "Claude: fix the bug", cpuPct: 12.34 }),
   proc({ pid: 300, command: "sleep", args: "sleep 300", cpuPct: 0, memBytes: 1 * MB }),
   proc({ pid: 400, command: "Safari", cpuPct: 64.2, memBytes: 2 * GB }),
@@ -91,7 +91,7 @@ async function mount(
   pollMs = 1e9,
 ): Promise<ReactTestRenderer> {
   const r = await mountNarrow(payload, confirmMs, pollMs);
-  const toggle = r.root.find((n) => n.type === "button" && text(n) === "fused-render only");
+  const toggle = r.root.find((n) => n.type === "button" && text(n) === "Fused Render only");
   click(toggle);
   return r;
 }
@@ -181,11 +181,11 @@ test("search matches name, command line, user and pid", async () => {
 
 test("opens on fused-render only: our rows, the app's cost, and the toggle pressed", async () => {
   const r = await mountNarrow();
-  const toggle = r.root.find((n) => n.type === "button" && text(n) === "fused-render only");
+  const toggle = r.root.find((n) => n.type === "button" && text(n) === "Fused Render only");
   expect(toggle.props["aria-pressed"]).toBe(true);
   expect(pidsOf(r)).toEqual([201, 100]);
   expect(text(r.root)).toContain("2 processes");
-  expect(text(r.root)).toContain("fused-render and the processes it runs");
+  expect(text(r.root)).toContain("Fused Render and the processes it runs");
   click(toggle);
   expect(pidsOf(r)).toEqual([400, 201, 100, 300, 1, 500]);
   expect(text(r.root)).toContain("6 processes");
@@ -194,10 +194,10 @@ test("opens on fused-render only: our rows, the app's cost, and the toggle press
 
 test("fused-render only narrows the table and shows what the app costs", async () => {
   const r = await mount();
-  const toggle = r.root.find((n) => n.type === "button" && text(n) === "fused-render only");
+  const toggle = r.root.find((n) => n.type === "button" && text(n) === "Fused Render only");
   click(toggle);
   expect(pidsOf(r)).toEqual([201, 100]);
-  const stat = r.root.find((n) => n.props["aria-label"] === "fused-render's own cost");
+  const stat = r.root.find((n) => n.props["aria-label"] === "Fused Render's own cost");
   expect(text(stat)).toContain("15.3%"); // 12.34 + 3
   expect(text(stat)).toContain("Processes2");
 });
@@ -432,7 +432,7 @@ test("clicking a row's name opens the detail drawer without selecting the row", 
   const r = await mountWith({
     loadDetail: async (pid: number) => (asked.push(pid), DETAIL),
   });
-  click(r.root.find((n) => n.type === "button" && text(n) === "fused-render only"));
+  click(r.root.find((n) => n.type === "button" && text(n) === "Fused Render only"));
   const name = row(r, 400).find((n) => n.props.className?.includes("monitor-name-open"));
   click(name);
   await flush();
@@ -460,7 +460,7 @@ test("a Claude CLI summary line sits above the table when any are open", async (
   });
   await flush();
   const line = renderer!.root.findAll((n) => n.props.className === "monitor-claudeline");
-  expect(text(line[0])).toBe("Claude CLIs: 3 (fused-render 2 · other 1) · 1.5 GB");
+  expect(text(line[0])).toBe("Claude CLIs: 3 (Fused Render 2 · other 1) · 1.5 GB");
 });
 
 // ---- Claude tasks strip --------------------------------------------------------------

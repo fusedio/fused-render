@@ -156,7 +156,7 @@ function sizeOnce(p: HTMLDivElement): void {
 
 /** ANCHORED BESIDE ITS ELEMENT, NOT AT THE POINTER: `data-hint-side="left"`.
  *  For a hint on a control that sits at the window's edge in a column of its
- *  own — the canvas page's Claude rail (apps/canvases/ClaudeRail), a ring per
+ *  own — the Claude rail (shell/claude-rail/ClaudeRail), a ring per
  *  chat 48px from the right edge. Pointer placement put the panel below the
  *  cursor and, for the task form, clamped it into the middle band, so it hung
  *  hundreds of pixels left of the ring it described. Here it stands just left
@@ -170,7 +170,10 @@ function placeBeside(el: Element): void {
   const r = el.getBoundingClientRect();
   const w = shownW;
   const h = shownH;
-  const left = Math.max(EDGE, r.left - 8 - w);
+  // The row form stands where the column's own windows stand: against the
+  // edge its host names (`data-hint-edge`), not against the one ring.
+  const edge = p.classList.contains("is-row") ? rowEdge(el) : r.left;
+  const left = Math.max(EDGE, edge - 8 - w);
   const top = Math.min(
     window.innerHeight - EDGE - h,
     Math.max(EDGE, r.top + r.height / 2 - h / 2),
@@ -300,13 +303,155 @@ function renderTaskHint(p: HTMLDivElement, el: Element): boolean {
   return true;
 }
 
+/** The x the row form is anchored against: the left edge of the nearest
+ *  ancestor that says it is the column (`data-hint-edge`), else the host's. */
+function rowEdge(el: Element): number {
+  const col = el.closest("[data-hint-edge]") ?? el;
+  return col.getBoundingClientRect().left;
+}
+
+/** The message glyph the count wears (lucide `message-square`, 12px). */
+const ROW_COUNT_ICON =
+  '<svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>';
+
+/** THE TASK'S NAME AND ITS FACTS (Akshil, 2026-11-16: "when we hover we show
+ *  a tooltip with the title of the task — instead show this as is") beside a
+ *  rail ring whose hover opens no card. It was as wide as the window the ring
+ *  opens until 2026-11-18 ("make it not the same width as the window, we can
+ *  have it less or more"); it is as wide as its words now, see below. It began as the Tasks list's whole row —
+ *  status, number, title, reply, count, time. Since 2026-11-17 the LEFT part
+ *  is gone and the title is never clamped ("cut the left side, like icon and
+ *  task id … get rid of truncation and keep only title, not subtitle as
+ *  well"; then, of a build that had dropped the facts too: "I asked only to
+ *  strip the left part, that is status and task id, keep the time and count
+ *  as is. And don't truncate it as well"): the title, whole — it wraps when
+ *  it is longer than the room — then the message count and the time at the
+ *  right end, on the title's first line. No ring, no number, no reply.
+ *  Opted into with `data-hint-row` beside the task form's `data-hint-title`;
+ *  `data-hint-count` and `data-hint-when` are the facts,
+ *  `data-hint-window` the window the ring opens
+ *  ("a" | "b" — the one the scrim dims, tasks.css). */
+function renderRowHint(p: HTMLDivElement, el: Element): boolean {
+  if (!el.hasAttribute("data-hint-row")) return false;
+  const title = (el.getAttribute("data-hint-title") || "").trim();
+  if (!title) return false;
+  const span = (cls: string, text: string): HTMLSpanElement => {
+    const s = document.createElement("span");
+    s.className = cls;
+    s.textContent = text;
+    return s;
+  };
+  const row = document.createElement("div");
+  row.className = "hint-row";
+  row.append(span("hint-row-title", title));
+  const count = (el.getAttribute("data-hint-count") || "").trim();
+  if (count) {
+    const c = span("hint-row-count", count);
+    c.insertAdjacentHTML("beforeend", ROW_COUNT_ICON);
+    row.append(c);
+  }
+  const when = (el.getAttribute("data-hint-when") || "").trim();
+  if (when) row.append(span("hint-row-time", when));
+  p.replaceChildren(row);
+  // WHICH WINDOW THIS RING OPENS: only that one steps back under the scrim
+  // (Akshil, 2026-11-17: "it darkens both instead of only … one of the
+  // window"). A host that does not say is window A's.
+  // A rail door that replaces no window (Search, the expand button) says
+  // "none": its row dims nothing.
+  const win = el.getAttribute("data-hint-window");
+  if (win === "none") p.removeAttribute("data-row-window");
+  else p.setAttribute("data-row-window", win === "b" ? "b" : "a");
+  // AS WIDE AS ITS WORDS, NOT AS THE WINDOW (Akshil, 2026-11-18: "the width,
+  // make it not the same width as the window, we can have it less or more …
+  // if it is the same width that's fine for one or two but not for all,
+  // basically it is fine if it is coincidence"). The panel fits its content
+  // (the fixed panel's own shrink-to-fit), up to the row's measure
+  // (tasks.css) and never past the room beside the column — which is all
+  // this says: a title longer than that wraps.
+  const room = rowEdge(el) - 8 - EDGE;
+  p.style.setProperty("--hint-row-room", `${Math.max(120, Math.round(room))}px`);
+  return true;
+}
+
+/** THE LIST MOVED, THE POINTER DID NOT (Akshil, 2026-11-17: "when I scroll
+ *  there is a little flash of the overlay that comes in and goes out"). A
+ *  scroll hides the hint; the browser then reports the element that slid
+ *  under the resting pointer, and its hint comes up — until the next scroll
+ *  tick hides it again. For a caption that is harmless. A rail ring's ROW
+ *  also dims the rail's windows (tasks.css, the scrim; `markRowDim`), so
+ *  every tick of the wheel blinked the window. A row that came up this way is
+ *  marked `is-passing` and dims nothing; the mark goes the moment the pointer
+ *  is somewhere new — the reader pointing — or the keyboard brings a hint. */
+let passing = false;
+
+/** WHICH RAIL WINDOW STANDS UNDER THE SCRIM, SAID ON THE ROOT ELEMENT
+ *  (tasks.css reads `:root[data-rail-row-dim]`): the row's window while a row
+ *  is up and the reader is pointing at it, nothing otherwise.
+ *
+ *  ON THE ROOT, NOT ASKED OF THE PANEL WITH `body:has(.hint-panel…)` (Akshil,
+ *  2026-11-18: "the render app feels a bit slow, especially when moving around
+ *  and resizing the tasks"). A `:has()` whose anchor is `body`, with a
+ *  descendant after it, makes the browser treat every element inserted or
+ *  removed ANYWHERE as something that may have changed the answer — and the
+ *  shadcn `group-has-*` rules make that invalidation the whole document. Every
+ *  insert restyled all ~5,800 elements (12.5 ms each, against 0.15 ms), and a
+ *  rail window's resize ran at 34 to 48 frames a second. An attribute written
+ *  here costs a restyle when the row comes up and when it goes, and nothing in
+ *  between. */
+const ROW_DIM_ATTR = "data-rail-row-dim";
+function markRowDim(): void {
+  const root = document.documentElement;
+  const dims = !!panel && panel.classList.contains("is-on") && panel.classList.contains("is-row") && !panel.classList.contains("is-passing");
+  const win = dims ? panel!.getAttribute("data-row-window") : null;
+  if (!win) {
+    if (root.hasAttribute(ROW_DIM_ATTR)) root.removeAttribute(ROW_DIM_ATTR);
+    return;
+  }
+  if (root.getAttribute(ROW_DIM_ATTR) !== win) root.setAttribute(ROW_DIM_ATTR, win);
+}
+
+let pointerX = Number.NaN;
+let pointerY = Number.NaN;
+
+function onScrolled(): void {
+  passing = true;
+}
+
+/** A pointer event at a NEW spot is the reader pointing. The events a scroll
+ *  causes under a pointer at rest carry the spot it already had.
+ *
+ *  THE FIRST EVENT IS A BASELINE, NOT A MOVE (CodeRabbit on #2320): until one
+ *  has been seen there is no spot to compare with, and a pointer already
+ *  resting on the rail when the page loaded would have its first scroll-made
+ *  event read as "somewhere new" — clearing the mark and dimming the window
+ *  with nothing having moved. */
+function pointed(e: PointerEvent): void {
+  const known = !Number.isNaN(pointerX) && !Number.isNaN(pointerY);
+  if (known && e.clientX === pointerX && e.clientY === pointerY) return;
+  pointerX = e.clientX;
+  pointerY = e.clientY;
+  if (!known) return;
+  if (!passing) return;
+  passing = false;
+  if (panel) panel.classList.remove("is-passing");
+  markRowDim();
+}
+
 function show(el: Element, x: number, y: number): void {
   const p = ensurePanel();
-  const task = renderTaskHint(p, el);
-  if (!task) renderHint(p, el.getAttribute("data-hint") || "");
+  const row = renderRowHint(p, el);
+  p.classList.toggle("is-row", row);
+  p.classList.toggle("is-passing", row && passing);
+  if (!row) {
+    p.style.removeProperty("--hint-row-room");
+    p.removeAttribute("data-row-window");
+  }
+  const task = !row && renderTaskHint(p, el);
+  if (!row && !task) renderHint(p, el.getAttribute("data-hint") || "");
   p.classList.toggle("is-task", task);
   if (!task) p.classList.remove("is-reply");
   p.classList.add("is-on");
+  markRowDim();
   sizeOnce(p);
   if (anchoredSide(el)) {
     placeBeside(el);
@@ -324,10 +469,16 @@ export function hideHint(): void {
     // Emptied as well as hidden: stale content in a hidden panel is content
     // that flashes on the next show, before its own text lands.
     panel.replaceChildren();
+    panel.classList.remove("is-row");
+    panel.removeAttribute("data-row-window");
+    panel.classList.remove("is-passing");
+    panel.style.removeProperty("--hint-row-room");
+    markRowDim();
   }
 }
 
 function onOver(e: PointerEvent): void {
+  pointed(e);
   const el = hintAt(e.clientX, e.clientY, e.target);
   if (!el) {
     if (host) hideHint();
@@ -351,6 +502,7 @@ function throughAt(target: EventTarget | null): boolean {
 }
 
 function onMove(e: PointerEvent): void {
+  pointed(e);
   if (!host && !throughAt(e.target)) return;
   if (host && !throughAt(e.target)) {
     // The hint's own element is under the pointer (pointerout would have
@@ -388,6 +540,8 @@ function onFocus(e: FocusEvent): void {
   if (!el) return;
   const r = el.getBoundingClientRect();
   host = el;
+  // The keyboard brought this one: it is the reader's, whatever scrolled.
+  passing = false;
   show(el, r.left + r.width / 2 - OFFSET_X, r.bottom - OFFSET_Y + 6);
 }
 
@@ -410,5 +564,8 @@ export function installHints(): void {
   // Anything that moves the page out from under a fixed panel: the panel is
   // anchored to viewport coordinates the scroll has just invalidated.
   window.addEventListener("scroll", hideHint, true);
+  // …and whatever comes up next under a pointer that has not moved is the
+  // list passing, not the reader pointing (`passing`).
+  window.addEventListener("scroll", onScrolled, true);
   window.addEventListener("blur", hideHint);
 }

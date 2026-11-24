@@ -13,8 +13,11 @@ export type Action =
   | "start"
   | "poll"
   | "decide"
+  | "allow_denied"
   | "app_state"
   | "canvas_shot"
+  | "canvas_shot_inbox"
+  | "canvas_shot_claim"
   | "sessions"
   | "live_run"
   | "defaults"
@@ -28,9 +31,11 @@ export type Action =
   | "cancel"
   | "live_host"
   | "send"
+  | "send_now"
   | "set_mode"
   | "commands"
   | "task_output"
+  | "context_usage"
   | "task_stop"
   | "task_background"
   | "tasks"
@@ -57,7 +62,7 @@ export interface StartRequest {
   message: string;
   /** "" = a new session (T:16605-16623). */
   session_id: string;
-  /** WHICH AGENT RUNS THIS CHAT — "claude" (default) | "copilot" | "codex" | "gemini"
+  /** WHICH AGENT RUNS THIS CHAT — "claude" (default) | "copilot" | "codex" | "gemini" | "opencode"
    *  (docs/COPILOT_BACKEND.md D2). Chosen at the first turn and immutable: a
    *  send into an existing session must name the session's own. */
   backend?: string;
@@ -162,6 +167,39 @@ export interface CanvasShotRequest {
   state: string;
 }
 
+/** `canvas_shot_inbox {state}` — a canvas page's poll (D1471): `state` is its
+ *  heartbeat JSON `{env, name, page_id, visible, focused, frame_up, error}`. */
+export interface CanvasShotInboxRequest {
+  state: string;
+}
+
+/** One request waiting on THIS page's canvas, from any run. */
+export interface CanvasShotInboxRow extends CanvasShotRow {
+  runId: string;
+  /** This page already holds the claim (a capture in flight, or an answer
+   *  that did not land). */
+  claimed: boolean;
+  /** When the tool stops waiting (epoch s; 0 from an older server). */
+  deadline?: number;
+}
+
+export interface CanvasShotInboxResponse {
+  rows: CanvasShotInboxRow[];
+  error?: string;
+}
+
+/** `canvas_shot_claim {run_id, request_id, state: {page_id}}`. */
+export interface CanvasShotClaimRequest {
+  run_id: string;
+  request_id: string;
+  state: string;
+}
+
+export interface CanvasShotClaimResponse {
+  claimed: boolean;
+  error?: string;
+}
+
 export interface SendRequest {
   run_id: string;
   /** Must equal the session's agent; ignored otherwise (§8). */
@@ -244,8 +282,12 @@ export interface AgentRequests {
   start: StartRequest;
   poll: PollRequest;
   decide: DecideRequest;
+  /** Approve the one tool call auto mode refused (agent.py `_allow_denied`). */
+  allow_denied: { session_id: string; tool_use_id: string };
   app_state: AppStateRequest;
   canvas_shot: CanvasShotRequest;
+  canvas_shot_inbox: CanvasShotInboxRequest;
+  canvas_shot_claim: CanvasShotClaimRequest;
   sessions: FileRequest;
   live_run: FileSessionRequest;
   /** `session_id` OPTIONAL, exactly as `live_run` takes it: with one the agent
@@ -263,10 +305,14 @@ export interface AgentRequests {
   cancel: CancelRequest;
   live_host: FileSessionRequest;
   send: SendRequest;
+  /** Ctrl+X on a line the run already holds: the `send_now` interrupt naming it. */
+  send_now: { run_id: string; client_uuid: string };
   /** The pill changed on a live run: apply the mode now, no message, no turn. */
   set_mode: { run_id: string; permission_mode: string };
   commands: CommandsRequest;
   task_output: TaskOutputRequest;
+  /** The context popover's `/context` split, asked of the run's live host. */
+  context_usage: { run_id: string } | { session_id: string };
   task_stop: TaskOutputRequest;
   task_background: TaskBackgroundRequest;
   tasks: RunTasksRequest;
@@ -289,7 +335,7 @@ export interface SegmentClock {
   ended?: number;
 }
 export interface TextSegment extends SegmentClock {
-  kind: "text";
+  kind: "text" | "update";
   text: string;
 }
 export interface ThinkingSegment extends SegmentClock {
@@ -331,6 +377,10 @@ export interface ToolSegment extends SegmentClock {
   orphan?: boolean;
   /** Only on a synthetic orphan parent (always ""). */
   detail?: string;
+  /** Set when auto mode's classifier refused this call (agent.py
+   *  `_classifier_denial`): its `reason`, and `allowed` once the user has
+   *  approved it (`_allow_denied`). */
+  denied?: { reason: string; allowed?: boolean };
 }
 export interface NoticeSegment extends SegmentClock {
   kind: "notice";
@@ -486,8 +536,8 @@ export interface AppStateRow {
 }
 
 /** One parked `canvas_screenshot` call (agent `_canvas_shot_requests`): what
- *  the model asked to see. Answered by the canvas page through its own
- *  capture (`useCanvasShotResponder`). */
+ *  the model asked to see. Answered by the canvas page off its own inbox
+ *  (`canvas-page-shot-responder`, D1471); the chat reads none of these. */
 export interface CanvasShotRow {
   id: string;
   what: "canvas" | "udf";
@@ -495,12 +545,8 @@ export interface CanvasShotRow {
   udf: string;
   reason: string;
   created_at: number;
-
-  // -- CLIENT-ONLY annotations (run-controller.ts). --
-  /** The run that asked. */
+  /** The run that asked (the page's inbox rows carry it). */
   runId?: string;
-  /** How many polls this request has been seen unanswered for. */
-  pollsSeen?: number;
 }
 
 export interface SkillRow {
@@ -570,6 +616,10 @@ export interface WorktreeHint {
   /** On `via: "exit"` from `git worktree remove <path>`: the absolute path
    *  removed. A different hint path stays standing. */
   removed?: string;
+  /** On `via: "agent"`: the absolute worktree hint (bash/enter) the main agent
+   *  was standing in when the isolated task started. The chat falls back to it
+   *  once no isolated task is live. */
+  prev?: WorktreeHint;
 }
 export interface ActivityTask {
   id: string;
@@ -591,6 +641,11 @@ export interface PollResponse {
   text: string;
   done: boolean;
   session_id: string;
+  /** The session this run resumed — "" for a fresh chat or a fork. Absent on
+   *  an older agent.py. Beside `session_id` (the run's OWN id, "" until the
+   *  CLI speaks on a backend that mints none) it is what tells a boot whose
+   *  run this is (`run-controller` `foreignRun`). */
+  resumed_from?: string;
   /** The run's agent (D2 §8). Absent on an older agent.py. */
   backend?: string;
   /** "" normally; non-empty does NOT narrow the shape. */
@@ -600,14 +655,13 @@ export interface PollResponse {
   /** Epoch seconds the current turn began (server stamp); 0 or absent on an
    *  older agent.py. */
   turn_started_at?: number;
+  /** `out.jsonl`'s length at this poll. */
+  out_size?: number;
   /** The run's original first user message. */
   message: string;
   permissions: PermissionRow[];
   /** [] once done. */
   app_state: AppStateRow[];
-  /** Unanswered `canvas_screenshot` requests (agent `_canvas_shot_requests`);
-   *  absent on an older agent.py. */
-  canvas_shot?: CanvasShotRow[];
   /** Live permission mode (`_live_mode`). */
   mode: PermissionMode;
   skills: SkillRow[];
@@ -619,6 +673,9 @@ export interface PollResponse {
   cancelled: boolean;
   /** Absent on an older agent.py; null when this window held no hint. */
   worktree_hint?: WorktreeHint | null;
+  /** Absolute paths of worktree calls whose result errored in this window:
+   *  the folder was never made, so the page withdraws them from its hint. */
+  worktree_failed?: string[];
   tasks_pending: boolean;
   activity: Activity;
   segments: Segment[];
@@ -671,6 +728,10 @@ export interface PollResponse {
    * which is the same as an empty one: the optimistic bubbles are all there is.
    */
   inbox?: InboxMessage[];
+  /** The uuids of the stdin lines the CLI has TAKEN (a `command_lifecycle`
+   *  `started`/`completed` receipt or the `isReplay` echo), newest last. Absent
+   *  on an older agent.py. */
+  inbox_taken?: string[];
   /** True on a window that held an `init` or `commands_changed` row: the
    *  slash-command list may have moved, so the page re-fetches `commands`
    *  once (SPEC C-2). Absent on an older agent.py. */
@@ -693,6 +754,9 @@ export interface InboxMessage {
   id: string;
   text: string;
   at?: string | number;
+  /** The entry's identity on the wire — the page's own `client_uuid` when the
+   *  send named one (a reload matches its stored lines against this). */
+  uuid?: string;
   /**
    * THE HOST HAS TAKEN IT OFF THE PILE — but the transcript has not echoed it
    * back yet (the project queue's inbox, agent.py). The server lists these ANYWAY
@@ -743,7 +807,19 @@ export interface ErrorOnly {
  * agrees with this one (`run-controller.ts` `noteSessionId` is a no-op the
  * second time). Having it HERE is what lets the url param, the state and the
  * running mark all happen at the send instead of one poll later. */
-export type StartResponse = { run_id: string; session_id?: string; error?: undefined } | ErrorOnly;
+export type StartResponse =
+  | {
+      run_id: string;
+      session_id?: string;
+      /** The chosen fork turn predates the chat's last compaction; the server forked at that compaction row instead. */
+      fork_clamped?: boolean;
+      error?: undefined;
+    }
+  | ErrorOnly;
+
+/** `allow_denied`'s answer: the grant is recorded, and `message` is what asks
+ *  the agent to run the call again — the page sends it like any other line. */
+export type AllowDeniedResponse = { allowed: string; message: string } | ErrorOnly;
 
 /** agent.py:2971-3038 — exactly one of the three. */
 export type SendResponse = { sent: true } | { respawn: true } | ErrorOnly;
@@ -770,11 +846,18 @@ export type AppStateResponse = { answered: string } | { error: string; retry: bo
 export interface CancelResponse {
   cancelled: string;
   still_queued?: unknown[];
+  /** `{uuid: typed words}` for the uuid names in `still_queued` the server can
+   *  account for; a uuid it cannot is absent. */
+  still_queued_text?: Record<string, string>;
 }
 
 /** agent.py:2759-2802 / 2902-2927 — "" when none. */
 export interface RunIdResponse {
   run_id: string;
+  /** Byte offset in `out.jsonl` of the first row that opened the run's current
+   *  turn (an echo, an assistant or stream row, an init) after its last
+   *  `result`; null when the open state is only trailing bookkeeping rows. */
+  turn_at?: number | null;
 }
 
 /** agent.py:4396. */
@@ -927,6 +1010,10 @@ export interface HistoryResponse {
    * nothing is held when nothing is running.
    */
   inbox?: InboxMessage[];
+  /** The uuids of the stdin lines the CLI has TAKEN (a `command_lifecycle`
+   *  `started`/`completed` receipt or the `isReplay` echo), newest last. Absent
+   *  on an older agent.py. */
+  inbox_taken?: string[];
   /**
    * HOW FULL THE MODEL'S CONTEXT WINDOW IS, off the LATEST USABLE assistant
    * record's `message.usage` (agent.py `_context_usage` / `_usage_row`).
@@ -974,6 +1061,11 @@ export interface ContextUsage {
    *  A Copilot session's comes from its host instead (ACP
    *  `usage_update.size`, docs/COPILOT_BACKEND.md §4). */
   window?: number | null;
+  /** The auto-compact window the USER configured (the
+   *  `CLAUDE_CODE_AUTO_COMPACT_WINDOW` env var or the `autoCompactWindow`
+   *  setting, resolved by agent.py for the run's folder). Absent when none is
+   *  set; the CLI compacts at `min(window, compact_window)`. */
+  compact_window?: number | null;
   compacted: boolean;
 }
 
@@ -1102,8 +1194,11 @@ export interface AgentResponses {
   start: StartResponse;
   poll: PollResponse | PollRefused;
   decide: DecideResponse;
+  allow_denied: AllowDeniedResponse;
   app_state: AppStateResponse;
   canvas_shot: AppStateResponse;
+  canvas_shot_inbox: CanvasShotInboxResponse;
+  canvas_shot_claim: CanvasShotClaimResponse;
   sessions: SessionsResponse | ErrorOnly;
   live_run: RunIdResponse | ErrorOnly;
   defaults: DefaultsResponse | ErrorOnly;
@@ -1117,9 +1212,11 @@ export interface AgentResponses {
   cancel: CancelResponse;
   live_host: RunIdResponse | ErrorOnly;
   send: SendResponse;
+  send_now: { sent: boolean } | ErrorOnly;
   set_mode: SetModeResponse;
   commands: CommandsResponse | ErrorOnly;
   task_output: TaskOutputResponse | ErrorOnly;
+  context_usage: ContextBreakdown | ErrorOnly;
   task_stop: TaskStopResponse | ErrorOnly;
   task_background: TaskBackgroundResponse | ErrorOnly;
   tasks: RunTasksResponse | ErrorOnly;
@@ -1242,6 +1339,42 @@ export interface TaskBackgroundRequest {
 export interface TaskBackgroundResponse {
   ok: true;
   backgrounded: boolean;
+  error?: undefined;
+}
+/** What a `/context` row is (CLI `kind`): `deferred` rows are tool schemas
+ *  loaded on demand, outside the window and the usage math. */
+export type ContextCategoryKind = "used" | "free" | "buffer" | "deferred";
+/** One `/context` row (agent.py `_context_breakdown`). `color` is the CLI's
+ *  theme key (`promptBorder`, `cyan_FOR_SUBAGENTS_ONLY`, ...). */
+export interface ContextCategory {
+  id: string;
+  name: string;
+  tokens: number;
+  color: string;
+  kind: ContextCategoryKind;
+}
+export interface ContextDetailItem {
+  name: string;
+  tokens: number;
+  /** MCP rows are per server: how many tools it holds. */
+  count?: number;
+}
+/** A row's drill-down: the top eight by tokens, the rest tallied. */
+export interface ContextDetail {
+  items: ContextDetailItem[];
+  more: number;
+  more_tokens: number;
+}
+/** `context_usage {run_id}`: `get_context_usage` (detail "summary"), trimmed. */
+export interface ContextBreakdown {
+  categories: ContextCategory[];
+  /** Keyed by the category id each list splits. */
+  details: Record<string, ContextDetail>;
+  total_tokens: number;
+  max_tokens: number;
+  model: string;
+  /** The host has gone; this is the last answer it gave, saved server-side. */
+  stale?: boolean;
   error?: undefined;
 }
 export interface TaskOutputResponse {

@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Build FusedRender.app (or FusedBot.app, FUSED_RENDER_FLAVOR=bot) + a
+# Build Fused Render.app + a
 # distributable DMG via py2app (SPEC §12, D33-D35).
 #
 # Pipeline: pick/bootstrap a FRAMEWORK-build python (py2app needs one to
@@ -46,6 +46,29 @@ _build_failed() {
 }
 trap _build_failed ERR
 
+# Apple's timestamp server (codesign --timestamp) and the notarization-ticket
+# CDN (stapler) are network services that drop a connection now and then:
+# "The timestamp service is not available", "The network connection was lost"
+# (NSURLErrorDomain -1005). Each one killed an otherwise good ~25 min release
+# build, most often the Intel DMG at stapler. Retry the call a few times, with
+# a growing wait, before letting the failure through. A real failure (a bad
+# identity, a rejected ticket) fails identically every time and still aborts,
+# located by the trap above, after about two minutes of retries.
+apple_retry() {
+  local attempt=1 max=5 delay="${FUSED_RENDER_APPLE_RETRY_DELAY:-15}" rc
+  until "$@"; do
+    rc=$?
+    if (( attempt >= max )); then
+      echo "    giving up on '$1 ${2:-}' after $attempt attempts (exit $rc)" >&2
+      return "$rc"
+    fi
+    echo "    '$1 ${2:-}' failed (exit $rc); retry $attempt/$((max - 1)) in ${delay}s" >&2
+    sleep "$delay"
+    attempt=$((attempt + 1))
+    delay=$((delay * 2 > 120 ? 120 : delay * 2))
+  done
+}
+
 # ---------------------------------------------------------------------------
 # Config
 # ---------------------------------------------------------------------------
@@ -53,17 +76,17 @@ trap _build_failed ERR
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 REF="$(PYTHONPATH="$REPO_ROOT" python3 -m fused_render._branch ref)"
 SUFFIX="$(PYTHONPATH="$REPO_ROOT" python3 -m fused_render._branch suffix)"
-# Product flavor (fused_render/_flavor.py): render -> FusedRender, bot ->
-# FusedBot. The env var is pinned to its default when unset so a stale
-# fused_render/_baked_flavor.py left in the tree by an earlier bot build (the
-# wheel build below is what removes it, and that has not run yet) cannot turn a
-# plain `bash scripts/build_dmg.sh` into a bot build. `python3 -c`, not `-m`:
-# the package __init__ already imports _flavor, so -m would warn about runpy.
-FLAVOR="$(FUSED_RENDER_FLAVOR="${FUSED_RENDER_FLAVOR:-render}" PYTHONPATH="$REPO_ROOT" \
-  python3 -c "from fused_render import _flavor; print(_flavor.flavor())")"
-APP_BASE="$(FUSED_RENDER_FLAVOR="$FLAVOR" PYTHONPATH="$REPO_ROOT" \
+# App identity (fused_render/_flavor.py). `python3 -c`, not `-m`: the package
+# __init__ already imports _flavor, so -m would warn about runpy.
+APP_BASE="$(PYTHONPATH="$REPO_ROOT" \
   python3 -c "from fused_render import _flavor; print(_flavor.app_name())")"
 APP_NAME="${APP_BASE}${SUFFIX}"
+# The .app folder, which differs from APP_NAME (the executable and the DMG's
+# file-name token): "Fused Render" vs "FusedRender". It holds a space, so
+# every path built from it stays quoted.
+BUNDLE_BASE="$(PYTHONPATH="$REPO_ROOT" \
+  python3 -c "from fused_render import _flavor; print(_flavor.bundle_name())")"
+BUNDLE_NAME="${BUNDLE_BASE}${SUFFIX}"
 
 # Single source of truth is fused_render/__init__.py's __version__ (pyproject
 # derives it dynamically via [tool.hatch.version], so it has no literal version
@@ -107,16 +130,16 @@ if [[ "$ARCH" == "arm64" ]]; then
   ARCH_SUFFIX=""
 else
   BUILD_VENV="$BUILD_DIR/py2app-venv-$ARCH"
-  # In the DMG name only. The .app inside stays FusedRender.app, the name
+  # In the DMG name only. The .app inside stays "Fused Render.app", the name
   # the updater swaps in /Applications and the cask installs.
   ARCH_SUFFIX="-$ARCH"
 fi
 PY2APP_DIST="$BUILD_DIR/py2app-dist"
 ICNS_PATH="$BUILD_DIR/${APP_NAME}.icns"
-APP_DIR="$PY2APP_DIST/${APP_NAME}.app"
+APP_DIR="$PY2APP_DIST/${BUNDLE_NAME}.app"
 DMG_PATH="$DIST_DIR/${APP_NAME}-${VERSION}${ARCH_SUFFIX}.dmg"
 
-echo "==> fused-render ${VERSION} [${FLAVOR}, ${ARCH}] -> ${APP_NAME}.app (py2app) -> ${DMG_PATH##*/}"
+echo "==> fused-render ${VERSION} [${ARCH}] -> ${BUNDLE_NAME}.app (py2app) -> ${DMG_PATH##*/}"
 mkdir -p "$BUILD_DIR" "$DIST_DIR"
 
 # ---------------------------------------------------------------------------
@@ -233,9 +256,6 @@ fi
 # ---------------------------------------------------------------------------
 
 export FUSED_RENDER_BRANCH="$REF"
-# Baked into the wheel the same way (scripts/hatch_build.py), and seen by
-# setup_py2app.py and every bundled-interpreter smoke below.
-export FUSED_RENDER_FLAVOR="$FLAVOR"
 
 if [[ ! -x "$BUILD_VENV/bin/python" ]]; then
   echo "==> creating build venv"
@@ -338,12 +358,11 @@ FUSED_RENDER_REQUIRE_BUNDLED=1 \
   "$REPO_ROOT/tests/test_bundle_contents.py"
 
 # ---------------------------------------------------------------------------
-# 3. App icon, at the sizes iconutil wants. Render: a fresh, high-res render
-#    of the same four-pointed sparkle used for the menu-bar glyph
+# 3. App icon, at the sizes iconutil wants: a fresh, high-res render of the
+#    same four-pointed sparkle used for the menu-bar glyph
 #    (fused_render/assets/menubar-template.png, 36px, template/monochrome) on
-#    a rounded dark card. Bot: the committed 1024px FusedBot artwork
-#    (fused_render/assets/bot/fusedbot-icon-1024.png) resized. Build artifact
-#    only - never committed (BUILD_DIR is gitignored).
+#    a rounded dark card. Build artifact only - never committed (BUILD_DIR is
+#    gitignored).
 # ---------------------------------------------------------------------------
 
 echo "==> generating app icon"
@@ -351,24 +370,6 @@ ICONSET_DIR="$BUILD_DIR/${APP_NAME}.iconset"
 rm -rf "$ICONSET_DIR" "$ICNS_PATH"
 mkdir -p "$ICONSET_DIR"
 
-if [[ "$FLAVOR" == "bot" ]]; then
-"$BUILD_VENV/bin/python" - "$ICONSET_DIR" "$REPO_ROOT/fused_render/assets/bot/fusedbot-icon-1024.png" <<'PYEOF'
-import sys
-from PIL import Image
-
-iconset_dir, src = sys.argv[1], sys.argv[2]
-bg = Image.open(src).convert("RGBA")
-if bg.size[0] != bg.size[1]:
-    sys.exit(f"bot icon must be square, got {bg.size[0]}x{bg.size[1]}: {src}")
-
-sizes = [16, 32, 128, 256, 512]
-for size in sizes:
-    img = bg.resize((size, size), Image.LANCZOS)
-    img.save(f"{iconset_dir}/icon_{size}x{size}.png")
-    img2x = bg.resize((size * 2, size * 2), Image.LANCZOS)
-    img2x.save(f"{iconset_dir}/icon_{size}x{size}@2x.png")
-PYEOF
-else
 "$BUILD_VENV/bin/python" - "$ICONSET_DIR" <<'PYEOF'
 import math
 import sys
@@ -424,7 +425,6 @@ for size in sizes:
     img2x = bg.resize((size * 2, size * 2), Image.LANCZOS)
     img2x.save(f"{iconset_dir}/icon_{size}x{size}@2x.png")
 PYEOF
-fi
 
 iconutil -c icns "$ICONSET_DIR" -o "$ICNS_PATH"
 test -f "$ICNS_PATH"
@@ -966,16 +966,16 @@ rm -rf "$BUILD_DIR/pil-venv"
 # ---------------------------------------------------------------------------
 # 4c. Bundled fused CLI (SPEC §19 DP-3): the `fused` package installed above
 #     (a [bundled] requirement, so setup_py2app.py's derivation forces it)
-#     ships in the bundle so Deploy works with zero setup. Two artifacts:
+#     ships in the bundle so canvases and sharing work with zero setup. Two
+#     artifacts:
 #     - Contents/Resources/bin/fused: a terminal wrapper over the SAME baked-in CLI
-#       (bundled python + fused_render/_fused_cli.py shim), for the one-time
-#       setup steps a modal can't do (`fused cloud setup`, `fused cloud
-#       login`, `fused env create`). The Deploy modal's guidance names this
-#       path when running packaged (deploy._setup_cli_hint).
+#       (bundled python + fused_render/_fused_cli.py shim), for commands a user
+#       runs in a terminal (e.g. a sign-in). fusedcli.setup_cli_hint names
+#       this path when running packaged.
 #     - a smoke test invoking real CLI verbs through the shim, so a py2app
 #       packaging gap (an untraced dynamic import, a dropped data dir - see
 #       setup_py2app.py's fused-deps block) fails the BUILD, not the user's first
-#       deploy. Runs before signing: the wrapper must exist before the seal.
+#       canvas sync. Runs before signing: the wrapper must exist before the seal.
 # ---------------------------------------------------------------------------
 
 echo "==> bundled fused CLI: terminal wrapper + smoke test"
@@ -990,7 +990,7 @@ WRAPPER_PATH="$APP_DIR/Contents/Resources/bin/fused"
 mkdir -p "$(dirname "$WRAPPER_PATH")"
 cat > "$WRAPPER_PATH" <<WRAPPER
 #!/bin/sh
-# fused CLI bundled with ${APP_NAME}.app - the same interpreter + fused
+# fused CLI bundled with ${BUNDLE_NAME}.app - the same interpreter + fused
 # package the app's Deploy button uses (fused_render/_fused_cli.py, SPEC §19).
 # PYTHONHOME points the bundled python at its own runtime, exactly as the
 # app's own smoke tests / py2app launcher do. PYTHONPATH is UNSET (env -u):
@@ -1004,18 +1004,26 @@ exec env -u PYTHONPATH PYTHONHOME="\$RES" "\$RES/../MacOS/python" "\$RES/lib/${P
 WRAPPER
 chmod +x "$WRAPPER_PATH"
 
-# --help imports the whole click command tree; `env list` (against an empty,
-# isolated store) exercises the environments stack (pydantic models et al).
-for probe in "--help" "share --help" "env list"; do
-  if ! PROBE_OUT="$(env OPENFUSED_ENVS_FILE="$BUILD_DIR/smoke-envs.json" \
-      "$WRAPPER_PATH" $probe 2>&1)"; then
-    echo "FATAL: bundled fused CLI failed on: fused $probe" >&2
+# --help imports the whole click command tree; `workbench canvas validate` on a
+# minimal canvas exercises the canvas models (pydantic et al) that canvas sync
+# runs on every publish (canvases.py's _SyncManager validates before a push).
+SMOKE_CANVAS="$BUILD_DIR/smoke-canvas"
+rm -rf "$SMOKE_CANVAS"
+mkdir -p "$SMOKE_CANVAS"
+printf '[canvas]\nname = "smoke"\n' > "$SMOKE_CANVAS/canvas.toml"
+smoke_probe() {
+  if ! PROBE_OUT="$("$WRAPPER_PATH" "$@" 2>&1)"; then
+    echo "FATAL: bundled fused CLI failed on: fused $*" >&2
     echo "$PROBE_OUT" >&2
     echo "(a py2app packaging gap? see setup_py2app.py's fused packages block)" >&2
     exit 1
   fi
-done
-echo "    fused --help / share --help / env list OK"
+}
+smoke_probe --help
+smoke_probe share --help
+smoke_probe workbench canvas validate "$SMOKE_CANVAS"
+rm -rf "$SMOKE_CANVAS"
+echo "    fused --help / share --help / workbench canvas validate OK"
 
 # ---------------------------------------------------------------------------
 # 4d-bis. Bundle uv (D176). NOT a convenience: the install loader (SPEC PY-18)
@@ -1230,7 +1238,7 @@ MINOS_REPORT="$(find "$APP_DIR" -type f \( -name '*.so' -o -name '*.dylib' -o -p
         *) continue ;;
       esac
       v="$(otool -l "$f" 2>/dev/null | awk "/LC_BUILD_VERSION/{b=1} b&&/minos/{print \$2; exit} /LC_VERSION_MIN_MACOSX/{m=1} m&&/version/{print \$2; exit}")"
-      [ -n "$v" ] && printf "%s %s\n" "$v" "$f"
+      if [ -n "$v" ]; then printf "%s %s\n" "$v" "$f"; fi
     done' _ | sort -t. -k1,1n -k2,2n | tail -5)"
 MINOS_MAX="$(echo "$MINOS_REPORT" | tail -1 | cut -d" " -f1)"
 echo "    highest minos in the bundle: ${MINOS_MAX:-none} (floor ${MINOS_FLOOR})"
@@ -1423,16 +1431,16 @@ PLIST
 PLIST
     CEF_FW="$CHROMIUM_DEST/Chromium Embedded Framework.framework"
     while IFS= read -r -d '' lib; do
-      codesign --force --options runtime --timestamp $KC_OPT -s "$SIGN_IDENTITY" "$lib"
+      apple_retry codesign --force --options runtime --timestamp $KC_OPT -s "$SIGN_IDENTITY" "$lib"
     done < <(find "$CEF_FW/Versions/A/Libraries" -type f -name '*.dylib' -print0 2>/dev/null)
-    codesign --force --options runtime --timestamp $KC_OPT -s "$SIGN_IDENTITY" "$CEF_FW"
-    codesign --force --options runtime --timestamp $KC_OPT -s "$SIGN_IDENTITY" "$CHROMIUM_DEST/FusedChromium.framework"
+    apple_retry codesign --force --options runtime --timestamp $KC_OPT -s "$SIGN_IDENTITY" "$CEF_FW"
+    apple_retry codesign --force --options runtime --timestamp $KC_OPT -s "$SIGN_IDENTITY" "$CHROMIUM_DEST/FusedChromium.framework"
     for helper in "$CHROMIUM_DEST"/*.app; do
-      codesign --force --options runtime --timestamp --entitlements "$CHROMIUM_ENTITLEMENTS" \
+      apple_retry codesign --force --options runtime --timestamp --entitlements "$CHROMIUM_ENTITLEMENTS" \
         $KC_OPT -s "$SIGN_IDENTITY" "$helper"
     done
     codesign --verify --strict "$CHROMIUM_DEST/FusedChromium.framework"
-    codesign --verify --strict "$CHROMIUM_DEST/FusedRender Helper.app"
+    codesign --verify --strict "$CHROMIUM_DEST/Fused Render Helper.app"
   fi
 
   echo "==> signing nested Mach-O binaries"
@@ -1445,7 +1453,7 @@ PLIST
   # ID certificate" / "does not include a secure timestamp").
   signed_count=0
   while IFS= read -r -d '' macho; do
-    codesign --force --options runtime --timestamp \
+    apple_retry codesign --force --options runtime --timestamp \
       --entitlements "$ENTITLEMENTS" $KC_OPT -s "$SIGN_IDENTITY" "$macho"
     signed_count=$((signed_count + 1))
   done < <(
@@ -1465,7 +1473,7 @@ PLIST
     exit 1
   fi
   echo "==> sealing the app bundle"
-  codesign --force --options runtime --timestamp \
+  apple_retry codesign --force --options runtime --timestamp \
     --entitlements "$ENTITLEMENTS" $KC_OPT -s "$SIGN_IDENTITY" "$APP_DIR"
   codesign --verify --strict --verbose=2 "$APP_DIR"
 else
@@ -1495,7 +1503,7 @@ fi  # FUSED_RENDER_SKIP_CODESIGN
 echo "==> rendering dmg background"
 DMG_BACKGROUND="$BUILD_DIR/dmg-background.png"
 "$BUILD_VENV/bin/python" "$REPO_ROOT/scripts/dmg_background.py" "$DMG_BACKGROUND" \
-  --caption "Drag $(FUSED_RENDER_FLAVOR="$FLAVOR" PYTHONPATH="$REPO_ROOT" \
+  --caption "Drag $(PYTHONPATH="$REPO_ROOT" \
     python3 -c "from fused_render import _flavor; print(_flavor.display_name())") into Applications"
 test -f "$DMG_BACKGROUND" && test -f "${DMG_BACKGROUND%.png}@2x.png"
 
@@ -1550,8 +1558,11 @@ label_pos = "bottom"
 PYEOF
 
 rm -f "$DMG_PATH"
+# The volume name is what Finder shows for the mounted image: the brand, with
+# its space. The DMG's file name keeps APP_NAME (no space) for URLs and the
+# updater's download parsing.
 "$BUILD_VENV/bin/dmgbuild" -s "$DMGBUILD_SETTINGS" -D app="$APP_DIR" -D background="$DMG_BACKGROUND" \
-  "$APP_NAME" "$DMG_PATH"
+  "$BUNDLE_NAME" "$DMG_PATH"
 
 # ---------------------------------------------------------------------------
 # 6b. Notarize + staple (optional, D73). Runs only when a notarytool keychain
@@ -1585,8 +1596,8 @@ if [[ -n "${FUSED_RENDER_NOTARY_PROFILE:-}" ]]; then
   xcrun notarytool submit "$DMG_PATH" \
     --keychain-profile "$FUSED_RENDER_NOTARY_PROFILE" --wait
   echo "==> stapling notarization ticket"
-  xcrun stapler staple "$DMG_PATH"
-  xcrun stapler validate "$DMG_PATH"
+  apple_retry xcrun stapler staple "$DMG_PATH"
+  apple_retry xcrun stapler validate "$DMG_PATH"
 else
   echo "==> skipping notarization (FUSED_RENDER_NOTARY_PROFILE unset)"
 fi
@@ -1601,10 +1612,9 @@ fi
 # ---------------------------------------------------------------------------
 
 rm -rf "$APP_DIR" "$ICONSET_DIR"
-# The wheel build baked the ref/flavor into the SOURCE tree (gitignored files).
-# Leaving them there turns the next editable dev run or pytest into that
-# branch/flavor silently (dev.sh and conftest pin the flavor, but not every
-# entry point does). The wheel already carries its own copies.
-rm -f "$REPO_ROOT/fused_render/_baked_flavor.py" "$REPO_ROOT/fused_render/_baked_branch.py"
+# The wheel build baked the ref into the SOURCE tree (a gitignored file).
+# Leaving it there turns the next editable dev run or pytest into that branch
+# silently. The wheel already carries its own copy.
+rm -f "$REPO_ROOT/fused_render/_baked_branch.py"
 
 echo "==> done: $DMG_PATH ($(du -h "$DMG_PATH" | cut -f1))"

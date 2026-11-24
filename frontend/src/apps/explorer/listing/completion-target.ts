@@ -1,4 +1,4 @@
-import { DRIVE_ABS } from "@platform/lib/path-url";
+import { DRIVE_ABS, urlScheme } from "@platform/lib/path-url";
 
 // Decision 2: what the field's completion dropdown asks about. A path-shaped
 // query names a directory to list and a partial name to narrow it by — this
@@ -23,6 +23,9 @@ export function completionTarget(
 ): CompletionTarget | null {
   const raw = query;
   if (!raw || raw.includes("*")) return null;
+  // A URL is not a path to complete (see listing-address.ts); a one-letter
+  // "scheme" is a Windows drive.
+  if ((urlScheme(raw.trim())?.length ?? 0) >= 2) return null;
   if (!raw.includes("/") && raw !== "~" && !DRIVE_ABS.test(raw)) return null;
 
   // "~" alone has nothing after it to split on — the segment being completed

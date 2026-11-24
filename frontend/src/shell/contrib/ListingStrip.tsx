@@ -64,12 +64,12 @@ import {
 } from "@platform/shadcn/ui/alert-dialog";
 import { AppDoctorModal } from "@platform/ui/AppDoctorModal";
 import { JobProgress } from "./JobProgress";
-import { PublishDialog } from "./PublishDialog";
+import { EDIT_ID, PUBLISH_ID, PublishDialog } from "./PublishDialog";
 import { SignInSheet } from "./SignInSheet";
 import { QuietAction, StatusStrip, type StripTone } from "./StatusStrip";
 import { STEPS_FOR } from "./words";
 
-export const PUBLISH_ID = "publish-market";
+export { PUBLISH_ID } from "./PublishDialog";
 const FIX_ID = "fix-with-claude";
 const CHECK_ID = "check-listing";
 const REMOVE_ID = "remove-market";
@@ -166,8 +166,11 @@ export function useListing({
   const [busy, setBusy] = useState<string | null>(null);
   const [job, setJob] = useState<{ id: string; since: number } | null>(null);
   const [error, setError] = useState<string | null>(null);
+  // `{publish}` carries the action the details form posts: the server
+  // offers `publish-market` (first listing) OR `edit-listing` (a listed
+  // app's details) — posting the wrong one is refused as not offered.
   const [sheet, setSheet] = useState<
-    null | "publish" | "doctor" | "sign-in" | { confirm: ContribAction; sentence: string }
+    null | { publish: string } | "doctor" | "sign-in" | { confirm: ContribAction; sentence: string }
   >(null);
   const signal = useUnmountSignal();
   const genRef = useRef(0);
@@ -276,8 +279,9 @@ export function useListing({
     if (a.dialog === "doctor" || a.id === "open-doctor") return setSheet("doctor");
     if (a.dialog === "sign-in") return setSheet("sign-in");
     if (a.id === PUBLISH_ID || a.dialog === "listing") {
-      if (doctorBlocks) return setSheet("doctor");
-      return setSheet("publish");
+      // Doctor gates a first listing only: an edit keeps the reviewed commit.
+      if (doctorBlocks && a.id !== EDIT_ID) return setSheet("doctor");
+      return setSheet({ publish: a.id });
     }
     if (a.confirm || a.id === REMOVE_ID) {
       return setSheet({
@@ -320,9 +324,10 @@ export function useListing({
 
   const sheets = (
     <>
-      {sheet === "publish" && (
+      {typeof sheet === "object" && sheet !== null && "publish" in sheet && (
         <PublishDialog
           dir={dir}
+          action={sheet.publish}
           onClose={() => setSheet(null)}
           onPublished={(m) => {
             notify({ title: m || "Sent for review. It usually takes about 30 minutes.", tone: "info" });
@@ -351,7 +356,7 @@ export function useListing({
         />
       )}
       <AlertDialog
-        open={typeof sheet === "object" && sheet !== null}
+        open={typeof sheet === "object" && sheet !== null && "confirm" in sheet}
         onOpenChange={(o) => {
           if (!o && !busy) {
             setSheet(null);
@@ -359,7 +364,7 @@ export function useListing({
           }
         }}
       >
-        {typeof sheet === "object" && sheet !== null && (
+        {typeof sheet === "object" && sheet !== null && "confirm" in sheet && (
           <AlertDialogContent>
             <AlertDialogHeader>
               <AlertDialogTitle>{sheet.confirm.label}?</AlertDialogTitle>
@@ -411,7 +416,13 @@ export function useListing({
     press,
     button,
     openDoctor: () => setSheet("doctor"),
-    openPublish: () => setSheet(doctorBlocks ? "doctor" : "publish"),
+    // The details form on the action the server offers for it: Edit
+    // details when listed (or in review), else the first listing.
+    openPublish: () => {
+      const offered = actions.find((a) => a.dialog === "listing" || a.id === PUBLISH_ID) ?? null;
+      const id = offered?.id ?? (listing?.listed ? EDIT_ID : PUBLISH_ID);
+      setSheet(doctorBlocks && id !== EDIT_ID ? "doctor" : { publish: id });
+    },
     refresh: () => read(true),
     sheets,
   };

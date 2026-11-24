@@ -123,8 +123,13 @@ describe("closedToastText", () => {
 describe("Remove anyway", () => {
   const realFetch = globalThis.fetch;
   let calls = 0;
+  // Only the remove endpoint is stubbed and counted: the whole suite shares one
+  // process, so a late request left over from another file's component can hit
+  // the global fetch while this describe owns it, and must not count as a click.
   const answer = (body: unknown | Error) => {
-    globalThis.fetch = (async () => {
+    globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
+      if (!url.includes("/api/tasks/worktrees/remove")) return realFetch(input, init);
       calls++;
       if (body instanceof Error) throw body;
       return new Response(JSON.stringify(body), { status: 200, headers: { "content-type": "application/json" } });

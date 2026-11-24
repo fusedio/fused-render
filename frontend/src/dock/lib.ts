@@ -3,9 +3,8 @@
 // at rest: no mood pose, no animation layers). src/dock is a src-root entry, so it may import apps/bots/lib
 // (scripts/check-boundaries.mjs); face.ts is pure data, and its only import is a type.
 //
-// What the tiles ARE is the server's call (fused_render/dock.py, by flavor): `kind: "apps"` under Fused Render — the
-// user's apps, folders and exported .fused files alike, THEN their bots — `kind: "bots"` under Fused Bot. The page
-// draws whichever rows arrive; only the Home tile's picture and the empty hint key off `kind`.
+// What the tiles ARE is the server's call (fused_render/dock.py): the user's apps, folders and exported .fused
+// files alike, THEN their bots. The page draws whichever rows arrive.
 import { BRANDS, FACE_SHAPES, faceOf } from "../apps/bots/lib/face";
 
 export interface DockFace { shape?: string; color?: string; icon?: string }
@@ -20,7 +19,7 @@ export interface AppRow {
 }
 export type Row = BotRow | AppRow;
 /** GET /api/dock. `pinned` is the pinned zone in tray order; `recent` excludes the pinned. */
-export interface DockPayload { kind?: "apps" | "bots"; pinned?: Row[]; recent?: Row[]; tilesize?: number }
+export interface DockPayload { pinned?: Row[]; recent?: Row[]; tilesize?: number }
 
 /** How many recent rows OF EACH KIND (apps, bots) the tray shows right of the separator. */
 export const RECENT_CAP = 3;

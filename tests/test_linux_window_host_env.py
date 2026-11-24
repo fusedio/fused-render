@@ -1,38 +1,24 @@
-"""The Linux window host turns WebKitGTK's DMABUF renderer off before WebKit
-loads, without overriding a value the user set."""
+"""The Linux window host uses WebKitGTK's DMABUF (GPU) renderer unless the
+user turned it off in the environment."""
+import pytest
+
 from fused_render.supervisor._linux import window_host
 
 VAR = "WEBKIT_DISABLE_DMABUF_RENDERER"
 
 
-def test_disables_dmabuf_renderer_by_default(monkeypatch):
+@pytest.mark.parametrize(("value", "active"), [(None, True), ("0", True), ("1", False)])
+def test_gpu_rendering_active_follows_webkit_env(monkeypatch, value, active):
+    if value is None:
+        monkeypatch.delenv(VAR, raising=False)
+    else:
+        monkeypatch.setenv(VAR, value)
+    assert window_host.gpu_rendering_active() is active
+
+
+def test_load_toolkit_leaves_the_renderer_alone(monkeypatch):
     monkeypatch.delenv(VAR, raising=False)
-    window_host.configure_webkit_env()
-    assert window_host.os.environ[VAR] == "1"
-
-
-def test_user_value_wins(monkeypatch):
-    monkeypatch.setenv(VAR, "0")
-    window_host.configure_webkit_env()
-    assert window_host.os.environ[VAR] == "0"
-
-
-def test_load_toolkit_sets_env_before_importing_gi(monkeypatch):
-    import builtins
-
-    monkeypatch.delenv(VAR, raising=False)
-    seen = {}
-    real_import = builtins.__import__
-
-    def fake_import(name, *args, **kwargs):
-        if name == "gi":
-            seen["value"] = window_host.os.environ.get(VAR)
-            raise ImportError("no gi")
-        return real_import(name, *args, **kwargs)
-
-    monkeypatch.setattr(builtins, "__import__", fake_import)
-    try:
+    monkeypatch.setitem(window_host.sys.modules, "gi", None)
+    with pytest.raises(window_host.ToolkitUnavailable):
         window_host.load_toolkit()
-    except window_host.ToolkitUnavailable:
-        pass
-    assert seen["value"] == "1"
+    assert VAR not in window_host.os.environ

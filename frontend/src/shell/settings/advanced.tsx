@@ -1,9 +1,11 @@
 // Advanced: the call log, the index query console, diagnostics.
-import { useEffect, useState } from "react";
+import { useEffect, useState, useSyncExternalStore } from "react";
 import {
   askIndex,
   buildDiagnostics,
+  clearUdfSaved,
   fetchDiagnosticsPlan,
+  fetchUdfSavedStats,
   fetchServerHealth,
   putCallsEnabled,
   putCallsParamsMode,
@@ -13,6 +15,7 @@ import {
   type CallsParamsMode,
   type DiagnosticsPlan,
   type DiagnosticsResult,
+  type UdfSavedStats,
 } from "@platform/lib/api";
 import type { IndexQueryOutcome } from "@platform/lib/index-query";
 import { copyToClipboard } from "@platform/lib/clipboard";
@@ -90,7 +93,6 @@ export function CallParamsControl({ prefs, onChange }: PrefControlProps) {
   return (
     <SettingRow
       id="call-params"
-      off={!calls.effective_enabled}
       control={
         <SettingSelect
           id="call-params"
@@ -100,7 +102,7 @@ export function CallParamsControl({ prefs, onChange }: PrefControlProps) {
             { key: "keys", label: "Names only" },
             { key: "off", label: "Record nothing" },
           ]}
-          disabled={busy || !calls.effective_enabled}
+          disabled={busy}
           onChange={(v) => void run(() => putCallsParamsMode(v as CallsParamsMode))}
         />
       }
@@ -152,7 +154,6 @@ export function CallRetentionControl({ prefs, onChange }: PrefControlProps) {
   return (
     <SettingRow
       id="call-retention"
-      off={!calls.effective_enabled}
       status={
         locked ? (
           <>
@@ -172,7 +173,7 @@ export function CallRetentionControl({ prefs, onChange }: PrefControlProps) {
             { key: "90", label: "90 days" },
             { key: "0", label: "Until the size cap" },
           ]}
-          disabled={busy || !calls.effective_enabled || locked}
+          disabled={busy || locked}
           onChange={(v) => void run(() => putCallsRetentionDays(Number(v)))}
         />
       }
@@ -316,7 +317,7 @@ function QueryTable({ outcome }: { outcome: IndexQueryOutcome & { ok: true } }) 
 
 // ── Diagnostics (SPEC §50) ────────────────────────────────────────────────
 // One button that zips logs, crash reports, memory samples and the open-apps
-// list to the Desktop. The plan line (what the zip WOULD hold) is read up
+// list to ~/Downloads. The plan line (what the zip WOULD hold) is read up
 // front so the reader knows the size before pressing. WINDOW PRESETS, not a
 // date picker: a reporter knows "a few minutes ago" or "all day", never a
 // clock time. The bulky collectors honour the window; the small join keys are
@@ -345,17 +346,117 @@ function diagnosticsSince(win: DiagnosticsWindow, startedAt: number | null): num
   }
 }
 
+// The build outlives this row: leaving Preferences unmounts the control but
+// the POST keeps running, and the server mirrors it into the job registry so
+// the bottom Activity dock shows it (its row links back here). Module state,
+// not component state, so coming back mid-build shows "Collecting…" and a
+// finished build's path instead of an idle button that could start a second.
+type DiagnosticsRun = {
+  busy: boolean;
+  /** Whether the run in flight reads the system log — its status line. */
+  systemLog: boolean;
+  result: DiagnosticsResult | null;
+  error: string | null;
+};
+let diagRun: DiagnosticsRun = { busy: false, systemLog: false, result: null, error: null };
+const diagListeners = new Set<() => void>();
+function setDiagRun(next: Partial<DiagnosticsRun>) {
+  diagRun = { ...diagRun, ...next };
+  for (const l of diagListeners) l();
+}
+function subscribeDiagRun(l: () => void) {
+  diagListeners.add(l);
+  return () => {
+    diagListeners.delete(l);
+  };
+}
+async function startDiagnostics(opts: { since_s?: number; system_log: boolean }) {
+  if (diagRun.busy) return;
+  setDiagRun({ busy: true, systemLog: opts.system_log, result: null, error: null });
+  try {
+    setDiagRun({ busy: false, result: await buildDiagnostics(opts) });
+  } catch (e) {
+    setDiagRun({ busy: false, error: (e as Error).message });
+  }
+}
+
+// fused-render's saved UDF results (SPEC §54.3): what they take on disk, and
+// one button that deletes them all. The next open of each UDF runs it fresh.
+export function UdfSavedControl() {
+  const [stats, setStats] = useState<UdfSavedStats | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [cleared, setCleared] = useState<UdfSavedStats | null>(null);
+  const [unmeasured, setUnmeasured] = useState(false);
+
+  useEffect(() => {
+    let alive = true;
+    fetchUdfSavedStats()
+      .then((s) => alive && setStats(s))
+      // Size unknown: say so, and leave Clear usable.
+      .catch(() => alive && setUnmeasured(true));
+    return () => {
+      alive = false;
+    };
+  }, []);
+
+  const clear = () => {
+    if (busy) return;
+    setBusy(true);
+    setError(null);
+    clearUdfSaved()
+      .then((r) => {
+        setCleared(r.cleared);
+        setStats({ entries: 0, bytes: 0 });
+      })
+      .catch((e: unknown) => setError(e instanceof Error ? e.message : String(e)))
+      .finally(() => setBusy(false));
+  };
+
+  const empty = stats !== null && stats.entries === 0;
+  // Clear waits for the measurement, so a late read cannot bring back the
+  // count it just cleared.
+  const measuring = stats === null && !unmeasured;
+  return (
+    <SettingRow
+      id="udf-saved"
+      status={
+        busy
+          ? "Clearing…"
+          : stats
+            ? `${stats.entries} ${stats.entries === 1 ? "result" : "results"} · ${formatBytes(stats.bytes)}`
+            : unmeasured
+              ? "Size unknown"
+              : "Measuring…"
+      }
+      control={
+        <Button variant="outline" size="sm" disabled={busy || empty || measuring} onClick={clear}>
+          {busy ? "Clearing…" : "Clear"}
+        </Button>
+      }
+    >
+      {cleared && !error && (
+        <div className="settings-actions">
+          <span className="settings-row-desc">
+            Cleared {cleared.entries} {cleared.entries === 1 ? "result" : "results"} ({formatBytes(cleared.bytes)}).
+          </span>
+        </div>
+      )}
+      {error && <ErrorBanner>{error}</ErrorBanner>}
+    </SettingRow>
+  );
+}
+
 export function DiagnosticsControl() {
   const [plan, setPlan] = useState<DiagnosticsPlan | null>(null);
-  const [busy, setBusy] = useState(false);
-  const [result, setResult] = useState<DiagnosticsResult | null>(null);
+  const run = useSyncExternalStore(subscribeDiagRun, () => diagRun);
+  const { busy, result, error } = run;
   const [copied, setCopied] = useState(false);
-  const [error, setError] = useState<string | null>(null);
   const [win, setWin] = useState<DiagnosticsWindow>("2h");
   // The macOS unified log is the ONE slow collector (15–45 s). Off here by
   // default; the menu items and the CLI keep it on, because a reporter's
   // bundle is the one that has to carry the jetsam evidence.
-  const [systemLog, setSystemLog] = useState(false);
+  const [systemLog, setSystemLog] = useState(() => diagRun.busy && diagRun.systemLog);
   const [startedAt, setStartedAt] = useState<number | null>(null);
 
   useEffect(() => {
@@ -380,19 +481,10 @@ export function DiagnosticsControl() {
     };
   }, [win, startedAt]);
 
-  const save = async () => {
+  const save = () => {
     if (busy) return;
-    setBusy(true);
-    setError(null);
-    setResult(null);
     setCopied(false);
-    try {
-      setResult(await buildDiagnostics({ since_s: diagnosticsSince(win, startedAt), system_log: systemLog }));
-    } catch (e) {
-      setError((e as Error).message);
-    } finally {
-      setBusy(false);
-    }
+    void startDiagnostics({ since_s: diagnosticsSince(win, startedAt), system_log: systemLog });
   };
 
   return (
@@ -400,7 +492,7 @@ export function DiagnosticsControl() {
       id="diagnostics"
       status={
         busy
-          ? systemLog
+          ? run.systemLog
             ? "Reading the system log… 15–45 seconds"
             : "Collecting…"
           : plan
@@ -421,7 +513,7 @@ export function DiagnosticsControl() {
             disabled={busy}
             onChange={(v) => setWin(v as DiagnosticsWindow)}
           />
-          <Button variant="accent" size="sm" disabled={busy} onClick={() => void save()}>
+          <Button variant="accent" size="sm" disabled={busy} onClick={save}>
             {busy ? "Collecting…" : "Save…"}
           </Button>
         </>
@@ -443,6 +535,21 @@ export function DiagnosticsControl() {
           <span className="settings-row-desc">
             Saved {formatBytes(result.bytes)} to <code className="break-all">{result.path}</code>
           </span>
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={() => {
+              // The in-app explorer's listing of the folder, the zip selected
+              // — stays inside the app rather than handing off to Finder.
+              const cut = Math.max(result.path.lastIndexOf("/"), result.path.lastIndexOf("\\"));
+              navigate(cut > 0 ? result.path.slice(0, cut) : result.path, {
+                isDir: true,
+                sel: cut > 0 ? result.path.slice(cut + 1) : null,
+              });
+            }}
+          >
+            Show in explorer
+          </Button>
           <Button
             variant="outline"
             size="sm"

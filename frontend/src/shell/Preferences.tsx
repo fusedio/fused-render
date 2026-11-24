@@ -1,6 +1,5 @@
 // Preferences page (SPEC §20) — `/preferences`, entered from the sidebar's
-// Settings menu. Framed inside the Bots page under Fused Bot (`?embed=1`,
-// apps/bots/components/PrefsPanel.tsx).
+// Settings menu.
 //
 // A LEFT NAV OF GROUPS UNDER THE SIDEBAR'S OWN HEADINGS, A SEARCH BOX OVER
 // ALL OF THEM, AND ONE ROW PER SETTING. What the sections and groups are,
@@ -28,6 +27,7 @@
 // becoming a history entry.
 import { useCallback, useEffect, useMemo, useRef, useState, type ComponentType, type SVGProps } from "react";
 import {
+  Cable,
   Search,
   SlidersHorizontal,
   Sparkles,
@@ -42,9 +42,8 @@ import {
 } from "lucide-react";
 import { useClaudeConfigStatus } from "@apps/claude_config/available";
 import { getPrefs, type Prefs } from "@platform/lib/api";
-import { IS_QUERY_EMBED, replaceSearch } from "@platform/lib/router";
+import { replaceSearch } from "@platform/lib/router";
 import { ClaudeMark } from "@platform/ui/ClaudeMark";
-import { isBot } from "@platform/lib/flavor";
 import { isMac } from "@platform/lib/platform";
 import { cn } from "@platform/lib/utils";
 import { ErrorBanner } from "@platform/ui/ErrorBanner";
@@ -55,7 +54,9 @@ import { Input } from "@platform/shadcn/ui/input";
 import {
   groupOf,
   navSections,
+  parentOff,
   resolveGroup,
+  searchableSettings,
   sectionsOf,
   visibleGroups,
   visibleSettings,
@@ -67,6 +68,7 @@ import { searchSettings, tokenize } from "./settings/search";
 import { CONTROLS } from "./settings/controls";
 import { rowId, SettingsViewContext, type SettingsView } from "./settings/SettingRow";
 import { IndexStateProvider } from "./settings/indexing";
+import Connections from "./Connections";
 
 /** The Claude Code group wears the Claude mark, not a terminal prompt: a `>_` reads as "developer only" to the people this page is for. The mark fills its 512 box edge to edge while lucide's 24-unit icons carry ~2px of padding, so it is drawn at 0.85 to look optically equal; the button's `[&_svg:not([class*='size-'])]:size-4` CSS sets the 16px box (it beats the width/height attributes). */
 function ClaudeNavIcon(props: SVGProps<SVGSVGElement>) {
@@ -82,6 +84,7 @@ const GROUP_ICONS: Record<GroupId, ComponentType<SVGProps<SVGSVGElement>>> = {
   apps: LayoutGrid,
   indexing: FolderSearch,
   lan: Wifi,
+  connections: Cable,
   integrations: Plug,
   advanced: Wrench,
 };
@@ -101,7 +104,8 @@ function Section({
   prefs,
   onChange,
 }: {
-  title: string;
+  /** null: the group's only section, whose heading would repeat the group's title. */
+  title: string | null;
   entries: readonly SettingEntry[];
   prefs: Prefs;
   onChange: (p: Prefs) => void;
@@ -116,8 +120,8 @@ function Section({
     </div>
   );
   return (
-    <section className="settings-section" aria-label={title}>
-      <h3 className="settings-section-title">{title}</h3>
+    <section className="settings-section" aria-label={title ?? undefined}>
+      {title && <h3 className="settings-section-title">{title}</h3>}
       {card}
     </section>
   );
@@ -165,7 +169,6 @@ function PreferencesPage({ claudeConfig }: { claudeConfig: boolean | null }) {
   const [target, setTarget] = useState<string | null>(() => params.get("s"));
   const pageRef = useRef<HTMLDivElement>(null);
   const searchRef = useRef<HTMLInputElement>(null);
-  const bot = isBot();
 
   useEffect(() => {
     let alive = true;
@@ -190,12 +193,19 @@ function PreferencesPage({ claudeConfig }: { claudeConfig: boolean | null }) {
   const loaded = prefs !== null && claudeConfig !== null && claudeReady;
   const entries = useMemo(() => {
     if (!prefs || claudeConfig === null) return [];
-    const base: SettingEntry[] = visibleSettings({ prefs, bot, mac: isMac, claudeConfig });
+    const base: SettingEntry[] = visibleSettings({ prefs, mac: isMac, claudeConfig });
     return [...base, ...claudeRows];
-  }, [prefs, bot, claudeConfig, claudeRows]);
+  }, [prefs, claudeConfig, claudeRows]);
+  // What search looks through: every row, plus the child rows a group leaves
+  // out while their parent is off.
+  const searchable = useMemo(() => {
+    if (!prefs || claudeConfig === null) return [];
+    const base: SettingEntry[] = searchableSettings({ prefs, mac: isMac, claudeConfig });
+    return [...base, ...claudeRows];
+  }, [prefs, claudeConfig, claudeRows]);
   const groups = useMemo(() => visibleGroups(entries), [entries]);
   const sections = useMemo(() => navSections(groups), [groups]);
-  const byId = (id: string) => entries.find((e) => e.id === id);
+  const byId = (id: string) => searchable.find((e) => e.id === id);
 
   // Scroll a jumped-to row into view, light it briefly, then let it go.
   useEffect(() => {
@@ -237,14 +247,18 @@ function PreferencesPage({ claudeConfig }: { claudeConfig: boolean | null }) {
   const deep = byId(target ?? "");
   const current: GroupId = deep ? deep.group : resolveGroup(tab, groups);
 
-  const hits = useMemo(() => searchSettings(entries, tokens), [entries, tokens]);
+  const hits = useMemo(() => searchSettings(searchable, tokens), [searchable, tokens]);
   const view: SettingsView = {
     tokens: searching ? tokens : null,
     flashId: flash,
     prefs: prefs ?? undefined,
     jump: (id) => {
-      const group = byId(id)?.group;
-      if (group) showGroup(group, id);
+      const row = byId(id);
+      if (!row) return;
+      // A child its group does not draw yet: light its parent instead, the
+      // switch that brings it back.
+      const target = parentOff(row, prefs) && row.parent ? row.parent.id : id;
+      showGroup(row.group, target);
     },
   };
 
@@ -260,16 +274,14 @@ function PreferencesPage({ claudeConfig }: { claudeConfig: boolean | null }) {
     : groupOf(current).label;
   const blurb = searching
     ? hits.length
-      ? "Change them right here, or follow the path above one to see it in its group."
+      ? null
       : "Try another word — dark, hotkey, token, wifi, queue, model."
     : groupOf(current).blurb;
 
   return (
     <div className="settings-page" ref={pageRef}>
       <div className="settings-header">
-        {/* Framed inside the Bots page's panel the panel's own bar carries
-            the title; a second heading here read as a repeat. */}
-        {!IS_QUERY_EMBED && <h1 className="settings-title">Preferences</h1>}
+        <h1 className="settings-title">Preferences</h1>
         {prefs && (
           <div className="settings-search" role="search">
             <Search aria-hidden="true" className="settings-search-icon" />
@@ -280,15 +292,13 @@ function PreferencesPage({ claudeConfig }: { claudeConfig: boolean | null }) {
               onChange={(e) => setQuery(e.target.value)}
               onKeyDown={(e) => {
                 if (e.key === "Escape" && query) {
-                  // Spent here: framed in the Bots page, a document-level Esc
-                  // closes the whole panel (PrefsPanel), and clearing a search
-                  // is not a request to leave.
+                  // Spent here: clearing a search is not a request to leave.
                   e.preventDefault();
                   e.stopPropagation();
                   setQuery("");
                 }
               }}
-              placeholder={`Search ${entries.length} settings`}
+              placeholder={`Search ${searchable.length} settings`}
               aria-label="Search settings"
               className="settings-search-input"
               autoComplete="off"
@@ -354,7 +364,7 @@ function PreferencesPage({ claudeConfig }: { claudeConfig: boolean | null }) {
                   )}
                 </h2>
               </div>
-              <p>{blurb}</p>
+              {blurb && <p>{blurb}</p>}
             </div>
             <SettingsViewContext.Provider value={view}>
               <IndexStateProvider>
@@ -370,9 +380,19 @@ function PreferencesPage({ claudeConfig }: { claudeConfig: boolean | null }) {
                           onChange={setPrefs}
                         />
                       ))
-                  : sectionsOf(entries, current).map((s) => (
-                      <Section key={s.section} title={s.section} entries={s.entries} prefs={prefs} onChange={setPrefs} />
-                    ))}
+                  : // Connections draws its own page: a card per provider
+                    // the server lists, not rows the registry knows.
+                    current === "connections"
+                    ? <Connections />
+                    : sectionsOf(entries, current).map((s, _i, all) => (
+                        <Section
+                          key={s.section}
+                          title={all.length > 1 ? s.section : null}
+                          entries={s.entries}
+                          prefs={prefs}
+                          onChange={setPrefs}
+                        />
+                      ))}
               </IndexStateProvider>
             </SettingsViewContext.Provider>
           </main>

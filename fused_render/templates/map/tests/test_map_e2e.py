@@ -20,6 +20,7 @@ from __future__ import annotations
 import functools
 import json
 import os
+import re
 import sys
 import threading
 import time
@@ -38,7 +39,7 @@ gpd = pytest.importorskip("geopandas")
 xr = pytest.importorskip("xarray")
 pytest.importorskip("h5netcdf")
 from rasterio.transform import from_bounds  # noqa: E402
-from shapely.geometry import box  # noqa: E402
+from shapely.geometry import Point, box  # noqa: E402
 
 MAP = Path(__file__).resolve().parents[1]
 SERVER = os.environ.get("FUSED_RENDER_URL", "http://127.0.0.1:1778")
@@ -92,6 +93,13 @@ def data(tmp_path_factory):
     frame.to_parquet(d / "buildings.parquet")
     frame.iloc[:500].to_crs(3857).to_file(d / "small.shp")
     frame.iloc[:500].to_file(d / "small.geojson", driver="GeoJSON")
+    classes = gpd.GeoDataFrame({"cls": [1, 2, 3]}, crs=4326,
+                               geometry=[box(50 + i / 5, 25 + i / 5, 50.1 + i / 5, 25.1 + i / 5) for i in range(3)])
+    classes.to_file(d / "two.gpkg", layer="classes", driver="GPKG")
+    gpd.GeoDataFrame({"note": ["check", "fine"]}, crs=4326,
+                     geometry=[Point(51, 26).buffer(0.05), Point(51.5, 26.5).buffer(0.05)]) \
+        .to_crs(32639).to_file(d / "two.gpkg", layer="review_polygon", driver="GPKG")
+    classes.to_file(d / "one.gpkg", layer="classes", driver="GPKG")
     t = np.array(["2024-01-01", "2024-02-01", "2024-03-01"], dtype="datetime64[ns]")
     lat, lon = np.linspace(-60, 60, 61), np.linspace(-180, 178, 180)
     cube = (np.cos(np.radians(lat))[None, :, None] * 30 + np.arange(3)[:, None, None] * 5
@@ -396,10 +404,37 @@ class _CorsHandler(SimpleHTTPRequestHandler):
         pass
 
 
+class _RangeHandler(_CorsHandler):
+    served = {}
+
+    def do_GET(self):
+        header = self.headers.get("Range")
+        path = self.translate_path(self.path)
+        name = os.path.basename(path)
+        if not header or not os.path.isfile(path):
+            if os.path.isfile(path):
+                _RangeHandler.served[name] = _RangeHandler.served.get(name, 0) + os.path.getsize(path)
+            return super().do_GET()
+        size = os.path.getsize(path)
+        first, last = header.removeprefix("bytes=").split("-")
+        start = int(first) if first else max(0, size - int(last))
+        end = min(int(last), size - 1) if first and last else size - 1
+        with open(path, "rb") as f:
+            f.seek(start)
+            body = f.read(end - start + 1)
+        _RangeHandler.served[name] = _RangeHandler.served.get(name, 0) + len(body)
+        self.send_response(206)
+        self.send_header("Content-Range", f"bytes {start}-{end}/{size}")
+        self.send_header("Content-Length", str(len(body)))
+        self.send_header("Access-Control-Expose-Headers", "Content-Range")
+        self.end_headers()
+        self.wfile.write(body)
+
+
 @pytest.fixture()
 def remote(data):
     """`data` over plain HTTP, standing in for a remote bucket."""
-    server = ThreadingHTTPServer(("127.0.0.1", 0), functools.partial(_CorsHandler, directory=str(data)))
+    server = ThreadingHTTPServer(("127.0.0.1", 0), functools.partial(_RangeHandler, directory=str(data)))
     threading.Thread(target=server.serve_forever, daemon=True).start()
     yield f"http://127.0.0.1:{server.server_address[1]}"
     server.shutdown()
@@ -427,3 +462,218 @@ def test_a_remote_layer_downloads_to_a_chosen_folder(page, remote, tmp_path):
     local = p.js("fm.execute({op: 'add_layer', source: arg, id: 'local'}); return (await fm.whenIdle()).map(f => f.status);",
                  result["path"])
     assert local == ["ready", "ready"]
+
+
+def _drawn(p, layer_id):
+    return p.js("""const m = window.__map;
+                   return m.getLayersOrder().filter(id => id.startsWith('v-' + arg + '-')).map(id => {
+                     const type = m.getLayer(id).type;
+                     return [type, type === 'fill' ? m.getPaintProperty(id, 'fill-color') : null,
+                             m.getLayoutProperty(id, 'visibility') ?? 'visible'];
+                   });""", layer_id)
+
+
+def _settled(p):
+    p.page.wait_for_function("() => !window.__map.isMoving()", timeout=10000)
+    time.sleep(0.3)
+    p.page.wait_for_function("() => !window.__map.isMoving()", timeout=10000)
+
+
+def test_a_multi_layer_geopackage_becomes_one_layer_per_source_layer(page, data, cdn):
+    p = page()
+    p.js("fm.execute({op: 'add_layer', source: arg}, {fit: true});", str(data / "two.gpkg"))
+    facts = by_id(p.idle())
+    assert set(facts) == {"classes", "review-polygon"}, facts
+    for layer_id, name, features in (("classes", "classes", 3), ("review-polygon", "review_polygon", 2)):
+        f = facts[layer_id]
+        assert f["status"] == "ready" and f["loaded_as"] == "vector", f
+        assert f["options"] == {"source_layer": name} and f["source"] == str(data / "two.gpkg")
+        assert f["features"] == features
+    west, south, east, north = facts["review-polygon"]["bounds"]
+    assert 50.9 < west < east < 51.6 and 25.9 < south < north < 26.6, "each layer reprojects on its own"
+    assert p.page.locator(".vector-control-layer-picker").count() == 0
+    assert [layer["id"] for layer in p.js("return fm.getDocument().layers;")] == ["classes", "review-polygon"]
+    _settled(p)
+    w, s, e, n = p.js("return window.__map.getBounds().toArray().flat();")
+    assert w < 50 and s < 25 and e > 51.55 and n > 26.55, "the map fits both layers together"
+
+    p.js("fm.execute({op: 'update_layer', id: 'classes', style: {fill_color: '#ff0000'}});")
+    p.page.wait_for_function("() => window.__map.getPaintProperty(window.__map.getLayersOrder()"
+                             ".find(id => id.startsWith('v-classes-') && id.endsWith('-fill')), 'fill-color') === '#ff0000'",
+                             timeout=10000)
+    assert [color for kind, color, _ in _drawn(p, "review-polygon") if kind == "fill"] not in ([], ["#ff0000"])
+    p.js("fm.execute({op: 'update_layer', id: 'review-polygon', visible: false});")
+    p.page.wait_for_function("() => window.__map.getLayersOrder().filter(id => id.startsWith('v-review-polygon-'))"
+                             ".every(id => window.__map.getLayoutProperty(id, 'visibility') === 'none')", timeout=10000)
+    assert {visibility for _, _, visibility in _drawn(p, "classes")} == {"visible"}
+    p.js("fm.execute({op: 'update_layer', id: 'review-polygon', visible: true});"
+         "fm.execute({op: 'move_layer', id: 'classes', to: 'top'});")
+    time.sleep(0.5)
+    order = p.js("return window.__map.getLayersOrder();")
+    first = lambda prefix: min(i for i, name in enumerate(order) if name.startswith(prefix))
+    assert first("v-review-polygon-") < first("v-classes-")
+
+    p.js("fm.execute({op: 'remove_layer', id: 'classes'});")
+    p.page.wait_for_function("() => !window.__map.getLayersOrder().some(id => id.startsWith('v-classes-'))", timeout=10000)
+    assert _drawn(p, "review-polygon"), "the other layer stays on the map"
+    assert [f["status"] for f in p.idle()] == ["ready"]
+
+    xy = p.js("const c = window.__map.project([51, 26]); return [c.x, c.y];")
+    p.page.mouse.click(*xy)
+    p.page.wait_for_selector(".vector-control-popup", timeout=10000)
+    assert p.js("return getComputedStyle(document.querySelector('.vector-control-popup-title')).fontWeight;") == "600"
+    assert p.js("return getComputedStyle(document.querySelector('.vector-control-panel')).display;") == "none"
+
+
+def test_a_single_layer_file_and_a_layer_already_pinned_to_one_load_as_they_are(page, data, cdn):
+    pinned = {"type": "fused-map", "layers": [
+        {"source": str(data / "two.gpkg"), "id": "pinned", "name": "Review", "options": {"source_layer": "review_polygon"}},
+        {"source": str(data / "one.gpkg")}]}
+    p = page(map=json.dumps(pinned))
+    facts = by_id(p.idle())
+    assert set(facts) == {"pinned", "one"}, facts
+    assert facts["pinned"]["status"] == "ready" and facts["pinned"]["features"] == 2
+    assert facts["pinned"]["options"] == {"source_layer": "review_polygon"} and facts["pinned"]["name"] == "Review"
+    assert facts["one"]["status"] == "ready" and facts["one"]["features"] == 3 and facts["one"]["options"] == {}
+    assert p.js("return fm.getDocument().layers.map(l => l.id);") == ["pinned", "one"]
+
+
+def test_a_multi_layer_file_splits_however_it_arrives(page, data, remote, tmp_path, cdn):
+    if str(MAP) not in sys.path:
+        sys.path.insert(0, str(MAP))
+    import map_tools
+
+    names = lambda facts: sorted((f["id"], f["status"], f["options"].get("source_layer")) for f in facts)
+    split = [("classes", "ready", "classes"), ("review-polygon", "ready", "review_polygon")]
+
+    assert names(page(_file=str(data / "two.gpkg")).idle()) == split
+
+    p = page()
+    p.page.locator("#importpath").fill(str(data / "two.gpkg"))
+    p.page.locator("#btn-importpath").click()
+    p.page.wait_for_function("() => fusedMap.getDocument().layers.length === 2", timeout=60000)
+    assert names(p.idle()) == split
+
+    p = page()
+    p.js("fm.execute({op: 'add_layer', source: arg + '/two.gpkg'});", remote)
+    assert names(p.idle()) == split
+
+    drops = tmp_path / "drops"
+    drops.mkdir()
+    p = page(dir=str(drops))
+    p.js("""const bytes = await (await fetch('/api/fs/raw?path=' + encodeURIComponent(arg))).arrayBuffer();
+            const transfer = new DataTransfer();
+            transfer.items.add(new File([bytes], 'dropped.gpkg'));
+            document.getElementById('mapwrap').dispatchEvent(new DragEvent('drop', {dataTransfer: transfer, bubbles: true, cancelable: true}));""",
+         str(data / "two.gpkg"))
+    p.page.wait_for_function("() => fusedMap.getDocument().layers.length === 2", timeout=60000)
+    assert names(p.idle()) == split
+    assert {layer["source"] for layer in p.js("return fm.getDocument().layers;")} == {str(drops / "dropped.gpkg")}
+
+    path = str(tmp_path / "agent.fmap")
+    assert map_tools.add_layer(path, str(data / "two.gpkg"), style={"fill_opacity": 0.2})["id"] == "two"
+    p = page(_file=path)
+    p.page.wait_for_function("() => fusedMap.getDocument().layers.length > 0", timeout=15000)
+    assert names(p.idle()) == split
+    deadline = time.time() + 10
+    while time.time() < deadline:
+        on_disk = map_tools.describe_map(path)["map"]["layers"]
+        if len(on_disk) == 2:
+            break
+        time.sleep(0.3)
+    assert [(layer["id"], layer["options"], layer["style"]) for layer in on_disk] == [
+        ("review-polygon", {"source_layer": "review_polygon"}, {"fill_opacity": 0.2}),
+        ("classes", {"source_layer": "classes"}, {"fill_opacity": 0.2})]
+    assert map_tools.update_layer(path, "classes", style={"fill_color": "#00ff00"})["status"] == "ok"
+    p.page.wait_for_function("() => fusedMap.describeLayer('classes').style.fill_color === '#00ff00'", timeout=15000)
+    assert p.js("return fm.describeLayer('review-polygon').style;") == {"fill_opacity": 0.2}
+
+
+def test_without_the_in_browser_engine_python_lists_and_reads_each_layer(page, data):
+    p = page()
+    p.page.route(re.compile(r"https://(cdn\.jsdelivr\.net|extensions\.duckdb\.org)/.*"), lambda route: route.abort())
+    p.js("fm.execute({op: 'add_layer', source: arg});", str(data / "two.gpkg"))
+    facts = by_id(p.idle())
+    assert set(facts) == {"classes", "review-polygon"}, facts
+    for layer_id, features in (("classes", 3), ("review-polygon", 2)):
+        f = facts[layer_id]
+        assert f["status"] == "ready" and f["features"] == features, f
+        assert "Python" in f["note"]
+
+
+
+@pytest.fixture()
+def bucket(data, remote):
+    rng = np.random.default_rng(4)
+    per, tiles = 2500, [(x, y) for x in range(4) for y in range(4)]
+    xs = np.concatenate([rng.uniform(10 + x / 2, 10.495 + x / 2, per) for x, _ in tiles])
+    ys = np.concatenate([rng.uniform(45 + y / 2, 45.495 + y / 2, per) for _, y in tiles])
+    frame = gpd.GeoDataFrame({"use": rng.choice(["res", "com", "ind"], xs.size),
+                              "height": rng.uniform(3, 80, xs.size).round(1),
+                              "uid": [f"{i:08d}-{rng.bytes(12).hex()}" for i in range(xs.size)]},
+                             geometry=[box(x, y, x + 1e-3, y + 1e-3) for x, y in zip(xs, ys)], crs=4326)
+    frame.to_parquet(data / "tiled.parquet", write_covering_bbox=True, row_group_size=per)
+    frame.drop(columns="uid").to_parquet(data / "unsorted.parquet")
+    _RangeHandler.served = {}
+    return remote, frame, data
+
+
+def test_a_big_remote_geoparquet_streams_only_the_row_groups_in_view(page, bucket):
+    url, frame, folder = bucket
+    p = page()
+    p.js("window.__map.jumpTo({center: [-100, 40], zoom: 9});")
+    p.js("fm.execute({op: 'add_layer', source: arg + '/tiled.parquet', id: 'tiled'});", url)
+    f = by_id(p.idle())["tiled"]
+    assert f["status"] == "ready" and f["loaded_as"] == "vector" and f["render_mode"] == "stream", f
+    assert f["features"] == len(frame) and f["row_groups"] == 16 and f["loaded_row_groups"] == 0
+    assert {"use", "height"} <= set(f["fields"]) and "uid" not in f["fields"]
+    west, south, east, north = f["bounds"]
+    assert 9.99 < west < 10.01 and 44.99 < south < 45.01 and 11.99 < east < 12.01 and 46.99 < north < 47.01
+    assert p.js("return window.__map.getLayersOrder().filter(id => /^s\\d+-tiled-cov-fill$/.test(id)).length;") == 1
+
+    p.js("window.__map.jumpTo({center: [10.25, 45.25], zoom: 12});")
+    p.page.wait_for_function("() => fusedMap.describeLayer('tiled').loaded_row_groups > 0", timeout=60000)
+    f = by_id(p.idle())["tiled"]
+    assert f["loaded_row_groups"] == 1 and f["loaded_features"] == 2500, f
+    assert 0 < _RangeHandler.served["tiled.parquet"] < 0.4 * (folder / "tiled.parquet").stat().st_size
+
+    p.js("fm.execute({op: 'update_layer', id: 'tiled', style: {color_by: 'use'}});")
+    p.page.wait_for_function("() => (fusedMap.describeLayer('tiled').legend || {}).type === 'cats'", timeout=30000)
+    assert {i["value"] for i in p.js("return fm.describeLayer('tiled').legend.items;")} == {"res", "com", "ind"}
+
+    inside = frame.cx[10.2:10.3, 45.2:45.3].iloc[0]
+    west, south, east, north = inside.geometry.bounds
+    _settled(p)
+    p.page.wait_for_function("() => window.__map.loaded() && window.__map.areTilesLoaded()", timeout=30000)
+    x, y = p.js("const pt = window.__map.project(arg); return [pt.x, pt.y];", [(west + east) / 2, (south + north) / 2])
+    p.page.mouse.click(x, y)
+    p.page.wait_for_function("uid => (document.querySelector('.maplibregl-popup') || {}).textContent?.includes(uid)",
+                             arg=inside["uid"], timeout=30000)
+    assert inside["use"] in p.page.locator(".maplibregl-popup").inner_text()
+
+    p.js("fm.execute({op: 'remove_layer', id: 'tiled'});")
+    p.idle()
+    assert p.js("return window.__map.getLayersOrder().filter(id => /^s\\d+-tiled-/.test(id));") == []
+    assert p.js("return Object.keys(window.__map.getStyle().sources).filter(id => /^s\\d+-tiled-/.test(id));") == []
+
+
+def test_a_view_across_the_antimeridian_loads_row_groups_on_both_sides(page, data, remote):
+    rng = np.random.default_rng(6)
+    xs = np.concatenate([rng.uniform(179.0, 179.9, 500), rng.uniform(-179.9, -179.0, 500)])
+    frame = gpd.GeoDataFrame({"n": np.arange(xs.size)}, crs=4326,
+                             geometry=[box(x, y, x + 1e-3, y + 1e-3) for x, y in zip(xs, rng.uniform(0, 1, xs.size))])
+    frame.to_parquet(data / "dateline.parquet", write_covering_bbox=True, row_group_size=500)
+    p = page()
+    p.js("window.__map.jumpTo({center: [180, 0.5], zoom: 7});")
+    p.js("fm.execute({op: 'add_layer', source: arg + '/dateline.parquet', id: 'dateline'});", remote)
+    f = by_id(p.idle())["dateline"]
+    assert f["render_mode"] == "stream" and f["row_groups"] == 2 and f["loaded_row_groups"] == 2, f
+
+
+def test_a_remote_geoparquet_without_row_group_bounds_is_tiled_as_before(page, bucket, cdn):
+    url, frame, _ = bucket
+    p = page()
+    p.js("fm.execute({op: 'add_layer', source: arg + '/unsorted.parquet', id: 'flat'});", url)
+    f = by_id(p.idle())["flat"]
+    assert f["status"] == "ready" and f["loaded_as"] == "vector" and f["render_mode"] != "stream", f
+    assert f["features"] == len(frame)

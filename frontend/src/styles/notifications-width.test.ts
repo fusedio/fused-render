@@ -45,7 +45,8 @@ function block(selector: string): string {
 
 test("the column sets a real width, not only a cap, and stretches its entries to it", () => {
   const rule = block(".notif-host");
-  expect(rule).toContain("width: min(300px, calc(100vw - 32px))");
+  // …less the Claude rail while one stands (2026-11-05, `--claude-rail-w`).
+  expect(rule).toContain("width: min(300px, calc(100vw - 32px - var(--claude-rail-w, 0px)))");
   expect(rule).toContain("align-items: stretch");
   // Not the old shrink-wrap behaviour that caused the bug in the first place.
   expect(rule).not.toContain("align-items: flex-end");

@@ -37,7 +37,7 @@
 // refreshed" actually describes — an answer whose index has since moved and
 // has not yet been repainted over it.
 import { useDeferredValue, useEffect, useMemo, useRef, useState } from "react";
-import { indexRank, requestFolderScan } from "@platform/lib/api";
+import { rankFolder as indexRank, requestScan as requestFolderScan } from "@apps/explorer/listing/source";
 import type { IndexRankResult, RankReason } from "@platform/lib/api";
 import {
   fsMutationCount,
@@ -49,6 +49,8 @@ import {
 import { escapesFsPath } from "@apps/explorer/listing/query-base";
 import { isPathShapedQuery } from "@apps/explorer/listing/path-shaped-query";
 import { navHintQCommitted, replaceSearch } from "@platform/lib/router";
+import { canonicalRemoteUrl } from "@platform/lib/remote";
+import { useCanvasesFlag } from "@platform/lib/canvases-flag";
 import { INSTANT_DEBOUNCE_MS, PENDING_INDICATOR_MS, QueryMemo } from "@platform/lib/instant-search";
 import { MIN_QUERY_CHARS, willResolveToGlobMode } from "@apps/explorer/lib/home-search";
 import { useRankedSearchEnabled } from "@apps/explorer/lib/ranked-search-pref";
@@ -188,7 +190,16 @@ export function useListingSearch(
   // that same thin query, not a two-character one, and a whitespace-derived
   // pattern is at least as indiscriminate as a bare substring search (see
   // MIN_QUERY_CHARS's own doc comment, lib/home-search.ts).
-  const searching = trimmedQ.length >= MIN_QUERY_CHARS;
+  //
+  // An S3 address (platform/lib/remote.ts) is not a search either: it is a
+  // location, which the field's Enter opens. Treating it as one would rank the
+  // folder for "s3://…" on every keystroke and, over a file, hop to the parent
+  // folder (FileSearchField) before Enter ever reached the field. Only while
+  // the Canvases flag is on, as on the home box (FilesHome.tsx): off, the
+  // text is an ordinary query, exactly as before S3 locations existed.
+  const canvasesOn = useCanvasesFlag();
+  const longEnough = trimmedQ.length >= MIN_QUERY_CHARS;
+  const searching = longEnough && !(canvasesOn && canonicalRemoteUrl(trimmedQ) !== null);
   // `isStale` is completed below, once the request's own pending state is
   // known: the input can have settled while the answer for it is in flight.
   // Compares RAW against RAW (`query` vs. `q`, both untrimmed) — the two are
@@ -873,7 +884,10 @@ export function useListingSearch(
   // whether opening `rows[0]` with nothing selected is a safe guess — so it
   // opened an arbitrary, unrelated folder row on Enter (code review finding
   // 1). `runsSearch` is still what decides staleness for an actual search.
-  const rowsAnswerQuery = !searching || (runsSearch && !staleRows && !deferredStale);
+  // `!longEnough` rather than `!searching` for the same reason: an S3 address
+  // is not `searching` either, and the folder rows under it answer nothing
+  // the user typed — so Enter from the page body must not open row 0.
+  const rowsAnswerQuery = !longEnough || (runsSearch && !staleRows && !deferredStale);
 
   // The mode the LAST settled answer actually ran under — "substring" once
   // nothing has searched yet, since that is the cap capHits already defaults

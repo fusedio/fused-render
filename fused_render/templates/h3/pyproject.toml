@@ -1,0 +1,5 @@
+[tool.fused-render.app]
+main = "h3_reader.py"
+
+[tool.fused-render.template]
+stream = [".parquet"]

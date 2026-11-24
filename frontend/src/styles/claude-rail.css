@@ -1,0 +1,2303 @@
+/* THE CLAUDE RAIL (shell/claude-rail/ClaudeRail.tsx) and the card off it
+   (RailPeek.tsx): a page's right edge — the canvas page, the app page, the
+   explorer's file and folder views — while its Claude pane is shut, and with
+   favourites on beside the open pane too (owner, 2026-11-05). The global
+   sidebar's collapsed column, mirrored: same 48px, same button and dot
+   classes (sidebar.css). Rules moved here from canvases.css when the rail
+   left the canvases app (2026-11-01). */
+/* ---- The Claude rail (ClaudeRail.tsx): a page's right edge while the
+   Claude pane is shut — and, favourites on, past the open pane while it has a
+   chat or a favourite to draw (claude-rail-lib `railShown`). The global
+   sidebar's collapsed column, mirrored: same 48px, same button and dot
+   classes (sidebar.css). */
+.claude-rail {
+  position: relative;
+  flex: 0 0 48px;
+  width: 48px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  padding: 10px 0;
+  box-sizing: border-box;
+  border-left: 1px solid var(--border);
+  background: var(--bg);
+  --rail-sep: color-mix(in srgb, var(--fg) 22%, transparent);
+}
+/* THE RAIL REACHES THE WINDOW'S BOTTOM (owner, 2026-11-05: "like the left
+   sidebar, it goes all the way to the bottom"): the rail is laid out above
+   the status bar — the page's row ends where the bar begins — so its column
+   is continued through the bar's strip by this box: the rail's own
+   background and left hairline, one status bar tall, hung off its foot. The
+   bar itself ends at the rail (notifications.css `--status-bar-end`), so
+   nothing of the bar is covered. Favourites on only (`railUp` says the
+   width then; the rail of 2026-11-04 is as it was), and never over an open
+   terminal drawer, which stands between the rail's foot and the bar. Above
+   the bar (a positioned sibling later in the tree) by its z-index; the
+   rail's cards are portaled to the body and are not in this context. */
+.claude-rail.is-scroll:not([hidden]) {
+  z-index: 3;
+}
+/* …AND THE RAIL ITSELF REACHES DOWN INTO THAT STRIP (owner, 2026-11-06:
+   "unwanted space at the bottom of bots"): the strip used to be a pseudo
+   element hung under the rail's foot, so the bots — the rail's last section
+   — ended a status bar above the window's bottom, with 22px of empty
+   column under them. Now the rail's own box is pulled down by the bar's
+   height (a stretched flex item with a negative bottom margin grows by it;
+   no ancestor clips, measured on the canvas, app, explorer and fallback
+   rows), so the last section sits on the window's edge, as the global
+   sidebar's bottom cluster does on the left. The same `is-scroll` rail.
+   THROUGH AN OPEN TERMINAL DRAWER TOO (owner, 2026-11-10: "left sidebar
+   doesn't move, right sidebar moves"): the drawer says its height on the
+   document (TerminalDrawer `--term-drawer-h`, 0 while shut) and the rail is
+   pulled down by it as well, while the drawer ends at the rail's edge
+   (notifications.css `.term-drawer`), the same as the bar does. */
+#main .claude-rail.is-scroll:not([hidden]) {
+  margin-bottom: calc(-1 * (var(--status-bar-h, 22px) + var(--term-drawer-h, 0px)));
+}
+/* A rail with nothing to draw beside the open pane (ClaudeRail `shown`,
+   claude-rail-lib `railShown`) is hidden, not unmounted: the attribute alone
+   loses to `display: flex` above. */
+.claude-rail[hidden] {
+  display: none;
+}
+.claude-rail .sidebar-rail-items {
+  width: 100%;
+}
+/* THE LIST SCROLLS, favourites on (owner, 2026-11-05; ClaudeRail
+   `.is-scroll`): every ring drawn, the list scrolling in its share of the
+   column with its scrollbar hidden — the favourites' own idiom (below) —
+   while the favourites keep their floor (the list still gives way first:
+   its shrink is the full 1 beside their token). Off, it clips (below). */
+.claude-rail.is-scroll .claude-rail-chats {
+  overflow-x: hidden;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  scrollbar-width: none;
+  /* AT MOST TEN RINGS TALL (owner, 2026-11-05; ClaudeRail `--list-rows`,
+     claude-rail-lib LIST_ROWS_MAX): ten 28px seats, nine 4px gaps, the 4px
+     of wash padding — past that the list scrolls. */
+  max-height: calc(var(--list-rows, 10) * 28px + (var(--list-rows, 10) - 1) * 4px + 4px);
+  /* MORE ABOVE / BELOW (owner, 2026-11-05: "subtle indicators … you can
+     scroll up and down"): the rings fade out at the edge there is more past
+     (ClaudeRail `listEdges` sets the two lengths; 0 = no fade). A mask, not
+     an overlay: nothing is drawn over the rings, they thin into the rail. */
+  -webkit-mask-image: linear-gradient(
+    to bottom,
+    transparent 0,
+    black var(--fade-top, 0px),
+    black calc(100% - var(--fade-bottom, 0px)),
+    transparent 100%
+  );
+  mask-image: linear-gradient(
+    to bottom,
+    transparent 0,
+    black var(--fade-top, 0px),
+    black calc(100% - var(--fade-bottom, 0px)),
+    transparent 100%
+  );
+}
+.claude-rail.is-scroll .claude-rail-chats::-webkit-scrollbar {
+  display: none;
+}
+/* THE SHELL'S FALLBACK RAIL (shell/claude-rail FallbackRail, App.tsx): two
+   wrappers around the page that are no box at all — the page laid out as it
+   always was — until the fallback stands, when they become a row: the page's
+   column (what #main is, restated), then the 48px rail at the right edge,
+   above the status bar. */
+.shell-main-row,
+.shell-main-col {
+  display: contents;
+}
+.shell-main-row:has(> .claude-rail:not([hidden])) {
+  flex: 1 1 auto;
+  min-width: 0;
+  min-height: 0;
+  display: flex;
+  flex-direction: row;
+}
+.shell-main-row:has(> .claude-rail:not([hidden])) > .shell-main-col {
+  flex: 1 1 auto;
+  min-width: 0;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+.claude-rail.has-favs .sidebar-rail-items {
+  /* NOTHING DRAWS PAST THE RAIL'S FOOT (under the status bar): the list
+     clips to the rings that fit and the favourites scroll (below), so this
+     only bites on a window too short for the favourites' floor. Horizontal
+     room is the rail's full 48px, which every ring's wash keeps inside; the
+     last ring's 3px focus outline gets 3px of the rail's foot padding,
+     inside the clip and taken back by the margin. Only with favourites
+     drawn: the flag-off rail is left as it was. */
+  overflow: hidden;
+  padding-bottom: 3px;
+  margin-bottom: -3px;
+}
+.claude-rail-item {
+  position: relative;
+}
+/* THE NAV DOORS' TOP (ClaudeRail `.claude-rail-nav`; owner, 2026-11-07, order 2026-11-08): Search, Bots, Tasks and the + where
+   the panel glyph stood, spaced like the items column's seats; the column's
+   own divider follows. */
+.claude-rail-nav {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
+  flex: 0 0 auto;
+}
+/* THE NAV DOORS HOVER LIKE THE RINGS (owner, 2026-11-09: "the hover area of
+   bots, search, + and tasks is different from the task rings — make it the
+   same"): the wash is painted on the same `::after` box the rings use (2px
+   past the seat, 9px to the rail's edges, 8px corners, under the glyph),
+   and that box is the door's hit area too — never the 28px seat itself. */
+.claude-rail-nav .sidebar-rail-btn {
+  isolation: isolate;
+}
+.claude-rail-nav .sidebar-rail-btn::after {
+  content: "";
+  position: absolute;
+  inset: -2px -9px;
+  border-radius: 8px;
+  z-index: -1;
+}
+.claude-rail-nav .sidebar-rail-btn:hover,
+.claude-rail-nav .sidebar-rail-btn.is-open {
+  background: none;
+  box-shadow: none;
+  color: var(--fg);
+}
+.claude-rail-nav .sidebar-rail-btn:hover::after,
+.claude-rail-nav .sidebar-rail-btn.is-open::after {
+  background: rgba(var(--tint), 0.08);
+}
+/* A NAV DOOR WHOSE WINDOW STANDS (ClaudeRail `doorOpen`; owner, 2026-11-09:
+   "show highlight only when the window is open"): the hover wash while a
+   preview stands, a step firmer with the hairline once a press holds it —
+   the list rings' `.peeked` / `.is-pinned` pair. */
+.claude-rail-nav .sidebar-rail-btn.is-open.is-pinned::after {
+  background: rgba(var(--tint), 0.14);
+  box-shadow: inset 0 0 0 1px rgba(var(--tint), 0.22);
+}
+/* …AND SO DOES THE EXPAND BUTTON (Akshil, 2026-11-23: "hover should not have
+   two styles — stick to the lower ones, follow the task ring hover style"):
+   it stands outside `.claude-rail-nav` and wore the sidebar's 28px wash
+   (sidebar.css `.sidebar-rail-btn:hover`). It takes the rings' box too. */
+.claude-rail > .sidebar-rail-btn {
+  position: relative;
+  isolation: isolate;
+}
+.claude-rail > .sidebar-rail-btn::after {
+  content: "";
+  position: absolute;
+  inset: -2px -9px;
+  border-radius: 8px;
+  z-index: -1;
+}
+.claude-rail > .sidebar-rail-btn:hover {
+  background: none;
+  box-shadow: none;
+  color: var(--fg);
+}
+.claude-rail > .sidebar-rail-btn:hover::after {
+  background: rgba(var(--tint), 0.08);
+}
+/* The rail's inner edge (ClaudeRail `.claude-rail-seam`): pulled left, it opens
+   the pane. 6px of hit area straddling the rail's border, and the app's seam
+   hairline on hover — the explorer's reopen edge (.preview-side-reopen). */
+.claude-rail-seam {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: -3px;
+  width: 6px;
+  cursor: col-resize;
+  z-index: 3;
+}
+.claude-rail-seam::after {
+  content: "";
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 2px;
+  width: 1px;
+  background: transparent;
+  pointer-events: none;
+  transition:
+    background var(--dur-fast) var(--ease-out),
+    box-shadow var(--dur-fast) var(--ease-out);
+}
+/* Focused from the keyboard (its Enter opens the pane): the hover's hairline,
+   no ring. */
+.claude-rail-seam:focus-visible {
+  outline: none;
+}
+.claude-rail-seam:hover::after,
+.claude-rail-seam:focus-visible::after {
+  background: var(--seam-hot);
+  box-shadow: 0 0 3px color-mix(in srgb, var(--seam-hot) 35%, transparent);
+}
+
+/* The rail's chats (ClaudeRail `.claude-rail-chats`): one status ring per chat,
+   in the List view's order, under the New task seat, in the sidebar's
+   scrolling middle (.sidebar-rail-scroll). The ring is the Tasks page's own
+   (schedule.css `.schedule-ring`), centred in the 28px seat; the seat's hover
+   wash and `.active` are the sidebar's. */
+.claude-rail-chats {
+  /* As many whole rings as fit, from the top, and NO scroll (owner,
+     2026-11-02). The list is ITS RINGS' height, shrinking when the column
+     is short — not the column's leftover (owner, 2026-11-03: "the back to
+     canvas button should be end of list"): the foot stands right under the
+     last ring, as it did before #2069, and `.claude-rail-room` below takes
+     what is left. ClaudeRail `fit` measures this box plus the room. The gap
+     is the items column's own. */
+  flex: 0 1 auto;
+  min-height: 0;
+  width: 100%;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
+  overflow: hidden;
+  /* ROOM FOR THE FIRST AND LAST RING'S WASH: a ring's hover / active / pinned
+     wash is painted 2px past its seat (`.claude-rail-chat::after`,
+     `inset: -2px -9px`), and this box clips — so the first ring's wash lost
+     its top edge (owner, 2026-11-03: "the top border clipped for the first
+     task item when it is active"). 2px of padding inside the clip, taken
+     back by the margin so the column's spacing is unchanged; ClaudeRail
+     `fit` subtracts it from the measure. */
+  padding: 2px 0;
+  margin: -2px 0;
+}
+/* The column's leftover, under the Git section and above the favourites
+   (owner, 2026-11-04: Git follows the list, favourites hold the foot): nothing
+   is drawn in it; it is what the list could grow into, and ClaudeRail `fit`
+   adds its height to the list's to know how many rings the column holds. */
+.claude-rail-room {
+  flex: 1 1 auto;
+  min-height: 0;
+  width: 100%;
+}
+/* The list item wraps the link (ClaudeRail: the popup attributes live on the
+   link, not on a `listitem`); it is the 28px seat and nothing else. */
+.claude-rail-seat {
+  display: flex;
+  flex: 0 0 auto;
+}
+.claude-rail-chat {
+  position: relative;
+}
+/* NO DEAD ZONES (owner, 2026-11-02): the ring is 28px in a 48px rail with
+   4px between seats, and a pointer resting in the gap or the margin hovered
+   nothing. The link's hit area reaches half the gap up and down and nearly
+   to the rail's edges (9px: a 10th would scroll the rail sideways) — and the
+   WASH IS PAINTED ON THAT SAME BOX (owner: "tip of my pointer is on a
+   different item and a different item is shown highlighted"), so what lights
+   up is exactly what the pointer is over. The pseudo sits under the ring
+   (`z-index: -1` inside the link's own stacking context), and every state
+   wash the seat used to paint on itself moves onto it. */
+.claude-rail-chat {
+  isolation: isolate;
+}
+.claude-rail-chat::after {
+  content: "";
+  position: absolute;
+  inset: -2px -9px;
+  border-radius: 8px;
+  z-index: -1;
+}
+.claude-rail-chat.claude-rail-chat:hover,
+.claude-rail-chat.claude-rail-chat.active,
+.claude-rail-chat.claude-rail-chat.peeked,
+.claude-rail-chat.claude-rail-chat.is-last {
+  background: none;
+  box-shadow: none;
+}
+.claude-rail-chat:hover::after,
+.claude-rail-chat.active::after,
+.claude-rail-chat.peeked::after {
+  background: rgba(var(--tint), 0.08);
+}
+/* A SELECTED NODE SORTS THE LIST (ClaudeRail, claude-rail-lib `railRows`;
+   owner, 2026-11-10): the node's chats first, a hairline, then every other
+   chat on the canvas at half strength — full again under the pointer or the
+   keyboard, so the ring being read is never the faded one. An open file
+   sorts its folder's list the same way (owner, 2026-11-16). The hairline is
+   the rail's own divider (sidebar.css `.sidebar-rail-sep`), its margin taken
+   in by the list's 4px gap. */
+.claude-rail-node-sep {
+  flex: 0 0 auto;
+  width: 28px;
+  height: 1px;
+  margin: 2px 0;
+  background: var(--rail-sep);
+}
+.claude-rail-seat.is-off {
+  opacity: 0.5;
+  transition: opacity 120ms ease;
+}
+.claude-rail-seat.is-off:hover,
+.claude-rail-seat.is-off:focus-within {
+  opacity: 1;
+}
+/* THE FAVOURITES (ClaudeRail `favs`; owner, 2026-11-03): the rail's last
+   section, under the git seats and a tight hairline of its own. The ring
+   whose card is up (`.is-open`, the shell's FavouritePeek) wears the pinned
+   wash — and is the section's ONE active ring: no other favourite wears
+   `.is-last`, `.is-pinned` or `.active` meanwhile (ClaudeRail `activeRing`).
+   A SHORT RAIL WITH MANY STARS: the list above gives up its rings first —
+   this block's shrink is a token beside the list's, so the flex algorithm
+   takes the list down to nothing before it touches this — and then this
+   block shrinks too and SCROLLS inside the rail, its scrollbar hidden like
+   the sidebar's own scrolling middle (.sidebar-rail-scroll). ITS FLOOR is
+   three rings (fewer stars: all of them — ClaudeRail sets `--fav-floor`),
+   and the Git section gives way BEFORE it (below: it shrinks and clips),
+   so on a short rail the floor still fits above the items' clip and every
+   favourite can be scrolled to (CodeRabbit, PR #2100). None draws under
+   the status bar. The 2px padding inside the clip is the rings' wash room,
+   as on `.claude-rail-chats`; a ring is 28px plus the 4px gap. */
+.claude-rail-favs {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
+  flex: 0 0.001 auto;
+  min-height: calc(var(--fav-floor, 3) * 32px);
+  width: 100%;
+  overflow-x: hidden;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  scrollbar-width: none;
+  padding: 2px 0;
+  margin: -2px 0;
+}
+.claude-rail-favs::-webkit-scrollbar {
+  display: none;
+}
+/* …and the Git section is what gives way to that floor: with favourites
+   drawn it shrinks and clips its last seats, rather than the favourites
+   falling under the clip. Its shrink is a token beside the favourites'
+   own, so it gives nothing until they stand on their floor (`min-height`
+   freezes them there, and the flex algorithm hands the rest to this). The
+   3px inside the clip is the seats' focus-outline room. */
+.claude-rail.has-favs .claude-rail-git {
+  flex: 0 0.000001 auto;
+  min-height: 0;
+  width: 100%;
+  overflow: hidden;
+  padding: 3px 0;
+  margin: -3px 0;
+}
+.claude-rail.has-favs .claude-rail-git > * {
+  flex-shrink: 0;
+}
+.claude-rail .sidebar-rail-sep.is-tight {
+  /* The same 4px as the left rail's dividers (sidebar.css
+     `.sidebar-rail-sep`): left and right stand identically (owner,
+     2026-11-05; 8px each side with the column's gap, 2026-11-09). */
+  margin: 4px 0;
+}
+/* …over the pinned bots, 6px more below (owner, 2026-11-09: "space between
+   fav bots and fav tasks is not the same as the left sidebar"): a bot's face
+   fills its 28px seat where a 16px glyph or ring leaves 6px, so at the plain
+   4px the hairline sat visibly tighter to the faces than to the rings. */
+.claude-rail .sidebar-rail-sep.is-tight.is-over-faces {
+  margin-bottom: 10px;
+}
+/* THE FOOT'S PADDING IS THE GLOBAL SIDEBAR'S (owner, 2026-11-06: "keep it
+   aligned to the Settings icon, same bottom padding"): the rail reaches the
+   window's bottom now (above), and its last section stands the 8px over the
+   edge that the sidebar's Settings row does on the left (measured: the
+   row's box ends 8px over the window's bottom). Was 2px, when the rail
+   ended a status bar higher. Without favourites the rail keeps its 10px. */
+.claude-rail.has-favs {
+  padding-bottom: 8px;
+}
+/* A BLOCKED CHAT AT THE HEAD OF THE FAVOURITES (ClaudeRail `.is-blocked`;
+   owner, 2026-11-05): a list ring in the favourites' box — its ring is
+   already the Blocked lane's red; nothing more is drawn, so it reads as
+   "blocked", not "starred". */
+.claude-rail-chat.is-blocked {
+  position: relative;
+}
+/* THE PINNED BOTS (ClaudeRail `.claude-rail-bots`; owner, 2026-11-05):
+   under the favourites, the rail's last section — a 24px face in the 28px
+   seat, the Bots row's dots at the seat's corner. Scrolls like the
+   favourites when the column is short; its floor is two faces. */
+.claude-rail-bots {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
+  flex: 0 0.0001 auto;
+  min-height: 0;
+  width: 100%;
+  overflow-x: hidden;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  scrollbar-width: none;
+  padding: 2px 0;
+  margin: -2px 0;
+}
+.claude-rail-bots::-webkit-scrollbar {
+  display: none;
+}
+.claude-rail-bots > .claude-rail-seat {
+  flex: 0 0 auto;
+}
+.claude-rail-bot {
+  position: relative;
+}
+/* THE FACE FILLS THE SEAT (owner, 2026-11-05: "icons for bots should be a
+   bit bigger"): the face SVG draws its body in the middle ~76% of its box
+   (apps/bots components/Face: r=38 of 100), so a 28px box shows a 21px
+   face. Drawn at 36px and pulled in by 4px on every side, the body is
+   ~27px — the seat's own size — and the seat still measures 28px. */
+.claude-rail-bot-face {
+  display: block;
+  width: 36px;
+  height: 36px;
+  margin: -4px;
+}
+.claude-rail-bot-face svg {
+  display: block;
+  width: 100%;
+  height: 100%;
+}
+.claude-rail-bot .sidebar-rail-dot {
+  position: absolute;
+  right: 4px;
+  bottom: 4px;
+}
+/* THE BOT WHOSE CARD IS UP (ClaudeRail `.peeked` on a bot's ring; BotPeek,
+   2026-11-05): THE CHAT RINGS' OWN MARKS, EXACTLY (owner, 2026-11-06: "the
+   active css of bots and tasks is different, why?") — the wash and the
+   pinned hairline are drawn on the same `::after` box the chat rings draw
+   theirs on (`.claude-rail-chat::after` above: 2px over the seat, 9px to
+   the rail's edges, 8px corners, under the face), never on the seat itself,
+   which drew a tight filled square. The hover wash stays while the pointer
+   is over the card; a step firmer, with the hairline, once a press PINNED
+   it (`.is-pinned`). */
+.claude-rail-bot::after {
+  content: "";
+  position: absolute;
+  inset: -2px -9px;
+  border-radius: 8px;
+  z-index: -1;
+}
+.claude-rail-bot.claude-rail-bot:hover,
+.claude-rail-bot.claude-rail-bot.peeked {
+  background: none;
+  box-shadow: none;
+  color: var(--fg);
+}
+.claude-rail-bot:hover::after,
+.claude-rail-bot.peeked::after {
+  background: rgba(var(--tint), 0.08);
+}
+.claude-rail-bot.peeked.is-pinned::after {
+  background: rgba(var(--tint), 0.14);
+  box-shadow: inset 0 0 0 1px rgba(var(--tint), 0.22);
+}
+.claude-rail-chat.is-fav.is-open::after {
+  background: rgba(var(--tint), 0.14);
+  box-shadow: inset 0 0 0 1px rgba(var(--tint), 0.22);
+}
+/* THE PIN ON THE RING OF A PINNED WINDOW (ClaudeRail `pinMark`; owner,
+   2026-11-18: "when we pin we should show a pin icon topleft of the task
+   ring in rail, smaller version, also invert the pin on x axis so it faces
+   right side"): the head's own filled pin (RailPin `PinAngle`), small, at
+   the seat's top-left corner — outside the ring's circle — and mirrored (the
+   glyph itself is, RailPin `PinAngle`), so its point leans in toward the
+   ring it holds. Only while the window is
+   PINNED (not a hover, not a temp card): the wash says "open", the pin says
+   "stays". The head's muted ink; it takes no pointer and no name (the
+   window's pin button says it). On every door of the rail whose window is
+   pinned: a ring, a favourite, a bot's face, a nav door. */
+.claude-rail-pinmark {
+  position: absolute;
+  top: -1px;
+  left: -4px;
+  display: flex;
+  color: var(--fg-muted);
+  pointer-events: none;
+}
+/* The favourite's card (FavouritePeek `#claude-rail-fav-peek`): ONE ABOVE
+   THE RAIL'S OWN CARD (45) and its bridge (44), so where the two must
+   overlap (a window too small to keep them apart, RailPeek `avoid`) the
+   favourite's × stays reachable. No page bar stands higher: the app page's,
+   the explorer's and the canvas page's headers are plain flow or single
+   digits (measured live at 45, 2026-11-04 — nothing over the card). And
+   NOT above everything (it was 100000): its own ⋮ menu and the chat's
+   pickers (shadcn positioners, z 1200), the erase dialog (the Modal
+   chassis, 1000), shadcn dialogs (50), the notifications (2000) and the
+   hint panel (9000) all portal to the body and must draw over it — at
+   100000 the card's own menu opened under the card. */
+#claude-rail-fav-peek,
+/* The bot's card is window B too (BotPeek, 2026-11-06): the same place,
+   the same size, the same step above the rail's own card. */
+#claude-rail-bot-peek {
+  /* WINDOW B OVER EVERY WINDOW A (owner, 2026-11-09: "window b zindex higher
+     than window a"): the rail card (45), the Tasks and Bots cards (46) and
+     the +'s New task popover (`.modal-popover`, 46) all stand under it. */
+  z-index: 47;
+}
+.claude-rail-favs > .claude-rail-seat {
+  flex: 0 0 auto;
+}
+/* The ring whose chat the hover card shows (ClaudeRail `.peeked`): the hover wash stays on while the pointer is
+   over the card, so the card and its ring read as one thing. */
+.claude-rail-chat.peeked {
+  color: var(--fg);
+}
+/* …and the ring whose card a click PINNED (ClaudeRail `.is-pinned`): a step
+   firmer than the hover wash, with a hairline, so "this one is open" holds
+   while the pointer is elsewhere — and still quieter than the ring's own
+   status colour. */
+.claude-rail-chat.peeked.is-pinned::after {
+  background: rgba(var(--tint), 0.14);
+  box-shadow: inset 0 0 0 1px rgba(var(--tint), 0.22);
+}
+
+/* THE CARD OFF THE RAIL (RailPeek.tsx):
+   the hovered chat itself, a gap off the rail's left edge, placed by
+   rail-peek-lib `peekPlacement` (inline left/top/width/height). One element,
+   kept in the DOM; `.is-on` fades it in and slides the inner card 6px
+   (var(--dur-med)); off, `visibility` waits for the fade so the close is a
+   fade too. NO TRANSFORM ON THIS BOX — a transformed ancestor would re-root
+   every fixed-position popover inside the chat — hence the slide on the
+   inner wrapper, which ends at `transform: none`. Position changes glide
+   only while the card is up (the ring-to-ring swap); a hidden card jumps.
+   Under the shadcn dialogs (z-50, NewJobModal) and over the page. */
+.claude-rail-peek {
+  position: fixed;
+  left: 0;
+  top: 0;
+  z-index: 45;
+  box-sizing: border-box;
+  display: flex;
+  flex-direction: column;
+  opacity: 0;
+  visibility: hidden;
+  pointer-events: none;
+  transition:
+    opacity var(--dur-med) var(--ease-out),
+    visibility 0s linear var(--dur-med);
+}
+.claude-rail-peek.is-on {
+  opacity: 1;
+  visibility: visible;
+  pointer-events: auto;
+  /* Size glides too: a hover card that gets pinned grows to the remembered
+     size rather than jumping (RailPeek header, "a pinned card resizes"). */
+  transition:
+    opacity var(--dur-med) var(--ease-out),
+    top var(--dur-med) var(--ease-out),
+    left var(--dur-med) var(--ease-out),
+    width var(--dur-med) var(--ease-out),
+    height var(--dur-med) var(--ease-out),
+    visibility 0s;
+}
+/* …but not under the pointer: a corner drag moves the box every frame. */
+.claude-rail-peek.is-resizing,
+.claude-rail-peek.is-resizing .claude-rail-peek-card {
+  transition: none;
+}
+.claude-rail-peek.is-resizing {
+  user-select: none;
+  -webkit-user-select: none;
+}
+/* THE GRIPS (RailPeek, owner 2026-11-02): hit areas on the card's two LEFT
+   corners and its left, top and bottom edges (owner, 2026-11-04) — the right
+   edge stands against the rail — each with its resize cursor. Children of
+   the fixed box, not of the card (the card clips its overflow), above the
+   head and the chat. The SAME GRIPS ON A SIZED POPOVER CARD (Modal
+   `popover.resize`, owner 2026-11-08: the +'s New task card is window A):
+   `.modal-popover-grip` wears every rule here, in deploy.css's
+   `.modal-popover-frame`, so every card resizes with one look.
+   The grips draw nothing themselves. ONE LOOK FOR EDGE AND CORNER (owner,
+   2026-11-10: "we have edge and corner which is different and looks a bit
+   off"): the CARD'S OWN OUTLINE lights up where the drag will move it —
+   `.rail-grip-ring`, one per grip, a 2px ring on the card's 10px radius
+   masked to the part in play. An edge lights its whole side and rounds both
+   its corners; a corner lights its arc and fades out along its two sides.
+   The way window and pane edges do it (macOS, VS Code's sashes, Linear's
+   sidebar): the cursor says "resize", the outline says which part. A short
+   wait before a hover lights it, so a pointer crossing an edge does not
+   flash; the ink's tone, never the accent (owner, 2026-11-04: "when
+   resizing we show accent border colour — let's not do that"). */
+:is(.claude-rail-peek-grip, .modal-popover-grip) {
+  position: absolute;
+  z-index: 3;
+  touch-action: none;
+}
+:is(.claude-rail-peek-grip, .modal-popover-grip).is-tl,
+:is(.claude-rail-peek-grip, .modal-popover-grip).is-bl {
+  left: -6px;
+  width: 18px;
+  height: 18px;
+}
+:is(.claude-rail-peek-grip, .modal-popover-grip).is-tl {
+  top: -6px;
+  cursor: nwse-resize;
+}
+:is(.claude-rail-peek-grip, .modal-popover-grip).is-bl {
+  bottom: -6px;
+  cursor: nesw-resize;
+}
+/* The edges: 8px strips centred on the border, short of the corners (whose
+   grips sit over the strips' ends and win). */
+:is(.claude-rail-peek-grip, .modal-popover-grip).is-l,
+:is(.claude-rail-peek-grip, .modal-popover-grip).is-t,
+:is(.claude-rail-peek-grip, .modal-popover-grip).is-b {
+  z-index: 2;
+}
+:is(.claude-rail-peek-grip, .modal-popover-grip).is-l {
+  left: -4px;
+  top: 12px;
+  bottom: 12px;
+  width: 8px;
+  cursor: ew-resize;
+}
+:is(.claude-rail-peek-grip, .modal-popover-grip).is-t,
+:is(.claude-rail-peek-grip, .modal-popover-grip).is-b {
+  left: 12px;
+  right: 12px;
+  height: 8px;
+  cursor: ns-resize;
+}
+:is(.claude-rail-peek-grip, .modal-popover-grip).is-t {
+  top: -4px;
+}
+:is(.claude-rail-peek-grip, .modal-popover-grip).is-b {
+  bottom: -4px;
+}
+.rail-grip-ring {
+  position: absolute;
+  inset: 0;
+  z-index: 2;
+  box-sizing: border-box;
+  border: 2px solid color-mix(in srgb, var(--fg) 55%, transparent);
+  border-radius: 10px;
+  pointer-events: none;
+  opacity: 0;
+  transition: opacity var(--dur-fast) var(--ease-out);
+}
+.rail-grip-ring.is-l {
+  -webkit-mask-image: linear-gradient(to right, black 11px, transparent 24px);
+  mask-image: linear-gradient(to right, black 11px, transparent 24px);
+}
+.rail-grip-ring.is-t {
+  -webkit-mask-image: linear-gradient(to bottom, black 11px, transparent 24px);
+  mask-image: linear-gradient(to bottom, black 11px, transparent 24px);
+}
+.rail-grip-ring.is-b {
+  -webkit-mask-image: linear-gradient(to top, black 11px, transparent 24px);
+  mask-image: linear-gradient(to top, black 11px, transparent 24px);
+}
+.rail-grip-ring.is-tl {
+  -webkit-mask-image: radial-gradient(circle at 0 0, black 14px, transparent 44px);
+  mask-image: radial-gradient(circle at 0 0, black 14px, transparent 44px);
+}
+.rail-grip-ring.is-bl {
+  -webkit-mask-image: radial-gradient(circle at 0 100%, black 14px, transparent 44px);
+  mask-image: radial-gradient(circle at 0 100%, black 14px, transparent 44px);
+}
+/* Lit: on a hover after a beat, at once and a shade stronger under a drag. */
+:is(.claude-rail-peek-grip, .modal-popover-grip).is-l:hover ~ .rail-grip-ring.is-l,
+:is(.claude-rail-peek-grip, .modal-popover-grip).is-t:hover ~ .rail-grip-ring.is-t,
+:is(.claude-rail-peek-grip, .modal-popover-grip).is-b:hover ~ .rail-grip-ring.is-b,
+:is(.claude-rail-peek-grip, .modal-popover-grip).is-tl:hover ~ .rail-grip-ring.is-tl,
+:is(.claude-rail-peek-grip, .modal-popover-grip).is-bl:hover ~ .rail-grip-ring.is-bl {
+  opacity: 1;
+  transition-delay: 80ms;
+}
+:is(.claude-rail-peek-grip, .modal-popover-grip).is-l.is-active ~ .rail-grip-ring.is-l,
+:is(.claude-rail-peek-grip, .modal-popover-grip).is-t.is-active ~ .rail-grip-ring.is-t,
+:is(.claude-rail-peek-grip, .modal-popover-grip).is-b.is-active ~ .rail-grip-ring.is-b,
+:is(.claude-rail-peek-grip, .modal-popover-grip).is-tl.is-active ~ .rail-grip-ring.is-tl,
+:is(.claude-rail-peek-grip, .modal-popover-grip).is-bl.is-active ~ .rail-grip-ring.is-bl {
+  opacity: 1;
+  border-color: color-mix(in srgb, var(--fg) 75%, transparent);
+  transition-delay: 0s;
+}
+/* …AND THE RIGHT SIDE, ON A FLOATING WINDOW ONLY (rail-move-lib; owner,
+   2026-11-17: "the right edge is free now"): the left grips mirrored. */
+:is(.claude-rail-peek-grip, .modal-popover-grip).is-tr,
+:is(.claude-rail-peek-grip, .modal-popover-grip).is-br {
+  right: -6px;
+  width: 18px;
+  height: 18px;
+}
+:is(.claude-rail-peek-grip, .modal-popover-grip).is-tr {
+  top: -6px;
+  cursor: nesw-resize;
+}
+:is(.claude-rail-peek-grip, .modal-popover-grip).is-br {
+  bottom: -6px;
+  cursor: nwse-resize;
+}
+:is(.claude-rail-peek-grip, .modal-popover-grip).is-r {
+  z-index: 2;
+  right: -4px;
+  top: 12px;
+  bottom: 12px;
+  width: 8px;
+  cursor: ew-resize;
+}
+.rail-grip-ring.is-r {
+  -webkit-mask-image: linear-gradient(to left, black 11px, transparent 24px);
+  mask-image: linear-gradient(to left, black 11px, transparent 24px);
+}
+.rail-grip-ring.is-tr {
+  -webkit-mask-image: radial-gradient(circle at 100% 0, black 14px, transparent 44px);
+  mask-image: radial-gradient(circle at 100% 0, black 14px, transparent 44px);
+}
+.rail-grip-ring.is-br {
+  -webkit-mask-image: radial-gradient(circle at 100% 100%, black 14px, transparent 44px);
+  mask-image: radial-gradient(circle at 100% 100%, black 14px, transparent 44px);
+}
+:is(.claude-rail-peek-grip, .modal-popover-grip).is-r:hover ~ .rail-grip-ring.is-r,
+:is(.claude-rail-peek-grip, .modal-popover-grip).is-tr:hover ~ .rail-grip-ring.is-tr,
+:is(.claude-rail-peek-grip, .modal-popover-grip).is-br:hover ~ .rail-grip-ring.is-br {
+  opacity: 1;
+  transition-delay: 80ms;
+}
+:is(.claude-rail-peek-grip, .modal-popover-grip).is-r.is-active ~ .rail-grip-ring.is-r,
+:is(.claude-rail-peek-grip, .modal-popover-grip).is-tr.is-active ~ .rail-grip-ring.is-tr,
+:is(.claude-rail-peek-grip, .modal-popover-grip).is-br.is-active ~ .rail-grip-ring.is-br {
+  opacity: 1;
+  border-color: color-mix(in srgb, var(--fg) 75%, transparent);
+  transition-delay: 0s;
+}
+/* A PINNED WINDOW MOVES BY ITS HEAD'S FIRST ROW (useCardMove; owner,
+   2026-11-17: "instead of whole header draggable now the colored part 1st of
+   the header is draggable for pinned chats"): `.is-movable` on the card's box
+   while it is pinned, and the grab is the row the pin colours (task-head.css
+   "A PINNED RAIL WINDOW'S FIRST ROW"; rail-move-lib `RAIL_HEAD_SELECTOR`,
+   `POPOVER_HEAD_SELECTOR`) — the shared head's row 1, or a one-row head's
+   row. The title's row keeps its text cursor's ways. Its controls keep their
+   own cursor: a zero-specificity reset that any rule of theirs outranks. */
+:is(.claude-rail-peek, .modal-popover).is-movable
+  :is(.task-head-row, .claude-rail-peek-head > .claude-rail-peek-row:first-child):not(.claude-rail-peek-body *, .modal-body *) {
+  cursor: grab;
+  touch-action: none;
+}
+:where(:is(.claude-rail-peek, .modal-popover).is-movable :is(.task-head-row, .claude-rail-peek-head > .claude-rail-peek-row:first-child):not(.claude-rail-peek-body *, .modal-body *))
+  :where(button, input, textarea, select, [contenteditable]) {
+  cursor: auto;
+}
+:where(:is(.claude-rail-peek, .modal-popover).is-movable :is(.task-head-row, .claude-rail-peek-head > .claude-rail-peek-row:first-child):not(.claude-rail-peek-body *, .modal-body *))
+  :where(a[href]) {
+  cursor: pointer;
+}
+/* …under the drag: no glide (the box follows the pointer every frame), no
+   text selection; and the page's frames take no pointer, so a drag over the
+   canvas or an app keeps its pointer stream (`.rail-card-moving` on <html>;
+   the app page seam's own trick, app-page.css). */
+.claude-rail-peek.is-dragging,
+.claude-rail-peek.is-dragging .claude-rail-peek-card,
+.modal-popover.is-dragging .modal-dialog {
+  transition: none;
+}
+:is(.claude-rail-peek, .modal-popover).is-dragging
+  :is(.task-head-row, .claude-rail-peek-head > .claude-rail-peek-row:first-child):not(.claude-rail-peek-body *, .modal-body *) {
+  cursor: grabbing;
+}
+html.rail-card-moving {
+  user-select: none;
+  -webkit-user-select: none;
+}
+html.rail-card-moving iframe {
+  pointer-events: none;
+}
+/* LAST PRESSED ON TOP (rail-move-lib `raised`; owner, 2026-11-17): with
+   either window floating, the one pressed last steps over the other — the
+   top of the rail cards' band (45–48), never over a dialog, the hint panel
+   or the magnet's guide. The door cards' own ids are named so their rule
+   (46) does not outrank it. */
+.claude-rail-peek.is-front,
+#claude-rail-tasks-peek.is-front,
+#claude-rail-bots-peek.is-front,
+#claude-rail-git-peek.is-front,
+#claude-rail-fav-peek.is-front,
+#claude-rail-bot-peek.is-front,
+.modal-popover.is-front {
+  z-index: 48;
+}
+/* FREE PINS (rail-slots-lib; `.is-free-pin`, useCardMove — behind
+   `rail_extras_enabled`). A PINNED WINDOW STANDS UNDER THE NON-PINS: the
+   window a hover or a click opens beside the rail is the one the reader is
+   looking at, and where a pin could not be pushed clear of it (no room to
+   its left) the non-pin lies over it. Under the hover's bridge too (44), so
+   a pin lying across the gap never takes the pointer on its way to the card.
+   Between the two pins: last pressed on top. The ids are named for the door
+   cards' own rule (46), as above. */
+.claude-rail-peek.is-free-pin,
+#claude-rail-tasks-peek.is-free-pin,
+#claude-rail-bots-peek.is-free-pin,
+#claude-rail-git-peek.is-free-pin,
+.modal-popover.is-free-pin {
+  z-index: 42;
+}
+.claude-rail-peek.is-free-pin.is-front,
+#claude-rail-tasks-peek.is-free-pin.is-front,
+#claude-rail-bots-peek.is-free-pin.is-front,
+#claude-rail-git-peek.is-free-pin.is-front,
+.modal-popover.is-free-pin.is-front {
+  z-index: 43;
+}
+/* A PIN PUSHED BY A WINDOW THAT IS BEING RESIZED FOLLOWS ITS EDGE, NO GLIDE
+   (`html.rail-card-resizing`, useCardMove `setRailResizing`; Akshil,
+   2026-11-19: "when we resize the non-pin window the movement of pinned
+   windows based on that is a bit sluggish and not responsive"): the glide is
+   for a push that lands all at once — a window opening or closing — and under
+   a grip it trailed the dragged edge by its own length. */
+html.rail-card-resizing .claude-rail-peek.is-free-pin,
+html.rail-card-resizing .claude-rail-peek.is-free-pin .claude-rail-peek-card,
+html.rail-card-resizing .modal-popover.is-free-pin .modal-dialog {
+  transition: none;
+}
+/* THE PIN A NON-PIN'S PIN ICON IS ABOUT TO REPLACE (`.is-doomed`,
+   rail-slots-store; Akshil, 2026-11-18: "we show the pin task window border
+   subtle red so we know this task is going to be killed"): a hairline in the
+   status red while that icon is hovered or focused. The icon's own caption
+   says it in words (rail-slots-lib `pinHint`). */
+.claude-rail-peek.is-free-pin.is-doomed > .claude-rail-peek-card,
+.modal-popover.is-free-pin.is-doomed .modal-dialog {
+  outline: 1.5px solid color-mix(in srgb, var(--status-failed) 70%, transparent);
+  outline-offset: -1px;
+  box-shadow: 0 0 0 4px color-mix(in srgb, var(--status-failed) 14%, transparent);
+}
+/* THE WIDTH MAGNET'S GUIDE (card-snap.ts, owner 2026-11-10): one line on
+   <body> along the left edge two stacked cards share once a width drag
+   snapped them level — a quiet grey, dashed (owner, 2026-11-10: "shouldn't
+   be accent colour … a bit more greyish subtle"), a little past both cards' ends,
+   over every card and taking no pointer. Fades out where it last stood. */
+.rail-snap-guide {
+  position: fixed;
+  width: 0;
+  border-left: 1px dashed color-mix(in srgb, var(--fg) 35%, transparent);
+  z-index: 60;
+  pointer-events: none;
+  opacity: 0;
+  transition: opacity var(--dur-fast) var(--ease-out);
+}
+.rail-snap-guide.is-on {
+  opacity: 1;
+}
+/* …AND ITS HORIZONTAL TWIN, for the edge magnet of a pinned window's head
+   drag (card-snap `setSnapGuideH`; owner, 2026-11-17): the same dashed line
+   laid along a top or bottom edge. */
+.rail-snap-guide.is-h {
+  width: auto;
+  height: 0;
+  border-left: 0;
+  border-top: 1px dashed color-mix(in srgb, var(--fg) 35%, transparent);
+}
+.claude-rail-peek-card {
+  flex: 1 1 auto;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  background: var(--bg);
+  color: var(--fg);
+  /* THE EDGE READS AGAINST THE WORKBENCH (owner, 2026-10-30: "hard to know
+     the separation between that and the code panel — contrasting border,
+     subtle but noticeable"). The card floats over the embed's own dark
+     panels, which share the app's border tone, so a plain `--border`
+     vanished. Two lines: a 1px border a few steps brighter than --border
+     (a quarter of the ink), and a 1px halo of the background colour outside
+     it, so the border stands on a thin band of our own tone whatever panel
+     is beneath — the same trick a menu on a menu uses. The drop shadow does
+     the rest. */
+  border: 1px solid color-mix(in srgb, var(--fg) 24%, var(--bg));
+  border-radius: 10px;
+  overflow: hidden;
+  box-shadow:
+    0 0 0 1px color-mix(in srgb, var(--bg) 70%, transparent),
+    0 14px 36px var(--shadow-sm),
+    0 2px 6px var(--shadow-ink-soft);
+  transform: translateX(6px);
+  transition: transform var(--dur-med) var(--ease-out);
+}
+.claude-rail-peek.is-on .claude-rail-peek-card {
+  transform: none;
+}
+/* The Linux window host's GPU rendering (`data-gpu-rendering`) draws the
+   card's fade wrong: it vanishes for a few frames as it lands. The card
+   appears and moves without transitions there. */
+:root[data-gpu-rendering] .claude-rail-peek,
+:root[data-gpu-rendering] .claude-rail-peek.is-on,
+:root[data-gpu-rendering] .claude-rail-peek-card {
+  transition: none;
+}
+/* The head, TWO ROWS (owner, 2026-11-02): the first row is the facts and
+   the seats — ×, star, number, where-chip, then at the right the unread count
+   and age, archive, Open, ⋮ — and the second row is the title alone, full
+   width. 12px, like the rail's own captions. */
+.claude-rail-peek-head {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 4px 8px 5px 6px;
+  border-bottom: 1px solid var(--border);
+  font-size: 12px;
+  flex: 0 0 auto;
+}
+.claude-rail-peek-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 26px;
+  min-width: 0;
+}
+/* The flexible gap: everything before it hugs the left, everything after
+   it the right, and a long node name shrinks before any seat does. */
+.claude-rail-peek-gap {
+  flex: 1 1 0;
+  min-width: 4px;
+}
+/* The title row: the recap sentence, one line, the head's old title style
+   (12px, 500, ellipsis) on a line of its own — no box (owner, 2026-11-02:
+   "keep it as it was previously just in a new line"). The pencil at its
+   right end shows on hover or focus (TaskPeekWho's rule). */
+.claude-rail-peek-titlerow {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  min-width: 0;
+  min-height: 22px;
+  padding: 0 2px 0 6px;
+}
+.claude-rail-peek-title {
+  flex: 0 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-weight: 500;
+}
+/* The reply after the title, the List row's `.tasks-title-reply`: a quiet
+   italic aside that takes what the title leaves, never a second title. With
+   no reply the title has the row (its `flex: 0 1 auto` still shrinks it to
+   the box). */
+.claude-rail-peek-reply {
+  flex: 1 1 0;
+  min-width: 0;
+  margin-left: 4px;
+  color: var(--fg-muted);
+  font-style: italic;
+  font-weight: 300;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.claude-rail-peek-titlerow:not(:has(.claude-rail-peek-reply)) .claude-rail-peek-title {
+  flex: 1 1 auto;
+}
+.claude-rail-peek-rename {
+  width: 22px;
+  height: 22px;
+  opacity: 0;
+}
+.claude-rail-peek-titlerow:hover .claude-rail-peek-rename,
+.claude-rail-peek-rename:focus-visible {
+  opacity: 1;
+}
+@media (hover: none) {
+  .claude-rail-peek-rename {
+    opacity: 0.6;
+  }
+}
+/* FAVOURITES ON (owner, 2026-11-06): the second row carries the facts —
+   the status ring with the Archive seat over it on hover, the star, the
+   number — and the title takes all that is left; the pencil stands OVER the
+   title's end on hover (a gradient wash, the Archive seat's way) instead
+   of holding a seat of its own. */
+.claude-rail-peek.favs-on .claude-rail-peek-titlerow {
+  position: relative;
+  gap: 6px;
+  padding-left: 4px;
+}
+.claude-rail-peek.favs-on .claude-rail-peek-title {
+  flex: 1 1 auto;
+}
+.claude-rail-peek.favs-on .claude-rail-peek-titlerow:has(.claude-rail-peek-reply) .claude-rail-peek-title {
+  flex: 0 1 auto;
+}
+/* THE MARK SLOT, THE LIST ROW'S (tasks.css `.tasks-rowmark`, 2026-08-18;
+   owner, 2026-11-06: "make sure this is how we have in the Tasks page list,
+   reuse that here"): one box, two occupants — the status ring at rest, the
+   Archive button in its place with a pointer anywhere on the row. Nothing
+   moves: the slot is the ring's 16px, the button is taken out of flow and
+   centred on it (22px to aim at), the ring fades as the button arrives, and
+   `pointer-events` travels with the ink. The keyboard arm is the button's
+   own `:focus-visible`, never the row's `:focus-within` (the stuck-Archive
+   bug, tasks.css). */
+.claude-rail-peek-status {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  box-sizing: content-box;
+  width: 16px;
+  height: 16px;
+  flex: 0 0 16px;
+}
+.claude-rail-peek-status .claude-rail-peek-archive {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  width: 22px;
+  height: 22px;
+  padding: 0;
+  color: var(--fg-muted);
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  opacity: 0;
+  pointer-events: none;
+  z-index: 2;
+  transition: opacity 0.08s ease, background-color 0.08s ease, color 0.08s ease;
+}
+.claude-rail-peek-head:hover .claude-rail-peek-status .claude-rail-peek-archive,
+.claude-rail-peek-status .claude-rail-peek-archive:focus-visible {
+  opacity: 1;
+  pointer-events: auto;
+}
+.claude-rail-peek-head:hover .claude-rail-peek-status:has(.claude-rail-peek-archive) .schedule-ring,
+.claude-rail-peek-status:has(.claude-rail-peek-archive:focus-visible) .schedule-ring {
+  opacity: 0;
+  pointer-events: none;
+}
+.claude-rail-peek-status .schedule-ring {
+  transition: opacity 0.08s ease;
+}
+.claude-rail-peek-status .claude-rail-peek-archive:hover:not(:disabled) {
+  color: var(--fg);
+  background: var(--bg-alt);
+  border-color: var(--border);
+}
+.claude-rail-peek-status .claude-rail-peek-archive:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+.claude-rail-peek.favs-on .claude-rail-peek-rename {
+  position: absolute;
+  right: 2px;
+  top: 0;
+  bottom: 0;
+  height: auto;
+  width: 44px;
+  justify-content: flex-end;
+  padding-right: 4px;
+  border-radius: 0 6px 6px 0;
+  pointer-events: none;
+  background: linear-gradient(to right, transparent, var(--bg) 42%);
+  transition: opacity 0.12s ease;
+}
+.claude-rail-peek.favs-on .claude-rail-peek-head:hover .claude-rail-peek-rename,
+.claude-rail-peek.favs-on .claude-rail-peek-rename:focus-visible {
+  opacity: 1;
+  pointer-events: auto;
+}
+.claude-rail-peek.favs-on .claude-rail-peek-rename:hover {
+  background: linear-gradient(to right, transparent, var(--bg) 42%);
+}
+@media (hover: none) {
+  .claude-rail-peek-status .claude-rail-peek-archive {
+    opacity: 1;
+    pointer-events: auto;
+  }
+  .claude-rail-peek-status:has(.claude-rail-peek-archive) .schedule-ring {
+    opacity: 0;
+  }
+}
+.claude-rail-peek-title-input {
+  flex: 1 1 auto;
+  min-width: 0;
+  font: inherit;
+  font-weight: 500;
+  line-height: 18px;
+  color: var(--fg);
+  background: var(--bg);
+  border: 1px solid var(--accent);
+  border-radius: 4px;
+  padding: 1px 4px;
+  margin: 0;
+}
+.claude-rail-peek-title-input[aria-invalid="true"] {
+  border-color: var(--error);
+}
+.claude-rail-peek-title-input:disabled {
+  opacity: 0.6;
+}
+.claude-rail-peek-rename-error {
+  flex: 0 1 auto;
+  min-width: 0;
+  font-size: 11px;
+  color: var(--error);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+/* The × and the star (RailPeek, 2026-11-03): both are `.claude-rail-peek-btn`;
+   a favourite's star is filled, and stays in the muted grey (owner, 2026-11-04:
+   "the star when active should be greyed out") — the fill alone says starred,
+   no accent. Hover keeps the fill but never brightens it. */
+.claude-rail-peek-btn.claude-rail-peek-star.is-on,
+.claude-rail-peek-btn.claude-rail-peek-star.is-on:hover {
+  color: var(--fg-muted);
+}
+/* THE PULSE SEAT: "2 ▭ 3m ago" as muted words (no chip), and the archive
+   button standing over the words' right end, shown on hover or focus — the
+   List row's hover-revealed actions. Revealed by a hover ANYWHERE over the
+   card's head, both rows (owner, 2026-11-04: "when we hover over the top bar
+   we should show the archive icon, instead of only when hovering the time
+   part"), or by the keyboard on it. The button carries the card's
+   background so it covers the age it stands on. A seat with no words
+   (`is-bare`) shows the button at rest. */
+.claude-rail-peek-pulse {
+  position: relative;
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  min-width: 26px;
+  height: 26px;
+}
+.claude-rail-peek-meta {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 0 4px;
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+  color: var(--fg-muted);
+  white-space: nowrap;
+}
+.claude-rail-peek-count {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+}
+.claude-rail-peek-count.is-unread {
+  color: var(--fg);
+}
+.claude-rail-peek-count svg {
+  position: relative;
+  top: 0.5px;
+}
+/* Scoped under the pulse (two classes): the base seat rule has one, and the
+   minifier is free to order equals as it likes. */
+.claude-rail-peek-pulse .claude-rail-peek-archive {
+  position: absolute;
+  right: 0;
+  top: 0;
+  width: 44px;
+  justify-content: flex-end;
+  padding-right: 6px;
+  border-radius: 0 6px 6px 0;
+  opacity: 0;
+  pointer-events: none;
+  /* Fades in from the right over the words it stands on — the List row's
+     revealed actions (`.tasks-acts-inner`): the card's background, solid
+     under the glyph, gone at the button's left edge. */
+  background: linear-gradient(to right, transparent, var(--bg) 42%);
+  transition: opacity 0.12s ease;
+}
+.claude-rail-peek-head:hover .claude-rail-peek-pulse .claude-rail-peek-archive,
+.claude-rail-peek-pulse:focus-within .claude-rail-peek-archive,
+.claude-rail-peek-pulse.is-bare .claude-rail-peek-archive {
+  opacity: 1;
+  pointer-events: auto;
+}
+.claude-rail-peek-pulse .claude-rail-peek-archive:hover {
+  color: var(--fg);
+  background: linear-gradient(to right, transparent, var(--bg) 42%);
+}
+/* Under the head (four classes' weight): above the head-hover reveal. */
+.claude-rail-peek-head .claude-rail-peek-pulse .claude-rail-peek-archive:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+@media (hover: none) {
+  .claude-rail-peek-pulse .claude-rail-peek-archive {
+    opacity: 1;
+    pointer-events: auto;
+    position: static;
+    width: 26px;
+    padding-right: 0;
+    background: transparent;
+  }
+}
+.claude-rail-peek-words {
+  flex: 0 0 auto;
+  white-space: nowrap;
+  color: var(--fg-muted);
+}
+/* THE BOT CARD'S HEAD (BotPeek, 2026-11-05): one row — ×, the bot's face
+   and name, its status (red while it waits on the reader, the Bots row's
+   tone), Open. The face is the rail's own, a step smaller. */
+.claude-rail-peek-botface {
+  display: block;
+  width: 22px;
+  height: 22px;
+  flex: 0 0 auto;
+}
+.claude-rail-peek-botface svg {
+  display: block;
+  width: 100%;
+  height: 100%;
+}
+.claude-rail-peek-botname {
+  flex: 0 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-weight: 500;
+  color: var(--fg);
+}
+.claude-rail-peek-words.is-waiting {
+  color: var(--status-failed);
+}
+.claude-rail-peek-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 26px;
+  height: 26px;
+  flex: 0 0 auto;
+  padding: 0;
+  border: none;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--fg-muted);
+  cursor: pointer;
+}
+.claude-rail-peek-btn:hover {
+  background: rgba(var(--tint), 0.08);
+  color: var(--fg);
+}
+.claude-rail-peek-btn:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+  color: var(--fg);
+}
+/* THE PIN (RailPin.tsx; owner, 2026-11-16): hollow and muted while the card is
+   a hover or temp, the same glyph FILLED once pinned. The fill is the head's
+   own muted ink, not the accent, and a pinned window wears no accent edge
+   (owner, 2026-11-17: "remove accent border when pinned, and make the pin
+   subtle color fill when pinned instead of accent color"): the filled glyph
+   alone says pinned, so there is no rule here — `.task-head-btn` /
+   `.claude-rail-peek-btn` colour it, hover included. */
+/* The chats: every kept mount stacked in the same box, the shown one visible.
+   `visibility`, not `display`: a hidden chat keeps its layout and its scroll
+   position, which is what makes coming back to it instant. */
+.claude-rail-peek-body {
+  position: relative;
+  flex: 1 1 auto;
+  min-height: 0;
+}
+/* THE CHAT IS ELSEWHERE (RailPeek `bodyNote`; FavouritePeek while the pane
+   shows the same session): the card keeps its place and head, and says
+   where its chat went, centred in the muted ink of an empty state. */
+.claude-rail-peek-note {
+  position: absolute;
+  inset: 0;
+  margin: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 16px;
+  font-size: 13px;
+  color: var(--fg-muted);
+  text-align: center;
+}
+.claude-rail-peek-chat {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+  visibility: hidden;
+}
+.claude-rail-peek-chat.is-shown {
+  visibility: visible;
+}
+
+/* THE PLACE TAGS (shell/claude-rail PlaceTags; owner, 2026-11-06): one or
+   two pills with a chevron between — the place, then where in it — in the
+   rail cards' head and at the chat's own identity row's right end. A tag
+   that is a door wears the fill and the ink; one naming the place the page
+   already stands on is the outline alone, muted, the default cursor. */
+.place-tags {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  min-width: 0;
+  /* Whole, everywhere: the same word is the same pill in the card and in
+     the chat head (owner, 2026-11-06: "same length for the same word,
+     centre aligned"); the title gives way, never the place. */
+  flex: 0 0 auto;
+}
+
+.place-tags-seat {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  min-width: 0;
+}
+.place-tags-sep {
+  flex: 0 0 auto;
+  color: var(--fg-muted);
+  opacity: 0.7;
+}
+.place-tag {
+  flex: 0 0 auto;
+  min-width: 0;
+  max-width: 120px;
+  text-align: center;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 11px;
+  line-height: 18px;
+  padding: 0 7px;
+  border-radius: 9px;
+  border: 1px solid var(--border);
+  color: var(--fg-muted);
+  text-decoration: none;
+}
+.place-tag.is-file,
+.place-tag.is-node {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+a.place-tag.is-door {
+  background: rgba(var(--tint), 0.08);
+  color: var(--fg);
+}
+a.place-tag.is-door:hover {
+  background: rgba(var(--tint), 0.14);
+}
+/* A CANVAS'S WHERE-TAG WEARS ITS ICON (PlaceTags `part="where"`; Akshil,
+   2026-11-16): the canvas mark or the node's type — then the word.
+   The icon never shrinks; the word is what a narrow head folds
+   (task-head.css), leaving a round icon button. */
+.place-tag.has-icon {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  max-width: 140px;
+  /* The pill's own height with or without its word (the icon alone would
+     shrink it to the glyph). */
+  box-sizing: border-box;
+  height: 20px;
+}
+/* The star's and the archive's own size (14px; Akshil, 2026-11-16: "the icon
+   seems smaller — star and status ring, make nearly the same size"). */
+.place-tag.has-icon > svg {
+  flex: 0 0 auto;
+  width: 14px;
+  height: 14px;
+}
+.place-tag-word {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+/* The head's facts (RailPeek, owner 2026-10-30): the task number in the
+   Tasks page's register, and WHERE the chat lives — "Canvas", or the node's
+   name — as a quiet chip. The "Open" door is a word, not a glyph. */
+.claude-rail-peek-id {
+  flex: 0 0 auto;
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+  color: var(--fg-muted);
+}
+.claude-rail-peek-scope {
+  flex: 0 0 auto;
+  max-width: 120px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 11px;
+  line-height: 18px;
+  padding: 0 7px;
+  border-radius: 9px;
+  border: 1px solid var(--border);
+  color: var(--fg-muted);
+}
+/* The where-chip FILLS ONLY WHEN IT IS A DOOR (RailPeek; owner, 2026-11-05:
+   "filled background only when a click navigates or does something"): a
+   link to another folder, file or canvas, or a node of this canvas to
+   select (`.is-door`, claude-rail-lib `chipDoor`). A chip naming the place
+   the page already stands on is a plain-text span — the outline alone, the
+   muted ink, the default cursor. The door: no underline, ink, the fill, and
+   a firmer wash on hover. */
+a.claude-rail-peek-scope.is-door,
+a.claude-rail-peek-scope.is-door:hover {
+  text-decoration: none;
+}
+a.claude-rail-peek-scope.is-door {
+  display: inline-block;
+  cursor: pointer;
+  transition:
+    background-color 0.12s ease,
+    border-color 0.12s ease;
+}
+.claude-rail-peek.favs-on a.claude-rail-peek-scope.is-door {
+  color: var(--fg);
+  background: rgba(var(--tint), 0.06);
+}
+.claude-rail-peek a.claude-rail-peek-scope.is-door:not([aria-disabled="true"]):hover {
+  background: rgba(var(--tint), 0.14);
+  border-color: rgba(var(--tint), 0.35);
+}
+.claude-rail-peek a.claude-rail-peek-scope.is-door:not([aria-disabled="true"]):active {
+  background: rgba(var(--tint), 0.2);
+}
+a.claude-rail-peek-scope:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+/* The door, as the app's outline button (`.btn`, the sync strip's "Open in
+   workbench"), sized to the head's 26px seats. */
+.claude-rail-peek-open {
+  flex: 0 0 auto;
+  height: 24px;
+  padding: 0 10px;
+  font-size: 12px;
+  line-height: 22px;
+}
+/* The chat's own ⋮ (apps/claude/ui/Kebab), in a head seat: its button takes
+   the head's size and hover wash so it sits level with the close beside it. */
+.claude-rail-peek-kebab {
+  display: inline-flex;
+  flex: 0 0 auto;
+}
+.claude-rail-peek-kebab .c-kebabbtn {
+  width: 26px;
+  height: 26px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: none;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--fg-muted);
+  font-size: 15px;
+  line-height: 1;
+  cursor: pointer;
+}
+.claude-rail-peek-kebab .c-kebabbtn:hover {
+  background: rgba(var(--tint), 0.08);
+  color: var(--fg);
+}
+/* A seat with no conversation yet (a draft, a scheduled task): the card
+   hugs its content (`.is-plain`, no inline height) — the List's `Draft`
+   pill, when it was touched, its words, its settings. One door: the head's
+   Open. */
+.claude-rail-peek.is-plain {
+  height: auto;
+  max-height: 250px;
+}
+/* …so the shown seat has to be IN FLOW: the stacked chats are absolute
+   (every kept mount in one box), which gives a hugging card no height. */
+.claude-rail-peek.is-plain .claude-rail-peek-body {
+  flex: 0 1 auto;
+}
+.claude-rail-peek.is-plain .claude-rail-peek-chat.is-shown {
+  position: static;
+}
+.claude-rail-peek-plain {
+  padding: 14px 16px 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  overflow: auto;
+}
+.claude-rail-peek-plain-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+.claude-rail-peek-pill {
+  flex: 0 0 auto;
+  font-size: 11px;
+  line-height: 18px;
+  padding: 0 7px;
+  border-radius: 9px;
+  border: 1px solid var(--border);
+  color: var(--fg-muted);
+}
+.claude-rail-peek-pill.is-draft {
+  color: var(--error);
+  border-color: color-mix(in srgb, var(--error) 45%, transparent);
+}
+.claude-rail-peek-pill.is-queued {
+  color: var(--status-queued);
+  border-color: color-mix(in srgb, var(--status-queued) 45%, transparent);
+}
+.claude-rail-peek-plain-when {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 12px;
+  color: var(--fg-muted);
+}
+.claude-rail-peek-plain-words {
+  margin: 0;
+  font-size: 13px;
+  line-height: 1.5;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  display: -webkit-box;
+  -webkit-line-clamp: 5;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+.claude-rail-peek-plain-words.is-empty {
+  color: var(--fg-muted);
+  font-style: italic;
+}
+.claude-rail-peek-plain-meta {
+  margin: 0;
+  font-size: 11px;
+  color: var(--fg-muted);
+}
+
+/* FORCE START ON A CARD WITH NO CHAT YET (shell/ForceStartButton). A queued
+   task that has a conversation gets the verb from the chat's own waiting card
+   (apps/claude sched.css `.wc-run`); a queued task that has none draws a
+   placeholder, and this is the same button for it: the same neutral box, for
+   the same reason — the press puts a second run in the folder, and a
+   primary-coloured button would read as the card recommending it. Lives here
+   and not in new-task.css because the rail's two cards and the New task card
+   all draw it, and this sheet is in the barrel for every page. */
+.force-start {
+  flex: 0 0 auto;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: inherit;
+  gap: 6px 8px;
+  min-width: 0;
+  max-width: 100%;
+}
+.force-start-btn {
+  flex: 0 0 auto;
+  appearance: none;
+  padding: 3px 9px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--bg-alt);
+  color: var(--fg);
+  font: inherit;
+  font-size: 11.5px;
+  line-height: 1.5;
+  cursor: pointer;
+}
+.force-start-btn:hover:not(:disabled) {
+  background: var(--row-bg-hover);
+}
+.force-start-btn:disabled {
+  cursor: default;
+  opacity: 0.5;
+}
+.force-start-btn:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+.force-start-note {
+  min-width: 0;
+  font-size: 11.5px;
+  color: var(--error);
+  overflow-wrap: anywhere;
+}
+/* A note that is a small column and not one centred sentence: the Tasks card's
+   "Queued · after TASK-038" with its button under it. */
+.claude-rail-peek-note.is-stack {
+  flex-direction: column;
+  gap: 10px;
+}
+
+/* THE BRIDGE between the card and the rail (RailPeek): transparent, the
+   gap's width, the card's height; a pointer resting in it is "on the card".
+   Hit-testable only while the card is up. */
+.claude-rail-peek-bridge {
+  position: fixed;
+  z-index: 44;
+  pointer-events: none;
+  background: transparent;
+}
+.claude-rail-peek-bridge.is-on {
+  pointer-events: auto;
+}
+
+/* A FILE's chip in the card's head (RailPeek: a chat on one file of the
+   folder the rail stands in): the node chip's shape, as a label — no
+   workbench to select it in, so no button. The name is the path under the
+   folder and may be long; it ellipsises rather than growing the head. */
+.claude-rail-peek-scope.is-file {
+  max-width: 160px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 11px;
+}
+
+/* THE GIT SECTION (ClaudeRail `git`): under the chats, past the left rail's
+   separator, the repository the page sits in — Check for updates, the
+   branch, the last three commits. The same 28px seats as the rings; the
+   check's "behind" dot is the sidebar's own unread dot (sidebar.css
+   `.sidebar-rail-dot`). Never scrolls: five seats at most. A commit or
+   branch seat with no git panel to open (`onOpenGit` absent) is a label —
+   its hint still says what it is. */
+.claude-rail-git {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  flex: 0 0 auto;
+}
+/* A seat that is a label (ClaudeRail `is-label`, `aria-disabled`): no door
+   behind it, so no hand cursor and no hover wash — but it still takes the
+   pointer, because its hint is where its words are. */
+.claude-rail-git .sidebar-rail-btn.is-label {
+  cursor: default;
+}
+.claude-rail-git .sidebar-rail-btn.is-label:hover {
+  background: transparent;
+  color: inherit;
+}
+.claude-rail-git-check:disabled {
+  cursor: default;
+}
+/* The check seat turns while a fetch is out. */
+.claude-rail-git-check.is-checking svg {
+  animation: claude-rail-git-spin 0.9s linear infinite;
+}
+@keyframes claude-rail-git-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .claude-rail-git-check.is-checking svg {
+    animation: none;
+    opacity: 0.6;
+  }
+}
+
+/* THE BREAKOUT CARD (shell/breakout/BreakoutCards.tsx): a research-only side
+   chat floating bottom-right, one per open breakout, stacked by an inline
+   offset. The card chrome is `.claude-rail-peek-card`; this is only the fixed
+   box (no transform on it, for the same fixed-popover reason as the rail
+   peek) and the head's two buttons.
+   47: one above the pinned door cards (Tasks/Bots, 46) and the chat cards
+   (45), so a breakout opened from a card lands on top of it (Akshil,
+   2026-11-09); still under the + popover / modals (48). */
+.breakout-card {
+  position: fixed;
+  z-index: 48; /* over window B (47) and every window A */
+  box-sizing: border-box;
+  display: flex;
+  flex-direction: column;
+}
+.breakout-card .claude-rail-peek-card {
+  transform: none;
+}
+/* Drag handle: the head row moves the card (its buttons keep their own cursor). */
+.breakout-card .breakout-head {
+  cursor: grab;
+  touch-action: none;
+}
+.breakout-card .breakout-head.is-dragging {
+  cursor: grabbing;
+  user-select: none;
+}
+.breakout-card .breakout-head button {
+  cursor: pointer;
+}
+.breakout-card .breakout-error {
+  padding: 4px 12px;
+}
+.breakout-card .breakout-title,
+.breakout-card .breakout-note {
+  min-width: 0;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+/* One line for the head: the title is a short label and the note (a breakout's
+   state, a subagent's description) is the one that ellipsizes. */
+.breakout-card .breakout-title {
+  flex: 0 1 auto;
+  font-weight: 600;
+}
+.breakout-card .breakout-note {
+  flex: 0 100 auto;
+  color: var(--c-faint, var(--fg));
+  opacity: 0.7;
+}
+.breakout-card .breakout-spacer {
+  flex: 1 1 auto;
+}
+.breakout-card .breakout-btn {
+  padding: 2px 8px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: none;
+  color: var(--fg);
+  font-size: 12px;
+  cursor: pointer;
+}
+.breakout-card .breakout-btn:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--fg) 8%, transparent);
+}
+.breakout-card .breakout-btn:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+
+/* The Agent peek card body (BreakoutCards `AgentPeekCard`): the subagent as a
+   read-only chat, its `.chat-logwrap` the one scroller. `.chat-root` lays the
+   chat out as a ROW (chat.css); this one holds a single column, so it stands
+   the axis up and pins the box to the card. */
+.chat-root.agent-peek-body {
+  position: absolute;
+  inset: 0;
+  flex-direction: column;
+}
+/* The prompt: reading-type prose under a muted label, clamped to four lines
+   until its `show more` opens it, and set off from the reply by the
+   transcript's hairline. */
+.chat-root .agent-peek-prompt {
+  margin-bottom: 16px;
+  padding-bottom: 12px;
+  border-bottom: 1px solid var(--c-border);
+}
+.chat-root .agent-peek-label {
+  margin-bottom: 4px;
+  font-size: calc(var(--c-fs-meta) * var(--c-zoom, 1));
+  color: var(--c-faint);
+}
+.chat-root .agent-peek-prompt-text.is-clamped {
+  max-height: calc(4 * var(--c-fs-read) * var(--c-lh-read) * var(--c-zoom, 1));
+  overflow: hidden;
+}
+/* The trigger sits on the column's left edge, not in a paragraph's corner. */
+.chat-root .agent-peek-prompt .run-trigger:not([aria-expanded="true"]) {
+  padding-left: 0;
+}
+.agent-peek-empty {
+  padding: 12px;
+  opacity: 0.7;
+}
+
+/* NO HAIRLINES AROUND THE NAV DOORS (owner, 2026-11-07: "don't add
+   separators"; 2026-11-08: "no separator in between"): Search, Bots, Tasks
+   and + run straight into the items column; the pinned bots keep the foot. */
+.claude-rail.has-nav .sidebar-rail-items {
+  border-top: 0;
+  /* …but a seat's gap under the + (owner, 2026-11-07: the first ring's wash
+     sat flush under the +): the wash (`.claude-rail-chat::after`, 2px past
+     the ring) stands the nav's own 4px off the +, and the 2px of padding
+     keeps it inside this column's clip (`.has-favs` overflow). */
+  margin-top: 4px;
+  padding-top: 2px;
+}
+
+/* THE TASKS CARD (shell/claude-rail TasksPeek; owner, 2026-11-07): the Tasks
+   page in window A's chassis, off the rail's Tasks door. One step above the
+   rail's own card, as window B is: where a too-small window makes the two
+   meet, its × stays reachable (one card stands at a time anyway). */
+#claude-rail-tasks-peek {
+  z-index: 46;
+}
+/* The head's title — "Tasks", or the open chat's — in the bot card's name
+   seat's type: small, one line, ellipsised; never the page's big heading. */
+.claude-rail-tasks-title {
+  flex: 0 1 auto;
+  min-width: 0;
+  padding-left: 2px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-weight: 500;
+  color: var(--fg);
+}
+/* The page itself fills the card's body and scrolls inside, as it does on
+   /tasks (schedule.css "Full-height page"): no 1050px column, a gutter the
+   card's width can spare. The list stays mounted under an open chat — its
+   layer hidden, its scroll kept (`.claude-rail-peek-chat`). */
+.claude-rail-tasks-list > .prefs-page.schedule-page {
+  flex: 1 1 auto;
+  min-height: 0;
+  height: 100%;
+  box-sizing: border-box;
+  padding: 8px 10px 10px;
+  gap: 8px;
+}
+.claude-rail-tasks-list > .prefs-page.schedule-page > *,
+.claude-rail-tasks-list > .schedule-page > .prefs-section {
+  max-width: none;
+}
+.claude-rail-tasks-list > .schedule-page > .prefs-section.schedule-main {
+  gap: 8px;
+}
+
+/* THE BOTS CARD (shell/claude-rail BotsPeek; owner, 2026-11-09): the Bots
+   page's list, then a bot's chat, in window A's chassis off the rail's Bots
+   door — the Tasks card's twin (DoorCard), one step above the rail's own card
+   as that one is. */
+#claude-rail-bots-peek {
+  z-index: 46;
+}
+/* Back wears the ×'s seat; the walk's arrows beside it, the head's 26px
+   seats, dim at the list's ends. */
+.claude-rail-bots-peek .claude-rail-peek-btn:disabled {
+  opacity: 0.35;
+  cursor: default;
+}
+/* The list fills the card's body and scrolls inside: the page's column rules
+   apply (bots.css, `.bots-page .bots`), its own background dropped for the
+   card's. The list stays mounted under an open chat — its layer hidden, its
+   scroll kept (`.claude-rail-peek-chat`). */
+.claude-rail-bots-list > .bots-page.bots-pick {
+  flex: 1 1 auto;
+  min-height: 0;
+  background: transparent;
+}
+.claude-rail-bots-list .bots-page.bots-pick .bots {
+  flex: 1 1 auto;
+  min-height: 0;
+  background: transparent;
+  padding-top: 8px;
+}
+.claude-rail-bots-list .bots-page.bots-pick .bots .search {
+  margin: 0 10px 8px;
+}
+.claude-rail-bots-list .bots-page.bots-pick .botlist {
+  padding: 2px 6px 8px;
+}
+/* The page hides the list's native scrollbar and draws its own thumb
+   (BotList `.railbar`); this list draws no thumb, so the native one comes
+   back, thin, in the card (Bugbot on #2206). */
+.claude-rail-bots-list .bots-page.bots-pick .botlist {
+  scrollbar-width: thin;
+}
+.claude-rail-bots-list .bots-page.bots-pick .botlist::-webkit-scrollbar {
+  display: block;
+  width: 8px;
+}
+/* A row's last line and time read at the card's small type; the row keeps
+   the page's 44px face so the two lists tell one story. */
+.claude-rail-bots-list .bots-page.bots-pick .bot {
+  padding: 8px 10px;
+}
+.claude-rail-bots-list .bots-page.bots-pick .empty {
+  padding: 32px 16px;
+}
+
+/* THE GIT DOOR (ClaudeRail; owner, 2026-11-10): one nav-door seat under the
+   rings, past its hairline — the nav doors' wash and open states
+   (`.claude-rail-nav` above), on a column of its own. */
+.claude-rail-git-door {
+  width: 100%;
+}
+/* …with no rings its hairline is the items column's first child: the
+   column's own 2px of wash padding (`.has-nav .sidebar-rail-items`) comes
+   off its margin, so it stands 8px under the + as above the door (the
+   #2213 rule: 8px each side). */
+.claude-rail.has-nav .sidebar-rail-items > .sidebar-rail-sep.is-tight:first-child {
+  margin-top: 2px;
+}
+
+/* THE MODE DOORS (ClaudeRail; owner, 2026-11-20): the file's other modes,
+   one nav-door seat each, above the Git door and in its group. The glyph is
+   the mode menu's own (`.mode-icon-mask`), at the nav doors' size. */
+.claude-rail-mode-doors {
+  width: 100%;
+}
+.claude-rail-mode-glyph {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 16px;
+  height: 16px;
+}
+.claude-rail-mode-glyph > *,
+.claude-rail-mode-icon > * {
+  width: 16px;
+  height: 16px;
+  flex: none;
+}
+/* THE MODE CARD (shell/claude-rail ModePeek): the file in that mode — an
+   embed frame filling the card under its head — in window A's chassis off a
+   mode door, the Git card's twin (DoorCard), one per mode. A class, not an
+   id (there are several): one step above the rail's own card where it is a
+   non-pin, and under the two-class rules above (`.is-front`, `.is-free-pin`)
+   which outrank it as they should. */
+.claude-rail-mode-peek {
+  z-index: 46;
+}
+.claude-rail-mode-title {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+.claude-rail-mode-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 14px;
+  height: 14px;
+  color: var(--fg-muted);
+}
+.claude-rail-mode-icon > * {
+  width: 14px;
+  height: 14px;
+}
+.claude-rail-mode-body {
+  position: relative;
+  overflow: hidden;
+}
+.claude-rail-mode-frame {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  border: 0;
+  background: var(--bg);
+  opacity: 0;
+  transition: opacity 120ms ease-out;
+}
+.claude-rail-mode-body.is-loaded .claude-rail-mode-frame {
+  opacity: 1;
+}
+/* A grip's drag crosses the frame: it must not take the pointer. */
+.claude-rail-mode-peek.is-resizing .claude-rail-mode-frame {
+  pointer-events: none;
+}
+
+/* THE GIT CARD (shell/claude-rail GitPeek; owner, 2026-11-10): the status
+   bar's old Git panel (shell/GitPanelBody) in window A's chassis off the
+   rail's Git door — the Bots card's twin (DoorCard), one step above the
+   rail's own card as that one is. The branch row stays put; the commits fill
+   the card and scroll inside it. */
+#claude-rail-git-peek {
+  z-index: 46;
+}
+.claude-rail-git-peek .git-panel {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+}
+.git-panel-head {
+  flex: 0 0 auto;
+  padding: 8px 12px 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+}
+.git-panel-top {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+.git-panel-branch {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  flex: 1 1 auto;
+  min-width: 0;
+  font-size: 12px;
+  color: var(--fg);
+}
+.git-panel-branch-name {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-weight: 600;
+}
+.git-panel-branch-icon {
+  flex: none;
+  color: var(--fg-muted);
+}
+/* ↑n / ↓n beside the branch: how far it stands from the default branch.
+   Information only — what a push / pull would move is `.git-panel-sync`. */
+.git-panel-tag {
+  display: inline-flex;
+  align-items: center;
+  gap: 1px;
+  flex: none;
+  padding: 1px 6px 1px 4px;
+  border-radius: 999px;
+  background: var(--ctl-quiet-bg);
+  color: var(--fg-muted);
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+.git-panel-tools {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  flex: none;
+}
+/* The Updates chip's check button, at the card's ink (not the bar's). */
+.git-panel-check {
+  margin: 0;
+  width: 26px;
+  height: 26px;
+  border-radius: 6px;
+  color: var(--fg-muted);
+}
+.git-panel-check:hover:not(:disabled) {
+  background: rgba(var(--tint), 0.08);
+  color: var(--fg);
+}
+.git-panel-check:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+/* The Git view's primary sync button (template.html `.btn.primary` +
+   `.count`): filled in the ink, its count in a pill of the page's colour. */
+.git-panel-sync {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  flex: none;
+  height: 26px;
+  margin: 0;
+  padding: 0 9px;
+  border: 1px solid var(--fg);
+  border-radius: 6px;
+  background: var(--fg);
+  color: var(--bg);
+  font: inherit;
+  font-size: 12px;
+  font-weight: 700;
+  white-space: nowrap;
+  cursor: pointer;
+}
+.git-panel-sync:hover:not([aria-disabled="true"]) {
+  background: var(--fg-muted);
+  border-color: var(--fg-muted);
+}
+.git-panel-sync:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+.git-panel-sync[aria-disabled="true"] {
+  cursor: default;
+  background: rgba(var(--tint), 0.08);
+  border-color: var(--border);
+  color: var(--fg-muted);
+}
+.git-panel-sync-count {
+  padding: 0 5px;
+  border-radius: 999px;
+  background: var(--bg);
+  color: var(--fg);
+  font-size: 10px;
+  font-variant-numeric: tabular-nums;
+}
+.git-panel-sync[aria-disabled="true"] .git-panel-sync-count {
+  background: rgba(var(--tint), 0.08);
+  color: var(--fg-muted);
+}
+.git-panel-warn {
+  font-size: 11px;
+  color: var(--status-failed);
+}
+/* THE COMMITS ARE THE SCROLLING SECTION (owner, 2026-11-10): the rest of the
+   card, a thin native scrollbar. */
+.git-panel-commits {
+  flex: 1 1 auto;
+  min-height: 0;
+  list-style: none;
+  margin: 0;
+  padding: 4px 0 6px;
+  border-top: 1px solid var(--border);
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  scrollbar-width: thin;
+}
+/* One line a commit: subject left, short sha right. */
+.git-commit {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  width: 100%;
+  min-width: 0;
+  padding: 6px 12px;
+  border: 0;
+  background: none;
+  color: var(--fg);
+  font: inherit;
+  text-align: left;
+}
+button.git-commit {
+  cursor: pointer;
+}
+button.git-commit:hover {
+  background: rgba(var(--tint), 0.06);
+}
+button.git-commit:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
+}
+.git-commit-subject {
+  flex: 1 1 auto;
+  min-width: 0;
+  font-size: 12px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.git-commit-sha {
+  flex: none;
+  font-size: 11px;
+  color: var(--fg-muted);
+  font-family: var(--font-mono, ui-monospace, SFMono-Regular, Menlo, monospace);
+}
+.git-panel-empty {
+  flex: 1 1 auto;
+  margin: 0;
+  padding: 16px;
+  border-top: 1px solid var(--border);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 12px;
+  color: var(--fg-muted);
+}
+
+/* THE EXPANDABLE RAIL (ClaudeRail `expandOn`, `rail_extras_enabled`; owner,
+   2026-11-21): the left sidebar's expand / collapse, on the right rail.
+   Collapsed it is the 48px rail above, plus its button. Expanded (`.is-expanded`,
+   its width inline from platform/lib/railstate) it is the same rail, wider,
+   each seat a row: the icon in its 28px box at the row's left, then the
+   title. Nothing else changes — every wash, mark, dot and hint is the one
+   above, drawn on a wider box.
+
+   THE BUTTON: the left sidebar's own expand button (SidebarFrame
+   `.sidebar-rail-btn`), first on the rail; under it the hairline the left
+   sidebar draws under its button, 8px each side (`.sidebar-rail-items`'
+   top border there; the rail's own column has no gap, so the margin is the
+   whole 8px). */
+.claude-rail .sidebar-rail-sep.is-tight.claude-rail-expand-sep {
+  margin-top: 8px;
+  margin-bottom: 8px;
+}
+/* THE WIDTH GLIDES, as the left sidebar's does (sidebar.css `#sidebar`) —
+   expanding, and collapsing through the tuck (ClaudeRail `tucking`: the rows
+   stay while the rail narrows) — but never under its own drag. Reduced
+   motion: the blanket rule (reduced-motion.css) makes it a snap. */
+.claude-rail.is-expanded {
+  transition:
+    flex-basis var(--dur-panel) var(--ease-out),
+    width var(--dur-panel) var(--ease-out);
+}
+.claude-rail.is-expanded.is-resizing {
+  transition: none;
+}
+/* …and while that drag is held (<html>, ClaudeRail `edgeDrag`): the cursor
+   stays the seam's, nothing selects, and the windows standing against the
+   rail follow its edge frame by frame instead of gliding after it (their
+   own glides: `.claude-rail-peek.is-on` above, schedule.css's dialog). */
+html.claude-rail-resizing {
+  cursor: col-resize;
+  user-select: none;
+  -webkit-user-select: none;
+}
+html.claude-rail-resizing :is(.claude-rail-peek, .claude-rail-peek .claude-rail-peek-card, .modal-popover .modal-dialog) {
+  transition: none;
+}
+/* THE BUTTON MOVES WITH THE ICONS (owner, 2026-11-21: "top left of the
+   section rather than top right, it should move"): expanded it stands at the
+   rail's top-left, in the rows' own icon column (the 9.5px the rows keep
+   from the edge), where Search's glyph stands under it. */
+.claude-rail.is-expanded > .claude-rail-expand {
+  align-self: flex-start;
+  margin-left: 9.5px;
+}
+/* THE ROWS. Each seat as wide as the rail less the 9.5px the 48px rail left
+   each side of its 28px seats — so the wash box (`::after`, 2px past the
+   seat, 9px to the sides) keeps today's geometry, and is still the row's hit
+   area and hover target. */
+.claude-rail.is-expanded :is(.claude-rail-nav, .claude-rail-chats, .claude-rail-favs, .claude-rail-bots) {
+  align-self: stretch;
+  align-items: stretch;
+}
+.claude-rail.is-expanded .claude-rail-nav > .sidebar-rail-btn,
+.claude-rail.is-expanded .claude-rail-seat {
+  margin: 0 9.5px;
+}
+.claude-rail.is-expanded :is(.claude-rail-nav, .claude-rail-seat) > .sidebar-rail-btn {
+  width: auto;
+  min-width: 0;
+  justify-content: flex-start;
+  /* The title's left edge where the left sidebar's row text stands (44px in
+     from the panel's edge, sidebar.css `.sidebar-item`). */
+  gap: 6px;
+  font: inherit;
+}
+.claude-rail.is-expanded .claude-rail-seat > .sidebar-rail-btn {
+  flex: 1 1 auto;
+}
+/* The icon's own 28px box: the glyph centred as in the 28px seat, and the
+   box the dots (`.sidebar-rail-dot`, `.is-second`, the bot's corner dot) and
+   the pin mark (`.claude-rail-pinmark`) are placed against — on the icon, as
+   before, not at the row's far end. */
+.claude-rail-icon {
+  position: relative;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 28px;
+  width: 28px;
+  height: 28px;
+}
+/* The title: the left sidebar's row type (sidebar.css `.sidebar-item`),
+   one line, cut with "…"; fading in as the expanded rows do there
+   (`sidebar-content-in`). */
+.claude-rail-title {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  text-align: left;
+  font-size: 13.5px;
+  color: var(--fg);
+  animation: sidebar-content-in var(--dur-panel) var(--ease-out);
+}
+/* The hairlines stretch to the rows. */
+.claude-rail.is-expanded .sidebar-rail-sep {
+  align-self: stretch;
+  width: auto;
+  margin-left: 9.5px;
+  margin-right: 9.5px;
+}
+.claude-rail.is-expanded .claude-rail-node-sep {
+  align-self: stretch;
+  width: auto;
+  margin: 2px 9.5px;
+}

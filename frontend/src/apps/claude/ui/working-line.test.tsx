@@ -107,7 +107,7 @@ const buttons = (r: ReactTestRenderer) => r.root.findAllByType("button");
 describe("backgroundable", () => {
   test("truth table", () => {
     expect(backgroundable(working(), "running", T)).toBe(true);
-    expect(backgroundable(working({}, { name: "Agent" }), "running", T)).toBe(false);
+    expect(backgroundable(working({}, { name: "Read" }), "running", T)).toBe(false);
     expect(backgroundable(working({ phase: "composing" }), "running", T)).toBe(false);
     expect(backgroundable(working({ external: true }), "running", T)).toBe(false);
     expect(backgroundable(working(), "stopping", T)).toBe(false);
@@ -120,6 +120,19 @@ describe("backgroundable", () => {
     expect(backgroundable(working(), "running", [task({ tool_use_id: "toolu_other" })])).toBe(false);
     expect(backgroundable(working(), "running", [task({ backgrounded: true })])).toBe(false);
     expect(backgroundable(working(), "running", [task({ status: "completed" })])).toBe(false);
+  });
+
+  test("a foreground subagent (Agent, or its older name Task) with a matching running task", () => {
+    const sub = task({ id: "a1", kind: "agent", type: "local_agent", subagent_type: "general-purpose" });
+    for (const name of ["Agent", "Task"]) {
+      expect(backgroundable(working({}, { name }), "running", [sub])).toBe(true);
+      expect(backgroundable(working({}, { name }), "running")).toBe(false);
+      expect(backgroundable(working({}, { name }), "running", [])).toBe(false);
+      expect(backgroundable(working({}, { name }), "running", [task({ ...sub, tool_use_id: "toolu_other" })])).toBe(false);
+      expect(backgroundable(working({}, { name }), "running", [task({ ...sub, backgrounded: true })])).toBe(false);
+      expect(backgroundable(working({}, { name }), "running", [task({ ...sub, status: "completed" })])).toBe(false);
+      expect(backgroundable(working({ external: true }, { name }), "running", [sub])).toBe(false);
+    }
   });
 });
 
@@ -139,6 +152,21 @@ describe("background button", () => {
       <WorkingLine working={working({}, { name: "Read" })} status="running" tasks={T} onStop={() => {}} onBackground={() => {}} />,
     );
     expect(buttons(notBash)).toHaveLength(1);
+  });
+
+  test("a running foreground subagent gets the button; it and Ctrl+B call onBackground", () => {
+    let n = 0;
+    const sub = [task({ id: "a1", kind: "agent", type: "local_agent" })];
+    const r = mount(
+      <WorkingLine working={working({}, { name: "Agent", detail: "" })} status="running" tasks={sub} onStop={() => {}} onBackground={() => n++} />,
+    );
+    const bg = buttons(r).filter((b) => b.props.className === "stop background");
+    expect(bg).toHaveLength(1);
+    expect(bg[0].props.title).toBe("Send this subagent to the background (Ctrl+B)");
+    act(() => bg[0].props.onClick());
+    expect(n).toBe(1);
+    key({ ctrlKey: true });
+    expect(n).toBe(2);
   });
 
   test("tool open but no task yet: no button", () => {

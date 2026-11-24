@@ -14,8 +14,8 @@ import { ApiError, api, stepThumbUrl, type AppRef, type Bot, type BotEvent } fro
 import { esc, fmtDay, fmtSecs, fmtTime, fmtWhen } from "../lib/format";
 import { md } from "../lib/md";
 import { botsRoot } from "../lib/root";
-import { chosenOption, clearIndex, firstNewIndex, foldHint, foldStretches, isHandoff, isNoise, isTaskEnd, liveCards, optionKey, rowKeys, searchCountText, searchHit, sessionBreak } from "../lib/thread";
-import { act, clearScrollSeq, cur, errMsg, eventsOf, getState, jumpTo, markSeen, openDialog, poll, select, setNewCount, setScrollToEnd, showBanner, unviewed, useBots, viewedSet } from "../state/store";
+import { chosenOption, clearIndex, firstNewIndex, foldHint, foldStretches, isHandoff, isNoise, isTaskEnd, liveCards, offersPhone, optionKey, rowKeys, searchCountText, searchHit, sessionBreak } from "../lib/thread";
+import { act, clearScrollSeq, errMsg, eventsOf, getState, jumpTo, markSeen, openDialog, poll, select, setNewCount, setScrollToEnd, showBanner, unviewed, useBots, viewedSet } from "../state/store";
 import { END_GAP, clearSearchHighlight, gapOf, evBox, highlightSearch, pinToEnd, restoreAnchor, copyCsv, tableToCsv, topVisible, updateToBottom, type Anchor } from "./threadDom";
 import { approvalParts } from "@platform/lib/approvalParts";
 import { GateCard } from "@platform/ui/GateCard";
@@ -23,6 +23,8 @@ import { GateCard } from "@platform/ui/GateCard";
 import { ApprovalCard } from "./ApprovalCard";
 import { HandBackRow, HandoverNote } from "./HandoverCard";
 import { SetupLines } from "./SetupLines";
+import { ChromeInstall } from "./ChromeInstall";
+import { endsOnNoBrowser } from "../lib/setup";
 
 const EMPTY: BotEvent[] = [];
 const NO_SEQS: ReadonlySet<number> = new Set();
@@ -68,6 +70,8 @@ interface RowProps {
   chosen: string | null;
   /** The selected bot's display name, for the approval card's head. */
   botName?: string;
+  /** The selected bot's kind (only Super Bot's greeting offers the phone, lib/thread `offersPhone`). */
+  botKind?: string;
   /** The apps root (appFromText needs it; "" until loaded). */
   appsRoot: string;
   onBeside: (a: AppRef) => void;
@@ -169,8 +173,8 @@ export function HandoffCard({ e, state: rawState, targetLive, targetWaiting }: {
   };
   const openChat = (
     <div className="ft">
-      <button disabled={!targetLive} title={targetLive ? (h.task_dir || undefined) : "That bot is gone"}
-        onClick={() => { if (getState().bots.some((x) => x.id === h.target)) select(h.target); }}>Open {who}'s chat</button>
+      {/* The thread's own click handler opens it (`data-open-bot`): the host decides where the door goes (ThreadProps `onOpenBot`). */}
+      <button disabled={!targetLive} title={targetLive ? (h.task_dir || undefined) : "That bot is gone"} data-open-bot={h.target}>Open {who}'s chat</button>
     </div>
   );
   // A relayed APPROVAL is the shared gate card, the same one the bot's own chat shows; this wrapper only adds the door
@@ -264,7 +268,7 @@ function ClearMark({ e, n, open, onFold }: { e: BotEvent; n: number; open: boole
 /** Channel names in chips and "Texted" lines; a task Super Bot handed off reads "from Super Bot" (docs §11). */
 const chanLabel = (k: string) => (k === "imessage" ? "iMessage" : k === "handoff" ? "Super Bot" : k === "routine" ? "a routine" : k);
 
-function body({ e, botId, botName, reaction, live, chosen, appsRoot, onBeside, hstate, targetLive, targetWaiting, linkLive, hbSecs, hbShot, hbBot, queued, bopen, foldN, foldOpen, onFold }: RowProps): JSX.Element {
+function body({ e, botId, botName, botKind, reaction, live, chosen, appsRoot, onBeside, hstate, targetLive, targetWaiting, linkLive, hbSecs, hbShot, hbBot, queued, bopen, foldN, foldOpen, onFold }: RowProps): JSX.Element {
   const title = fmtWhen(e.ts);
   if (e.source === "clear") return <ClearMark e={e} n={foldN || 0} open={!!foldOpen} onFold={onFold} />;
   if (e.handoff && isHandoff(e)) return <HandoffCard e={e} state={hstate || e.handoff.state} targetLive={!!targetLive} targetWaiting={targetWaiting} />;
@@ -345,7 +349,7 @@ function body({ e, botId, botName, reaction, live, chosen, appsRoot, onBeside, h
         : `<span class="via" title="${esc(`Received over ${chanLabel(k)} from ${e.via!.addr || "?"}`)}">via ${esc(chanLabel(k))}</span>`
     : "";
   // The seeded Super Bot's greeting (registry.seed_super, source "seed") carries the door to Settings > Phone.
-  const seedBtn = e.role === "done" && e.source === "seed"
+  const seedBtn = offersPhone(e, botKind)
     ? '<div class="opts"><button class="opt seed" data-dialog="phone">Connect your phone</button></div>' : "";
   const html = (actable ? actsHtml(e.seq) + `<time class="when">${esc(fmtTime(e.ts))}</time>` : "")
     + (e.role === "user" ? esc(e.text) : md(e.text)) + seedBtn + viaChip
@@ -457,12 +461,42 @@ export interface ThreadProps {
   onReact: (anchor: Element, seq: number) => void;
   /** A reply button was clicked: quote this message in the composer. */
   onReply: (r: { seq: number; text: string }) => void;
+  /** Whether sitting at the thread's end marks the bot READ (`markSeen`): the page always (the default); the rail's
+   *  bot card only once a press pinned it (shell/claude-rail BotPeek; Bugbot on #2143) — a hover's glance over the
+   *  card must not spend the rail's unread dot. */
+  markRead?: boolean;
+  /** SHARE THE STORE'S SCROLL BOOKKEEPING (`pinned`, `newCount` — one
+   *  thread's worth): the page's thread does; the rail's bot card standing
+   *  BESIDE the Bots page (shell/claude-rail BotPeek, 2026-11-06) keeps its
+   *  own end-pin instead, so two threads never fight over one flag (a card
+   *  scrolled up would have stopped the page's auto-scroll). */
+  sharedScroll?: boolean;
+  /** A DOOR TO ANOTHER BOT'S CHAT — a hand-off card's "Open <bot>'s chat", a relayed line's "Read more" (`seq`: the
+   *  message to land on): the page selects the bot (`select` / `jumpTo`, the default); the rail's bot card, which
+   *  shows one bot and selects nothing, goes to the bot's page instead (components/BotChat; CodeRabbit on #2143). */
+  onOpenBot?: (id: string, seq?: number) => void;
 }
 
-export function Thread({ b, threadRef, searchQ, onSearchCount, onReact, onReply }: ThreadProps) {
+export function Thread({ b, threadRef, searchQ, onSearchCount, onReact, onReply, markRead = true, sharedScroll = true, onOpenBot }: ThreadProps) {
+  // The card's own end-pin (`sharedScroll` false): at the end until the reader scrolls up. Read through a ref: the
+  // observers below are the mount's closures (Bugbot on #2159 — a card carried onto /bots must switch too).
+  const localPinned = useRef(true);
+  const sharedRef = useRef(sharedScroll);
+  sharedRef.current = sharedScroll;
+  const pinnedNow = () => (sharedRef.current ? getState().pinned : localPinned.current);
+  const onThreadScroll = () => {
+    const th = threadRef.current;
+    if (sharedScroll) updateToBottom(th);
+    else if (th) localPinned.current = gapOf(th) <= END_GAP;
+  };
   const S = useBots();
   const appsRoot = useAppsRoot();
   const botId = b?.id ?? "";
+  // THE BOT IS THE PROP'S, never the store's selection (2026-11-05): on the page the two are one (ChatPane passes
+  // cur()); in the rail's bot card off the page (shell/claude-rail BotPeek, components/BotChat) nothing is selected
+  // and `b` is the pinned bot. The observers below read it off a ref: their closures are the mount's.
+  const botRef = useRef(b);
+  botRef.current = b;
   const evs = b ? S.events[b.id] || EMPTY : EMPTY;
   const firstSeq = evs.length ? evs[0].seq : 0;
 
@@ -593,6 +627,11 @@ export function Thread({ b, threadRef, searchQ, onSearchCount, onReact, onReply 
     // The page keeps the last EVENT_CAP events only: a card older than the oldest one held is gone from here, so say so
     // (the hand-off line is then the only copy) instead of leaving scrollSeq armed and the thread pinned to the end.
     const js = s.scrollSeq, jumping = !!js && js.bot === botId;
+    // YOUR OWN SEND, in this thread's composer (Composer `askScrollToEnd` marks the thread it sends from): the store's
+    // flag is the render's trigger only — two threads on one store (the page's and the rail's bot card beside it) each
+    // follow their own composer (Bugbot on #2161).
+    const mine = th.dataset.scrollEnd === "1";
+    if (mine) delete th.dataset.scrollEnd;
     // A jump into the folded conversation opens it first; the next commit lands on the message.
     if (jumping && folded && js.seq < evs[ci].seq && js.seq >= evs[0].seq) { setOpenFold(foldKey); return; }
     // …and a jump at a step hidden behind its stretch's trigger opens that stretch first, the same way.
@@ -608,7 +647,7 @@ export function Thread({ b, threadRef, searchQ, onSearchCount, onReact, onReply 
     if (fa) restoreAnchor(th, [fa]);
     else if (jumpEl) { jumpEl.scrollIntoView({ block: "start" }); clearScrollSeq(); }
     else if (jumping && evs.length && js.seq < evs[0].seq) { clearScrollSeq(); showBanner("That message is older than this chat keeps on the page."); pinToEnd(th, botId || undefined); }
-    else if (bumped || s.scrollToEnd || wasAtEnd) pinToEnd(th, botId || undefined);
+    else if (bumped || mine || wasAtEnd) pinToEnd(th, botId || undefined);
     // Anchors only ever fall off the top, so losing all of them means you were reading history the cap has now dropped:
     // the oldest message left is the closest thing to what you were looking at, so sit at the top of it.
     else if (rebuilt && !restoreAnchor(th, anchors)) th.scrollTop = 0;
@@ -631,18 +670,20 @@ export function Thread({ b, threadRef, searchQ, onSearchCount, onReact, onReply 
     // "Viewed" = a message has scrolled into the thread at least once. The .ev wrapper has no box: watch the message inside.
     const io = viewer.current;
     if (io) th.querySelectorAll<HTMLElement>(".ev[data-seq]:not([data-obs])").forEach((el) => { el.dataset.obs = "1"; const m = evBox(el); if (m) io.observe(m); });
-    const c = cur();
+    const c = b;
     // Folded rows never scroll into view; they are behind the marker, not unread. Steps folded behind a result the
     // same: the seed only ever folds what was already seen, and a click that folds is a reader who has read them.
     if (folded && botId) { const set = viewedSet(botId); for (const e of evs.slice(0, ci)) set.add(e.seq); }
     if (foldHidden.size && botId) { const set = viewedSet(botId); for (const j of foldHidden) set.add(evs[j].seq); }
-    if (c) setNewCount(unviewed(c, eventsOf(c.id)).length);
-    updateToBottom(th);
+    if (sharedScroll) {
+      if (c) setNewCount(unviewed(c, eventsOf(c.id)).length);
+      updateToBottom(th);
+    } else localPinned.current = gapOf(th) <= END_GAP; // the card's own pin, as the layout left the thread (CodeRabbit)
     // Sitting at the end with the tab visible means you are following along: keep "seen" current so a reload or re-open
     // does not draw a New line above messages you already watched arrive. In Stage the thread stays beside the page,
     // except in the narrow fallback (.sfull), where the live view covers it: nothing is seen then.
     const s2 = getState();
-    if (c && !document.hidden && s2.pinned && !(s2.fast && botsRoot().classList.contains("sfull"))) markSeen(c.id, c.seq);
+    if (c && markRead && !document.hidden && pinnedNow() && !(s2.fast && botsRoot().classList.contains("sfull"))) markSeen(c.id, c.seq);
   });
 
   // The observer (threshold .4, rooted at the thread) and the ResizeObserver that keeps a pinned thread pinned when its
@@ -651,27 +692,37 @@ export function Thread({ b, threadRef, searchQ, onSearchCount, onReact, onReply 
   useEffect(() => {
     const th = threadRef.current; if (!th) return;
     const io = new IntersectionObserver((entries) => {
-      const c = cur(); if (!c) return;
+      const c = botRef.current; if (!c) return;
       const set = viewedSet(c.id);
       let hit = false;
       for (const en of entries) {
         const seq = (en.target.closest(".ev") as HTMLElement | null)?.dataset.seq;
         if (en.isIntersecting && seq) { set.add(Number(seq)); hit = true; }
       }
-      if (hit) { setNewCount(unviewed(c, eventsOf(c.id)).length); updateToBottom(th); }
+      if (hit && sharedRef.current) { setNewCount(unviewed(c, eventsOf(c.id)).length); updateToBottom(th); }
     }, { root: th, threshold: 0.4 });
     viewer.current = io;
     th.querySelectorAll<HTMLElement>(".ev[data-seq]").forEach((el) => { el.dataset.obs = "1"; const m = evBox(el); if (m) io.observe(m); });
-    const ro = new ResizeObserver(() => { if (getState().pinned) th.scrollTop = th.scrollHeight; });
+    const ro = new ResizeObserver(() => { if (pinnedNow()) th.scrollTop = th.scrollHeight; });
     ro.observe(th);
     return () => { io.disconnect(); ro.disconnect(); viewer.current = null; };
   }, [threadRef]);
 
   // ---- clicks: react → picker, reply → quote, option → answer, approve / deny ----
   const onClick = (ev: ReactMouseEvent<HTMLDivElement>) => {
-    const t = ev.target as Element, sel = getState().sel;
+    const t = ev.target as Element, sel = botId || null;
     const jump = t.closest<HTMLElement>("[data-jump-bot]");
-    if (jump) { jumpTo(jump.dataset.jumpBot || "", Number(jump.dataset.jumpSeq)); return; }
+    if (jump) {
+      const id = jump.dataset.jumpBot || "", seq = Number(jump.dataset.jumpSeq);
+      if (onOpenBot) { if (getState().bots.some((x) => x.id === id)) onOpenBot(id, seq); } else jumpTo(id, seq);
+      return;
+    }
+    const open = t.closest<HTMLElement>("[data-open-bot]");
+    if (open) {
+      const id = open.dataset.openBot || "";
+      if (getState().bots.some((x) => x.id === id)) { if (onOpenBot) onOpenBot(id); else select(id); }
+      return;
+    }
     // Wide-table footer (md.ts): "Show all N rows" toggles the 12-row cap; "Copy as CSV" copies every row, hidden ones too.
     const more = t.closest<HTMLElement>("[data-tmore]");
     if (more) {
@@ -746,7 +797,7 @@ export function Thread({ b, threadRef, searchQ, onSearchCount, onReact, onReply 
       return (
         <Row key={keys[i]} e={e} botId={botId} day={sessionBreak(evs[i - 1], e)} isNew={i === firstNew} texted={texted.get(e.seq)}
           reaction={!ho && ACTABLE.has(e.role) ? rxs[e.seq] || "" : ""} live={card && live.has(e.seq) && !held.has(e.seq)}
-          botName={b.name} chosen={card ? chosenOption(evs, e.seq) : null} appsRoot={appsRoot} onBeside={onBeside}
+          botName={b.name} botKind={b.kind} chosen={card ? chosenOption(evs, e.seq) : null} appsRoot={appsRoot} onBeside={onBeside}
           hstate={ho ? (e.role === "system" ? hds.get(ho.id) : undefined) || ho.state : undefined} targetLive={ho ? botIds.has(ho.target) : undefined}
           targetWaiting={ho && e.relay ? S.bots.find((x) => x.id === ho.target)?.waiting_on ?? null : undefined}
           linkLive={e.link ? botIds.has(e.link.bot) : undefined} bopen={e.build ? buildOpen(evs, e) : undefined}
@@ -758,11 +809,13 @@ export function Thread({ b, threadRef, searchQ, onSearchCount, onReact, onReply 
       );
     });
     if (b.control && hoSeq == null) content.push(<HandoverNote key="handover" b={b} />);
+    // The task could not start for want of a browser: inside WSL the fix is a button, right under the error.
+    if (endsOnNoBrowser(evs)) content.push(<ChromeInstall key="chromeinstall" after="Send your message again." />);
   }
 
   return (
     <div className="thread" id="thread" ref={threadRef} data-bot={botId || undefined}
-      onScroll={() => updateToBottom(threadRef.current)} onClick={onClick}>
+      onScroll={onThreadScroll} onClick={onClick}>
       {content}
     </div>
   );

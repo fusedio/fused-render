@@ -37,7 +37,6 @@ const PERM = readFileSync(join(HERE, "PermCard.tsx"), "utf8");
 const ASK_CARD = readFileSync(join(HERE, "QuestionCard.tsx"), "utf8");
 const PLAN_CARD = readFileSync(join(HERE, "PlanCard.tsx"), "utf8");
 const SCHED_CSS = readFileSync(join(HERE, "../styles/sched.css"), "utf8");
-const TRANSCRIPT = readFileSync(join(HERE, "Transcript.tsx"), "utf8");
 
 /** Everything the render put on screen, as one string. */
 function textOf(node: ReactTestRenderer): string {
@@ -58,6 +57,7 @@ const row = (extra: Partial<WaitingRowData> = {}): WaitingRowData => ({
   due: "2026-09-12T09:59:00Z",
   word: "queued",
   optimistic: false,
+  comeback: false,
   repeat: false,
   stopId: "",
   ...extra,
@@ -181,6 +181,33 @@ describe("the one line under it", () => {
     expect(out).toContain("Sat 12 Sep, 05:12");
     expect(out).not.toContain("behind");
     act(() => r.unmount());
+  });
+
+  it("offers `retry now` before `delete` on the usage-limit comeback only (2026-11-23)", () => {
+    // "this ui doesn't have this": the comeback's row is where the chat shows
+    // the paused message, so the press lives there — and nowhere else.
+    let retried = 0;
+    const r = render(
+      <WaitingRow
+        row={row({ word: "scheduled", comeback: true })}
+        facts={{}}
+        onDelete={() => {}}
+        onRetry={() => { retried += 1; }}
+      />,
+    );
+    const buttons = r.root.findAllByType("button");
+    expect(buttons.map((b) => b.props.children)).toEqual(["retry now", "delete"]);
+    act(() => buttons[0].props.onClick());
+    expect(retried).toBe(1);
+    act(() => r.unmount());
+    const busy = render(
+      <WaitingRow row={row({ comeback: true })} facts={{}} onDelete={() => {}} onRetry={() => {}} retrying />,
+    );
+    expect(busy.root.findAllByType("button")[0].props.disabled).toBe(true);
+    act(() => busy.unmount());
+    const plain = render(<WaitingRow row={row()} facts={{}} onDelete={() => {}} onRetry={() => {}} />);
+    expect(plain.root.findAllByType("button").map((b) => b.props.children)).toEqual(["delete"]);
+    act(() => plain.unmount());
   });
 
   it("deletes on one press, with no arming, and goes dead while it is in flight", () => {
@@ -719,12 +746,9 @@ describe("a follow-up into this chat's own running turn", () => {
     expect(CHAT).not.toContain("state.queued.length");
     expect(CHAT).not.toContain('kind="inbox"');
     expect(WAITING).not.toContain("follow-up");
-    // The composer's note is gated on the flag, and the words are untouched for
-    // the build that still shows them.
-    expect(COMPOSER).toContain("{count > 0 && !queueOn ? (");
-    expect(COMPOSER).toContain('"1 follow-up is queued for this turn."');
-    expect(COMPOSER).toContain("follow-ups are queued for this turn.");
-    expect(CHAT).toContain("queueOn,");
+    // The composer's footnote is gone in both builds: the newest follow-up's
+    // bubble carries "(Ctrl+X to send now)" instead.
+    expect(COMPOSER).not.toContain("follow-ups are queued for this turn");
   });
 });
 
@@ -949,70 +973,37 @@ describe("a follow-up the live run is still holding", () => {
     // JSONL row. So a reload, or the standing watch's four-a-minute
     // `refreshHistory`, wiped the reader's own words (Akshil, 2026-09-12).
     expect(CONTROLLER).toContain("const publishInbox = (rows: InboxMessage[]) => {");
-    expect(CONTROLLER).toContain("publishInbox(Array.isArray(poll.inbox) ? poll.inbox : []);");
+    expect(CONTROLLER).toContain("if (Array.isArray(poll.inbox)) {");
+    expect(CONTROLLER).toContain("landInbox(poll.inbox);");
     // …AND FROM `history`, WHICH IS THE READ A RELOADING CHAT MAKES FIRST. The
     // poll's copy only keeps these up while a page stays open; a page that comes
     // BACK has no run to poll yet, and that window is exactly when the reader is
     // looking for the follow-up they typed. Asked beside `live_run`, which is the
     // field that says whether anything is running at all.
     expect(CONTROLLER).toContain(
-      "if (live) publishInbox(Array.isArray(res.inbox) ? res.inbox : []);",
+      "if (live) landInbox(Array.isArray(res.inbox) ? res.inbox : []);",
     );
     const land = CONTROLLER.slice(CONTROLLER.indexOf("function landHistory("));
-    expect(land.indexOf("publishInbox(")).toBeLessThan(land.indexOf("turns: historyToTurns(res),"));
-    // …and nothing is held once the run is over, the same rule `clearQueued`
-    // states for the optimistic half.
+    expect(land.indexOf("landInbox(")).toBeLessThan(land.indexOf("turns: historyToTurns(res),"));
+    // …and a refresh republishes it too, so a `turns` replace never drops it.
+    const refresh = CONTROLLER.slice(CONTROLLER.indexOf("async function refreshHistory("));
+    expect(refresh.slice(0, refresh.indexOf("setExternalWorking"))).toContain("landInbox(");
+    // …and the conversation being replaced takes its held lines with it.
     expect(CONTROLLER).toContain("const clearInbox = () => publishInbox([]);");
     expect(CONTROLLER).toContain("clearInbox();");
-    // DEDUPED AT RENDER, because "does this still need a bubble" is a question
-    // about what is on screen — and both answers move without the inbox moving.
-    expect(CHAT).toContain("const inboxRows = useMemo(");
-    expect(CHAT).toContain("inboxBubbles(");
-    expect(CHAT).toContain("state.inbox,");
-    expect(CHAT).toContain("state.queued,");
+    // THE STRIP IS DERIVED AT RENDER from the turns, the controller's queued
+    // keys and the run's inbox.
+    expect(CHAT).toContain("const queuedView = useMemo(");
+    expect(CHAT).toContain("queuedLines({ turns: state.turns, queuedKeys: state.queuedKeys, inbox: state.inbox })");
   });
 
-  it("is an ORDINARY bubble with no chrome of any kind", () => {
-    // It is not queued, it is not behind anything, and the host drains it in
-    // seconds: a line saying so would be this feature narrating the app's normal
-    // behaviour back at the reader (design.md, UI). So no `.c-waiting-line`, no
-    // dashed edge, no delete — the transcript's own user turn, full strength.
-    // Drawn WHATEVER THE FLAG SAYS: a mid-turn reload must redraw the
-    // follow-ups the CLI still holds, and flag off the composer's "queued"
-    // line counts them too (next test).
-    const at = CHAT.search(/\{inboxRows\.map\(\(row\) => \(/);
-    expect(CHAT).not.toMatch(/queueOn &&\s+inboxRows\.map/);
-    expect(at).toBeGreaterThan(-1);
-    // INSIDE THE LOG (Akshil, 2026-10-04): the rows ride Transcript's
-    // `trailing` slot, after the last turn and the recap, so they scroll with
-    // the conversation. Outside the scroller they sat under it, never moved,
-    // and read as a ghost of a message the reply above had already answered.
-    const trailing = CHAT.indexOf("trailing={");
-    expect(trailing).toBeGreaterThan(-1);
-    expect(trailing).toBeLessThan(at);
-    expect(CHAT.indexOf("waiting.map((row) => (")).toBeGreaterThan(trailing);
-    expect(TRANSCRIPT).toContain("{recap ?? null}\n            {trailing ?? null}");
-    const block = CHAT.slice(at, CHAT.indexOf("))}", at));
-    expect(block).toContain('<div className="c-inbox" key={row.id}>');
-    expect(block).toContain('<div className="bubble">{row.text}</div>');
-    expect(block).not.toContain("c-waiting-line");
-    expect(block).not.toContain("delete");
-    const css = SCHED_CSS.replace(/\/\*[\s\S]*?\*\//g, "");
-    const inbox = css.slice(css.indexOf(".c-inbox {"), css.indexOf("}", css.indexOf(".c-inbox {")));
-    // The log's own column, so the bubble lands where the turns above it land.
-    expect(inbox).toContain("max-width: 720px");
-    expect(inbox).toContain("padding: 0 20px 6px");
-    expect(inbox).not.toContain("dashed");
-  });
-
-  it("counts inbox rows in the composer's queued line, flag off", () => {
-    // A reload drops `state.queued` (page memory) but the run still reports the
-    // inbox; `inboxRows` is already deduped against it, so appending is safe.
-    expect(CHAT).toContain(
-      "queued: [...state.queued, ...inboxRows.map((r) => r.text)],",
-    );
-    expect(CHAT).toContain("      state.queued,\n      inboxRows,\n");
-    // The Composer draws that line only with the flag off.
-    expect(COMPOSER).toContain("!queueOn");
+  it("is drawn in the strip above the composer, never in the transcript's trailing slot", () => {
+    expect(CHAT).not.toContain("inboxRows");
+    expect(CHAT).not.toContain("c-inbox");
+    const strip = CHAT.indexOf("<QueuedStrip");
+    expect(strip).toBeGreaterThan(-1);
+    expect(strip).toBeGreaterThan(CHAT.indexOf("trailing={"));
+    expect(strip).toBeLessThan(CHAT.indexOf("<ComposerGate"));
+    expect(CHAT).toContain("state={transcriptState}");
   });
 });

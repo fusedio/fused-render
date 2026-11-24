@@ -1,14 +1,15 @@
-import { readFileSync } from "node:fs";
 // The run loop against a FAKE agent.py. Every test here is one of the rules the
 // template earned the hard way: whole-turn replay, D687 slicing after a
 // follow-up, ownership by the newest loop, card placement, the two poll
 // refusals, and a thrown poll that keeps `?run=`.
 import { installDomShim } from "@platform/lib/testDomShim";
 installDomShim();
-import { describe, expect, test } from "bun:test";
+import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 
 const {
   PERM_CARD_MAX,
+  POLL_MS,
+  pollDelay,
   POLL_NETWORK_RETRIES,
   POLL_TIMEOUT_RETRIES,
   SEND_TIMEOUT_PROBES,
@@ -20,6 +21,26 @@ const {
 const { AgentError } = await import("./agent");
 const { createMemoryParamsStore } = await import("../params/store");
 const { MARKER_VIEW } = await import("./wire");
+const { resetFlagsForTests, setPrefsDeadlineForTests } = await import("../feature-flag");
+
+// THE CLAUDE FLAGS ARE PROCESS-WIDE, and this file reads them (`decide` awaits
+// `queueFlagReady`). `bun test` runs every suite in one process: a chat or a
+// task view mounted by an EARLIER file under a fetch stub that never answers
+// leaves the shared prefs read pinned, and the first decide here then sat out
+// the whole 8 s gate — "a decide writes back what LANDED on disk" timed out,
+// on CI's file order only. Start from "not asked" and give the read a budget
+// of one tick: nothing here answers `/api/prefs`, the defaults are what these
+// tests assume. (ClaudeChat.boot.test.tsx: "Reset before, not only after".)
+beforeAll(() => {
+  resetFlagsForTests();
+  setPrefsDeadlineForTests(1);
+});
+// The budget goes back; the flags stay SETTLED (not reset): a later file that
+// reads them — run-controller.cards.test.ts guards itself the same way — must
+// not be the one to meet an unasked flag over a pinned read.
+afterAll(() => {
+  setPrefsDeadlineForTests();
+});
 
 import type { runAgent } from "./agent";
 import type {
@@ -669,7 +690,7 @@ describe("start → poll → done", () => {
     expect(controller.getState().trouble?.message).toBe("send timed out after 60s");
     // The turn never launched: the bubble goes and the words come back.
     expect(users(controller)).toEqual([]);
-    expect(returned).toEqual([{ text: "again" }]);
+    expect(returned).toEqual([{ text: "again", refused: true }]);
   });
 
   test("a send that throws anything ELSE still falls through to `start`", async () => {
@@ -748,7 +769,7 @@ describe("start → poll → done", () => {
     expect(agent.of("poll").length).toBe(0);
     expect(controller.getState().trouble?.message).toBe("start timed out after 60s");
     expect(users(controller)).toEqual([]);
-    expect(returned).toEqual([{ text: "hi" }]);
+    expect(returned).toEqual([{ text: "hi", refused: true }]);
   });
 
   test("a start the server says NEVER RAN (504 `NotRun`) is handed back, unprobed", async () => {
@@ -762,7 +783,7 @@ describe("start → poll → done", () => {
     expect(agent.of("poll").length).toBe(0);
     expect(controller.getState().trouble?.message).toBe("cancelled while queued");
     expect(users(controller)).toEqual([]);
-    expect(returned).toEqual([{ text: "hi" }]);
+    expect(returned).toEqual([{ text: "hi", refused: true }]);
   });
 
   // ---- the draft this send spends (`draft_key`, PR #1118 round 5) ----------
@@ -906,14 +927,14 @@ describe("start → poll → done", () => {
     expect(users(controller).map((t) => t.text)).toEqual(["one"]);
   });
 
-  test("a send that REACHED a bubble and then failed is not `refused`", async () => {
-    // The distinction the flag draws: `start` answering `{error}` left the
-    // failure in the transcript, which is where the reader stays to read it —
-    // so the words must NOT also reappear in the box, or a failed send reads as
-    // two messages. Only a pre-flight refusal owes them back.
+  test("a `start` that failed hands its WORDS back too (`refused`)", async () => {
+    // `start` answering `{error}` drops the bubble and leaves an error row that
+    // names only the failure — so unless the words go back to the box they are
+    // in no bubble, no queue and no composer (Akshil, 2026-11-08: a long prompt
+    // lost to `target not found`). No double message: the bubble is gone.
     const { controller, returned } = makeController({ start: () => ({ error: "no session" }) });
     await controller.sendMessage("this one failed");
-    expect(returned).toEqual([{ text: "this one failed" }]);
+    expect(returned).toEqual([{ text: "this one failed", refused: true }]);
     expect(users(controller)).toEqual([]);
   });
 
@@ -993,6 +1014,55 @@ describe("follow-ups (T:16024, D687)", () => {
     expect(seen).toEqual([["and then say goodnight"], ["and then say goodnight"]]);
     // The run is over: the CLI drained its queue as part of it.
     expect(controller.getState().queued).toEqual([]);
+  });
+
+  // THE LIVE CASE (run 20261104-130202-870854): the CLI emitted command_lifecycle
+  // queued, then (after the next tool result) the isReplay user echo and
+  // command_lifecycle started for the page's uuid — 3 s after Enter — and the
+  // composer still said "1 follow-up is queued" 35 s later. The server reports
+  // those uuids as `inbox_taken`; the entry leaves on them, keyed by uuid.
+  test("a follow-up the CLI took leaves the queue at once, keyed by its uuid", async () => {
+    const UUID = "00ed356b-e46f-4447-8456-58ba48aa6450";
+    let controller!: ChatController;
+    const seen: { queued: string[]; taken: string[] | undefined }[] = [];
+    const snap = () => {
+      const st = controller.getState();
+      seen.push({ queued: st.queued, taken: st.taken });
+    };
+    const made = makeController({
+      start: () => ({ run_id: "r1" }),
+      send: () => ({ sent: true as const }),
+      poll: async (_f, n) => {
+        if (n === 0) {
+          await controller.sendFollowUp("since worktree is not in main", { clientId: UUID });
+          snap();
+          return poll({ segments: [text("working")] });
+        }
+        if (n === 1) {
+          // `command_lifecycle queued` only: not taken yet.
+          snap();
+          return poll({ segments: [text("working")] });
+        }
+        if (n === 2) {
+          // The replay echo + `started` landed.
+          return poll({ segments: [text("working")], inbox_taken: [UUID] } as never);
+        }
+        snap();
+        return poll({ done: true, segments: [text("working")], inbox_taken: [UUID] } as never);
+      },
+    });
+    controller = made.controller;
+    // The run ends on the poll after the snapshot, so the retirement cannot be
+    // the run-end clear.
+    await controller.sendMessage("go");
+    expect(seen.length).toBe(3);
+    expect(seen[0].queued).toEqual(["since worktree is not in main"]);
+    expect(seen[1].queued).toEqual(["since worktree is not in main"]);
+    // Snapshotted while the run is still live (poll 3, before it answers done).
+    expect(seen[2].queued).toEqual([]);
+    expect(seen[2].taken).toContain(UUID);
+    // The user's bubble is still drawn (it is the transcript's own row now).
+    expect(users(controller).some((u) => u.text === "since worktree is not in main")).toBe(true);
   });
 
   test("two follow-ups are both counted, and identical text does not collapse", async () => {
@@ -1270,6 +1340,156 @@ describe("follow-ups (T:16024, D687)", () => {
     expect(calls[0]!.fields).toEqual({ run_id: "r1", permission_mode: "acceptEdits" });
     expect(made.agent.of("send").length).toBe(0);
     expect(modeAfter).toBe("acceptEdits");
+  });
+
+  test("allowDenied records the grant on the chat, stamps the chip Allowed, and sends the rerun words", async () => {
+    const denied = {
+      kind: "tool",
+      id: "t1",
+      name: "Bash",
+      input: { command: "git push --force" },
+      status: "error",
+      output: "refused",
+      images: [],
+      denied: { reason: "Git Destructive" },
+    } as never;
+    const made = makeController({
+      start: () => ({ run_id: "r1" }),
+      allow_denied: (f) => ({ allowed: f.tool_use_id, message: "run it again" }),
+      poll: () => poll({ done: true, segments: [denied] }),
+    });
+    await made.controller.sendMessage("go");
+    await made.controller.allowDenied("t1");
+    expect(made.agent.of("allow_denied")[0]!.fields).toEqual({ session_id: "s1", tool_use_id: "t1" });
+    const sent = [...made.agent.of("start"), ...made.agent.of("send")].map((c) => String(c.fields.message));
+    expect(sent.some((m) => m.includes("run it again"))).toBe(true);
+    const segs = made.controller.getState().turns.flatMap((t) => (t.role === "assistant" ? (t.segments ?? []) : []));
+    expect(segs.some((x) => x.kind === "tool" && x.denied?.allowed === true)).toBe(true);
+  });
+
+  test("allowDenied into a live run goes out as a follow-up, and the composer never sees the words", async () => {
+    let controller!: ChatController;
+    let allowed: Promise<void> | undefined;
+    const made = makeController({
+      start: () => ({ run_id: "r1" }),
+      allow_denied: () => ({ allowed: "t1", message: "run it again" }),
+      send: () => ({ sent: true as const }),
+      poll: async (_f, n) => {
+        if (n === 0) return poll({ segments: [text("hi")] });
+        if (n === 1) {
+          allowed = controller.allowDenied("t1");
+          await allowed;
+        }
+        return poll({ done: true, segments: [text("hi")] });
+      },
+    });
+    controller = made.controller;
+    await made.controller.sendMessage("go");
+    expect(made.agent.of("send").map((c) => String(c.fields.message))).toEqual([expect.stringContaining("run it again")]);
+    expect(made.agent.of("start")).toHaveLength(1);
+    expect(made.returned.filter((r) => r.text.includes("run it again"))).toEqual([]);
+  });
+
+  test("allowDenied whose retry was refused throws, stamps nothing and leaves the words out of the composer", async () => {
+    const denied = {
+      kind: "tool", id: "t1", name: "Bash", input: {}, status: "error", output: "", images: [],
+      denied: { reason: "X" },
+    } as never;
+    let starts = 0;
+    const made = makeController({
+      start: () => (++starts === 1 ? { run_id: "r1" } : { error: "no capacity" }),
+      allow_denied: () => ({ allowed: "t1", message: "run it again" }),
+      poll: () => poll({ done: true, segments: [denied] }),
+    });
+    await made.controller.sendMessage("go");
+    const seg = () =>
+      made.controller.getState().turns.flatMap((t) => (t.role === "assistant" ? (t.segments ?? []) : []));
+    await expect(made.controller.allowDenied("t1")).rejects.toThrow("retry could not be sent");
+    expect(seg().some((x) => x.kind === "tool" && x.denied?.allowed === true)).toBe(false);
+    expect(made.returned.filter((r) => r.text.includes("run it again"))).toEqual([]);
+  });
+
+  test.each([
+    ["the server answers {error}", () => ({ error: "session ended" })],
+    ["the request fails on the network", () => Promise.reject(new Error("network"))],
+  ])("allowDenied into a live run throws and stamps nothing when the follow-up fails: %s", async (_n, sendAnswer) => {
+    const denied = {
+      kind: "tool", id: "t1", name: "Bash", input: {}, status: "error", output: "", images: [],
+      denied: { reason: "X" },
+    } as never;
+    let controller!: ChatController;
+    let outcome: Promise<void> | undefined;
+    let seen: unknown;
+    const made = makeController({
+      start: () => ({ run_id: "r1" }),
+      allow_denied: () => ({ allowed: "t1", message: "run it again" }),
+      send: sendAnswer as never,
+      poll: async (_f, n) => {
+        if (n === 0) return poll({ segments: [denied] });
+        if (n === 1) {
+          outcome = controller.allowDenied("t1").then(
+            () => undefined,
+            (e) => void (seen = e),
+          );
+          await outcome;
+        }
+        return poll({ done: true, segments: [denied] });
+      },
+    });
+    controller = made.controller;
+    await made.controller.sendMessage("go");
+    expect(String((seen as Error)?.message)).toContain("retry could not be sent");
+    const segs = made.controller.getState().turns.flatMap((t) => (t.role === "assistant" ? (t.segments ?? []) : []));
+    expect(segs.some((x) => x.kind === "tool" && x.denied?.allowed === true)).toBe(false);
+    expect(made.returned.filter((r) => r.text.includes("run it again"))).toEqual([]);
+  });
+
+  test.each(["the conversation changes", "the controller is disposed"])(
+    "allowDenied drops its result when %s while allow_denied is in flight: no send, no Allowed stamp",
+    async (what) => {
+      const denied = {
+        kind: "tool", id: "t1", name: "Bash", input: {}, status: "error", output: "", images: [],
+        denied: { reason: "X" },
+      } as never;
+      let release!: () => void;
+      const gate = new Promise<void>((r) => (release = r));
+      const made = makeController({
+        start: () => ({ run_id: "r1" }),
+        allow_denied: async () => {
+          await gate;
+          return { allowed: "t1", message: "run it again" };
+        },
+        poll: () => poll({ done: true, segments: [denied] }),
+      });
+      await made.controller.sendMessage("go");
+      const before = made.agent.of("start").length + made.agent.of("send").length;
+      const pending = made.controller.allowDenied("t1");
+      if (what === "the controller is disposed") made.controller.dispose();
+      else await made.controller.openSession("s-other");
+      release();
+      await pending;
+      expect(made.agent.of("start").length + made.agent.of("send").length).toBe(before);
+      const segs = made.controller.getState().turns.flatMap((t) => (t.role === "assistant" ? (t.segments ?? []) : []));
+      expect(segs.some((x) => x.kind === "tool" && x.denied?.allowed === true)).toBe(false);
+    },
+  );
+
+  test("allowDenied with no session id has nowhere to allow it", async () => {
+    const made = makeController({});
+    await expect(made.controller.allowDenied("t1")).rejects.toThrow("No conversation");
+    expect(made.agent.of("allow_denied")).toHaveLength(0);
+  });
+
+  test("allowDenied surfaces the server's refusal and sends nothing", async () => {
+    const made = makeController({
+      start: () => ({ run_id: "r1" }),
+      allow_denied: () => ({ error: "that call was not refused by auto mode" }),
+      poll: () => poll({ done: true, segments: [text("hi")] }),
+    });
+    await made.controller.sendMessage("go");
+    const before = made.agent.of("start").length + made.agent.of("send").length;
+    await expect(made.controller.allowDenied("t9")).rejects.toThrow("not refused by auto mode");
+    expect(made.agent.of("start").length + made.agent.of("send").length).toBe(before);
   });
 
   test("set_mode with no live run is a no-op, and a respawn reply leaves the mode alone", async () => {
@@ -1951,6 +2171,27 @@ describe("follow-ups (T:16024, D687)", () => {
     expect(assistants(controller).length).toBe(1);
   });
 
+  test("a follow-up a LIVE session refused says the server's reason, not 'ended'", async () => {
+    let controller!: ChatController;
+    const made = makeController({
+      start: () => ({ run_id: "r1" }),
+      send: () => ({ error: "stop in progress — try again in a moment" }),
+      poll: async (_f, n) => {
+        if (n === 0) {
+          await controller.sendFollowUp("late");
+          return poll({ segments: [text("still going")] });
+        }
+        return poll({ done: true, segments: [text("still going")] });
+      },
+    });
+    controller = made.controller;
+    await controller.sendMessage("go");
+    expect(controller.getState().queued).toEqual([]);
+    expect(controller.getState().trouble?.message).toBe(
+      "Could not send: stop in progress — try again in a moment",
+    );
+  });
+
   test("`respawn` starts a fresh run and re-points the `run` param", async () => {
     let controller!: ChatController;
     const made = makeController({
@@ -2312,6 +2553,29 @@ describe("ownership: only the NEWEST loop owns the chrome (Bugbot PR #653)", () 
     expect(assistants(controller).map((t) => t.text)).toContain("the new turn");
   });
 
+  test("a superseded loop's late `worktree_failed` does not withdraw the newer run's hint", async () => {
+    let controller!: ChatController;
+    const hint = { path: "/x/wt", branch: "feat/x", via: "bash" as const };
+    const made = makeController({
+      start: (_f, n) => ({ run_id: n === 0 ? "r1" : "r2" }),
+      send: () => ({ respawn: true as const }),
+      poll: async (f, n) => {
+        if (f.run_id === "r1" && n === 0) {
+          const held = new Promise<void>((r) => void controller.sendFollowUp("respawn me").then(() => r()));
+          await held;
+          // The newer loop has landed the hint by the time this answer arrives.
+          await new Promise((r) => setTimeout(r, 20));
+          return poll({ done: true, worktree_failed: ["/x/wt"] });
+        }
+        return poll({ done: true, worktree_hint: hint, segments: [text("new")] });
+      },
+    });
+    controller = made.controller;
+    await controller.sendMessage("go");
+    await new Promise((r) => setTimeout(r, 50));
+    expect(controller.getState().worktreeHint).toEqual(hint);
+  });
+
   test("newChat retires the loop: it stops writing params and the transcript", async () => {
     let controller!: ChatController;
     const made = makeController({
@@ -2425,6 +2689,60 @@ describe("stop (T:15901)", () => {
     // Neither is left posted as a bubble the agent never read.
     expect(users(controller).map((t) => t.text)).toEqual(["go"]);
     expect(controller.getState().queued).toEqual([]);
+  });
+
+  // The current CLI names a still-queued message by the uuid the page stamped
+  // on it, not by its words.
+  const stopWithStill = async (still: string[], stillText?: Record<string, string>) => {
+    let controller!: ChatController;
+    const made = makeController({
+      start: () => ({ run_id: "r1" }),
+      send: () => ({ sent: true as const }),
+      cancel: () => ({ cancelled: "r1", still_queued: still, ...(stillText ? { still_queued_text: stillText } : {}) }),
+      poll: async (_f, n) => {
+        if (n === 0) {
+          await controller.sendFollowUp("say hi", { clientId: "36422243-e3e0-4d9a-bd54-aad6c0de909b" });
+          await controller.stopRun();
+          return poll({ segments: [text("half a thought")] });
+        }
+        return poll({ done: true, error: "killed", segments: [text("half a thought")] });
+      },
+    });
+    controller = made.controller;
+    await controller.sendMessage("go");
+    return made;
+  };
+
+  test("a still_queued uuid naming a queued follow-up hands back its typed text once", async () => {
+    const made = await stopWithStill(["36422243-e3e0-4d9a-bd54-aad6c0de909b"]);
+    expect(made.strandedLines.length).toBe(1);
+    expect(made.strandedLines[0].map((l) => l.text)).toEqual(["say hi"]);
+    expect(made.strandedLines[0][0].clientId).toBe("36422243-e3e0-4d9a-bd54-aad6c0de909b");
+  });
+
+  test("a uuid name whose words the CLI never saw verbatim still hands back one typed line", async () => {
+    // The wire the CLI holds is the composed turn (terminal hint appended), so
+    // the words do not match; the entry's id does.
+    const id = "36422243-e3e0-4d9a-bd54-aad6c0de909b";
+    const made = await stopWithStill([id, "say hi\n\n<terminal-hint>x</terminal-hint>"], { [id]: "say hi" });
+    expect(made.stranded[0].filter((t) => t === "say hi")).toEqual(["say hi"]);
+    expect(made.stranded[0].some((t) => t === id)).toBe(false);
+  });
+
+  test("a leftover uuid with still_queued_text is handed back as those words", async () => {
+    const other = "11111111-2222-3333-4444-555555555555";
+    const made = await stopWithStill(["36422243-e3e0-4d9a-bd54-aad6c0de909b", other], { [other]: "from elsewhere" });
+    expect(made.stranded).toEqual([["say hi", "from elsewhere"]]);
+  });
+
+  test("a still_queued uuid with no entry here is dropped, not handed back as a line", async () => {
+    const made = await stopWithStill(["36422243-e3e0-4d9a-bd54-aad6c0de909b", "11111111-2222-3333-4444-555555555555"]);
+    expect(made.stranded).toEqual([["say hi"]]);
+  });
+
+  test("an unmatched plain-text still_queued name is still handed back", async () => {
+    const made = await stopWithStill(["from another viewer"]);
+    expect(made.stranded).toEqual([["say hi", "from another viewer"]]);
   });
 
   test("a stop that never reached the backend takes its claim back", async () => {
@@ -3463,6 +3781,38 @@ describe("openSession / resumeRun / newChat", () => {
     expect((controller.getState().turns[1] as AssistantTurn).stopped).toBe(true);
   });
 
+  test("openSession to ANOTHER chat detaches from the live run; the same chat keeps it", async () => {
+    let release!: () => void;
+    const gate = new Promise<void>((r) => (release = r));
+    const { controller, agent } = makeController({
+      start: () => ({ run_id: "rB2", session_id: "sB" }),
+      history: () => ({ turns: [], transcript: { path: "/t.jsonl", mtime: 1, size: 1 } }),
+      send: () => ({ sent: true as const }),
+      poll: async (_f, n) => {
+        if (n === 0) return poll({ message: "go", segments: [text("x")], text: "x", session_id: "sA" });
+        await gate;
+        return poll({ done: true, text: "ok", segments: [text("ok")] });
+      },
+    });
+    const attached = controller.resumeRun("rA");
+    for (let i = 0; i < 50 && controller.getState().status !== "running"; i++) await new Promise((r) => setTimeout(r, 0));
+    expect(controller.getState().status).toBe("running");
+    // Same session: the live run stays attached.
+    await controller.openSession("sA");
+    expect(controller.getState().status).toBe("running");
+    expect(controller.getState().runId).toBe("rA");
+    // Another session: detached, so a typed line starts a message, not a send into rA.
+    await controller.openSession("sB");
+    expect(controller.getState().status).toBe("idle");
+    expect(controller.getState().runId).toBeNull();
+    release();
+    await controller.sendFollowUp("for B", { orStart: true });
+    expect(agent.of("send")).toHaveLength(0);
+    expect(agent.of("start")).toHaveLength(1);
+    await attached;
+    controller.dispose();
+  });
+
   test("a failed restore leaves an empty log and no trouble card", async () => {
     const { controller } = makeController({ history: () => ({ error: "no such session" }) });
     await controller.openSession("s-42");
@@ -3565,6 +3915,102 @@ describe("openSession / resumeRun / newChat", () => {
     expect(controller.getState().adopting).toBe(true);
     await controller.resumeRun("r1");
     expect(controller.getState().adopting).toBe(false);
+  });
+
+  // Sina, 2026-11-10 (canvas page): a "Fix with Claude" run id stayed on the
+  // page and was handed to every later chat mount. Opening T004 from Recent
+  // chats restored T004's transcript, then boot's `resumeRun` polled the dead
+  // fix run, whose session is T006's — and `noteSessionId` moved the header,
+  // the composer's settings and the URL onto T006 over T004's words.
+  test("boot writes off a `run=` whose session is not the one it restored (ownSession)", async () => {
+    const params = createMemoryParamsStore({ run: "r-other", session_id: "s-42" });
+    const { controller } = makeController(
+      {
+        history: () => ({ turns: [{ role: "user" as const, text: "hi", uuid: "u1" }] }),
+        poll: () => poll({ done: true, session_id: "s-other", segments: [text("someone else's reply")] }),
+      },
+      params,
+    );
+    await controller.openSession("s-42");
+    await controller.resumeRun("r-other", { ownSession: "s-42" });
+    // The session on screen is untouched, the stale param is gone, the gate is
+    // down and the other run's reply never landed in this transcript.
+    expect(controller.getState().sessionId).toBe("s-42");
+    expect(params.get("session_id")).toBe("s-42");
+    expect(params.get("run")).toBeUndefined();
+    expect(controller.getState().adopting).toBe(false);
+    expect(controller.getState().turns.map((t) => t.role)).toEqual(["user"]);
+    expect(controller.getState().trouble).toBeNull();
+  });
+
+  test("boot still adopts a `run=` that belongs to the restored session", async () => {
+    const params = createMemoryParamsStore({ run: "r1", session_id: "s-42" });
+    const { controller } = makeController(
+      {
+        history: () => ({ turns: [{ role: "user" as const, text: "hi", uuid: "u1" }] }),
+        poll: () => poll({ done: true, session_id: "s-42", segments: [text("finished offscreen")] }),
+      },
+      params,
+    );
+    await controller.openSession("s-42");
+    await controller.resumeRun("r1", { ownSession: "s-42" });
+    expect(controller.getState().sessionId).toBe("s-42");
+    expect(controller.getState().adopting).toBe(false);
+  });
+
+  // CodeRabbit, PR #2242. Ownership has TWO spellings: the run's own id and
+  // the session it resumed. A backend that mints a new id on resume matches
+  // only by the second, and must still be adopted.
+  test("boot adopts a `run=` that RESUMED the restored session, whatever id it runs under", async () => {
+    const params = createMemoryParamsStore({ run: "r1", session_id: "s-42" });
+    const { controller } = makeController(
+      {
+        history: () => ({ turns: [{ role: "user" as const, text: "hi", uuid: "u1" }] }),
+        poll: () => poll({ done: true, session_id: "s-new", resumed_from: "s-42", segments: [text("carried on")] }),
+      },
+      params,
+    );
+    await controller.openSession("s-42");
+    await controller.resumeRun("r1", { ownSession: "s-42" });
+    expect(controller.getState().sessionId).toBe("s-new");
+    expect(controller.getState().trouble).toBeNull();
+  });
+
+  // …and a run that has not NAMED itself yet (a Copilot or Codex run in its
+  // first seconds: no minted id) is decided at the probe all the same — it did
+  // not resume this session, so it cannot turn out to be it. Waiting for the
+  // name let its message into this transcript and its id onto the header.
+  test("boot writes off an UNNAMED `run=` that did not resume the restored session", async () => {
+    const params = createMemoryParamsStore({ run: "r-other", session_id: "s-42" });
+    const { controller } = makeController(
+      {
+        history: () => ({ turns: [{ role: "user" as const, text: "hi", uuid: "u1" }] }),
+        poll: () => poll({ session_id: "", resumed_from: "", message: "someone else's ask" }),
+      },
+      params,
+    );
+    await controller.openSession("s-42");
+    await controller.resumeRun("r-other", { ownSession: "s-42" });
+    expect(controller.getState().sessionId).toBe("s-42");
+    expect(params.get("run")).toBeUndefined();
+    expect(controller.getState().turns.map((t) => t.role)).toEqual(["user"]);
+    expect(controller.getState().adopting).toBe(false);
+  });
+
+  test("an unnamed follow-up run that resumed the restored session is adopted", async () => {
+    const params = createMemoryParamsStore({ run: "r1", session_id: "s-42" });
+    const { controller } = makeController(
+      {
+        history: () => ({ turns: [{ role: "user" as const, text: "hi", uuid: "u1" }] }),
+        poll: () => poll({ done: true, session_id: "", resumed_from: "s-42", segments: [text("reply")] }),
+      },
+      params,
+    );
+    await controller.openSession("s-42");
+    await controller.resumeRun("r1", { ownSession: "s-42" });
+    expect(controller.getState().sessionId).toBe("s-42");
+    expect(params.get("run")).toBeUndefined();
+    expect(controller.getState().trouble).toBeNull();
   });
 
   test("a resumeRun refused by the send gate lowers the gate rather than hiding forever", async () => {
@@ -5026,6 +5472,85 @@ describe("the run's tasks", () => {
     expect(await run("/x/wt")).toBe(null);
   });
 
+  test("an agent hint lands carrying the standing worktree as prev", async () => {
+    const hint = { path: "/x/wt", branch: "feat/x", via: "bash" as const };
+    const agentHint = { path: "", branch: "", via: "agent" as const, label: "t" };
+    const { controller } = makeController({
+      start: () => ({ run_id: "r1" }),
+      poll: (_f, n) =>
+        n === 0
+          ? poll({ worktree_hint: hint })
+          : n === 1
+            ? poll({ worktree_hint: agentHint })
+            : poll({ done: true, segments: [text("ok")], text: "ok" }),
+      history: () => ({ turns: [], transcript: null }),
+    });
+    await controller.sendMessage("go");
+    expect(controller.getState().worktreeHint).toEqual({ ...agentHint, prev: hint });
+  });
+
+  test("worktree_failed withdraws a hint the page already holds, and its prev under an agent hint", async () => {
+    const hint = { path: "/x/wt", branch: "feat/x", via: "bash" as const };
+    const agentHint = { path: "", branch: "", via: "agent" as const, label: "t" };
+    const run = async (steps: Array<Record<string, unknown>>) => {
+      const { controller } = makeController({
+        start: () => ({ run_id: "r1" }),
+        poll: (_f, n) => (n < steps.length ? poll(steps[n]!) : poll({ done: true, segments: [text("ok")], text: "ok" })),
+        history: () => ({ turns: [], transcript: null }),
+      });
+      await controller.sendMessage("go");
+      return controller.getState().worktreeHint;
+    };
+    // The hint came in one window, its refusal in a later one.
+    expect(await run([{ worktree_hint: hint }, { worktree_failed: ["/x/wt"] }])).toBe(null);
+    expect(await run([{ worktree_hint: hint }, { worktree_failed: ["/x/other"] }])).toEqual(hint);
+    // A failed path under an agent hint's prev goes; the agent hint stays.
+    expect(await run([{ worktree_hint: hint }, { worktree_hint: agentHint }, { worktree_failed: ["/x/wt"] }])).toEqual(agentHint);
+    // A failure and the agent hint in one window: no prev is carried from the failed path.
+    expect(await run([{ worktree_hint: hint }, { worktree_hint: agentHint, worktree_failed: ["/x/wt"] }])).toEqual(agentHint);
+  });
+
+  test("withdrawing a hint reverts to the plain hint it replaced, across windows", async () => {
+    const a = { path: "/x/a", branch: "feat/a", via: "bash" as const };
+    const b = { path: "/x/b", branch: "feat/b", via: "bash" as const };
+    const run = async (steps: Array<Record<string, unknown>>) => {
+      const { controller } = makeController({
+        start: () => ({ run_id: "r1" }),
+        poll: (_f, n) => (n < steps.length ? poll(steps[n]!) : poll({ done: true, segments: [text("ok")], text: "ok" })),
+        history: () => ({ turns: [], transcript: null }),
+      });
+      await controller.sendMessage("go");
+      return controller.getState().worktreeHint;
+    };
+    expect(await run([{ worktree_hint: a }, { worktree_hint: b }, { worktree_failed: ["/x/b"] }])).toEqual(a);
+    // Both failed: nothing stands.
+    expect(await run([{ worktree_hint: a }, { worktree_hint: b }, { worktree_failed: ["/x/b", "/x/a"] }])).toBe(null);
+  });
+
+  test("removing the prev worktree under an agent hint drops only prev; a bare exit clears", async () => {
+    const hint = { path: "/x/wt", branch: "feat/x", via: "bash" as const };
+    const agentHint = { path: "", branch: "", via: "agent" as const, label: "t" };
+    const run = async (exit: { removed?: string }) => {
+      const { controller } = makeController({
+        start: () => ({ run_id: "r1" }),
+        poll: (_f, n) =>
+          n === 0
+            ? poll({ worktree_hint: hint })
+            : n === 1
+              ? poll({ worktree_hint: agentHint })
+              : n === 2
+                ? poll({ worktree_hint: { path: "", branch: "", via: "exit", ...exit } })
+                : poll({ done: true, segments: [text("ok")], text: "ok" }),
+        history: () => ({ turns: [], transcript: null }),
+      });
+      await controller.sendMessage("go");
+      return controller.getState().worktreeHint;
+    };
+    expect(await run({ removed: "/x/wt" })).toEqual(agentHint);
+    expect(await run({})).toBe(null);
+    expect(await run({ removed: "/x/other" })).toEqual({ ...agentHint, prev: hint });
+  });
+
   test("an equal worktree hint does not bump rev", async () => {
     const hint = { path: "../wt", branch: "feat/x", via: "bash" as const };
     const revs: number[] = [];
@@ -5136,7 +5661,7 @@ describe("the run's tasks", () => {
     expect(controller.getState().tasks[0]!.status).toBe("killed");
   });
 
-  test("CodeRabbit: the older host's ended row keeps its grace through the newer run's polls", async () => {
+  test("CodeRabbit: the older host's ended row does not linger through the newer run's polls", async () => {
     let lap: string[] = [];
     const ended = { ...T("h"), status: "killed" as const, ended_at: Date.now() / 1000 };
     const { controller } = makeController({
@@ -5151,7 +5676,7 @@ describe("the run's tasks", () => {
     });
     await controller.openSession("s9");
     await controller.sendMessage("go");
-    expect(lap).toEqual(["h"]);
+    expect(lap).toEqual([]);
   });
 
   test("a restore lands history's tasks", async () => {
@@ -5307,10 +5832,43 @@ describe("the run's tasks", () => {
     controller.newChat();
   });
 
-  test("Bugbot 4307278686: only the OWNING loop's done starts (or retires) a host watch", () => {
-    const src = readFileSync(new URL("./run-controller.ts", import.meta.url), "utf8");
-    expect(src).toContain("if (loopSeq === seat) watchHostTasks(runId, seat);");
-    expect(src).not.toMatch(/if \(poll\.tasks_pending\) watchHostTasks\(runId, seat\);/);
+  test("a watch cannot be stranded: a loop that retires it without ever polling tasks still sees the host's death end the rows", async () => {
+    // The old host r1 holds a running row; a send opens r2, whose first poll
+    // is an unknown-run refusal (no tasks block at all), so the loop-seat
+    // change retired r1's watch and nothing started another.
+    let r1Alive = true;
+    const { controller, agent } = makeController({
+      history: () => ({ turns: [], transcript: null, live_run: "", tasks_run: "r1", tasks: [T("h", "running")] }),
+      live_run: () => ({ run_id: "" }),
+      live_host: () => ({ run_id: "" }),
+      start: () => ({ run_id: "r2" }),
+      poll: () => unknownRunPoll(),
+      tasks: () =>
+        r1Alive
+          ? { tasks: [T("h", "running")], tasks_pending: true, host_alive: true }
+          : { tasks: [{ ...T("h"), status: "killed" as const }], tasks_pending: false, host_alive: false },
+    });
+    await controller.openSession("s9");
+    await controller.sendMessage("go");
+    await settle();
+    expect(controller.getState().tasksRunId).toBe("r1");
+    expect(controller.getState().tasks[0]!.status).toBe("running");
+    r1Alive = false;
+    await settle();
+    expect(agent.of("tasks").every((c) => c.fields.run_id === "r1")).toBe(true);
+    expect(controller.getState().tasks.every((t) => t.status !== "running")).toBe(true);
+  });
+
+  test("a host whose run dir is gone ends the rows instead of leaving them live", async () => {
+    const { controller } = makeController({
+      history: () => ({ turns: [], transcript: null, live_run: "", tasks_run: "r1", tasks: [T("h", "running")] }),
+      live_run: () => ({ run_id: "" }),
+      live_host: () => ({ run_id: "" }),
+      tasks: () => ({ error: "unknown run_id" }),
+    });
+    await controller.openSession("s9");
+    await settle();
+    expect(controller.getState().tasks.every((t) => t.status !== "running")).toBe(true);
   });
 
   test("a host that dies under the watch downgrades the live rows, the one case that still does", async () => {
@@ -5396,5 +5954,252 @@ describe("the working clock survives a reload (server stamp)", () => {
     controller = made.controller;
     await controller.sendMessage("go");
     expect(seen).toEqual([1000]);
+  });
+});
+
+describe("the page-minted client id rides the wire and comes back", () => {
+  test("start and follow-up send carry client_uuid; delivery reports the id", async () => {
+    const SHOTS = "<pane-shot>\n[]\n</pane-shot>";
+    const delivered: string[] = [];
+    let controller!: ChatController;
+    const agent = fakeAgent({
+      start: () => ({ run_id: "r1" }),
+      send: () => ({ sent: true as const }),
+      poll: async (_f, n) => {
+        if (n === 0) await controller.sendFollowUp("more", { clientId: "id-follow", blocks: [SHOTS] });
+        return poll({ done: n > 0 });
+      },
+    });
+    controller = createChatController({
+      file: "/proj/app.py",
+      params: createMemoryParamsStore(),
+      run: agent.run,
+      sleep: () => Promise.resolve(),
+      now: () => 1_000,
+      wallClock: () => 1_000,
+      model: () => "sonnet",
+      effort: () => "high",
+      hasPane: () => true,
+      onSendDelivered: (id) => delivered.push(id),
+    });
+    await controller.sendMessage("go", { clientId: "id-start", blocks: [SHOTS] });
+    expect(agent.of("start")[0]!.fields.client_uuid).toBe("id-start");
+    expect(agent.of("send")[0]!.fields.client_uuid).toBe("id-follow");
+    expect(agent.of("start")[0]!.fields.typed).toBe("go");
+    expect(agent.of("send")[0]!.fields.typed).toBe("more");
+    expect(delivered).toEqual(["id-start", "id-follow"]);
+    controller.dispose();
+  });
+
+  test("a send that is refused echoes the id back on returned", async () => {
+    const returned: { clientId?: string }[] = [];
+    const agent = fakeAgent({
+      start: () => {
+        throw new AgentError({ message: "boom" });
+      },
+    });
+    const controller = createChatController({
+      file: "/proj/app.py",
+      params: createMemoryParamsStore(),
+      run: agent.run,
+      sleep: () => Promise.resolve(),
+      now: () => 1_000,
+      wallClock: () => 1_000,
+      model: () => "sonnet",
+      effort: () => "high",
+      hasPane: () => true,
+      onSendReturned: (info) => returned.push(info),
+    });
+    await controller.sendMessage("go", { clientId: "id-x" });
+    expect(returned.map((r) => r.clientId)).toEqual(["id-x"]);
+    controller.dispose();
+  });
+});
+
+describe("one host, many turns: a turn the page has not streamed is attached again", () => {
+  const settle = async () => {
+    for (let i = 0; i < 20; i++) await Promise.resolve();
+  };
+  const finishedTurn = (n: number) =>
+    poll({ done: true, session_id: "s1", out_size: 100, segments: [text("first")], text: "first" });
+
+  test("a woken turn on a run this page already streamed streams", async () => {
+    const made = makeController({
+      start: () => ({ run_id: "r1" }),
+      poll: (_f, n) => (n === 0 ? finishedTurn(n) : poll({ done: true, session_id: "s1", out_size: 400, segments: [text("woken")], text: "woken" })),
+      live_run: () => ({ run_id: "r1", turn_at: 100 }),
+      history: () => ({ turns: [], transcript: null }),
+    });
+    await made.controller.sendMessage("go");
+    expect(made.agent.of("poll").length).toBe(1);
+    await made.controller.adoptLiveRun("s1", { laps: 1, quiet: true });
+    expect(made.agent.of("poll").length).toBeGreaterThan(1);
+    expect(made.controller.getState().working).toBeNull();
+    made.controller.dispose();
+  });
+
+  test("the turn just streamed is not attached again, trailing rows or not (turn_at null)", async () => {
+    const made = makeController({
+      start: () => ({ run_id: "r1" }),
+      poll: (_f, n) => finishedTurn(n),
+      live_run: () => ({ run_id: "r1", turn_at: null }),
+      history: () => ({ turns: [], transcript: null }),
+    });
+    await made.controller.sendMessage("go");
+    await made.controller.adoptLiveRun("s1", { laps: 1, quiet: true });
+    expect(made.agent.of("poll").length).toBe(1);
+    made.controller.dispose();
+  });
+
+  test("a send-now's queued turn is looked for as soon as the abort ends the loop", async () => {
+    let controller!: ChatController;
+    const made = makeController({
+      start: () => ({ run_id: "r1" }),
+      send: () => ({ sent: true as const }),
+      send_now: () => ({ sent: true as const }),
+      poll: async (_f, n) => {
+        if (n === 0) {
+          await controller.sendFollowUp("urgent", { clientId: "id-urgent" });
+          await settle();
+          await controller.sendQueuedNow();
+          return finishedTurn(n);
+        }
+        return poll({ done: true, session_id: "s1", out_size: 500, segments: [text("urgent reply")], text: "urgent reply" });
+      },
+      live_run: () => ({ run_id: "r1", turn_at: 100 }),
+      history: () => ({ turns: [], transcript: null }),
+    });
+    controller = made.controller;
+    await controller.sendMessage("go");
+    await settle();
+    expect(made.agent.of("send_now").length).toBe(1);
+    expect(made.agent.of("live_run").length).toBeGreaterThan(0);
+    expect(made.agent.of("poll").length).toBeGreaterThan(1);
+    controller.dispose();
+  });
+});
+
+describe("queued lines follow the server's inbox", () => {
+  const settle = async () => {
+    for (let i = 0; i < 20; i++) await Promise.resolve();
+  };
+  const held = (...uuids: string[]) =>
+    uuids.map((uuid, i) => ({ id: `i${i}`, text: "again", uuid }));
+
+  test("two identical lines stay two entries, each keyed by its own id", async () => {
+    let controller!: ChatController;
+    const seen: string[][] = [];
+    const made = makeController({
+      start: () => ({ run_id: "r1" }),
+      send: () => ({ sent: true as const }),
+      poll: async (_f, n) => {
+        if (n === 0) {
+          await controller.sendFollowUp("again", { clientId: "u1" });
+          await controller.sendFollowUp("again", { clientId: "u2" });
+          return poll({ inbox: held("u1", "u2") });
+        }
+        seen.push(controller.getState().queued);
+        if (n === 1) return poll({ inbox: held("u2") });
+        seen.push(controller.getState().queued);
+        return poll({ done: true, inbox: [] });
+      },
+    });
+    controller = made.controller;
+    await controller.sendMessage("go");
+    // After the first poll both are held; once the server drops u1 only u2 is.
+    expect(seen[0]).toEqual(["again", "again"]);
+    expect(seen[1]).toEqual(["again"]);
+  });
+
+  test("a loop's end does not wipe lines the server still holds", async () => {
+    let controller!: ChatController;
+    const made = makeController({
+      start: () => ({ run_id: "r1" }),
+      send: () => ({ sent: true as const }),
+      poll: async (_f, n) => {
+        if (n === 0) await controller.sendFollowUp("later", { clientId: "u1" });
+        return poll({ done: n > 0, inbox: [{ id: "i0", text: "later", uuid: "u1" }] });
+      },
+    });
+    controller = made.controller;
+    await controller.sendMessage("go");
+    expect(controller.getState().queued).toEqual(["later"]);
+    expect(controller.getState().inbox.map((m) => m.uuid)).toEqual(["u1"]);
+  });
+
+  test("after the loop ends the inbox is re-read until the host settles it", async () => {
+    let controller!: ChatController;
+    let host: "holds" | "gone" = "holds";
+    const made = makeController({
+      start: () => ({ run_id: "r1" }),
+      send: () => ({ sent: true as const }),
+      poll: async (_f, n) => {
+        if (n === 0) await controller.sendFollowUp("later", { clientId: "u1" });
+        return poll({
+          done: n > 0,
+          session_id: "s1",
+          inbox: [{ id: "i0", text: "later", uuid: "u1" }],
+        });
+      },
+      history: () =>
+        host === "holds"
+          ? { turns: [], transcript: null, live_run: "r1", inbox: [{ id: "i0", text: "later", uuid: "u1" }] }
+          : { turns: [], transcript: null, live_run: "" },
+      live_run: () => ({ run_id: "" }),
+    });
+    controller = made.controller;
+    await controller.sendMessage("go");
+    await settle();
+    expect(controller.getState().inbox.map((m) => m.uuid)).toEqual(["u1"]);
+    // The host died holding the line: the next read says nothing is live.
+    host = "gone";
+    for (let i = 0; i < 200; i++) await Promise.resolve();
+    expect(controller.getState().inbox).toEqual([]);
+    expect(controller.getState().queued).toEqual([]);
+    controller.dispose();
+  });
+
+  test("a history refresh republishes the live run's inbox", async () => {
+    const made = makeController({
+      history: () => ({
+        turns: [],
+        transcript: null,
+        live_run: "r1",
+        inbox: [{ id: "i0", text: "later", uuid: "u1" }],
+      }),
+      live_run: () => ({ run_id: "" }),
+    });
+    await made.controller.refreshHistory("s1");
+    await settle();
+    expect(made.controller.getState().inbox.map((m) => m.uuid)).toEqual(["u1"]);
+  });
+
+  test("a refused send-now says so", async () => {
+    let controller!: ChatController;
+    let said = false;
+    const made = makeController({
+      start: () => ({ run_id: "r1" }),
+      send: () => ({ sent: true as const }),
+      send_now: () => ({ error: "no live session" }),
+      poll: async (_f, n) => {
+        if (n === 0) {
+          await controller.sendFollowUp("urgent", { clientId: "u1" });
+          expect(await controller.sendQueuedNow()).toBe(false);
+          said = controller.getState().turns.some((t) => JSON.stringify(t).includes("Couldn't send that now"));
+        }
+        return poll({ done: n > 0, inbox: [{ id: "i0", text: "urgent", uuid: "u1" }] });
+      },
+    });
+    controller = made.controller;
+    await controller.sendMessage("go");
+    expect(said).toBe(true);
+  });
+});
+
+describe("pollDelay", () => {
+  test("a hidden document polls slower, never stops", () => {
+    expect(pollDelay(false)).toBe(POLL_MS);
+    expect(pollDelay(true)).toBeGreaterThan(POLL_MS);
+    expect(Number.isFinite(pollDelay(true))).toBe(true);
   });
 });

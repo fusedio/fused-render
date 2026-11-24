@@ -73,7 +73,7 @@ def test_mime_and_glob_derivations():
     py = by_ext[".py"]
     assert py.mime == "application/x-fused-render-py"
     assert py.glob == "*.py"
-    assert py.type_name == "PY File (FusedRender)"
+    assert py.type_name == "PY File (Fused Render)"
 
 
 def test_standard_mime_tiering():

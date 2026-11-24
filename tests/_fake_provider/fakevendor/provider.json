@@ -1,0 +1,25 @@
+{
+  "name": "Fake Vendor",
+  "_comment": "Test-only pack for tests/_fake_vendor.py. ${FUSED_RENDER_FAKE_VENDOR_URL} is expanded by registry.py at load time; without it the pack fails validation and is skipped. Point FUSED_RENDER_CONNECT_PROVIDERS at tests/_fake_provider to load it.",
+  "auth": [
+    {"kind": "mcp-oauth", "resource": "${FUSED_RENDER_FAKE_VENDOR_URL}/mcp"},
+    {"kind": "oauth-pkce", "client_id": "fake-client",
+     "authorize_url": "${FUSED_RENDER_FAKE_VENDOR_URL}/authorize",
+     "token_url": "${FUSED_RENDER_FAKE_VENDOR_URL}/token",
+     "revoke_url": "${FUSED_RENDER_FAKE_VENDOR_URL}/revoke",
+     "identity_url": "${FUSED_RENDER_FAKE_VENDOR_URL}/me",
+     "scopes": {"scope": "read write"},
+     "redirect": {"host": "127.0.0.1", "ports": null, "path": "/callback"}},
+    {"kind": "oauth-device", "client_id": "fake-client",
+     "device_url": "${FUSED_RENDER_FAKE_VENDOR_URL}/device",
+     "token_url": "${FUSED_RENDER_FAKE_VENDOR_URL}/token",
+     "revoke_url": "${FUSED_RENDER_FAKE_VENDOR_URL}/revoke",
+     "scope": "read write",
+     "identity_url": "${FUSED_RENDER_FAKE_VENDOR_URL}/me"},
+    {"kind": "api-key", "label": "API key",
+     "identity_url": "${FUSED_RENDER_FAKE_VENDOR_URL}/me",
+     "docs": "${FUSED_RENDER_FAKE_VENDOR_URL}/keys"}
+  ],
+  "tools": {"remote": "${FUSED_RENDER_FAKE_VENDOR_URL}/mcp"},
+  "privacy": "A test double on 127.0.0.1. Nothing leaves this machine."
+}

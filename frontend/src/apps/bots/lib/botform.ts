@@ -1,15 +1,16 @@
 // What the two bot dialogs share (dialogs/CreateBot.tsx, dialogs/BotSettings.tsx): the model and effort menus, the
 // app-folder normalisation the Trusted apps list matches on, and the Logins choice (which browser's sign-ins to share).
 import type { Bot } from "./api";
+import { noBrowser } from "./derive";
 
 export const MODELS: [string, string][] = [
-  ["haiku", "Haiku · fastest"], ["sonnet", "Sonnet · balanced"], ["opus", "Opus · strongest"], ["fable", "Fable · most capable"],
+  ["haiku", "Haiku · Fast"], ["sonnet", "Sonnet · Balanced"], ["opus", "Opus · Deep reasoning"], ["fable", "Fable · Autonomous agents"],
   ["local-4b", "Gemma 4B · local model"], ["local-9b", "Gemma 12B · local model"],
 ];
 /** Super Bot runs on Claude Code: no local models (the backend refuses them too). */
 export const modelsFor = (isSuper: boolean): [string, string][] => (isSuper ? MODELS.filter(([v]) => !v.startsWith("local-")) : MODELS);
 
-export const EFFORTS: [string, string][] = [["low", "Low · quickest"], ["medium", "Medium"], ["high", "High · careful"], ["xhigh", "Extra high · slowest"]];
+export const EFFORTS: [string, string][] = [["low", "Low · quickest"], ["medium", "Medium"], ["high", "High · careful"], ["xhigh", "Xhigh · slowest"]];
 
 /** Trusted apps: the backend stores folders normalised (lower, -/_/space → "-"); match the listing the same way so a
  *  saved entry ticks its row whatever the folder's spelling on disk. */
@@ -24,7 +25,8 @@ export const browserOf = (b: Pick<Bot, "id" | "browser_id">): string => b.browse
 export function loginGroups(bots: Bot[], self?: string): { id: string; name: string; names: string[] }[] {
   const out = new Map<string, { id: string; name: string; names: string[] }>();
   for (const b of bots) {
-    if (b.id === self) continue;
+    // An expert has no browser: never a set of logins to share.
+    if (b.id === self || noBrowser(b)) continue;
     const k = browserOf(b), g = out.get(k) || { id: k, name: "", names: [] };
     g.names.push(b.name);
     if (!g.name && b.browser_name) g.name = b.browser_name;

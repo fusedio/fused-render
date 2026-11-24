@@ -12,12 +12,38 @@
 // its own — only "Custom (cron)…" reveals one extra input.
 import { canonFsPath } from "@platform/lib/path-url";
 import {
-  useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState,
+  Fragment, useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState,
   type KeyboardEvent as ReactKeyboardEvent, type ReactNode, type RefObject,
 } from "react";
 import { shortTaskId } from "@platform/lib/task-id";
 import { Dropdown, popStyle } from "./Dropdown";
 import { CommandMenu, acceptText, menuKey, menuQuery } from "@apps/claude/ui/CommandMenu";
+import { AttachButton } from "@apps/claude/ui/AttachButton";
+import { MicButton } from "@apps/claude/ui/MicButton";
+import { insertAt, useCanDictate, useDictation } from "@platform/lib/dictation";
+import { AgentMark } from "@platform/ui/AgentMark";
+import { Lists } from "@apps/claude/ui/Lists";
+import { paneChatUrl, taskPane } from "@apps/claude/ui/list-rows";
+import { ChatMount } from "@apps/claude";
+import { homePlaceholderFor, type TargetNoun } from "@apps/claude/pane/paneUrl";
+import { runAppEntry } from "@apps/claude/protocol/agent";
+// THE SHARED TASK HEAD on the open chat and the form (design.md, "One task
+// head, everywhere").
+import { TaskHead } from "./TaskHead";
+import { TaskPrChip } from "./TaskPrChip";
+import { useUrlVersion } from "@platform/lib/hooks";
+import { openInTasksItem, openInTasksProps } from "@platform/ui/openInTasks";
+import { usePlusCardHidden } from "./claude-rail/plus-card-store";
+import { useAutoReadOpenTasks, useDocumentVisible } from "./task-open-read";
+import { useTasksPulseRows } from "./tasksPulse";
+import { Kebab } from "@apps/claude/ui/Kebab";
+import { AgentProvider } from "@apps/claude/ui/agent-context";
+import type { BreakoutControl } from "@apps/claude/ClaudeChat";
+import { opensInSidePane, requestSideMaximized } from "@platform/lib/side-maximized-store";
+import { breakoutOpener } from "@platform/lib/breakouts";
+import { useRecentTasks } from "@apps/claude/ui/useRecentTasks";
+import { useLandingReads } from "@apps/claude/ui/useLandingReads";
+import "@apps/claude/styles/chat.css";
 import { useSlashCommands } from "@apps/claude/ui/useSlashCommands";
 import { filterCommands, type MenuCommand } from "@apps/claude/protocol/commands";
 import { getUiLayout, patchUiLayout } from "@platform/lib/ui-layout";
@@ -36,7 +62,7 @@ import {
   isUnlistedEffort,
   useAgentBackends,
 } from "@platform/lib/agent-backends";
-import { Modal } from "@platform/ui/modal/Modal";
+import { Modal, type ModalHeadContext, type ModalProps } from "@platform/ui/modal/Modal";
 import {
   cancelScheduledMessage,
   getClaudeSessionFolders,
@@ -45,12 +71,13 @@ import {
   listDir,
   rawUrl,
   readChatSettings,
+  getSchedule,
   scheduleMessage,
   statPath,
   uploadTaskShot,
 } from "@platform/lib/api";
 import type { Config, RecurrenceRule, ScheduledMessage, StatResult,
-  TaskAttachment } from "@platform/lib/api";
+  Task, TaskAttachment } from "@platform/lib/api";
 // THE APP'S OWN TYPEAHEAD KEYS, not a second reading of the same four presses.
 // `completionKeyAction` is the pure key→meaning map the Explorer's address bar
 // runs on (apps/explorer/listing/completion-keys.ts), and `moveHighlight` is its
@@ -77,7 +104,7 @@ import { listingAddress } from "@apps/explorer/listing/listing-address";
 import { THUMB_SEAL } from "@platform/lib/frame-focus";
 import { thumbUrl } from "@platform/lib/thumb-frame";
 import { ErrorBanner } from "@platform/ui/ErrorBanner";
-import { listedModelIn, normalizeModel } from "@platform/lib/model-vocab";
+import { listedModelIn, modelDescription, normalizeModel } from "@platform/lib/model-vocab";
 import { navigateUrl } from "@platform/lib/router";
 import {
   chatKeySession,
@@ -91,6 +118,7 @@ import {
   splitDraft,
   taskDraftKey,
   useAutosave,
+  type ChatDraft,
   type DraftConflictRule,
   type TaskDraftForm,
 } from "@platform/lib/drafts";
@@ -113,7 +141,8 @@ import {
   taskRunOptions,
 } from "./schedule-lib";
 import { whereParts } from "./where-label";
-import { ICON_CLOCK, ICON_CPU, ICON_FOLDER, ICON_PLUS, ICON_SHIELD } from "./ScheduleCalendar";
+import { ICON_CLOCK, ICON_FOLDER, ICON_PLUS } from "./ScheduleCalendar";
+import { PERMISSION_HINTS, permissionLabel } from "@platform/lib/permission-modes";
 import { CanvasGlyph } from "@apps/canvases/glyph";
 // `~/…` for a path under home — the one way this app shortens a folder, shared
 // with the Tasks page rather than written a second time here.
@@ -123,13 +152,15 @@ import { CanvasGlyph } from "@apps/canvases/glyph";
 // learnt one of the two controls has learnt both — a field that found
 // `~/Desktop` for "desktop" while the filter beside it did not would be two
 // searches wearing one word.
-import { projectMatches, tildePath } from "./tasks-lib";
+import { cardTitleLine, projectMatches, taskChatTarget, taskColumn, taskHref, tildePath } from "./tasks-lib";
 // THE PATH HALF OF A ROW: as much of it as fits, cut out of the MIDDLE, and the
 // whole of it on hover. See PathTip.tsx for why neither `text-overflow` (it
 // only ever cuts the tail, and the tail is the half that names the folder) nor
 // `title` (held back a second, drawn by the OS, unstylable) could do it.
 import { FitPath, usePathTip } from "./PathTip";
 import { onDraftChange } from "./tasksPulse";
+import { ForceStartButton, queuedLine } from "./ForceStartButton";
+import type { QueueFacts } from "@platform/lib/queue";
 // This card's own rules live in styles/new-task.css, imported from the
 // shell.css barrel like every other section — no shell component imports its
 // own CSS (tests/test_theme.py pins the barrel against the styles/ directory).
@@ -497,6 +528,16 @@ const ICON_TRASH = (
   </svg>
 );
 
+// lucide "pencil", beside the head's name field: shown on hover/focus to say
+// the name can be typed into.
+const ICON_PENCIL = (
+  <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+       strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+    <path d="M21.174 6.812a1 1 0 0 0-3.986-3.987L3.842 16.174a2 2 0 0 0-.5.83l-1.321 4.352a.5.5 0 0 0 .623.622l4.353-1.32a2 2 0 0 0 .83-.497z" />
+    <path d="m15 5 4 4" />
+  </svg>
+);
+
 // A quiet checkbox: a real <input> (focusable, space-toggled, announced as a
 // checkbox) wrapped in the <label> that names it, with the box itself drawn in
 // CSS so it resolves in both themes. Used twice — Repeat, and the flag behind
@@ -549,12 +590,12 @@ function CheckField({
 //
 // `display: contents` on the wrapper (new-task.css): the pills stay direct
 // flex items of `.nt-pills`.
-type PillName = "where" | "when" | "access" | "model" | "agent";
-const PILL_NAMES: readonly PillName[] = ["where", "when", "access", "model", "agent"];
+type PillName = "where" | "when" | "access" | "model" | "effort" | "agent";
+const PILL_NAMES: readonly PillName[] = ["where", "when", "access", "model", "effort", "agent"];
 
 function PropPill({
   k, icon, value, open, onToggle, onDismiss, onKeyDown, pillRef, children,
-  className, ariaLabel, invalid, empty, popWidth, popHeight, popClassName,
+  className, ariaLabel, invalid, empty, popWidth, popHeight, popClassName, align,
 }: {
   k: string;
   icon?: ReactNode;
@@ -577,6 +618,10 @@ function PropPill({
   popWidth: number;
   popHeight: number;
   popClassName?: string;
+  /** Which edge of the pill the popover hangs from. `end` for the pills on
+   *  the right of the row (Folder, When): a panel opening leftward from a
+   *  pill at the card's right edge would otherwise run off the card. */
+  align?: "start" | "end";
 }) {
   const popRef = useRef<HTMLDivElement>(null);
   // Closed BY FOCUS LEAVING, as opposed to by a pick or Escape: focus is
@@ -642,7 +687,7 @@ function PropPill({
           role="dialog"
           aria-label={ariaLabel}
           className={"schedule-pop nt-pop" + (popClassName ? " " + popClassName : "")}
-          style={{ ...popStyle(pillRef.current, popHeight), width: popWidth }}
+          style={{ ...popStyle(pillRef.current, popHeight, false, false, align === "end", popWidth), width: popWidth }}
         >
           {children}
         </div>
@@ -1424,17 +1469,9 @@ const NTH_LABELS = ["first", "second", "third", "fourth", "fifth"];
 const RECUR_UNITS: readonly RecurrenceRule["freq"][] = ["hour", "day", "week", "month"];
 const LEGACY_RECUR_UNITS: readonly RecurrenceRule["freq"][] = [...RECUR_UNITS, "year"];
 
-// How a permission mode is SAID. The keys are the server's contract and stay
-// exactly as they are on the wire; only the reading changes. A mode this map
-// has never heard of shows its key, which is still better than hiding it.
-const PERMISSION_LABELS: Record<string, string> = {
-  auto: "Auto",
-  acceptEdits: "Accept edits",
-  plan: "Plan only",
-  prompt: "Ask every time",
-};
-
-const permissionLabel = (key: string) => PERMISSION_LABELS[key] ?? key;
+// How a permission mode is SAID: platform/lib/permission-modes, the one copy
+// the chat composer's Approvals pill reads too. The keys are the server's
+// contract and stay exactly as they are on the wire; only the reading changes.
 
 /** Claude Code's own picker order: ask → accept edits → plan → auto. */
 const PERMISSION_ORDER = ["prompt", "acceptEdits", "plan", "auto"];
@@ -1759,6 +1796,19 @@ export function initialTextOf(
 // message is the trimmed text itself (never a recomposed title + body, so a
 // first line over the clamp is not lost); the name is the first line clamped on
 // a word boundary; the description is everything after the first line.
+/**
+ * THE NAME SOMEBODY TYPED, as opposed to the one the text implies (Akshil,
+ * 2026-11-09: "since we allow naming of tasks, i should be able to name the
+ * tasks"). A stored title that is just the text's first line — whole, or
+ * clamped by `shortTitle` — is the derived name and opens the head's field
+ * empty (its placeholder says it); anything else is a name of its own.
+ */
+export function customNameOf(title: string | null | undefined, text: string): string {
+  const t = (title ?? "").trim();
+  if (!t) return "";
+  return t === firstLine(text).trim() || t === shortTitle(text) ? "" : t;
+}
+
 export function taskFieldsOf(text: string): {
   message: string; title: string; description: string;
 } {
@@ -2609,6 +2659,8 @@ export interface DraftSeed {
 
 export interface SeededDraftForm {
   title: string | null;
+  /** The task's own name (the head's field), when one was typed. */
+  name: string | null;
   /** The whole box, verbatim — beats title + description on reopen. */
   text: string | null;
   description: string | null;
@@ -2689,6 +2741,7 @@ export function seededDraftForm(seed?: DraftSeed | null): SeededDraftForm {
     : null;
   return {
     title: str("title"),
+    name: str("name"),
     description: str("description"),
     text: str("text"),
     target: str("target"),
@@ -2703,6 +2756,91 @@ export function seededDraftForm(seed?: DraftSeed | null): SeededDraftForm {
     sessionId: str("session_id"),
     customRule: parseCustomRule(f.custom_rule),
   };
+}
+
+/**
+ * ONE CHAT RECORD, AS THE NEW TASK CARD OPENS ON IT (design "one record", §1).
+ *
+ * The hop no longer carries a sentence, a tray or a session in its URL — it
+ * carries the KEY, and this turns what is stored under that key into the seed
+ * the card already knows how to mount on (`DraftSeed`, the shape a reopened
+ * task draft uses). One seeding rule for both kinds of draft, which is what
+ * makes "the modal opens on the record" a true sentence rather than two
+ * near-identical paths.
+ *
+ * THE WORDS COME OUT OF `text`, SPLIT, and they go back into `text`, JOINED
+ * (contract §1: the words live in `text`, never in `form.description`; the
+ * modal splits and joins with `splitDraft`/`joinDraft`). So the composer's box
+ * and the card's two prose fields are two views of one string, and a hop out
+ * followed by Back to chat is lossless. Nothing here reads `form.title` — the
+ * title IS the first line, which is also what the listing row prints.
+ *
+ * `session_id` is the KEY when the key is a session: a hop out of a chat that
+ * has already run is a message into that thread, and that is what the Schedule
+ * payload's `sessionId` is built from. `new:<file>` has no thread to continue,
+ * and its `<file>` is the folder the card falls back to when the record names
+ * no target of its own.
+ *
+ * `at` IS WHAT A SESSION KEY CANNOT SAY (Akshil, 2026-09-16). A `new:<file>` key
+ * spells its folder; a session id spells only the thread, so this used to fall
+ * through to `""` and the card opened on the reader's HOME — and its first
+ * autosave then wrote that home path onto the conversation's own record as the
+ * target. Every door that knows the folder now states it: the hop's `?target=`
+ * (the composer's own `file`), or a draft row's `project`. The stored form still
+ * outranks it, because a form that names a target is a choice somebody made.
+ */
+export function chatHopSeed(
+  key: string,
+  record: ChatDraft | null,
+  at = "",
+): DraftSeed | null {
+  if (!record) return null;
+  const split = splitDraft(record.text);
+  const form = (record.form ?? {}) as Record<string, unknown>;
+  const newChat = key.startsWith(NEW_CHAT_PREFIX);
+  return {
+    id: "",
+    form: {
+      ...form,
+      title: split.title,
+      description: split.description,
+      attachments: record.attachments ?? [],
+      target: (typeof form.target === "string" && form.target)
+        || (newChat ? newChatFile(key) : "") || at || "",
+      session_id: newChat ? "" : key,
+    },
+  };
+}
+
+/**
+ * WHAT TIME A FORM THAT ALREADY EXISTS OPENS ON — its own, or none (Bugbot, PR
+ * #1126, 2026-09-12).
+ *
+ * `NEW_LINK_LEAD_MS` is an answer to a question a FRESH link asks: a card that
+ * has never been saved opens on now+2m because a deep link means "set this up",
+ * and a near-now time is the one to adjust from. A form that has been saved
+ * already answered that question, and the answer is in it — `when`, which the
+ * store keeps as null until somebody actually opens the when-row and picks one
+ * (NewJobModal `draftBody`). Null there means IMMEDIATE: a task to run, not a
+ * task to plan.
+ *
+ * Handing the lead date to such a form overwrote that. `creating` being a Date
+ * is what makes the card `planning`, `planning` is what makes `timePicked` open
+ * true, and `timePicked` is what puts `when` in the next autosave — so merely
+ * reopening an immediate draft rewrote it as one scheduled for two minutes'
+ * time, and Schedule sent it that way. So: the stored time when there is one,
+ * and nothing at all when there is not. Only the opening with no stored form
+ * behind it keeps the lead (see both call sites).
+ *
+ * An unreadable `when` reads as none here. The card seeds its own field from
+ * the string verbatim (`seededDraftForm`), so nothing is lost by this one
+ * declining to guess a Date out of it.
+ */
+export function reopenTime(seed: DraftSeed | null): Date | null {
+  const when = (seed?.form as { when?: unknown } | null | undefined)?.when;
+  if (typeof when !== "string" || !when) return null;
+  const at = new Date(when);
+  return Number.isNaN(at.getTime()) ? null : at;
 }
 
 export default function NewJobModal({
@@ -2722,6 +2860,13 @@ export default function NewJobModal({
   recentTargets,
   projects = NO_PROJECTS,
   planning = false,
+  popover,
+  onOpenChat,
+  onOpenDraft,
+  initialChatEntry = null,
+  initialChatSeed = null,
+  pinNode,
+  onCreatedChat,
   onClose,
   onCreated,
 }: {
@@ -2858,6 +3003,33 @@ export default function NewJobModal({
   // scheduled": that is `timePicked` below, which reads what the user actually
   // did rather than which view they came from.
   planning?: boolean;
+  /**
+   * THE SAME CARD AS A POPOVER (owner, 2026-11-07, behind the rail flag): the
+   * rail's + opens it floating beside the rail, no scrim, the page still live
+   * — "like the popover for task chats". The chassis' `popover` presentation
+   * (platform/ui/modal/Modal.tsx), passed straight through; every field,
+   * autosave and Create are this card's own either way. Absent (every other
+   * opener — the Tasks page, a draft's row), the modal it always was.
+   */
+  popover?: ModalProps["popover"];
+  /** The rail's landing card: a row of its chat lists pressed — the card goes
+   *  and the rail's door opens that chat (ClaudeRail `openChat`). */
+  onOpenChat?: (href: string) => void | Promise<boolean>;
+  /** …a DRAFT row pressed: the rail puts that draft in this window (the
+   *  chat landing's way — the pressed draft fills the box). */
+  onOpenDraft?: (task: Task) => void;
+  /** CREATE KEEPS THE CARD (Akshil, 2026-11-09: "it should instead open the
+   *  chat"): the rail remounts the card fresh with the new entry's chat open
+   *  (`initialChatEntry`), so Back is an empty landing. */
+  onCreatedChat?: (entryId: string, seed: { model?: string; effort?: string; backend?: string }) => void;
+  initialChatEntry?: string | null;
+  /** The settings the entry was created with — the open chat's until its
+   *  row is listed. */
+  initialChatSeed?: { model?: string; effort?: string; backend?: string } | null;
+  /** THE RAIL CARD'S PIN (claude-rail RailPinButton): seated in both shared
+   *  heads — the landing's and the open chat's — first in the corner, before the ← (no ✕ with it).
+   *  The rail's popover only. */
+  pinNode?: ReactNode;
   onClose: () => void;
   onCreated: () => void;
 }) {
@@ -3085,6 +3257,11 @@ export default function NewJobModal({
   const initialText = initialTextOf(saved, editing, derivedTitle, initialAsk);
   const [text, setText] = useState(initialText);
   const fields = taskFieldsOf(text);
+  // THE HEAD'S NAME FIELD: empty means "named from the text" (`fields.title`,
+  // shown as its placeholder, or "Untitled task" on an empty card).
+  const initialName = saved.name ?? customNameOf(editing?.title, initialText);
+  const [name, setName] = useState(initialName);
+  const taskTitle = name.trim() || fields.title;
   const initialTargetValue = saved.target ?? editing?.target ?? initialTarget ?? "";
   const [target, setTarget] = useState(initialTargetValue);
   // ONE date-time drives everything: a one-off runs at it, and every derived
@@ -3270,7 +3447,7 @@ export default function NewJobModal({
     // that takes none, or fewer levels) becomes the new model's default,
     // which is "" for one that takes none. So does an EMPTY effort, left
     // by a model that took none, when the new model takes one: the
-    // Thinking rows must show the level the run gets. A level it does
+    // Effort rows must show the level the run gets. A level it does
     // take stays.
     setEffort((e) =>
       !e || isUnlistedEffort(e, agentRef.current, value)
@@ -3706,6 +3883,22 @@ export default function NewJobModal({
   // measure. Measured on every change because "auto then scrollHeight" is the
   // one reflow-safe way to shrink back when lines are deleted.
   const askRef = useRef<HTMLTextAreaElement>(null);
+  // THE PREVIEW PINNED (the rail's +, Modal `popover.pinned`): a preview took
+  // no caret, so the pin gives the ask box the one it would have had at
+  // mount — unless the reader already put it somewhere in the card.
+  const popPinned = popover?.pinned;
+  const popPinnedWas = useRef(popPinned);
+  useEffect(() => {
+    const was = popPinnedWas.current;
+    popPinnedWas.current = popPinned;
+    if (was !== false || popPinned !== true) return;
+    const box = askRef.current;
+    if (!box) return;
+    const active = document.activeElement;
+    const card = box.closest('[role="dialog"]');
+    if (active && active !== document.body && card?.contains(active)) return;
+    box.focus({ preventScroll: true });
+  }, [popPinned]);
   // The box (`askRef` above) and the path (`pathRef`) are the two fields a
   // refused Save can send the caret to (see trySubmit). Refs rather than a
   // querySelector, because the card is a portal and there can be a second one
@@ -3764,6 +3957,7 @@ export default function NewJobModal({
     // setInitial exists for — this is the same one, one prefill earlier).
     target: initialTargetValue,
     text: initialText,
+    name: initialName,
     when,
     repeat,
     repeatOn,
@@ -3789,6 +3983,7 @@ export default function NewJobModal({
   const dirty =
     target !== initial.target ||
     text !== initial.text ||
+    name !== initial.name ||
     when !== initial.when ||
     repeat !== initial.repeat ||
     repeatOn !== initial.repeatOn ||
@@ -3951,7 +4146,7 @@ export default function NewJobModal({
     && (sessionAgent ? agent !== sessionAgent : pickedHere.current);
   const continuesSession = !leavesSession;
   const runModels = taskModelsOf(agent);
-  // The Thinking rows are the CHOSEN MODEL's (per model where the catalog
+  // The Effort rows are the CHOSEN MODEL's (per model where the catalog
   // knows them per model); empty, the section is not drawn.
   const runEfforts = taskEffortsOf(agent, model);
   // ANOTHER AGENT'S CARD OPENS ON ITS OWN DEFAULTS: the global pair above is
@@ -3982,7 +4177,7 @@ export default function NewJobModal({
     // that model's default ("" for one that takes none) and corrected to
     // it for ANY level the model does not take, a stored one included. A
     // level the spawn would drop is nothing an edit can keep lossless, and
-    // the Thinking rows (hidden for a model that takes none) must agree
+    // the Effort rows (hidden for a model that takes none) must agree
     // with what is sent.
     setEffort((e) => {
       const forModel = nextModel(isForeignModel(model, agent) ? defaultModelOf(agent) : model);
@@ -4047,6 +4242,7 @@ export default function NewJobModal({
     ? {
       title: draftSplit.title,
       description: draftSplit.description,
+      name: name.trim(),
       text,
       target,
       when: timePicked ? when : null,
@@ -4128,6 +4324,7 @@ export default function NewJobModal({
           permission: value.permission,
           target: value.target,
           new_task_each_run: value.new_task_each_run,
+          name: value.name ?? "",
         },
         { defer: true },
       );
@@ -4318,11 +4515,16 @@ export default function NewJobModal({
   const [whenPane, setWhenPane] = useState<"presets" | "custom">("presets");
   const [accessOpen, setAccessOpen] = useState(false);
   const [modelOpen, setModelOpen] = useState(false);
+  const [effortOpen, setEffortOpen] = useState(false);
+  // The Effort pill is not drawn for a model that takes no levels; an open
+  // flag left behind would reopen the popover the moment the pill came back.
+  useEffect(() => { if (!runEfforts.length) setEffortOpen(false); }, [runEfforts.length]);
   const [agentOpen, setAgentOpen] = useState(false);
   const wherePillRef = useRef<HTMLButtonElement>(null);
   const whenPillRef = useRef<HTMLButtonElement>(null);
   const accessPillRef = useRef<HTMLButtonElement>(null);
   const modelPillRef = useRef<HTMLButtonElement>(null);
+  const effortPillRef = useRef<HTMLButtonElement>(null);
   const agentPillRef = useRef<HTMLButtonElement>(null);
   const dismissPill = (which: PillName) => {
     if (which === "where") {
@@ -4336,12 +4538,16 @@ export default function NewJobModal({
       setAccessOpen(false);
     } else if (which === "agent") {
       setAgentOpen(false);
+    } else if (which === "effort") {
+      setEffortOpen(false);
     } else {
       setModelOpen(false);
     }
   };
   const togglePill = (which: PillName) => {
-    const wasOpen = { where: recentsOpen, when: whenOpen, access: accessOpen, model: modelOpen, agent: agentOpen }[which];
+    const wasOpen = {
+      where: recentsOpen, when: whenOpen, access: accessOpen, model: modelOpen, effort: effortOpen, agent: agentOpen,
+    }[which];
     for (const other of PILL_NAMES) if (other !== which) dismissPill(other);
     if (wasOpen) {
       dismissPill(which);
@@ -4361,6 +4567,8 @@ export default function NewJobModal({
       setAccessOpen(true);
     } else if (which === "agent") {
       setAgentOpen(true);
+    } else if (which === "effort") {
+      setEffortOpen(true);
     } else {
       setModelOpen(true);
     }
@@ -4615,11 +4823,11 @@ export default function NewJobModal({
       // this card, so a keystroke 300 ms before Save would otherwise fire after
       // the create and write the draft the server has just deleted straight back.
       if (syncKey) draftSyncer(syncKey).forget();
-      await scheduleMessage(
+      const created = await scheduleMessage(
         buildSchedulePayload({
           target,
           message: fields.description,
-          title: fields.title,
+          title: taskTitle,
           text,
           when,
           rule,
@@ -4698,6 +4906,15 @@ export default function NewJobModal({
         }
       }
       onCreated();
+      // THE RAIL'S CARD STAYS AND SHOWS THE NEW CHAT (see `onCreatedChat`).
+      if (landing && onCreatedChat && !editing && created?.entry?.id) {
+        onCreatedChat(created.entry.id, {
+          ...(created.entry.model ? { model: created.entry.model } : {}),
+          ...(created.entry.effort ? { effort: created.entry.effort } : {}),
+          ...(created.entry.backend ? { backend: created.entry.backend } : {}),
+        });
+        return;
+      }
       onClose();
     } catch (e) {
       // The server's 400s are written for a human (bad path, bad cron, past
@@ -4821,17 +5038,18 @@ export default function NewJobModal({
     setTimeOpen(false);
     setWhenPane("presets");
   };
+  // The mode hints' ids: the hover panel is aria-hidden, so each row also
+  // describes itself by a clipped span a screen reader can read.
+  const permHintBase = useId();
   const permissionOptions = [...(permissionModes.length ? permissionModes : ["auto"])]
     // No plan mode for an agent without one (§7 `plan_mode`).
     .filter((m) => m !== "plan" || capsOf(agent).plan_mode)
     .sort((a, b) => permissionRank(a) - permissionRank(b));
-  // MODEL's value: the model, then how hard it thinks in brackets — "Fable
-  // (med)" (owner, 2026-10-23: the effort was invisible outside the popover).
-  // Short and lowercase so the four pills keep to one line; nothing for a
-  // model that takes no effort.
+  // Two pills, two words — the way the chat composer says them ("Fable",
+  // "low"), one decision each (Akshil, 2026-11-02). The model pill used to fold
+  // the level in as "Sonnet (high)"; the level has its own pill now.
   const effortText = runEfforts.length ? taskRunLabel(runEfforts, effort) : "";
-  const modelText = (taskRunLabel(runModels, model) || "Default")
-    + (effortText ? ` (${effortText.toLowerCase().replace(/^medium$/, "med")})` : "");
+  const modelText = taskRunLabel(runModels, model) || "Default";
 
   // THE WHERE POPOVER'S KEYS (arrows, Tab, Enter). On the pill's wrapper, not the
   // input: a row reached by Tab is focusable too. Escape is PropPill's — it
@@ -4928,16 +5146,278 @@ export default function NewJobModal({
     }
   };
 
+  // THE RAIL'S LANDING (see the body): the place the task is about, said the
+  // way the chat's landing says its file — the name, then the path under it.
+  // A canvas is named as the canvas (and node), like its WHERE pill.
+  const landing = !!popover;
+  // THE MIC (the chat composer's, `ui/MicButton`): dictation into the ask box,
+  // on the rail's card only — the one that wears the chat's composer, clip and
+  // all. The words land at the caret for review; nothing creates the task.
+  const canDictate = useCanDictate(landing);
+  const micCaret = useRef<number | null>(null);
+  const mic = useDictation({
+    requester: "shell:new-task-composer",
+    onText: (words) => {
+      const box = askRef.current;
+      const held = box ? box.value : text;
+      const from = box ? (box.selectionStart ?? held.length) : held.length;
+      const next = insertAt(held, from, box ? (box.selectionEnd ?? from) : from, words);
+      micCaret.current = next.caret;
+      setText(next.value);
+    },
+    onMessage: (title, tone) => notify({ title, tone }),
+    // The box takes the caret back, unless the reader has gone to type
+    // somewhere else meanwhile (the chat composer's rule).
+    onSettled: () => {
+      const box = askRef.current;
+      if (!box) return;
+      // Any other field, this card's own included: pulling the caret out of
+      // a half-typed time would commit it on blur.
+      const at = box.ownerDocument.activeElement;
+      if (at && at !== box.ownerDocument.body && at !== box) return;
+      box.focus({ preventScroll: true });
+    },
+    doc: () => askRef.current?.ownerDocument,
+  });
+  useLayoutEffect(() => {
+    const at = micCaret.current;
+    if (at === null) return;
+    micCaret.current = null;
+    try {
+      askRef.current?.setSelectionRange?.(at, at);
+    } catch {
+      /* a box that cannot place a caret still has the words */
+    }
+  }, [text]);
+  const landingTarget = target.trim();
+  const landingName = lockedWhere
+    ? (lockedWhere.node ? `${lockedWhere.canvas} › ${lockedWhere.node}` : lockedWhere.canvas)
+    : (landingTarget ? leafOf(landingTarget) : "New task");
+  const landingPath = landingTarget;
+  // THE SIDEBAR CHAT'S PLACEHOLDER (Akshil, 2026-11-09): "Ask Claude about this
+  // project / folder / file…", the noun found the way the chat pane finds it
+  // (AppPane: stat, then the app-entry ask for a folder).
+  const [landingNoun, setLandingNoun] = useState<TargetNoun>("");
+  useEffect(() => {
+    setLandingNoun("");
+    if (!landing || !landingTarget) return;
+    let alive = true;
+    void (async () => {
+      try {
+        const st = await statPath(landingTarget);
+        let noun: TargetNoun = st.is_dir ? "folder" : "file";
+        if (st.is_dir) {
+          const app = await runAppEntry(landingTarget).catch(() => null);
+          if (app?.entry) noun = "project";
+        }
+        if (alive) setLandingNoun(noun);
+      } catch {
+        /* no noun: "Ask Claude…" */
+      }
+    })();
+    return () => {
+      alive = false;
+    };
+  }, [landing, landingTarget]);
+  // …AND THE LANDING'S LISTS, the chat's own (Recent chats, Pages,
+  // Snapshots): the same reads the chat's landing makes for this target, the
+  // same component drawing them. A row is a door: the card goes, the rail
+  // opens the chat.
+  const landingRecent = useRecentTasks(landing, landing ? landingTarget || null : null);
+  const { artifacts: landingArtifacts, snaps: landingSnaps } = useLandingReads(
+    landing ? landingTarget || null : null,
+    landingRecent,
+    undefined,
+  );
+  // A RECENT CHAT OPENS IN THIS CARD (Akshil, 2026-11-09: "open it in the
+  // popover window A itself and then go back button etc, like we have for
+  // tasks window A"): the Tasks card's way (TasksPeek) — the chat in the
+  // body, Back in the head; the landing stays mounted under it, hidden, its
+  // words, pills and scroll kept, and Back is the way home.
+  const [landingChat, setLandingChat] = useState<Task | null>(null);
+  // THE TASK JUST CREATED HERE (`initialChatEntry`): followed from its schedule
+  // entry to the session its run opens (`claude_session_id`), then shown like
+  // any recent chat. Until the run starts the body says so.
+  const [pendingEntry, setPendingEntry] = useState<string | null>(initialChatEntry);
+  const [pendingSession, setPendingSession] = useState("");
+  const [pendingDue, setPendingDue] = useState("");
+  const [pendingError, setPendingError] = useState("");
+  // Bumped by a Force start press: the poll below starts over at its quick pace.
+  const [pendingKick, setPendingKick] = useState(0);
+  useEffect(() => {
+    if (!pendingEntry || pendingSession) return;
+    let alive = true;
+    let tries = 0;
+    let timer: ReturnType<typeof setTimeout> | null = null;
+    // FOR AS LONG AS THE CARD SHOWS IT (CodeRabbit on #2220): quick while a
+    // run is about to start, slower after a minute — a task scheduled for
+    // later, or one queued behind others, still opens when it starts.
+    const wait = () => (tries < 60 ? 1000 : tries < 120 ? 5000 : 15000);
+    const look = () => {
+      void getSchedule().then((res) => {
+        if (!alive) return;
+        tries++;
+        const e = res.entries.find((x) => x.id === pendingEntry);
+        if (e?.claude_session_id) {
+          setPendingSession(e.claude_session_id);
+          return;
+        }
+        // …AND A RUN THAT FAILED TO START SAYS SO, instead of "Starting…"
+        // for ever. Back is the way out.
+        if (e && (e.state === "error" || e.state === "cancelled" || e.state === "missed")) {
+          setPendingError(e.error || (e.state === "cancelled" ? "The task was cancelled before it started." : "The task didn't start."));
+          return;
+        }
+        if (e?.due) setPendingDue(e.due);
+        timer = setTimeout(look, wait());
+      }, () => {
+        if (!alive) return;
+        tries++;
+        timer = setTimeout(look, Math.max(2000, wait()));
+      });
+    };
+    look();
+    return () => {
+      alive = false;
+      if (timer) clearTimeout(timer);
+    };
+  }, [pendingEntry, pendingSession, pendingKick]);
+  const chatOpen = !!landingChat || !!pendingEntry;
+  // THE LANDING GOES BEHIND A CHAT (`chatOpen` hides the composer below): the
+  // mic's hook is still mounted, so a take would go on recording with no
+  // button to stop it, and its Esc would be taken from the chat. The take goes
+  // with the composer; the draft text stays.
+  const micCancel = mic.cancel;
+  useLayoutEffect(() => {
+    if (chatOpen) micCancel();
+  }, [chatOpen, micCancel]);
+  const leaveChat = () => {
+    setLandingChat(null);
+    setPendingEntry(null);
+  };
+  // The open chat's Breakout, as it reports it — so the ⋮ carries the same
+  // items the Tasks card's does (TasksPeek; Akshil: ⋮ menus are identical).
+  const [chatBreakout, setChatBreakout] = useState<BreakoutControl | null>(null);
+  const liveChat = landingChat
+    ? (landingRecent?.find((t) => t.key === landingChat.key) ?? landingChat)
+    : pendingEntry
+      ? (landingRecent?.find((t) => (pendingSession && t.session_id === pendingSession)
+          || t.key === `pending:${pendingEntry}`) ?? null)
+      : null;
+  const chatSession = liveChat?.session_id || (landingChat ? "" : pendingSession);
+  // The created entry's settings, until its row says (CodeRabbit on #2220).
+  const chatSeed = landingChat ? null : initialChatSeed;
+  const chatFile = liveChat ? taskChatTarget(liveChat) : landingTarget;
+  const chatTitle = liveChat ? (cardTitleLine(liveChat).text || liveChat.title || "Chat") : "";
+  const chatHref = liveChat ? taskHref(liveChat) : null;
+  // "Open in Tasks" reads the page's path: a card kept across a hop re-reads it.
+  useUrlVersion();
+  /** The shared head's chip seat (ChatMount `headChipsHost`): the chat's
+   *  worktree pill shows there, as in every other task view. */
+  const [chipsHost, setChipsHost] = useState<HTMLElement | null>(null);
+  /** …and its status seat, for the chat's pause word (ChatMount
+   *  `headStatusHost`) — on no rung of the head's ladder. */
+  const [statusHost, setStatusHost] = useState<HTMLElement | null>(null);
+  // MARKED READ LIKE THE TASKS CARD DOES (TasksPeek, task-open-read): the open
+  // chat, while the card shows it and the window is in view.
+  const chatPulse = useTasksPulseRows(landing);
+  // WHERE THE WAITING TASK STANDS, for the placeholder below. Its row when the
+  // Recent list has it — and the pulse's copy of it when it does not: that
+  // list is the LANDING folder's, and a task created here for another folder
+  // (the Folder pill; the home page, which has no folder) never appears in it.
+  // The pulse is every task's, and carries the same three queue fields
+  // (routers/tasks.py `_PULSE_FIELDS`).
+  const waitFacts: QueueFacts | null = liveChat
+    ?? (pendingEntry ? chatPulse.find((t) => t.key === `pending:${pendingEntry}`) ?? null : null);
+  const docVisible = useDocumentVisible();
+  // …and only while the card is SHOWN: not while a page hop has it hidden
+  // (plus-card-store), when a reply would be marked read unseen.
+  const cardHidden = usePlusCardHidden();
+  const readKeys = useMemo(
+    () => (liveChat && docVisible && !cardHidden ? [liveChat.key] : []),
+    [liveChat, docVisible, cardHidden],
+  );
+  useAutoReadOpenTasks(chatPulse, readKeys);
+  const openFromLanding = (href: string | null): void | Promise<boolean> => {
+    if (!href) return;
+    onClose();
+    if (onOpenChat) return onOpenChat(href);
+    window.location.assign(href);
+  };
+  /** OPEN IN TASKS: close the card, then go to the Tasks page with this task's
+   *  panel up (the rail's own Tasks door goes by `navigateUrl` too). */
+  const openInTasksFromCard = (href: string): void => {
+    onClose();
+    void navigateUrl(href);
+  };
+  /** THE OPEN CHAT'S ⋮ on the shared head. */
+  const chatKebab = liveChat?.session_id ? (
+    <AgentProvider backend={liveChat.backend ?? ""}>
+      <Kebab
+        key={liveChat.key}
+        file={taskChatTarget(liveChat)}
+        sessionId={liveChat.session_id}
+        running={taskColumn(liveChat) === "in_progress" || taskColumn(liveChat) === "queued"}
+        asking={taskColumn(liveChat) === "needs_attention"}
+        queued={taskColumn(liveChat) === "queued"}
+        onErased={leaveChat}
+        onArchived={leaveChat}
+        {...openInTasksProps(openInTasksItem({ on: true, taskKey: liveChat.key, onOpen: openInTasksFromCard }))}
+        {...(chatHref && opensInSidePane(chatHref) ? {
+          fullScreen: {
+            on: false,
+            onToggle: () => {
+              const sid = liveChat.session_id;
+              void Promise.resolve(openFromLanding(chatHref)).then((went) => {
+                if (went !== false && sid) requestSideMaximized(sid);
+              });
+            },
+          },
+        } : {})}
+        {...(chatBreakout?.available ? {
+          breakout: { picking: chatBreakout.picking, onToggle: chatBreakout.toggle },
+        } : {})}
+      />
+    </AgentProvider>
+  ) : null;
+
   return (
     <Modal
       // A breadcrumb — WHO runs it, then what this card is — so the heading
       // answers "which agent" before the first field does. The crumb is the
       // agent dropdown (`titleLead`), a button beside the h2 rather than inside
       // it; the h2 alone names the dialog.
-      title={editing ? "Edit task" : "New task"}
+      // THE TASK'S NAME, editable in place (Akshil, 2026-11-09): grey while
+      // nobody has named it — the text's first line, or "Untitled task" — and
+      // a pencil plus the text cursor on hover say it can be typed into.
+      title={(
+        <span className="nt-name-wrap">
+          <input
+            className="nt-name"
+            type="text"
+            value={name}
+            placeholder={fields.title || "Untitled task"}
+            size={Math.max(8, Math.min(TITLE_MAX, (name || fields.title || "Untitled task").length + 1))}
+            maxLength={TITLE_MAX}
+            aria-label="Task name"
+            spellCheck={false}
+            onChange={(e) => setName(e.target.value)}
+            onKeyDown={(e) => {
+              // Enter names it and goes on to the message; it never creates.
+              if (e.key === "Enter") {
+                e.preventDefault();
+                e.stopPropagation();
+                askRef.current?.focus();
+              }
+            }}
+          />
+          <span className="nt-name-pen" aria-hidden="true">{ICON_PENCIL}</span>
+        </span>
+      )}
+      ariaLabel={editing ? "Edit task" : "New task"}
       titleLead={(
         <>
-          {/* THE AGENT FIRST (D18): the Permissions, Model and Thinking are that
+          {/* THE AGENT FIRST (D18): the Permissions, Model and Effort are that
               agent's. A card out of a session opens on that session's agent and
               may still pick another — the task then starts fresh there
               (`continuesSession`). A dropdown even with one agent on, so a
@@ -5015,6 +5495,12 @@ export default function NewJobModal({
       onClose={onClose}
       busy={busy}
       width={580}
+      {...(popover ? { popover } : {})}
+      // The rail cards' ✕: top-left (TasksPeek), and gone while a chat is open —
+      // Back is the way out there, as in the Tasks card.
+      closeAtStart={landing}
+      plainBody={landing}
+      hideClose={chatOpen}
       // THE CLOSE-TWICE GUARD IS OFF WHENEVER THERE IS A DRAFT TO CLOSE INTO
       // (design.md, Decisions: "Modal close keeps the draft silently; Discard in
       // footer. No prompt."). The guard exists to stop a ✕ discarding typed
@@ -5023,428 +5509,23 @@ export default function NewJobModal({
       // loss that does not happen. An EDIT keeps it: there is no draft there,
       // and its ✕ really does throw the changes away.
       dirty={editing ? dirty : false}
-      footer={
+      // FOLDER AND WHEN IN THE HEAD, beside the ✕ (Akshil, 2026-11-09): where
+      // and when the task runs are read with the title; the row under the box
+      // keeps model, effort and mode on the left and the card's own verbs —
+      // Discard/Delete, Create — on its right end. No footer row any more.
+      headActions={(
         <>
-          <div className="nt-foot-left">
-          <span className="nt-foot-hint">
-            <kbd className="nt-kbd">⇧</kbd><kbd className="nt-kbd">↵</kbd> new line
-          </span>
-          {/* Destructive, so it sits at the far left of the footer, away from
-              Save — `.btn-danger-text` carries the margin-right:auto that
-              anchors it there. Present only on an Edit, and only when the
-              entry is actually withdrawable. `type="button"`, like every
-              control in this footer: the form has no submit, so Enter never
-              reaches it. */}
-          {del && (
-            <button
-              type="button"
-              className={"btn btn-danger-text new-task-delete"
-                + (delConfirm ? " is-armed" : "")}
-              title={del.title}
-              disabled={busy}
-              onClick={remove}
-            >
-              {ICON_TRASH}
-              {delConfirm ? del.confirm : del.label}
-            </button>
-          )}
-          {/* DISCARD — the deliberate way to be rid of a draft, and the only
-              one (design.md: close keeps it, this throws it away). Drawn only
-              once a draft actually exists: on an untouched card there is
-              nothing to discard, and a button offering to delete nothing is a
-              button that makes the reader wonder what it knows.
-
-              ONE SEAT, ONE SKIN (Akshil, 2026-09-12). Delete and Discard can
-              never both be on a card — `del` is an Edit's and `draftId` is a
-              new task's — so they are not two controls sharing a footer, they
-              are the same control under the two names the card can be in. It
-              therefore takes Delete's exact class (`.new-task-delete` carries
-              the glyph spacing, `.btn-danger-text` the `margin-right:auto` that
-              anchors the far-left seat) and Delete's trash glyph. Two weights
-              for one position read as a footer that moves its buttons around
-              depending on what you opened. The LABEL still differs, because the
-              verbs do: one withdraws a running task, one drops an unfinished
-              form. No arming step here — there is nothing scheduled to undo. */}
-          {(draftId || (recordKey && !editing)) && (
-            <button
-              type="button"
-              className="btn btn-danger-text new-task-delete"
-              disabled={busy}
-              title="Discard this draft"
-              onClick={discard}
-            >
-              {ICON_TRASH}
-              Discard
-            </button>
-          )}
-          </div>
-          {/* The way back completes the chat's round trip: chat → schedule →
-              adjust the draft → schedule again. Only shown when there is a chat
-              record behind this card — from anywhere else there is no "back".
-              Two ways it can have: the hop's own `?from=` route, and the record's
-              own key turned into one (see `backToChat`). */}
-          {canGoBack && (
-            <button type="button" className="btn btn-secondary schedule-back-chat"
-                    disabled={busy}
-                    onClick={() => void backToChat()}>
-              {backConfirm ? "Discard changes?" : "Back to chat"}
-            </button>
-          )}
-          {/* NOT disabled on `!ready`. A dead button is not a hint: the
-              commonest way to reach it is the commonest thing to forget (type a
-              name, press Save, leave the description empty) and the answer was
-              nothing at all — no message, no focus move, the card just sat there
-              (QA, 2026-08-18). The rules are unchanged; a press on a form that
-              cannot be saved now SAYS which field is missing and puts the caret
-              in it. See trySubmit / saveBlockedReason.
-
-              `aria-disabled` rather than `disabled` so the state is still
-              announced, while the button stays focusable and pressable — which
-              is the whole point. Only `busy` truly disables it: a second press
-              mid-save would schedule the message twice. */}
-          <button type="button" className="btn btn-primary schedule-save"
-                  disabled={busy} aria-disabled={!ready} onClick={trySubmit}>
-            {busy ? `${actionLabel === "Create" ? "Creating" : "Scheduling"}…` : actionLabel}
-            {/* The key that presses it. Enter creates from either field, so the
-                badge states a chord that is true (the ⌘↩ it once advertised is
-                gone — Akshil, 2026-09-23). */}
-            <kbd className="nt-kbd nt-kbd--on-dark" aria-hidden="true">↵</kbd>
-          </button>
-        </>
-      }
-    >
-      <div
-        className="schedule-form"
-      >
-        {/* ONE WRITING SURFACE: a single borderless box that reads as a
-            document you type into. See `.new-task-write` in new-task.css for the
-            treatment, including what focus looks like with no box to recolour.
-            The box below is prefilled from a chat draft or the session's own
-            name (sessionTitleOf), which land as its first line. */}
-        <div
-          className="new-task-write"
-          // The write block is the drop target — the part of the card that
-          // reads as "the message", which is what an image is attached TO.
-          onDragOver={(e) => {
-            if ([...e.dataTransfer.items].some((i) => i.kind === "file")) {
-              e.preventDefault();
-            }
-          }}
-          onDrop={(e) => {
-            if (e.dataTransfer.files?.length) {
-              e.preventDefault();
-              attachFiles(e.dataTransfer.files);
-            }
-          }}
-        >
-          {/* ONE BOX (Paperclip's "Describe a task…"): the whole task text.
-              There is no title field — the task's name is the first line,
-              clamped (taskFieldsOf), the way the server names a session from
-              its first prompt. REQUIRED (`aria-required`): it is what Claude is
-              sent. Enter creates the task, Shift+Enter is the textarea's own
-              newline, and an IME composition's Enter is left alone. Goes
-              through trySubmit, not submit, so a form that cannot be saved
-              answers the same way the button does. Autogrows from the CSS
-              floor up to its max-height, then scrolls. */}
-          <div className="new-task-ask-wrap">
-            <textarea
-              ref={askRef}
-              className="new-task-field new-task-ask"
-              rows={2}
-              aria-label={titlePlaceholderFor(agentLabel(agent))}
-              aria-required="true"
-              value={text}
-              onChange={(e) => setText(e.target.value)}
-              onPaste={pasteFiles}
-              aria-autocomplete="list"
-              aria-controls={menuOpen ? menuId : undefined}
-              aria-activedescendant={menuOpen ? `${menuId}-${menuActive}` : undefined}
-              onKeyDown={(e) => {
-                // THE MENU HAS THE ARROWS, ENTER, TAB AND ESC WHILE IT IS OPEN.
-                // Enter always accepts the row here (no "fully typed name"
-                // exception: a task is created by Create, or by Enter once the
-                // menu is closed). Not mid-composition: an IME's keys are its own.
-                if (menuOpen && !e.nativeEvent.isComposing) {
-                  const k = menuKey(e.key, menuActive, menuRows.length, e.shiftKey);
-                  if (k) {
-                    e.preventDefault();
-                    if (k.type === "move") setMenuIdx(k.index);
-                    else if (k.type === "accept") pickCommand(menuRows[menuActive].name);
-                    else {
-                      // Esc closes the menu and goes no further: not the modal's.
-                      e.stopPropagation();
-                      setMenuDismissed(text);
-                    }
-                    return;
-                  }
-                }
-                if (e.key !== "Enter" || e.nativeEvent.isComposing || e.shiftKey) return;
-                e.preventDefault();
-                if (!busy) trySubmit();
-              }}
-              autoFocus
-            />
-            {menuOpen && (
-              <CommandMenu
-                id={menuId}
-                rows={menuRows}
-                active={menuActive}
-                onPick={pickCommand}
-                onHover={setMenuIdx}
-                className="nt-cmd-menu"
-              />
-            )}
-            {/* The placeholder, drawn rather than set: two lines in two faces,
-                which a native `placeholder` cannot do. Hidden the moment there
-                is text or an image, like the native one; `aria-hidden` because
-                the field's `aria-label` already says what it is. */}
-            {!text && images.length === 0 && (
-              <div className="new-task-ask-hint" aria-hidden="true">
-                <span>{titlePlaceholderFor(agentLabel(agent))}</span>
-                <small>{ASK_PLACEHOLDER}</small>
-              </div>
-            )}
-          </div>
-
-          {/* The attachments, minimal on purpose (Akshil, 2026-08-26: "just
-              the image and the x icon on it"): a bare thumbnail that OPENS the
-              viewer — a receipt this small proves a picture exists, it cannot
-              show what is in it — and an ✕ riding its corner. A NON-PICTURE
-              gets the same footprint with the doc glyph and a short filename in
-              place of the picture (thumbnail XOR glyph, D613), because a file is
-              the one attachment that cannot show what it is.
-
-              NO ＋ PICKER (D618): the row is chips and nothing else. The entry
-              points are paste on either field and drop anywhere on the card,
-              which is the gesture every user of this card actually makes; a
-              dashed square standing permanently in the row was chrome for the
-              one who does neither. */}
-          <div className="new-task-images">
-            {images.map((img) => (
-              <div
-                key={img.key}
-                className={"nt-img" + (img.path ? "" : " nt-img-up")}
-              >
-                <button
-                  type="button"
-                  className={"nt-img-open" + (img.kind === "file" ? " nt-img-doc" : "")}
-                  aria-label={img.kind === "image"
-                    ? "View image" : "Preview " + img.name}
-                  onClick={() => {
-                    setViewerKey(img.key);
-                    setViewerZoom(false);
-                  }}
-                >
-                  {img.kind === "image" && (img.thumb || img.path) ? (
-                    <img src={img.thumb ?? rawUrl(img.path)} alt="" />
-                  ) : (
-                    <>
-                      <span className="nt-img-glyph" aria-hidden="true">📄</span>
-                      <span className="nt-img-name">{img.name}</span>
-                    </>
-                  )}
-                </button>
-                <button
-                  type="button"
-                  className="nt-img-x"
-                  aria-label="Remove attachment"
-                  onClick={() => {
-                    if (img.thumb) URL.revokeObjectURL(img.thumb);
-                    applyImages((prev) => prev.filter((i) => i.key !== img.key));
-                    setViewerKey((k) => (k === img.key ? null : k));
-                  }}
-                >
-                  {ICON_X}
-                </button>
-              </div>
-            ))}
-          </div>
-
-          {/* The viewer (#shotview, ported): modal on purpose — the one thing
-              the user is doing here is looking at one attachment. A PICTURE is
-              fitted first; clicking the image swaps to natural size and the box
-              scrolls, which is the only way a card-sized column shows a wide
-              screenshot at a legible scale. Scrim click and Escape both close
-              it. */}
-          {viewer && viewer.kind === "image" && (
-            <div className="nt-shotview" role="dialog" aria-label="Attached image">
-              <div className="nt-shotview-scrim" onClick={closeViewer} />
-              <figure className={"nt-shotview-box" + (viewerZoom ? " zoom" : "")}>
-                <img
-                  className="nt-shotview-img"
-                  src={viewer.thumb ?? rawUrl(viewer.path)}
-                  alt="attached image"
-                  onClick={() => setViewerZoom((z) => !z)}
-                />
-                <figcaption className="nt-shotview-bar">
-                  <span className="nt-shotview-path">
-                    {viewer.path || "uploading…"}
-                  </span>
-                  <span className="nt-shotview-spacer" />
-                  <button
-                    type="button"
-                    className="nt-chip-x"
-                    onClick={closeViewer}
-                  >
-                    Close
-                  </button>
-                </figcaption>
-              </figure>
-            </div>
-          )}
-
-          {/* A FILE's viewer: the file in its OWN fused-render template, sealed
-              (D616). A name and a path answer "which file is this" and do not
-              answer "is this the RIGHT file", which is the question a viewer
-              exists for — and fused-render already owns a table for a .csv, a
-              schema for a .parquet, a page for a .md.
-
-              The frame is UNMOUNTED by this very conditional on every exit —
-              Close, Escape and the scrim all clear `viewer` — and that is the
-              load-bearing half rather than a tidy-up: a template is a RUNNING
-              document (a warm python worker behind it, a poll, possibly a map
-              redrawing), so one left mounted behind a shut modal goes on costing
-              all of it. */}
-          {viewer && viewer.kind === "file" && (
-            <div className="nt-shotview" role="dialog" aria-label="Attached file">
-              <div className="nt-shotview-scrim" onClick={closeViewer} />
-              <figure className="nt-shotview-box nt-shotview-doc">
-                {previewSrc && (
-                  <iframe
-                    className="nt-shotview-frame"
-                    {...THUMB_SEAL}
-                    src={previewSrc}
-                    title=""
-                    tabIndex={-1}
-                    aria-hidden="true"
-                    onLoad={() => setFrameLoaded(true)}
-                  />
-                )}
-                {(previewWait || (!!previewSrc && !frameLoaded)) && (
-                  <p className="nt-shotview-load">loading preview…</p>
-                )}
-                <figcaption className="nt-shotview-bar">
-                  <span className="nt-shotview-name">
-                    <span aria-hidden="true">📄</span> {viewer.name}
-                  </span>
-                  <span className="nt-shotview-path">
-                    {viewer.path || "uploading…"}
-                  </span>
-                  <span className="nt-shotview-spacer" />
-                  <button
-                    type="button"
-                    className="nt-chip-x"
-                    onClick={closeViewer}
-                  >
-                    Close
-                  </button>
-                </figcaption>
-              </figure>
-            </div>
-          )}
-        </div>
-
-        <div className="nt-pills">
-          {/* WHICH Claude, and HOW HARD — one pill, because they are one decision
-              read together ("Fable, thinking high"). Picking does not close the
-              popover: there are two things to set. A model is the rarest thing
-              anyone changes about a task; nothing about either appears on the
-              task row or the calendar chip (design: the card asks, the list
-              stays quiet). */}
-          <PropPill
-            k=""
-            icon={ICON_CPU}
-            ariaLabel="Model"
-            value={modelText}
-            open={modelOpen}
-            onToggle={() => togglePill("model")}
-            onDismiss={() => dismissPill("model")}
-            pillRef={modelPillRef}
-            popWidth={260}
-            popHeight={300}
-          >
-            <div className="nt-pop-h">Model</div>
-            {/* Same contract as Permissions: the KEY is submitted, the label is
-                only how it is said. `taskRunOptions` is what keeps an
-                unrecognised stored value selectable instead of silently
-                resetting the task to the default on the next edit. */}
-            <div className="nt-menu" role="group" aria-label="Model">
-              {taskRunOptions(runModels, model).map((o) => (
-                <button
-                  key={o.key}
-                  type="button"
-                  role="menuitemradio"
-                  aria-checked={model === o.key}
-                  disabled={(o as { disabled?: boolean }).disabled}
-                  onClick={() => pickModel(o.key)}
-                >
-                  {o.label}
-                  {model === o.key && ICON_CHECK}
-                </button>
-              ))}
-            </div>
-            {/* "Thinking", not "Effort" (the CLI's word for the flag): what the
-                user is choosing is how long Claude gets to think before it
-                acts, and the chat's own pill says the same thing. The wire is
-                untouched — this is the label. NOT DRAWN for a model that
-                takes no effort (a Copilot model whose catalog row lists
-                none): a section of levels the spawn would drop is a choice
-                that does nothing. */}
-            {runEfforts.length ? (
-              <>
-                <div className="nt-pop-h">Thinking</div>
-                <div className="nt-menu" role="group" aria-label="Thinking">
-                  {taskRunOptions(runEfforts, effort).map((o) => (
-                    <button
-                      key={o.key}
-                      type="button"
-                      role="menuitemradio"
-                      aria-checked={effort === o.key}
-                      disabled={(o as { disabled?: boolean }).disabled}
-                      onClick={() => pickEffort(o.key)}
-                    >
-                      {o.label}
-                      {effort === o.key && ICON_CHECK}
-                    </button>
-                  ))}
-                </div>
-              </>
-            ) : null}
-          </PropPill>
-          <PropPill
-            k=""
-            icon={ICON_SHIELD}
-            ariaLabel="Permissions"
-            value={permissionLabel(permission)}
-            open={accessOpen}
-            onToggle={() => togglePill("access")}
-            onDismiss={() => dismissPill("access")}
-            pillRef={accessPillRef}
-            popWidth={260}
-            popHeight={210}
-          >
-            {/* The KEY is what gets submitted; the label is only how the mode is
-                said. The raw keys ("acceptEdits") were the server's vocabulary
-                printed at the user (audit 2026-08-16), and an unknown key still
-                shows itself rather than being hidden. */}
-            <div className="nt-menu" role="menu" aria-label="Permissions">
-              {permissionOptions.map((m) => (
-                <button
-                  key={m}
-                  type="button"
-                  role="menuitemradio"
-                  aria-checked={permission === m}
-                  onClick={() => { setPermission(m); setAccessOpen(false); }}
-                >
-                  {permissionLabel(m)}
-                  {permission === m && ICON_CHECK}
-                </button>
-              ))}
-            </div>
-            <div className="nt-menu-note">
-              The task runs unattended. Auto approves safe actions and holds the rest.
-            </div>
-          </PropPill>
+          {/* WHERE and WHEN as one group against the ✕. Wrapped in
+              `.nt-pills > .nt-pills-right` so the row's pill skin (the bare,
+              muted icon-and-word look) carries over unchanged. A wrapper rather
+              than a gap item, because the pills sit in `display: contents`
+              wrappers and the where pill is one of two elements (`WherePill`
+              on a locked card). */}
+          {/* THE BODY'S SCOPE, BOXLESS (`.nt-head-scope` is display: contents):
+              the Folder and When popovers are styled under `.deploy-body` and
+              `.schedule-form` (schedule.css), and keep that skin up here. */}
+          <div className="nt-head-scope deploy-body schedule-form">
+          <div className="nt-pills nt-pills--head"><div className="nt-pills-right">
           {/* NOT THERE AT ALL inside an app's Tasks tab (Akshil, 2026-09-19: "in
               dedicated tasks when we open the new task modal, hide the path
               field"): a control whose one answer is already known is a control
@@ -5478,7 +5559,10 @@ export default function NewJobModal({
               popWidth={300}
               popHeight={320}
               popClassName="nt-pop--where"
+              align="end"
             >
+              {/* The heading the other four popovers have (Akshil, 2026-11-03). */}
+              <div className="nt-pop-h">Folder</div>
               <input
                 ref={pathRef}
                 type="text"
@@ -5788,27 +5872,26 @@ export default function NewJobModal({
             k=""
             icon={ICON_CLOCK}
             ariaLabel="When"
-            value={timePicked
-              ? whenText
-              : <><span className="pp-dot" aria-hidden="true" />Now</>}
+            value={timePicked ? whenText : "Now"}
             open={whenOpen}
             onToggle={() => togglePill("when")}
             onDismiss={() => dismissPill("when")}
             pillRef={whenPillRef}
             popWidth={250}
             popHeight={whenPane === "presets" ? 250 : 200}
-          >
+          
+            align="end">
             {whenPane === "presets" ? (
               <>
                 <div className="nt-pop-h">Run</div>
                 <div className="nt-menu" role="menu" aria-label="Run">
-                  {/* NOW is the default and says so with the green dot — the
-                      pill reads the same until somebody states an opinion about
-                      when (`timePicked`). It clears that opinion, so the card
-                      runs immediately and says Create. */}
+                  {/* NOW is the default, ticked — the pill reads the same until
+                      somebody states an opinion about when (`timePicked`). No
+                      green dot (Akshil, 2026-11-07): the pill is a bare word
+                      like its neighbours. Picking it clears that opinion, so
+                      the card runs immediately and says Create. */}
                   <button type="button" role="menuitemradio" aria-checked={!timePicked}
                           onClick={runNow}>
-                    <span className="pp-dot" aria-hidden="true" />
                     Now
                     {!timePicked && ICON_CHECK}
                   </button>
@@ -5991,6 +6074,633 @@ export default function NewJobModal({
               </>
             )}
           </PropPill>
+          </div></div>
+          </div>
+        </>
+      )}
+      // THE OPEN CHAT'S NAME (see `landingChat`): its head is the shared one
+      // below.
+      {...(chatOpen ? { ariaLabel: `${chatTitle || "New task"} — chat` } : {})}
+      // THE FORM'S OWN HEAD (design.md "One task head, everywhere"): the same
+      // pieces the chassis' head is given above —
+      // the agent crumb, the name, the source chip, Folder and When — on the
+      // shared chassis, × in the lead corner. The ✕'s two states carry over:
+      // gone while busy, armed after a dirty close (the chassis' `ctx`).
+      {...(!chatOpen ? {
+        head: ({ titleId, close, busy: closing, armed, parts }: ModalHeadContext) => (
+          <TaskHead
+            className="nt-form-head"
+            pinNode={pinNode}
+            // The rail's popover with the pin (`pinNode`): no × — a click
+            // outside closes a temp card, a pinned one is unpinned first.
+            lead={closing || pinNode ? null : {
+              kind: "close",
+              label: armed ? "Close and discard changes" : "Close",
+              hint: armed ? "Press again to discard" : "Close",
+              armed,
+              onPress: close,
+            }}
+            task={null}
+            title={
+              <div className="modal-head-title">
+                {parts.titleLead}
+                <h2 id={titleId}>{parts.title}</h2>
+                {parts.titleAside}
+              </div>
+            }
+            // In the chassis' own `.modal-head-actions` box, so its row rules
+            // (deploy.css, new-task.css) still lay the pills out.
+            chips={<div className="modal-head-actions">{parts.headActions}</div>}
+            fitEnabled={false}
+          />
+        ),
+      } : {})}
+      // …AND THE OPEN CHAT'S HEAD is one `TaskHead` in place of the chassis'
+      // head (Modal `head`): Back, the identity, ↗ Open and the ⋮, at every
+      // task view's height.
+      {...(chatOpen ? {
+        head: ({ titleId }: ModalHeadContext) => (
+          <TaskHead
+            reveal="window"
+            className="nt-chat-head"
+            lead={{ kind: "back", label: "Back", onPress: leaveChat }}
+            pinNode={pinNode}
+            task={liveChat}
+            title={liveChat ? undefined : (name || fields.title || "New task")}
+            titleId={titleId}
+            open={chatHref ? { href: chatHref, label: "Open this chat", onOpen: (h) => openFromLanding(h) } : null}
+            // The task's pull request, after the chat's branch tag.
+            chips={liveChat ? <TaskPrChip task={liveChat} /> : null}
+            chipsRef={setChipsHost}
+            statusRef={setStatusHost}
+            kebab={chatKebab}
+            // The ring's Archive goes back to the form, as the ⋮'s.
+            onFiled={(kind) => {
+              if (kind === "archive") leaveChat();
+            }}
+          />
+        ),
+      } : {})}
+    >
+      {chatOpen && !chatSession && (
+        <div className="nt-landing-chat nt-landing-wait">
+          <p className={pendingError ? "nt-landing-wait-error" : undefined} role={pendingError ? "alert" : undefined}>
+            {pendingError
+              ? pendingError
+              : pendingDue && new Date(pendingDue).getTime() > Date.now() + 60_000
+                ? `Scheduled — it runs ${new Date(pendingDue).toLocaleString()}.`
+                // A TASK WAITING FOR ITS FOLDER IS NOT STARTING (Akshil,
+                // 2026-11-18): it says where it stands, and the button under
+                // it is the way to stop waiting.
+                : queuedLine(waitFacts) || "Starting the task…"}
+          </p>
+          {!pendingError && waitFacts && (pendingEntry || liveChat) ? (
+            <ForceStartButton
+              facts={waitFacts}
+              target={pendingEntry ? { entry_id: pendingEntry } : { key: liveChat!.key }}
+              // The entry's poll may be on its slow cadence by now (a task
+              // queued for minutes): the press starts it over.
+              onDone={() => setPendingKick((n) => n + 1)}
+            />
+          ) : null}
+        </div>
+      )}
+      {chatOpen && chatSession && (
+        <div key={chatSession} className="nt-landing-chat">
+          <ChatMount
+            onBreakout={breakoutOpener()}
+            onBreakoutControl={setChatBreakout}
+            file={chatFile}
+            sessionId={chatSession}
+            {...((liveChat?.model || chatSeed?.model) ? { model: liveChat?.model || chatSeed?.model } : {})}
+            {...((liveChat?.effort || chatSeed?.effort) ? { effort: liveChat?.effort || chatSeed?.effort } : {})}
+            {...((liveChat?.backend || chatSeed?.backend) ? { backend: liveChat?.backend || chatSeed?.backend } : {})}
+            chatOnly
+            peek
+            noAnnTools
+            paramsSource="memory"
+            onEscape={leaveChat}
+            onNavigate={(href) => openFromLanding(href)}
+            smallCard
+            smallCardShown
+            headChipsHost={chipsHost}
+            headStatusHost={statusHost}
+          />
+        </div>
+      )}
+      {/* THE RAIL'S LANDING PAGE: the form in a boxless `.deploy-body` scope
+          (its fields' and pills' skins), and the chat's lists OUTSIDE it — the
+          body is plain there, so `.deploy-body button` (fields.css) cannot
+          repaint the rows' own icon buttons (a draft's trash drew as an empty
+          square). Kept mounted under an open chat, not shown. */}
+      <div
+        className={landing ? "nt-landing-page" : "nt-plain"}
+        style={chatOpen ? { display: "none" } : undefined}
+      >
+      <div className={landing ? "deploy-body nt-landing-scope" : "nt-plain"}>
+      <div
+        className="schedule-form"
+      >
+        {/* ONE WRITING SURFACE: a single borderless box that reads as a
+            document you type into. See `.new-task-write` in new-task.css for the
+            treatment, including what focus looks like with no box to recolour.
+            The box below is prefilled from a chat draft or the session's own
+            name (sessionTitleOf), which land as its first line. */}
+        {/* THE RAIL'S CARD IS THE CHAT'S LANDING PAGE (Akshil, 2026-11-09:
+            "add the whole page as is", rail popover only — the Tasks page
+            keeps its card): the agent's mark and the place's name over its
+            path, then the composer — the box, the attachments and the run's
+            pill row in one rounded card, the paperclip and the round send at
+            the row's end. The head (agent, name, Folder, When, ✕) is
+            untouched. Off the rail `.nt-plain` is boxless and the body is the
+            card it always was. The wrapper is the drop target: it reads as
+            "the message", which is what a file is attached TO. */}
+        {landing && (
+          <div className="nt-landing-head">
+            <div className="nt-landing-title">
+              <AgentMark backend={agent} className="nt-landing-mark" />
+              <span>{landingName}</span>
+            </div>
+            {landingPath ? <div className="nt-landing-sub">{landingPath}</div> : null}
+          </div>
+        )}
+        <div
+          className={landing ? "nt-composer" : "nt-plain"}
+          onDragOver={(e) => {
+            if ([...e.dataTransfer.items].some((i) => i.kind === "file")) {
+              e.preventDefault();
+            }
+          }}
+          onDrop={(e) => {
+            if (e.dataTransfer.files?.length) {
+              e.preventDefault();
+              attachFiles(e.dataTransfer.files);
+            }
+          }}
+        >
+        <div className="new-task-write">
+          {/* ONE BOX (Paperclip's "Describe a task…"): the whole task text.
+              There is no title field — the task's name is the first line,
+              clamped (taskFieldsOf), the way the server names a session from
+              its first prompt. REQUIRED (`aria-required`): it is what Claude is
+              sent. Enter creates the task, Shift+Enter is the textarea's own
+              newline, and an IME composition's Enter is left alone. Goes
+              through trySubmit, not submit, so a form that cannot be saved
+              answers the same way the button does. Autogrows from the CSS
+              floor up to its max-height, then scrolls. */}
+          <div className="new-task-ask-wrap">
+            <textarea
+              ref={askRef}
+              className="new-task-field new-task-ask"
+              rows={2}
+              aria-label={titlePlaceholderFor(agentLabel(agent))}
+              aria-required="true"
+              value={text}
+              onChange={(e) => setText(e.target.value)}
+              onPaste={pasteFiles}
+              aria-autocomplete="list"
+              aria-controls={menuOpen ? menuId : undefined}
+              aria-activedescendant={menuOpen ? `${menuId}-${menuActive}` : undefined}
+              onKeyDown={(e) => {
+                // THE MENU HAS THE ARROWS, ENTER, TAB AND ESC WHILE IT IS OPEN.
+                // Enter always accepts the row here (no "fully typed name"
+                // exception: a task is created by Create, or by Enter once the
+                // menu is closed). Not mid-composition: an IME's keys are its own.
+                if (menuOpen && !e.nativeEvent.isComposing) {
+                  const k = menuKey(e.key, menuActive, menuRows.length, e.shiftKey);
+                  if (k) {
+                    e.preventDefault();
+                    if (k.type === "move") setMenuIdx(k.index);
+                    else if (k.type === "accept") pickCommand(menuRows[menuActive].name);
+                    else {
+                      // Esc closes the menu and goes no further: not the modal's.
+                      e.stopPropagation();
+                      setMenuDismissed(text);
+                    }
+                    return;
+                  }
+                }
+                if (e.key !== "Enter" || e.nativeEvent.isComposing || e.shiftKey) return;
+                e.preventDefault();
+                if (!busy) trySubmit();
+              }}
+              // A hover's preview takes no caret (Modal `popover.pinned`); the
+              // pin hands it over (`popPinned` below).
+              autoFocus={popover?.pinned !== false}
+            />
+            {canDictate && (
+              <span className="sr-only" role="status">
+                {mic.busy ? mic.note || "Transcribing…" : ""}
+              </span>
+            )}
+            {menuOpen && (
+              <CommandMenu
+                id={menuId}
+                rows={menuRows}
+                active={menuActive}
+                onPick={pickCommand}
+                onHover={setMenuIdx}
+                className="nt-cmd-menu"
+              />
+            )}
+            {/* The placeholder, drawn rather than set: two lines in two faces,
+                which a native `placeholder` cannot do. Hidden the moment there
+                is text or an image, like the native one; `aria-hidden` because
+                the field's `aria-label` already says what it is. */}
+            {!text && images.length === 0 && (
+              <div className="new-task-ask-hint" aria-hidden="true">
+                <span>
+                  {landing && mic.busy
+                    ? // What the transcription is doing, where the words will land.
+                      mic.note || "Transcribing…"
+                    : landing
+                      ? homePlaceholderFor(landingNoun, agentLabel(agent))
+                      : titlePlaceholderFor(agentLabel(agent))}
+                </span>
+                {/* The chat's box says one line; so does the rail's. */}
+                {!landing && <small>{ASK_PLACEHOLDER}</small>}
+              </div>
+            )}
+          </div>
+
+          {/* The attachments, minimal on purpose (Akshil, 2026-08-26: "just
+              the image and the x icon on it"): a bare thumbnail that OPENS the
+              viewer — a receipt this small proves a picture exists, it cannot
+              show what is in it — and an ✕ riding its corner. A NON-PICTURE
+              gets the same footprint with the doc glyph and a short filename in
+              place of the picture (thumbnail XOR glyph, D613), because a file is
+              the one attachment that cannot show what it is.
+
+              NO ＋ PICKER (D618): the row is chips and nothing else. The entry
+              points are paste on either field and drop anywhere on the card,
+              which is the gesture every user of this card actually makes; a
+              dashed square standing permanently in the row was chrome for the
+              one who does neither. */}
+          <div className="new-task-images">
+            {images.map((img) => (
+              <div
+                key={img.key}
+                className={"nt-img" + (img.path ? "" : " nt-img-up")}
+              >
+                <button
+                  type="button"
+                  className={"nt-img-open" + (img.kind === "file" ? " nt-img-doc" : "")}
+                  aria-label={img.kind === "image"
+                    ? "View image" : "Preview " + img.name}
+                  onClick={() => {
+                    setViewerKey(img.key);
+                    setViewerZoom(false);
+                  }}
+                >
+                  {img.kind === "image" && (img.thumb || img.path) ? (
+                    <img src={img.thumb ?? rawUrl(img.path)} alt="" />
+                  ) : (
+                    <>
+                      <span className="nt-img-glyph" aria-hidden="true">📄</span>
+                      <span className="nt-img-name">{img.name}</span>
+                    </>
+                  )}
+                </button>
+                <button
+                  type="button"
+                  className="nt-img-x"
+                  aria-label="Remove attachment"
+                  onClick={() => {
+                    if (img.thumb) URL.revokeObjectURL(img.thumb);
+                    applyImages((prev) => prev.filter((i) => i.key !== img.key));
+                    setViewerKey((k) => (k === img.key ? null : k));
+                  }}
+                >
+                  {ICON_X}
+                </button>
+              </div>
+            ))}
+          </div>
+
+          {/* The viewer (#shotview, ported): modal on purpose — the one thing
+              the user is doing here is looking at one attachment. A PICTURE is
+              fitted first; clicking the image swaps to natural size and the box
+              scrolls, which is the only way a card-sized column shows a wide
+              screenshot at a legible scale. Scrim click and Escape both close
+              it. */}
+          {viewer && viewer.kind === "image" && (
+            <div className="nt-shotview" role="dialog" aria-label="Attached image">
+              <div className="nt-shotview-scrim" onClick={closeViewer} />
+              <figure className={"nt-shotview-box" + (viewerZoom ? " zoom" : "")}>
+                <img
+                  className="nt-shotview-img"
+                  src={viewer.thumb ?? rawUrl(viewer.path)}
+                  alt="attached image"
+                  onClick={() => setViewerZoom((z) => !z)}
+                />
+                <figcaption className="nt-shotview-bar">
+                  <span className="nt-shotview-path">
+                    <bdi>{viewer.path || "uploading…"}</bdi>
+                  </span>
+                  <span className="nt-shotview-spacer" />
+                  <button
+                    type="button"
+                    className="nt-chip-x"
+                    onClick={closeViewer}
+                  >
+                    Close
+                  </button>
+                </figcaption>
+              </figure>
+            </div>
+          )}
+
+          {/* A FILE's viewer: the file in its OWN fused-render template, sealed
+              (D616). A name and a path answer "which file is this" and do not
+              answer "is this the RIGHT file", which is the question a viewer
+              exists for — and fused-render already owns a table for a .csv, a
+              schema for a .parquet, a page for a .md.
+
+              The frame is UNMOUNTED by this very conditional on every exit —
+              Close, Escape and the scrim all clear `viewer` — and that is the
+              load-bearing half rather than a tidy-up: a template is a RUNNING
+              document (a warm python worker behind it, a poll, possibly a map
+              redrawing), so one left mounted behind a shut modal goes on costing
+              all of it. */}
+          {viewer && viewer.kind === "file" && (
+            <div className="nt-shotview" role="dialog" aria-label="Attached file">
+              <div className="nt-shotview-scrim" onClick={closeViewer} />
+              <figure className="nt-shotview-box nt-shotview-doc">
+                {previewSrc && (
+                  <iframe
+                    className="nt-shotview-frame"
+                    {...THUMB_SEAL}
+                    src={previewSrc}
+                    title=""
+                    tabIndex={-1}
+                    aria-hidden="true"
+                    onLoad={() => setFrameLoaded(true)}
+                  />
+                )}
+                {(previewWait || (!!previewSrc && !frameLoaded)) && (
+                  <p className="nt-shotview-load">loading preview…</p>
+                )}
+                <figcaption className="nt-shotview-bar">
+                  <span className="nt-shotview-name">
+                    <span aria-hidden="true">📄</span> {viewer.name}
+                  </span>
+                  <span className="nt-shotview-path">
+                    <bdi>{viewer.path || "uploading…"}</bdi>
+                  </span>
+                  <span className="nt-shotview-spacer" />
+                  <button
+                    type="button"
+                    className="nt-chip-x"
+                    onClick={closeViewer}
+                  >
+                    Close
+                  </button>
+                </figcaption>
+              </figure>
+            </div>
+          )}
+        </div>
+
+        <div className="nt-pills">
+          {/* THE RUN'S THREE WORDS, said the way the chat composer says them:
+              model, thinking, approvals — three bare pills (text and a chevron,
+              no icon, no key) on the LEFT, with where and when as the bordered
+              chips on the RIGHT (Akshil, 2026-11-02, from the composer's own
+              row). Each pill is one decision and one popover; a model is the
+              rarest thing anyone changes about a task, and nothing about any of
+              the three appears on the task row or the calendar chip (design:
+              the card asks, the list stays quiet). */}
+          <PropPill
+            k=""
+            className="pp--bare"
+            ariaLabel="Model"
+            value={modelText}
+            open={modelOpen}
+            onToggle={() => togglePill("model")}
+            onDismiss={() => dismissPill("model")}
+            pillRef={modelPillRef}
+            popWidth={220}
+            popHeight={taskRunOptions(runModels, model).length * 28 + 40}
+          >
+            <div className="nt-pop-h">Model</div>
+            {/* Same contract as Permissions: the KEY is submitted, the label is
+                only how it is said. `taskRunOptions` is what keeps an
+                unrecognised stored value selectable instead of silently
+                resetting the task to the default on the next edit. */}
+            <div className="nt-menu" role="group" aria-label="Model">
+              {taskRunOptions(runModels, model).map((o) => {
+                const desc = modelDescription(o.key);
+                return (
+                <button
+                  key={o.key}
+                  type="button"
+                  role="menuitemradio"
+                  aria-checked={model === o.key}
+                  disabled={(o as { disabled?: boolean }).disabled}
+                  onClick={() => { pickModel(o.key); setModelOpen(false); }}
+                >
+                  {o.label}
+                  {desc ? <span className="nt-menu-desc">{desc}</span> : null}
+                  {model === o.key && ICON_CHECK}
+                </button>
+                );
+              })}
+            </div>
+          </PropPill>
+          {/* "Effort", not "Thinking" (Akshil, 2026-11-07: thinking is a
+              different thing): the CLI's word for the flag and the chat
+              composer's heading for the same list. NOT DRAWN for a model that
+              takes no effort (a Copilot model whose catalog row lists
+              none): a pill of levels the spawn would drop is a choice
+              that does nothing. */}
+          {runEfforts.length ? (
+            <PropPill
+              k=""
+              className="pp--bare"
+              ariaLabel="Effort"
+              value={effortText}
+              open={effortOpen}
+              onToggle={() => togglePill("effort")}
+              onDismiss={() => dismissPill("effort")}
+              pillRef={effortPillRef}
+              popWidth={200}
+              popHeight={taskRunOptions(runEfforts, effort).length * 28 + 40}
+            >
+              <div className="nt-pop-h">Effort</div>
+              <div className="nt-menu" role="group" aria-label="Effort">
+                {taskRunOptions(runEfforts, effort).map((o) => (
+                  <button
+                    key={o.key}
+                    type="button"
+                    role="menuitemradio"
+                    aria-checked={effort === o.key}
+                    disabled={(o as { disabled?: boolean }).disabled}
+                    onClick={() => { pickEffort(o.key); setEffortOpen(false); }}
+                  >
+                    {o.label}
+                    {effort === o.key && ICON_CHECK}
+                  </button>
+                ))}
+              </div>
+            </PropPill>
+          ) : null}
+          <PropPill
+            k=""
+            className="pp--bare"
+            ariaLabel="Permissions"
+            value={permissionLabel(permission)}
+            open={accessOpen}
+            onToggle={() => togglePill("access")}
+            onDismiss={() => dismissPill("access")}
+            pillRef={accessPillRef}
+            popWidth={220}
+            popHeight={permissionOptions.length * 28 + 40}
+          >
+            {/* "Mode" — the composer's word for the same list (Akshil,
+                2026-11-02) and the heading the Model and Effort menus have.
+                The KEY is what gets submitted; the label is only how the mode
+                is said. The raw keys ("acceptEdits") were the server's
+                vocabulary printed at the user (audit 2026-08-16), and an unknown
+                key still shows itself rather than being hidden.
+
+                What a mode MEANS is on the row's hover (`data-hint`, the app's
+                instant tooltip), one line per mode, not printed under the menu:
+                the note that used to sit there described Auto alone, for every
+                pick. A screen reader gets the same sentence from a clipped span
+                the row points at — a SIBLING of the button, not a child, so the
+                row's accessible name stays the mode's word alone. */}
+            <div className="nt-pop-h">Mode</div>
+            <div className="nt-menu" role="menu" aria-label="Permissions">
+              {permissionOptions.map((m) => (
+                <Fragment key={m}>
+                  <button
+                    type="button"
+                    role="menuitemradio"
+                    aria-checked={permission === m}
+                    data-hint={PERMISSION_HINTS[m]}
+                    aria-describedby={PERMISSION_HINTS[m] ? `${permHintBase}-${m}` : undefined}
+                    onClick={() => { setPermission(m); setAccessOpen(false); }}
+                  >
+                    {permissionLabel(m)}
+                    {permission === m && ICON_CHECK}
+                  </button>
+                  {PERMISSION_HINTS[m] && (
+                    <span id={`${permHintBase}-${m}`} className="sr-only">{PERMISSION_HINTS[m]}</span>
+                  )}
+                </Fragment>
+              ))}
+            </div>
+          </PropPill>
+          {/* THE CARD'S VERBS, at the right end of the pill row (Akshil,
+              2026-11-09): Discard/Delete then Back to chat then Create — on
+              the rail's landing card, the paperclip and the chat's round
+              send in Create's seat. */}
+          <div className="nt-row-actions">
+          <div className="nt-foot-left">
+          {/* NO KEY GLYPHS (owner, 2026-11-07): no "⇧↵ new line" hint here
+              and no ↵ in the action button — Enter still creates, Shift+Enter
+              still adds a line. */}
+          {/* Destructive, so it sits at the far left of the footer, away from
+              Save — `.btn-danger-text` carries the margin-right:auto that
+              anchors it there. Present only on an Edit, and only when the
+              entry is actually withdrawable. `type="button"`, like every
+              control in this footer: the form has no submit, so Enter never
+              reaches it. */}
+          {del && (
+            <button
+              type="button"
+              className={"btn btn-danger-text new-task-delete"
+                + (delConfirm ? " is-armed" : "")}
+              title={del.title}
+              disabled={busy}
+              onClick={remove}
+            >
+              {ICON_TRASH}
+              {delConfirm ? del.confirm : del.label}
+            </button>
+          )}
+          {/* DISCARD — the deliberate way to be rid of a draft, and the only
+              one (design.md: close keeps it, this throws it away). Drawn only
+              once a draft actually exists: on an untouched card there is
+              nothing to discard, and a button offering to delete nothing is a
+              button that makes the reader wonder what it knows.
+
+              ONE SEAT, ONE SKIN (Akshil, 2026-09-12). Delete and Discard can
+              never both be on a card — `del` is an Edit's and `draftId` is a
+              new task's — so they are not two controls sharing a footer, they
+              are the same control under the two names the card can be in. It
+              therefore takes Delete's exact class (`.new-task-delete` carries
+              the glyph spacing, `.btn-danger-text` the `margin-right:auto` that
+              anchors the far-left seat) and Delete's trash glyph. Two weights
+              for one position read as a footer that moves its buttons around
+              depending on what you opened. The LABEL still differs, because the
+              verbs do: one withdraws a running task, one drops an unfinished
+              form. No arming step here — there is nothing scheduled to undo. */}
+          {/* NOT ON THE RAIL'S CARD (Akshil, 2026-11-09: "doesn't look good"):
+              the chat's composer has no Discard; a draft goes from its row's
+              trash in the list under the box. */}
+          {!landing && (draftId || (recordKey && !editing)) && (
+            <button
+              type="button"
+              className="btn btn-danger-text new-task-delete"
+              disabled={busy}
+              title="Discard this draft"
+              onClick={discard}
+            >
+              {ICON_TRASH}
+              Discard
+            </button>
+          )}
+          </div>
+          {/* The way back completes the chat's round trip: chat → schedule →
+              adjust the draft → schedule again. Only shown when there is a chat
+              record behind this card — from anywhere else there is no "back".
+              Two ways it can have: the hop's own `?from=` route, and the record's
+              own key turned into one (see `backToChat`). */}
+          {canGoBack && (
+            <button type="button" className="btn btn-secondary schedule-back-chat"
+                    disabled={busy}
+                    onClick={() => void backToChat()}>
+              {backConfirm ? "Discard changes?" : "Back to chat"}
+            </button>
+          )}
+          {/* NOT disabled on `!ready`. A dead button is not a hint: the
+              commonest way to reach it is the commonest thing to forget (type a
+              name, press Save, leave the description empty) and the answer was
+              nothing at all — no message, no focus move, the card just sat there
+              (QA, 2026-08-18). The rules are unchanged; a press on a form that
+              cannot be saved now SAYS which field is missing and puts the caret
+              in it. See trySubmit / saveBlockedReason.
+
+              `aria-disabled` rather than `disabled` so the state is still
+              announced, while the button stays focusable and pressable — which
+              is the whole point. Only `busy` truly disables it: a second press
+              mid-save would schedule the message twice. */}
+          {landing ? (
+            <>
+              <AttachButton onFiles={attachFiles} className="nt-attach" disabled={busy} />
+              {/* Right of the clip, as in the chat's composer and the Bots'. */}
+              {canDictate ? <MicButton mic={mic} className="nt-attach nt-mic" disabled={busy} /> : null}
+              <button type="button" className="nt-send schedule-save"
+                      disabled={busy} aria-disabled={!ready} onClick={trySubmit}
+                      aria-label={busy ? `${actionLabel === "Create" ? "Creating" : "Scheduling"}…` : actionLabel}
+                      title={actionLabel}>
+                {/* The chat's send, as is: a round accent arrow (Akshil,
+                    2026-11-09). The verb is its name and its tooltip. */}
+                <svg width="14" height="14" viewBox="0 0 16 16" fill="none" aria-hidden="true">
+                  <path d="M8 13V3M8 3L3.5 7.5M8 3l4.5 4.5" stroke="currentColor"
+                        strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round" />
+                </svg>
+              </button>
+            </>
+          ) : (
+          <button type="button" className="btn btn-primary schedule-save"
+                  disabled={busy} aria-disabled={!ready} onClick={trySubmit}>
+            {busy ? `${actionLabel === "Create" ? "Creating" : "Scheduling"}…` : actionLabel}
+          </button>
+          )}
+          </div>
+        </div>
         </div>
         {/* EVERY LINE THE ROWS USED TO PRINT UNDER THEMSELVES, in one place: the
             path's refusal, who runs the task, what leaving the session costs,
@@ -6103,6 +6813,41 @@ export default function NewJobModal({
             closing={recurOut}
           />
         )}
+      </div>
+      </div>
+      {landing && (
+        <div className="chat-root c-tokens nt-landing-lists">
+          {/* The picked agent's caps (snapshots and their restore), not the
+              default's (CodeRabbit on #2220). */}
+          <AgentProvider backend={agent}>
+          <Lists
+            file={landingTarget || null}
+            recent={landingRecent}
+            artifacts={landingArtifacts}
+            snaps={landingSnaps}
+            onOpen={(sessionId) => {
+              const row = landingRecent?.find((t) => t.session_id === sessionId);
+              if (row?.session_id) setLandingChat(row);
+              else openFromLanding(row ? taskHref(row) : null);
+            }}
+            // EVERY CHAT ROW OPENS HERE (Akshil, 2026-11-09: only the head's
+            // Open leaves the card — the rule of every window A/B card and the
+            // Tasks page): a row about a file in this folder, which the chat
+            // landing would hop to, is found by the URL it would hop to and
+            // shown in the card. Anything else (a Page, an Upcoming entry's
+            // card) still leaves.
+            onNavigate={(url) => {
+              const row = landingRecent?.find((t) => !!t.session_id
+                && (taskHref(t) === url
+                  || paneChatUrl(taskPane(t, landingTarget || null), t.session_id) === url));
+              if (row) setLandingChat(row);
+              else openFromLanding(url);
+            }}
+            {...(onOpenDraft ? { onFillDraft: onOpenDraft } : {})}
+          />
+          </AgentProvider>
+        </div>
+      )}
       </div>
     </Modal>
   );

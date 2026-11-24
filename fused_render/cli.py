@@ -127,7 +127,7 @@ def _build_parser() -> argparse.ArgumentParser:
                           help="window: 30m / 2h / 1d (default: the last day, or "
                                "since the current server booted if longer)")
     diagnose.add_argument("--out", default=None, metavar="DIR",
-                          help="directory to write the zip into (default: ~/Desktop)")
+                          help="directory to write the zip into (default: ~/Downloads)")
     diagnose.add_argument("--no-system-log", action="store_true",
                           help="skip the macOS unified log (`log show`, the slow step: "
                                "15-45 s; it is where jetsam memory kills show up)")
@@ -256,6 +256,12 @@ def _run_serve(args: argparse.Namespace) -> None:
         codex_health.warm_in_background()
     if _agent_registry.is_enabled("gemini"):
         gemini_health.warm_in_background()
+    if _agent_registry.is_enabled("opencode"):
+        from fused_render import opencode_health
+        opencode_health.warm_in_background()
+    if _agent_registry.is_enabled("cursor"):
+        from fused_render import cursor_health
+        cursor_health.warm_in_background()
     start_dir = os.path.abspath(os.path.expanduser(args.start_dir))
     # CLI install: no packaged updater applies, so tell the user about a newer
     # PyPI release (check-only; update/pypi.py).
@@ -307,11 +313,10 @@ def _run_serve(args: argparse.Namespace) -> None:
     app.state.uvicorn_server = server
     # Local-network sharing of ~/Fused/local (lan.py): a second listener the
     # `lan_enabled` preference controls; this loopback bind is not touched.
-    from fused_render import _flavor, lan
+    from fused_render import lan
 
     lan.attach(app)
-    if not _flavor.is_bot():  # Fused Bot has no LAN sharing surface
-        lan.start_if_enabled()
+    lan.start_if_enabled()
     server.run()
 
 
@@ -329,8 +334,8 @@ def _free_port() -> int:
 
 # The two shapes `open` recognizes as "install this from GitHub" rather than
 # "open this local path": a plain repo URL, and the deep link the desktop
-# app's own `<scheme>://open?git=…` handler accepts (DL-9; the scheme is the
-# flavor's, fused-render:// or fused-bot://). Matched by prefix,
+# app's own `<scheme>://open?git=…` handler accepts (DL-9; the scheme is
+# `_flavor.scheme()`, fused-render://). Matched by prefix,
 # case-insensitively, same as deeplink.git_payload_from.
 _GITHUB_TARGET_PREFIXES = (
     "https://github.com/",

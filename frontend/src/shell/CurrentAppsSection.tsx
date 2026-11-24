@@ -65,12 +65,11 @@ import {
   ENV_NAMES,
   canvasNameFromPath,
   canvasPagePath,
-  canvasPageTabFromSearch,
-  canvasProjectFromPath,
-  canvasProjectPath,
   isWorkbenchEnv,
+  type WorkbenchEnv,
 } from "@apps/canvases/api";
 import { CanvasGlyph } from "@apps/canvases/glyph";
+import { RenameCanvasDialog } from "@apps/canvases/RenameCanvasDialog";
 
 /** Which half of the desk a section draws (owner, 2026-10-20: "add all
  *  options on canvas sidebar as we have on folder sidebar"). ONE store, one
@@ -173,18 +172,14 @@ export function useDeskAppsOrdered(enabled: boolean): CurrentApp[] {
   return currentApps(entries, [], new Set(), []);
 }
 
-/** A canvas row's door: the canvas's PROJECT page (/canvases-project/…), on
- *  the tab the reader is on when they are already on a canvas project page
- *  ("same view, other canvas", the Projects rule below). Null for a clone of
- *  an unknown environment, which has no project page — the caller falls back
- *  to the folder's app page. Exported for the collapsed rail's canvas doors
- *  (GlobalSidebar), the same door as the row. */
+/** A canvas row's door: the canvas's editor (/canvases/<env>/<name>). Null
+ *  for a clone of an unknown environment, which has no editor route — the
+ *  caller falls back to the folder's app page. Exported for the collapsed
+ *  rail's canvas doors (GlobalSidebar), the same door as the row. */
 export function canvasRowHref(app: CurrentApp): string | null {
   const c = app.canvas;
   if (!c || !isWorkbenchEnv(c.env)) return null;
-  const onProject = canvasProjectFromPath(location.pathname) !== null;
-  const tab = onProject ? canvasPageTabFromSearch(location.search) : undefined;
-  return canvasProjectPath(c.env, c.name, tab !== undefined ? { tab } : undefined);
+  return canvasPagePath(c.env, c.name);
 }
 
 function CurrentAppRow({
@@ -214,7 +209,6 @@ function CurrentAppRow({
   // params (`?file=`, `?view=`) name things inside ONE app and are dropped.
   // Off an app page the default tab it is. Read at render: the sidebar
   // remounts on every navigation (App.tsx), so the href cannot go stale.
-  // A canvas row's door is the canvas's project page, same rule.
   const onAppPage = appPathFromPath(location.pathname) !== null;
   const tab = onAppPage ? appPageTabFromSearch(location.search) : undefined;
   const href = canvasRowHref(app) ?? appPageUrl(app.path, tab);
@@ -233,13 +227,7 @@ function CurrentAppRow({
     onSeen(app.path);
     // The row for the page already on screen, on the tab it already shows, is
     // a no-op; the tab's own params would be the only thing the click cleared.
-    // A canvas row lights on its EDITOR too (isActive), but its door is the
-    // PROJECT page: lit by the editor it still navigates — otherwise the
-    // sidebar offers no way from the editor to the project view (owner,
-    // 2026-10-22). Lit by the project page, `onCanvas` resolved from that
-    // path, so active ⇒ this canvas's project page ⇒ at the door.
-    const atDoor = active && (!app.canvas || canvasProjectFromPath(location.pathname) !== null);
-    if (!atDoor) navigateUrl(href);
+    if (!active) navigateUrl(href);
   };
   const onRemove = async (e: React.MouseEvent) => {
     e.preventDefault();
@@ -336,9 +324,15 @@ function CurrentAppRow({
       >
         {app.name}
       </a>
+      {/* The env chip, last in the row by CSS order and flush with its right
+          edge (canvases.css), so every row's chip sits in one column; the
+          running/unread dot and a "· N queued" count stay after the name. Both
+          spellings are rendered and a container query picks one: the word, or
+          its initial when the section is narrow. The hover ✕ overlays it. */}
       {showEnv && app.canvas && isWorkbenchEnv(app.canvas.env) && (
         <span className="canvas-row-env" aria-hidden="true">
-          {ENV_NAMES[app.canvas.env].tag}
+          <span className="canvas-row-env-full">{ENV_NAMES[app.canvas.env].tag}</span>
+          <span className="canvas-row-env-initial">{ENV_NAMES[app.canvas.env].initial}</span>
         </span>
       )}
       {/* The running dot sits AFTER the name (owner, 2026-08-27), so it never
@@ -399,10 +393,17 @@ export default function CurrentAppsSection({ section = "projects" }: { section?:
   // which keeps a scheduled due time and so does not move when a recurring
   // run finishes early (Bugbot, 2026-09-07). Sorted, so a re-ordered pulse
   // does not refetch.
+  //
+  // ...and whether the row is READ (owner, 2026-11-11: one unread state): the
+  // desk's dot now also dies when its task is read anywhere
+  // (current_apps._unread), which moves no clock at all — a read in the peek
+  // left the server's flag off and this sidebar's dot on until something else
+  // happened. A boolean term, not the count: 3 unread becoming 2 is not news
+  // the desk draws.
   const pulseSignal = useMemo(
     () =>
       rows
-        .map((r) => `${r.key} ${r.status} ${r.happened_at ?? 0}`)
+        .map((r) => `${r.key} ${r.status} ${r.happened_at ?? 0} ${r.unread > 0 ? 1 : 0}`)
         .sort()
         .join("\n"),
     [rows],
@@ -502,10 +503,9 @@ export default function CurrentAppsSection({ section = "projects" }: { section?:
 
   // Which row is the page on screen. Read at render: the sidebar remounts on
   // every navigation (App.tsx), so a stale read cannot outlive a route change.
-  // For a canvas row: its project page OR its editor (both are "the canvas
-  // open"), so the dot clears on either and the row lights on either.
+  // For a canvas row: its editor.
   const onPath = appPathFromPath(location.pathname);
-  const onCanvas = canvasProjectFromPath(location.pathname) ?? canvasNameFromPath(location.pathname);
+  const onCanvas = canvasNameFromPath(location.pathname);
   const isActive = (app: CurrentApp): boolean =>
     app.canvas
       ? !!onCanvas && onCanvas.env === app.canvas.env && onCanvas.name === app.canvas.name
@@ -630,10 +630,18 @@ export default function CurrentAppsSection({ section = "projects" }: { section?:
   // the plain `.fused` export with it off. A hook, not the sync getter: this
   // menu is built inside a component, so it follows the flag live.
   const sharing = useAppShareOffered();
+  // The canvas rename dialog (apps/canvases/RenameCanvasDialog): renames the
+  // canvas on the server AND its clone folder, through the host — never the
+  // folder alone (the folder name IS the canvas name the push uses).
+  const [renamingCanvas, setRenamingCanvas] = useState<
+    { env: WorkbenchEnv; name: string } | null
+  >(null);
+
   // A canvas row's verbs: the clone's listing, the canvas editor (the two
-  // panes with Claude), the task verbs, and the cross by name. No Share /
-  // Export / Rename / Uninstall: a canvas is the workbench's to name, share
-  // and delete; the clone is a window onto it.
+  // panes with Claude), Rename (server + clone together, owner 2026-11-13),
+  // the task verbs, and the cross by name. No Share / Export / Uninstall: a
+  // canvas is the workbench's to share and delete; the clone is a window
+  // onto it.
   const canvasMenuItems = (app: CurrentApp): MenuEntry[] => [
     {
       label: "Open in Explorer",
@@ -648,6 +656,16 @@ export default function CurrentAppsSection({ section = "projects" }: { section?:
       onClick: () => {
         if (app.canvas && isWorkbenchEnv(app.canvas.env)) {
           navigateUrl(canvasPagePath(app.canvas.env, app.canvas.name));
+        }
+      },
+    },
+    {
+      label: "Rename…",
+      icon: MenuIcons.rename,
+      disabled: !app.canvas || !isWorkbenchEnv(app.canvas.env),
+      onClick: () => {
+        if (app.canvas && isWorkbenchEnv(app.canvas.env)) {
+          setRenamingCanvas({ env: app.canvas.env, name: app.canvas.name });
         }
       },
     },
@@ -927,6 +945,17 @@ export default function CurrentAppsSection({ section = "projects" }: { section?:
             }}
           />
         </Modal>
+      )}
+      {renamingCanvas && (
+        <RenameCanvasDialog
+          env={renamingCanvas.env}
+          name={renamingCanvas.name}
+          onClose={() => setRenamingCanvas(null)}
+          onRenamed={() => {
+            pokeTasks();
+            refetch();
+          }}
+        />
       )}
       {iconPicker && (
         <IconPicker

@@ -31,6 +31,7 @@ import { useEffect } from "react";
 import { modeTitle } from "@platform/lib/mode-name";
 import { withNoFocus } from "@platform/lib/frame-focus";
 import { ChatMount } from "@apps/claude";
+import { placeRoot } from "@shell/claude-rail/claude-rail-lib";
 import { usePaneFocusGuard } from "@apps/explorer/listing/usePaneFocusGuard";
 import {
   SideCloseButton,
@@ -45,6 +46,7 @@ import {
   type PaneSideChoice,
   type PaneSideEntries,
 } from "@apps/explorer/listing/pane-side";
+import { breakoutOpener } from "@platform/lib/breakouts";
 
 export default function ListingPreviewPane({
   undecided = false,
@@ -173,7 +175,9 @@ export default function ListingPreviewPane({
           // `noFocus` is what stops the pane taking the keyboard off the
           // listing.
           <ChatMount
+            onBreakout={breakoutOpener()}
             file={folder}
+            pageRoot={placeRoot({ kind: "folder", dir: folder })}
             // Asked once (pane-modes.test pins that: one call).
             chatOnly={paneChatOnly(side)}
             noFocus

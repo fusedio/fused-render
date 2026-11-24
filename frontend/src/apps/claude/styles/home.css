@@ -67,7 +67,7 @@
   padding: 0 24px 32px;
 }
 .c-home-title {
-  font-size: 26px;
+  font-size: calc(26px * var(--c-zoom, 1));
   /* These names are paths and slugs with no spaces in them; without this one
      unbroken name overflows the column instead of wrapping inside it. */
   overflow-wrap: anywhere;
@@ -81,10 +81,10 @@
    a continuum because a headline has a small number of sizes it can be and
    still look chosen (T:3277-3286). */
 .c-home-title.c-t-mid {
-  font-size: 21px;
+  font-size: calc(21px * var(--c-zoom, 1));
 }
 .c-home-title.c-t-min {
-  font-size: 17px;
+  font-size: calc(17px * var(--c-zoom, 1));
 }
 .c-home-title .c-spark {
   color: var(--c-accent);
@@ -106,7 +106,7 @@
 }
 .c-home-sub {
   color: var(--c-faint);
-  font-size: 12.5px;
+  font-size: calc(12.5px * var(--c-zoom, 1));
   text-align: center;
   margin-bottom: 28px;
   overflow: hidden;
@@ -149,7 +149,7 @@
    transition is the nearest honest thing (FIX-7). */
 .chat-root .c-list-tab {
   font: inherit;
-  font-size: 11px;
+  font-size: calc(11px * var(--c-zoom, 1));
   font-weight: 600;
   letter-spacing: 0.8px;
   text-transform: uppercase;
@@ -230,12 +230,12 @@
    is excluded outright rather than having tasks.css's numbers restated here,
    because a copy of them is a second place to keep them in step. */
 .chat-root .c-lists .c-list-panel:not(:has(.tasks-list-frame)) {
-  font-size: var(--c-fs-read);
+  font-size: calc(var(--c-fs-read) * var(--c-zoom, 1));
   line-height: var(--c-lh-read);
 }
 .c-head {
   color: var(--c-faint);
-  font-size: 11px;
+  font-size: calc(11px * var(--c-zoom, 1));
   font-weight: 600;
   letter-spacing: 0.8px;
   text-transform: uppercase;
@@ -254,7 +254,7 @@
    PR4's seat for Artifacts / Snapshots, which have real loaders there. */
 .c-list-empty {
   padding: 10px 14px;
-  font-size: 12px;
+  font-size: calc(12px * var(--c-zoom, 1));
   color: var(--c-faint);
 }
 
@@ -332,7 +332,7 @@
   border: 1px solid var(--c-border);
   border-radius: 12px;
   margin-bottom: 6px;
-  font-size: 12.5px;
+  font-size: calc(12.5px * var(--c-zoom, 1));
   cursor: pointer;
   background: transparent;
   transition:
@@ -351,7 +351,7 @@
    stretching the line. */
 .c-art-ic {
   flex-shrink: 0;
-  font-size: 13px;
+  font-size: calc(13px * var(--c-zoom, 1));
   line-height: 1;
 }
 .c-art-title {
@@ -398,7 +398,7 @@
 .c-snapsretry {
   margin-left: auto;
   font: inherit;
-  font-size: 11.5px;
+  font-size: calc(11.5px * var(--c-zoom, 1));
   font-weight: 400;
   letter-spacing: 0;
   text-transform: none;
@@ -431,7 +431,7 @@
   align-items: baseline;
   gap: 8px;
   padding: 0 4px 5px;
-  font-size: 11.5px;
+  font-size: calc(11.5px * var(--c-zoom, 1));
 }
 .c-snap-run-name {
   color: var(--c-fg);
@@ -452,7 +452,7 @@
   border: 1px solid var(--c-border);
   border-radius: 12px;
   margin-bottom: 6px;
-  font-size: 12.5px;
+  font-size: calc(12.5px * var(--c-zoom, 1));
   cursor: pointer;
 }
 .c-snap-row:hover {
@@ -467,7 +467,7 @@
 .c-snap-dot {
   color: var(--c-faint);
   flex-shrink: 0;
-  font-size: 10px;
+  font-size: calc(10px * var(--c-zoom, 1));
 }
 .c-snap-row.is-here {
   border-color: var(--c-border-strong);
@@ -499,7 +499,7 @@
 }
 .c-snap-caret {
   color: var(--c-faint);
-  font-size: 9px;
+  font-size: calc(9px * var(--c-zoom, 1));
   flex-shrink: 0;
 }
 /* An open row and its body are ONE box: the expansion is part of the row it
@@ -520,7 +520,7 @@
   border-top: none;
   border-radius: 0 0 12px 12px;
   padding: 10px 14px 12px;
-  font-size: 12px;
+  font-size: calc(12px * var(--c-zoom, 1));
 }
 .c-snap-row.is-open + .c-snap-body {
   border-color: var(--c-border-strong);
@@ -533,7 +533,7 @@
   margin: 0 0 10px;
   max-height: 240px;
   overflow: auto;
-  font-size: 11.5px;
+  font-size: calc(11.5px * var(--c-zoom, 1));
   line-height: 1.45;
   white-space: pre;
 }
@@ -591,7 +591,7 @@
 }
 .c-snapsnote {
   color: var(--c-faint);
-  font-size: 11.5px;
+  font-size: calc(11.5px * var(--c-zoom, 1));
   padding: 4px;
 }
 

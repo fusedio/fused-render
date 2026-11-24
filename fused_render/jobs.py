@@ -263,6 +263,7 @@ _ORIGIN_BY_ROUTE: dict[str, str] = {
     "/preferences": "Preferences",
     "/skills": "Skills",
     "/preferences?tab=indexing": "Explorer",
+    "/preferences?s=diagnostics": "Diagnostics",
     "/tasks": "Scheduler",
 }
 

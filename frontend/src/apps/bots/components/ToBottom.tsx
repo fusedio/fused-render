@@ -4,18 +4,33 @@ import type { RefObject } from "react";
 import { setNewCount, useBotsSelector } from "../state/store";
 import { pinToEnd, updateToBottom, viewAll } from "./threadDom";
 
-export interface ToBottomProps { threadRef: RefObject<HTMLDivElement> }
+export interface ToBottomProps {
+  threadRef: RefObject<HTMLDivElement>;
+  /** The bot the thread shows; absent, the store's selection (the page). The rail's bot card names its own
+   *  (components/BotChat): off the page nothing is selected. */
+  botId?: string;
+  /** Thread `sharedScroll`: false for the rail's bot card beside the Bots page, whose own thread holds the
+   *  store's `pinned` / `newCount` — the button then neither reads nor writes them (Bugbot on #2159): a plain
+   *  jump-to-end arrow, always offered, no new-message pill. */
+  sharedScroll?: boolean;
+}
 
-export function ToBottom({ threadRef }: ToBottomProps) {
-  const has = useBotsSelector((s) => !!s.sel && s.bots.some((b) => b.id === s.sel));
-  const n = useBotsSelector((s) => s.newCount), pinned = useBotsSelector((s) => s.pinned);
-  const sel = useBotsSelector((s) => s.sel);
+export function ToBottom({ threadRef, botId, sharedScroll = true }: ToBottomProps) {
+  const sel = useBotsSelector((s) => botId ?? s.sel);
+  const has = useBotsSelector((s) => !!sel && s.bots.some((b) => b.id === sel));
+  const storeN = useBotsSelector((s) => s.newCount), storePinned = useBotsSelector((s) => s.pinned);
+  const n = sharedScroll ? storeN : 0, pinned = sharedScroll ? storePinned : false;
   const fresh = has && !!n;
   return (
     <button className={`tobottom${fresh ? " new" : ""}${has && (fresh || !pinned) ? " show" : ""}`} id="tobottom" type="button"
       title="Jump to the latest message" aria-label="Jump to the latest message"
       onClick={() => {
         const th = threadRef.current;
+        if (!sharedScroll) {
+          // The card's own jump: nothing of the page's bookkeeping is touched.
+          if (th) th.scrollTop = th.scrollHeight;
+          return;
+        }
         if (sel) viewAll(sel);
         setNewCount(0);
         // A jump, not a glide: a smooth scroll over a long thread is still animating when the next message lands, and the

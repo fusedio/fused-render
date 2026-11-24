@@ -1,5 +1,5 @@
 // The SHARE CARD: the comparison chart, this machine's hardware, and the
-// fused render mark, redrawn as one self-contained PNG (SPEC AI-14).
+// Fused Render mark, redrawn as one self-contained PNG (SPEC AI-14).
 //
 // A benchmark number is only meaningful WITH the machine that produced it, so
 // the hardware block is not decoration here — it is the caption without which
@@ -104,7 +104,7 @@ function platformLabel(platform: string): string {
  *  after an upgrade must keep saying which version produced the numbers. */
 export function provenanceLine(appVersion: string | null, now: Date): string {
   const day = now.toLocaleDateString(undefined, { year: "numeric", month: "short", day: "numeric" });
-  return appVersion ? `fused render ${appVersion} · ${day}` : `fused render · ${day}`;
+  return appVersion ? `Fused Render ${appVersion} · ${day}` : `Fused Render · ${day}`;
 }
 
 /** The line under the title: which metric these bars are, and which way it
@@ -188,7 +188,7 @@ export interface ShareCardInput {
 /** Draw the card and hand back its PNG bytes.
  *
  *  Rejects only if the canvas itself is unavailable or refuses to encode; a
- *  missing LOGO is not a failure. The footer's "fused render 0.4.53 · ..."
+ *  missing LOGO is not a failure. The footer's "Fused Render 0.4.53 · ..."
  *  text is drawn unconditionally regardless of whether the mark loaded, so a
  *  failed `loadLogo()` just means the footer ships without its mark, not that
  *  the card loses its branding — the card without its picture is still the

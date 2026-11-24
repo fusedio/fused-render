@@ -59,7 +59,10 @@ CONTROL_POOL = ThreadPoolExecutor(max_workers=2,
 #: The actions that ride `CONTROL_POOL`; every other action rides `POOL`.
 # `canvas_shot` is `app_state`'s twin: a page answering a tool call that is
 # blocked until the answer lands, so it must not queue behind polls either.
-CONTROL_ACTIONS = frozenset({"cancel", "decide", "app_state", "canvas_shot"})
+# `canvas_shot_claim` too (D1471): the page's claim is the step before the
+# capture, and a claim stuck behind polls is a slower picture.
+CONTROL_ACTIONS = frozenset({"cancel", "decide", "allow_denied", "app_state",
+                             "canvas_shot", "canvas_shot_claim"})
 
 
 #: THE TASK-OUTPUT LANE (SPEC T-3). `task_output` parks a worker for up to
@@ -76,6 +79,7 @@ TASK_STOP_POOL = ThreadPoolExecutor(max_workers=2,
 
 #: Actions with a lane of their own, beside the control lane.
 SIDE_POOLS: dict[str, ThreadPoolExecutor] = {"task_output": TASK_OUTPUT_POOL,
+                                              "context_usage": TASK_OUTPUT_POOL,
                                               "task_stop": TASK_STOP_POOL,
                                               "task_background": TASK_STOP_POOL}
 
@@ -105,6 +109,8 @@ BUDGETS_S: dict[str, float] = {
     "cancel": 15.0,
     # SPEC T-3: a 10 s control-response wait plus the request write.
     "task_output": 15.0,
+    # The context popover's breakdown: the same 10 s wait, on the same lane.
+    "context_usage": 15.0,
     "task_stop": 15.0,
     "task_background": 15.0,
     "commands": 30.0,

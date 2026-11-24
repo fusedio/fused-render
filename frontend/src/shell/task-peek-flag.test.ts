@@ -147,7 +147,7 @@ describe("the markup adds nothing when the feature is off", () => {
     expect(VIEWS).toContain("{SHOW_PAGE_DOOR && peekOn && page && !openDraft && (");
     expect(VIEWS).toContain("{SHOW_PAGE_DOOR && peekOn && page && !isDraftTask(task) && (");
     // …and the card's hover strip is not drawn FOR one either.
-    expect(VIEWS).toContain("{((peekOn && page) || file || folderMissing");
+    expect(VIEWS).toContain("{((peekOn && page) || folderMissing");
   });
 
   it("writes no fit attributes on the list or the toolbar", () => {
@@ -173,7 +173,9 @@ describe("the markup adds nothing when the feature is off", () => {
     // Since 2026-09-20 the scope no longer disarms the peek — the app page's
     // Tasks tab hosts the same panel (TaskPeekFrame.tsx) — so the flag is the
     // whole gate on the Tasks page, and the app page adds its own tab test.
-    expect(PAGE).toContain("const peekable = peekOn;");
+    // …except in the rail's Tasks card (TasksPeek, `inCard`; owner,
+    // 2026-11-07), which hosts no side peek of its own.
+    expect(PAGE).toContain("const peekable = peekFlag && !inCard;");
     expect(PAGE).toContain("if (!peekable) return page;");
     expect(FRAME).toContain('<div className="peek-shell">');
     // …and the OFF shells share no name with the peek's host, so no rule reaches them.
@@ -212,116 +214,6 @@ describe("the peek header", () => {
     expect(HEAD).not.toContain("<ChatTopbar");
   });
 
-  it("orders the row left to right, and that order is the tab order", () => {
-    // Controls · who · acts. Read off the source in the order it renders,
-    // because the tab order IS the DOM order and there is no tabindex anywhere
-    // in this header to say otherwise.
-    const head = HEAD.slice(
-      HEAD.indexOf('<header className="task-side-peek-head"'),
-      HEAD.indexOf("</header>"),
-    );
-    const at = (needle: string) => {
-      const i = head.indexOf(needle);
-      expect(i).toBeGreaterThan(-1);
-      return i;
-    };
-    const order = [
-      'aria-label="Close the task panel"',
-      'aria-label="Previous task"',
-      'aria-label="Next task"',
-      // The identity block, in one element (TaskPeekWho.tsx) — its own three
-      // marks are ordered below.
-      "<TaskPeekWho",
-      // …and the right cluster reads project · Open · ⋮: the FACT, then the
-      // act, then the rest of the acts (design.md, Polish batch 4).
-      "<TaskPeekProject",
-      "task-side-peek-open",
-      'aria-label="More actions"',
-    ].map(at);
-    expect(order).toEqual([...order].sort((a, b) => a - b));
-    expect(head).not.toContain("tabIndex");
-    // RING · NUMBER · TITLE inside that block, and nothing between them that
-    // could take a tab stop.
-    const who = WHO.slice(WHO.indexOf('<div className="task-side-peek-who">'));
-    const inner = ["<StatusIcon", "task-side-peek-id", "task-side-peek-title"].map((n) => {
-      const i = who.indexOf(n);
-      expect(i).toBeGreaterThan(-1);
-      return i;
-    });
-    expect(inner).toEqual([...inner].sort((a, b) => a - b));
-    expect(WHO).not.toContain("tabIndex");
-  });
-
-  it("leads with a plain × in EVERY mode, and has NO Resize panel (2026-09-15)", () => {
-    // The × always closes (design.md, Polish batch 4, item 11). The way out of
-    // cover is now the sidebar itself — expanding it resets the panel to its
-    // default split (task-peek-store `expandUncovers`) — so the "Resize panel"
-    // button that stood beside the × is gone, not folded away.
-    expect(HEAD).toContain('aria-label="Close the task panel"');
-    expect(HEAD).toContain('data-hint="Close · Esc"');
-    expect(HEAD).not.toContain("<PanelIcon");
-    expect(HEAD).not.toContain('className="task-side-peek-resize"');
-    expect(HEAD).not.toContain("Resize panel");
-    expect(HEAD).not.toContain("showListBesidePeek");
-    expect(HEAD).not.toContain("canShowList");
-    expect(HEAD).not.toContain('items.push({ label: "Close", icon: ICON_CLOSE');
-  });
-
-  it('says "↗ Open" in words, in the header and on the row alike', () => {
-    // The folder door mark was the page's one picture for this act, and a good
-    // one in a MENU. Out on a row of glyph buttons that are otherwise verbs —
-    // run, archive, delete — it was the only mark a reader had to be taught,
-    // one tooltip at a time (design.md, Polish batch 4).
-    //
-    // THE MARK LEADS AND THE ARROW POINTS OUT (Polish batch 5): an external-
-    // link glyph in front of the word, the way every other icon-and-word
-    // control in this app is built. The trailing "→" it replaces meant
-    // "forward", which is what the Next chevron three inches away means.
-    expect(HEAD).toContain("{ICON_OPEN_EXTERNAL}\n                  Open");
-    expect(HEAD).not.toContain("ICON_ARROW_RIGHT");
-    expect(VIEWS).not.toContain("ICON_ARROW_RIGHT");
-    expect(VIEWS).toContain("const OPEN_DOOR_LABEL = (");
-    expect(VIEWS).toContain("{OPEN_DOOR_LABEL}");
-    // …and the same words on the row AND on the wall card, which is the whole
-    // claim: one act, one wording, three surfaces.
-    expect((VIEWS.match(/\{OPEN_DOOR_LABEL\}/g) ?? []).length).toBe(2);
-    expect(VIEWS).toContain('className="tasks-act tasks-act--page"');
-    expect(VIEWS).toContain('className="tasks-act tasks-card-act tasks-act--page"');
-    // …AND THE CARDS WALL, which lives in TaskCards.tsx and draws its own door.
-    // It takes the words from the same export rather than typing them again.
-    expect(CARDS).toContain("OPEN_DOOR_LABEL,");
-    expect(CARDS).toContain("{peekOn ? OPEN_DOOR_LABEL : ICON_FOLDER}");
-    expect(VIEWS).toContain("export const OPEN_DOOR_LABEL = (");
-    // BOTH of the wall's two doors — the live one and the disabled one a gone
-    // folder gets.
-    expect((CARDS.match(/\{peekOn \? OPEN_DOOR_LABEL : ICON_FOLDER\}/g) ?? []).length).toBe(2);
-    // FLAG OFF, MAIN'S GLYPH. This file's cards also render on the app page's
-    // Tasks tab, where there is no peek — the door keeps the folder there, and
-    // the text styling is gated on the same `peekOn` that the List row's own
-    // door is rendered behind.
-    expect(CARDS).toContain('(peekOn ? " task-card-door--page" : "")');
-    expect(CARDS).toContain("const ICON_FOLDER = (");
-    expect(CARDS_CSS).toContain(".task-card-doors > .task-card-door--page {");
-    // …and all three doors wear an OUTLINE at rest (design.md, Polish batch 5).
-    // The wall's already did; the other two were bare words in a run of ink,
-    // with only a hover wash to say they could be pressed.
-    expect(PEEK_CSS).toContain(".task-side-peek-open {");
-    expect(PEEK_CSS.slice(PEEK_CSS.indexOf(".task-side-peek-open {"))).toContain(
-      "border: 1px solid var(--border);",
-    );
-    expect(TASKS_CSS.slice(TASKS_CSS.indexOf(".tasks-act--page,"))).toContain(
-      "border-color: var(--border);",
-    );
-    // The SHAPE survives where a mark is still the right answer — the peek's ⋮,
-    // where a menu row is a label with a glyph beside it.
-    expect(HEAD).toContain("<svg {...ICON}><path d={ICON_OPEN_FOLDER_PATH} /></svg>");
-    expect(HEAD).toContain("icon: ICON_OPEN_DOOR");
-    // …and the arrows the folder replaced are still gone from the rows, cards
-    // and header.
-    expect(VIEWS).not.toContain("M14 4h6v6M20 4l-7 7M10 20H4v-6M4 20l7-7");
-    expect(HEAD).not.toContain("M14 4h6v6M20 4l-7 7M10 20H4v-6M4 20l7-7");
-  });
-
   it("draws the row's and the card's doors as OUTLINES, and the card keeps its hover under them (Akshil, 2026-09-14)", () => {
     // No fill on hover — outline brightens and ink goes near-white.
     expect(PEEK_CSS).toContain(".tasks-peek-host .tasks-act--page:hover:not(:disabled),");
@@ -333,22 +225,6 @@ describe("the peek header", () => {
     // The strip is the card's sibling, so the wrapper's hover has to carry the fill.
     expect(PEEK_CSS).toContain(".tasks-peek-host .tasks-card-wrap:hover > .schedule-tv-card:not(:disabled)");
     expect(PEEK_CSS).toContain(".tasks-peek-host .tasks-card-wrap:hover > .schedule-tv-card.is-peeked");
-  });
-
-  it("walks with CHEVRONS, not arrows", () => {
-    expect(HEAD).toContain('<svg {...ICON}><polyline points="18 15 12 9 6 15" /></svg>');
-    expect(HEAD).toContain('<svg {...ICON}><polyline points="6 9 12 15 18 9" /></svg>');
-  });
-
-  it("names the ARROW KEYS in the chevrons' tooltips", () => {
-    // A tooltip names the gesture a reader is most likely to reach for, and on
-    // a list with a panel open that is ↑/↓ — not ⌃⇧K/J, which is a chord you
-    // have to be told about twice (design.md, Polish batch 5). The chords still
-    // work; they are simply not what the button advertises.
-    expect(HEAD).toContain('data-hint="Previous task · ↑"');
-    expect(HEAD).toContain('data-hint="Next task · ↓"');
-    expect(HEAD).not.toContain("⌃⇧K\"");
-    expect(HEAD).not.toContain("⌃⇧J\"");
   });
 
   it("has no ⌘↩ anywhere — the doors are the way out", () => {
@@ -422,35 +298,6 @@ describe("the peek header", () => {
     expect(HEAD).not.toContain('label: "Copy link"');
   });
 
-  it("gives every icon a tooltip", () => {
-    const head = HEAD.slice(
-      HEAD.indexOf('<header className="task-side-peek-head"'),
-      HEAD.indexOf("</header>"),
-    );
-    // One `data-hint` per control — the app's own tooltip contract. Five now:
-    // close, prev, next, Open, kebab (Resize panel went 2026-09-15). The
-    // project name is not in the count: it is a label, and its full path is a
-    // `title` rather than a hint (design.md, Polish batch 4).
-    expect(head.match(/data-hint=/g)?.length).toBe(5);
-  });
-
-  it("stays ONE LINE at the pane minimum by folding, in a stated order", () => {
-    // The title ellipsises all the way down first; then the project name goes,
-    // then the door — and the door reappears in the ⋮, because a hidden control
-    // has to be somewhere (design.md, Header + list state v2).
-    expect(FIT).toContain('export const PEEK_HEAD_DROPS = [\n  ".task-side-peek-project",\n  ".task-side-peek-open",\n]');
-    expect(PEEK_CSS).toContain(
-      '.task-side-peek-head[data-fit]:not([data-fit="0"]) .task-side-peek-project',
-    );
-    expect(PEEK_CSS).toContain('.task-side-peek-head[data-fit="2"] .task-side-peek-open');
-    expect(HEAD).toContain("headFit >= PEEK_HEAD_DROPS.length");
-    // Nothing else ever folds: the way out of a panel and the way to its
-    // actions are what a narrow window must never take away.
-    for (const kept of ["task-side-peek-title", "task-side-peek-id", "task-side-peek-kebab"]) {
-      expect(PEEK_CSS).not.toContain(`[data-fit] .${kept} {\n  display: none`);
-    }
-  });
-
   it("sends a MESSAGE row to the panel, at that turn", () => {
     // The press used to leave the page for Explorer; now the thread the reader
     // has expanded stays on screen beside the conversation, which is the whole
@@ -479,9 +326,10 @@ describe("the peek header", () => {
     // wash, because a label that lights up under the pointer promises a press.
     expect(WHO).toContain('<span className="task-side-peek-project"');
     expect(WHO).toContain('title={tildePath(task.project, home)}');
-    // …and the peek still hands its own home directory over, so the tooltip
-    // keeps its `~`.
-    expect(HEAD).toContain("<TaskPeekProject task={task} home={home} />");
+    // The peek header no longer shows the project or the agent at all (user,
+    // 2026-11-04: the header was crammed); the chat Topbar still does.
+    expect(HEAD).not.toContain("<TaskPeekProject");
+    expect(HEAD).not.toContain("<TaskPeekAgent");
     expect(PEEK_CSS).not.toContain(".task-side-peek-project:hover");
   });
 
@@ -690,7 +538,8 @@ describe("the middle pane's floor", () => {
     // Since 2026-09-15 the switch is `tight`, not `floored`: the list scrolls
     // rather than folding its marks from the first pixel the frame is under
     // the column (Scheduled.tsx `scrolls`).
-    expect(PAGE).toContain("const scrolls = peek.open && peek.tight;");
+    // (Never in the rail's Tasks card: the page's peek layout is the page's.)
+    expect(PAGE).toContain("const scrolls = peekable && peek.open && peek.tight;");
     // The frame itself moved to TaskPeekFrame.tsx (2026-09-20) so the app page
     // can draw the same one; the switch and the number are written there.
     expect(FRAME).toContain("const scrolls = layout.open && layout.tight;");

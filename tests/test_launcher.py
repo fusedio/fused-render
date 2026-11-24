@@ -228,18 +228,7 @@ def test_prefs_launcher_keys(home, tmp_path):
     assert os.path.isfile(home / "prefs.json")
 
 
-# ---- Fused Bot flavor --------------------------------------------------------
-
-
-@pytest.fixture
-def bot(monkeypatch):
-    from fused_render import _flavor
-
-    monkeypatch.setattr(_flavor, "_CACHED", "bot")
-
-
-def _prefs_file(home):
-    return home / "prefs.json"
+# ---- bot rows ----------------------------------------------------------------
 
 
 def _bot(bid, name, *, pinned=False, updated=0.0, status="idle"):
@@ -247,68 +236,82 @@ def _bot(bid, name, *, pinned=False, updated=0.0, status="idle"):
             "running": status != "idle", "updated": updated, "pinned": pinned}
 
 
-def test_bot_flavor_keys_and_defaults(home, bot):
-    assert launcher.hotkey_key() == "bot_launcher_hotkey"
-    assert launcher.row_modifier_key() == "bot_launcher_row_modifier"
-    assert launcher.default_hotkey() == "alt+shift+space" and launcher.default_row_modifier() == "alt+shift"
-    home.mkdir(parents=True, exist_ok=True)
-    _prefs_file(home).write_text(json.dumps({"launcher_hotkey": "cmd+shift+KeyL",
-                                             "launcher_row_modifier": "cmd"}))
-    s = launcher.settings()
-    assert s["kind"] == "bots" and s["hotkey"] == "alt+shift+space" and s["row_modifier"] == "alt+shift"
-    _prefs_file(home).write_text(json.dumps({"bot_launcher_hotkey": "cmd+shift+KeyL",
-                                             "bot_launcher_row_modifier": "cmd"}))
-    s = launcher.settings()
-    assert s["hotkey"] == "shift+cmd+l" and s["row_modifier"] == "cmd"
-
-
-def test_render_flavor_ignores_bot_keys(home):
-    assert launcher.hotkey_key() == "launcher_hotkey" and launcher.row_modifier_key() == "launcher_row_modifier"
-    home.mkdir(parents=True, exist_ok=True)
-    _prefs_file(home).write_text(json.dumps({"bot_launcher_hotkey": "cmd+shift+KeyL",
-                                             "bot_launcher_row_modifier": "cmd"}))
-    s = launcher.settings()
-    assert s["kind"] == "apps" and s["hotkey"] == hotkey.DEFAULT_SPEC and s["row_modifier"] == "alt"
-
-
-def test_bot_registry_orders_pinned_then_recent(home, bot, monkeypatch):
+def test_bot_registry_orders_pinned_then_recent_and_is_search_only(home, monkeypatch):
     from fused_render import dock
 
     monkeypatch.setattr(dock, "_bot_rows", lambda: [
         _bot("old", "Old", updated=1), _bot("zed", "zed", pinned=True),
         _bot("new", "New", updated=9, status="busy"), _bot("alp", "Alpha", pinned=True)])
-    launcher.invalidate()
-    reg = launcher.registry()
+    reg = launcher._bot_registry()
     assert [r["id"] for r in reg] == ["alp", "zed", "new", "old"]  # pinned by name casefold, then updated desc
-    assert [r["pinned"] for r in reg] == [True, True, False, False]
-    assert [r["recent"] for r in reg] == [False, False, True, True]
+    # Found by typing only: neither flag set, so the empty query never lists them.
+    assert not any(r["pinned"] or r["recent"] for r in reg)
     new = reg[2]
     assert new["kind"] == "bot" and new["path"] == "new" and new["url"] == "/bots/new"
     assert new["name"] == new["title"] == "New" and new["icon"] is None
     assert new["face"] == {"emoji": "x"} and new["status"] == "busy" and new["running"] is True
-    assert [r["id"] for r in launcher.search("", reg)] == ["alp", "zed", "new", "old"]
-    assert launcher.nth_pinned(1)["id"] == "alp" and launcher.nth_pinned(3)["id"] == "new"
-    assert launcher.nth_pinned(5) is None
 
 
-def test_prefs_launcher_keys_store_per_flavor(home, tmp_path, bot):
-    home.mkdir(parents=True, exist_ok=True)
-    _prefs_file(home).write_text(json.dumps({"launcher_hotkey": "alt+space"}))
+def test_launcher_shown_route(home, tmp_path):
+    """GET /api/launcher/shown: the rail's Search door's open state. False
+    with no panel, the hook's answer with one, false if the hook raises."""
     client = _client(tmp_path)
-    r = client.put("/api/prefs", json={"launcher_hotkey": "cmd+shift+KeyL",
-                                       "launcher_row_modifier": "cmd"}, headers=FUSED)
+    assert client.get("/api/launcher/shown").json() == {"shown": False}
+    launcher.native_hooks["is_shown"] = lambda: True
+    assert client.get("/api/launcher/shown").json() == {"shown": True}
+
+    def boom():
+        raise RuntimeError("panel gone")
+
+    launcher.native_hooks["is_shown"] = boom
+    assert client.get("/api/launcher/shown").json() == {"shown": False}
+
+
+def test_launcher_show_route(home, tmp_path):
+    """POST /api/launcher/show: the Claude rail's Search door. 404 with no
+    panel in this process; with one, the hook is called (it hops to the
+    main thread itself); the X-Fused guard holds."""
+    client = _client(tmp_path)
+    assert client.post("/api/launcher/show", headers=FUSED).status_code == 404
+    assert client.get("/api/config").json()["launcher_available"] is False
+
+    shown = []
+    launcher.native_hooks["show"] = lambda anchor=None: shown.append(anchor)
+    assert client.get("/api/config").json()["launcher_available"] is True
+    assert client.post("/api/launcher/show").status_code in (400, 403)
+    assert shown == []
+    r = client.post("/api/launcher/show", headers=FUSED)
+    assert r.status_code == 200 and r.json() == {"ok": True}
+    assert shown == [None]
+
+    # The rail's anchor reaches the hook; junk is no anchor.
+    r = client.post("/api/launcher/show", json={"anchor": {"left": 1180.5, "top": 12}}, headers=FUSED)
     assert r.status_code == 200
-    stored = json.loads(_prefs_file(home).read_text())
-    assert stored["bot_launcher_hotkey"] == "shift+cmd+l" and stored["bot_launcher_row_modifier"] == "cmd"
-    assert stored["launcher_hotkey"] == "alt+space" and "launcher_row_modifier" not in stored
-    assert r.json()["launcher"]["hotkey"] == "shift+cmd+l"
+    assert shown[-1] == {"left": 1180.5, "top": 12.0}
+    client.post("/api/launcher/show", json={"anchor": {"left": "x", "top": 12}}, headers=FUSED)
+    assert shown[-1] is None
+    client.post("/api/launcher/show", json={"anchor": [1, 2]}, headers=FUSED)
+    assert shown[-1] is None
+    before = len(shown)
+    r = client.post("/api/launcher/show", json={"anchor": {"left": 10**400, "top": 12}}, headers=FUSED)
+    assert r.status_code == 200 and len(shown) == before + 1 and shown[-1] is None
+    before = len(shown)
+    r = client.post("/api/launcher/show", json={"anchor": {"left": True, "top": 12}}, headers=FUSED)
+    assert r.status_code == 200 and len(shown) == before + 1 and shown[-1] is None
 
 
-def test_api_launcher_bot_has_no_files(home, tmp_path, bot, monkeypatch):
-    from fused_render import dock
-
-    monkeypatch.setattr(dock, "_bot_rows", lambda: [_bot("a", "Alpha", pinned=True)])
-    launcher.invalidate()
-    body = _client(tmp_path).get("/api/launcher?q=alp").json()
-    assert body["files"] == [] and body["files_reason"] == ""
-    assert [x["id"] for x in body["apps"] if x.get("kind") == "bot"] == ["a"]
+def test_beside_frame_stands_like_window_a():
+    """The panel's right edge a gap left of the rail, its top level with the
+    door; clamped to the screen's visible frame (y-up)."""
+    vis = (0.0, 0.0, 1920.0, 1055.0)
+    # Rail's left edge at x=1870, door's top at y=1000 (screen, y-up).
+    x, y = launcher.beside_frame(1870, 1000, 680, 74, vis)
+    assert (x, y) == (1870 - 8 - 680, 1000 - 74)
+    # Taller: the top stays, it grows down.
+    assert launcher.beside_frame(1870, 1000, 680, 500, vis) == (1182, 500)
+    # A narrow window near the screen's left: never off the left edge.
+    assert launcher.beside_frame(300, 1000, 680, 74, vis)[0] == 0
+    # Taller than the room under the door: pushed up to fit.
+    assert launcher.beside_frame(1870, 60, 680, 700, vis) == (1182, 0)
+    # A door above the visible frame (a second screen's numbers): the top clamps.
+    assert launcher.beside_frame(1870, 2000, 680, 74, vis) == (1182, 1055 - 74)

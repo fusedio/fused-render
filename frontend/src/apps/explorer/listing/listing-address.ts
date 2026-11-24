@@ -1,4 +1,4 @@
-import { DRIVE_ABS } from "@platform/lib/path-url";
+import { DRIVE_ABS, urlScheme } from "@platform/lib/path-url";
 
 // Decision 5: whether a typed query in the listing's merged search field
 // names one exact filesystem path, as opposed to a pattern to search for.
@@ -23,6 +23,11 @@ export function listingAddress(
 ): string | null {
   const raw = query.trim();
   if (!raw || raw.includes("*")) return null;
+  // A URL (`s3://…`, `https://…`, `file://…`) is never a folder-relative
+  // path: joining it onto the folder would stat `<folder>/s3:/…` on every
+  // keystroke. The field's Enter handler opens S3 addresses itself.
+  // A one-letter "scheme" is a Windows drive (`C://Users`), not a URL.
+  if ((urlScheme(raw)?.length ?? 0) >= 2) return null;
   if (
     !raw.includes("/") &&
     raw !== "~" &&

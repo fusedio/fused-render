@@ -5,7 +5,7 @@
   "type": "module",
   "scripts": {
     "dev": "vite",
-    "test": "bun test",
+    "test": "bun test --parallel",
     "check:boundaries": "node scripts/check-boundaries.mjs",
     "build": "node scripts/check-boundaries.mjs && tsc --noEmit && vite build",
     "watch": "vite build --watch",

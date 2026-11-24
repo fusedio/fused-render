@@ -294,14 +294,16 @@ export function confirmQuestion(targets: MachineProc[], verb: string): string {
 
 export type ClaudeTreeTone = "running" | "waiting" | "stale" | "idle";
 
-/** What a tree is doing, in words, and its tone. "Done – still alive" — the
- *  task finished but its session host is still up (holding a background job,
- *  or just idle) — is amber: the obvious thing to stop. */
+/** What a tree is doing, in words, and its tone. "Background" — the task is
+ *  finished but a job it started is still running — reads as work in
+ *  progress. "Done – still alive" — the session host is up with nothing left
+ *  running — is amber: the obvious thing to stop. */
 export function claudeTreeState(t: ClaudeTaskTree): { text: string; tone: ClaudeTreeTone } {
   if (t.helper) return { text: "App helper", tone: "idle" };
   if (!t.task_id) return { text: "No task", tone: "idle" };
   if (t.state === "waiting") return { text: "Waiting on you", tone: "waiting" };
   if (t.state === "running") return { text: "Running", tone: "running" };
+  if (t.state === "background") return { text: "Background", tone: "running" };
   if (t.state === "done") return { text: "Done – still alive", tone: "stale" };
   // Any other status (queued, upcoming, …) with the tree still up.
   return { text: `${statusWord(t.status)} – still alive`, tone: "stale" };

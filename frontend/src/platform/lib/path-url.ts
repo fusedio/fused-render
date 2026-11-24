@@ -66,11 +66,32 @@ export function canonFsPath(p: string): string {
   return DRIVE_ABS.test(s) ? s.replace(/\\/g, "/") : s;
 }
 
+// An `s3://bucket/key` explorer LOCATION (platform/lib/remote.ts) — not a
+// filesystem path, and never to be handed to a local route. Defined here, in
+// the dependency-free codec module, because the codec itself needs it;
+// remote.ts re-exports it as part of the remote surface.
+export function isRemoteLocation(p: string | null | undefined): boolean {
+  return typeof p === "string" && p.startsWith("s3://");
+}
+
 // Windows fs paths are rooted at a drive letter ("C:/..."), not at "/": the
 // shell's canonical form adds a leading slash only for POSIX paths. A bare
 // drive ("C:", how a drive root decodes from a URL whose segment split drops
 // the trailing slash) becomes "C:/" -- bare "C:" is cwd-relative.
+//
+// A first segment of `s3:` is a REMOTE location: `/explorer/view/s3%3A/b/k`
+// (encodeFsPathSegments drops the "//" as an empty segment) decodes back to
+// `s3://b/k`. The URL never carries a prefix's trailing "/" — the server's
+// stat decides file vs folder — except the bucket root, which is always
+// `s3://b/`. A slash already present in `joined` is kept.
+// Limits: a key with an empty segment (`a//b`) or a `.`/`..` segment cannot be
+// addressed — this codec drops empty segments and the browser normalises dot
+// segments out of the URL; the server refuses `.`/`..` keys anyway.
 export function rootedFsPath(joined: string): string {
+  if (joined === "s3:" || joined.startsWith("s3:/")) {
+    const rest = joined.slice(3).replace(/^\/+/, "");
+    return "s3://" + rest + (rest && !rest.includes("/") ? "/" : "");
+  }
   if (/^[A-Za-z]:$/.test(joined)) return joined + "/";
   return /^[A-Za-z]:\//.test(joined) ? joined : "/" + joined;
 }

@@ -89,6 +89,9 @@ const {
   peekVisibleOrder,
   stepPeekKey,
   syncPeekFromUrl,
+  registerPeekCard,
+  notePressInCard,
+  workspaceOwnsKey,
 } = await import("./task-peek-store");
 
 beforeEach(() => {
@@ -1192,6 +1195,27 @@ describe("the sidebar, and the only thing that moves it", () => {
     expect(sidebar.loadSidebarState().collapsed).toBe(false);
   });
 
+  it("a covering panel stops at the host, not the window, when chrome stands at its right", () => {
+    // The shell's fallback rail (48px) beside the host: counted as content,
+    // the panel came out 48px wider than the host, ran out past its left edge
+    // and the host's `overflow: hidden` cut the × off under the sidebar rail.
+    arm();
+    setPeekWidth(1200);
+    const doc = globalThis as unknown as { document: { querySelector: (sel: string) => unknown } };
+    const realQuerySelector = doc.document.querySelector;
+    const right = VIEWPORT - 48;
+    doc.document.querySelector = (sel: string) =>
+      sel === ".tasks-peek-host" ? { getBoundingClientRect: () => ({ right }) } : null;
+    try {
+      applyResize();
+      expect(sidebar.getSidebarState().collapsed).toBe(true);
+      expect(currentRoom().cover).toBe(true);
+      expect(currentRoom().peekWidth).toBe(right - SIDEBAR_RAIL);
+    } finally {
+      doc.document.querySelector = realQuerySelector;
+    }
+  });
+
   it("SHRINKS a covering panel to the default when the reader re-opens the sidebar", () => {
     // Akshil, 2026-09-15. Their sidebar wins; the panel that was covering the
     // list hands its width back so the list is on screen beside it again.
@@ -1493,7 +1517,12 @@ function withFakeTasksDom(
   const liveEachSide = opts.tightEachSide ?? untightEachSide;
   const main = { getBoundingClientRect: () => ({ width: Math.min(cap, opts.content) }) };
   const page = {};
-  const host = { clientWidth: opts.content };
+  // Its right edge on the window's: no chrome beside it (task-peek-store
+  // `viewportWidth`).
+  const host = {
+    clientWidth: opts.content,
+    getBoundingClientRect: () => ({ right: (globalThis as { window: { innerWidth: number } }).window.innerWidth }),
+  };
   const styles = new Map<unknown, Record<string, unknown>>();
   styles.set(main, {
     getPropertyValue: (name: string) =>
@@ -1715,5 +1744,119 @@ describe("frameClickCloses", () => {
 
   it("says nothing about a click with no target at all", () => {
     expect(frameClickCloses(null)).toBe(false);
+  });
+});
+
+// THE RAIL'S TASKS CARD (owner, 2026-11-07; shell/claude-rail TasksPeek): a
+// press in the card opens the task's chat in the card — never the page's peek
+// or its URL — and a press on the page under it still opens the page's.
+describe("the rail's Tasks card", () => {
+  function card() {
+    const token = {};
+    const log: string[] = [];
+    const off = registerPeekCard(token, {
+      open: (key, anchor) => log.push(`open ${key}${anchor ? ` @${anchor}` : ""}`),
+      close: () => log.push("close"),
+    });
+    return { token, log, off };
+  }
+
+  it("a press in the card opens its chat there, and the page's peek stays as it was", () => {
+    setPeekHost(true);
+    openPeek("sess-page");
+    const c = card();
+    notePressInCard(c.token);
+    expect(openPeek("sess-card", { anchor: "m3" })).toBe(true);
+    closePeek();
+    expect(c.log).toEqual(["open sess-card @m3", "close"]);
+    expect(getPeekState().key).toBe("sess-page");
+    c.off();
+  });
+
+  it("a card with no press of its own leaves every open to the page", () => {
+    setPeekHost(true);
+    const c = card();
+    expect(openPeek("sess-1")).toBe(true);
+    expect(getPeekState().key).toBe("sess-1");
+    expect(c.log).toEqual([]);
+    c.off();
+  });
+
+  it("a card that went takes its scope with it", () => {
+    const c = card();
+    notePressInCard(c.token);
+    c.off();
+    expect(openPeek("sess-1")).toBe(false);
+    expect(c.log).toEqual([]);
+  });
+
+  it("refuses an empty key in the card too", () => {
+    const c = card();
+    notePressInCard(c.token);
+    expect(openPeek("")).toBe(false);
+    c.off();
+  });
+});
+
+describe("workspaceOwnsKey", () => {
+  // Elements as far as the rule reads them: an ancestor chain, `closest` on
+  // the card's selector, `contains`.
+  function el(parent: FakeEl | null, card = false, inert = false): FakeEl {
+    const me: FakeEl = {
+      parent,
+      card,
+      inert,
+      closest(sel: string) {
+        if (sel !== ".claude-rail-peek" && sel !== "[inert]") return null;
+        const hit = sel === "[inert]" ? (n: FakeEl) => n.inert : (n: FakeEl) => n.card;
+        for (let n: FakeEl | null = me; n; n = n.parent) if (hit(n)) return n;
+        return null;
+      },
+      contains(other: FakeEl) {
+        for (let n: FakeEl | null = other; n; n = n.parent) if (n === me) return true;
+        return false;
+      },
+    };
+    return me;
+  }
+  interface FakeEl {
+    parent: FakeEl | null;
+    card: boolean;
+    inert: boolean;
+    closest(sel: string): FakeEl | null;
+    contains(other: FakeEl): boolean;
+  }
+  const page = el(null);
+  const pageWs = el(page);
+  const cardBox = el(null, true);
+  const cardWs = el(cardBox);
+  const inCard = el(cardWs);
+  const onPage = el(pageWs);
+  const own = (root: FakeEl, target: unknown) => workspaceOwnsKey(root as unknown as Element, target as EventTarget | null);
+
+  it("the page's Workspace: every key but those typed in a rail card", () => {
+    expect(own(pageWs, onPage)).toBe(true);
+    expect(own(pageWs, { tagName: "BODY" })).toBe(true);
+    expect(own(pageWs, null)).toBe(true);
+    expect(own(pageWs, inCard)).toBe(false);
+  });
+
+  it("the card's Workspace: only keys typed inside its card", () => {
+    expect(own(cardWs, inCard)).toBe(true);
+    expect(own(cardWs, onPage)).toBe(false);
+    expect(own(cardWs, null)).toBe(false);
+  });
+
+  // The list goes inert under the card's chat, the card while it is down:
+  // a key typed on the chat's Back (inside the card, outside the list) must
+  // not reach the Workspace behind (Bugbot, 2026-11-08).
+  it("a Workspace under inert owns nothing, not even a key typed in its card", () => {
+    const hiddenList = el(cardBox, false, true);
+    const hiddenWs = el(hiddenList);
+    const onBack = el(cardBox);
+    expect(own(hiddenWs, onBack)).toBe(false);
+    expect(own(hiddenWs, el(hiddenWs))).toBe(false);
+    const downCard = el(null, true, true);
+    expect(own(el(downCard), el(downCard))).toBe(false);
   });
 });

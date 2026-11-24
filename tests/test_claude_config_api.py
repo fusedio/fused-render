@@ -1208,6 +1208,8 @@ def mcp_cache(tmp_path, monkeypatch):
     from fused_render.claude_config import mcp as mcp_mod
 
     monkeypatch.setenv("FUSED_RENDER_HOME", str(tmp_path / "mcp-home"))
+    # The list refresh also probes a headless session; never the real binary here.
+    monkeypatch.setattr(lib, "claude_session_mcp_status", lambda: {})
     mcp_mod._wait_idle()
     yield mcp_mod
     mcp_mod._wait_idle()

@@ -5,31 +5,26 @@
 import type { Bookmark } from "@platform/lib/bookmarks";
 import type { CurrentApp } from "@shell/current-apps-lib";
 
-// Apps + canvases sum to the ten the apps group had alone (owner,
-// 2026-10-22: "reduce the number of apps being shown, and use the freed up
-// space to show canvases") — the rail's height does not grow.
-export const RAIL_APPS_MAX = 5;
-export const RAIL_CANVASES_MAX = 5;
-export const RAIL_PINS_MAX = 3;
+// Seven of each (owner, 2026-11-09: was 5 / 5 / 3); the rail's middle
+// scrolls on a short window (sidebar.css `.sidebar-rail-scroll`).
+export const RAIL_APPS_MAX = 7;
+export const RAIL_CANVASES_MAX = 7;
+export const RAIL_PINS_MAX = 7;
 
 /** The three groups in the order their sections show them, capped. `desk` is
  *  the whole desk in section order; it splits on `canvas` exactly as the
- *  sections do (CurrentAppsSection `inSection`). Under Fused Bot no section
- *  exists, so no group does; the canvases group follows the Canvases
- *  section's own gate (`canvases`: the feature on, owner 2026-10-22 — no
+ *  sections do (CurrentAppsSection `inSection`). The canvases group follows
+ *  the Canvases section's own gate (`canvases`: the feature on, owner 2026-10-22 — no
  *  sign-in half, so a new machine sees the group with the switch). */
 export function railExtras({
   desk,
   pins,
-  bot,
   canvases,
 }: {
   desk: CurrentApp[];
   pins: Bookmark[];
-  bot: boolean;
   canvases: boolean;
 }): { apps: CurrentApp[]; canvases: CurrentApp[]; pins: Bookmark[] } {
-  if (bot) return { apps: [], canvases: [], pins: [] };
   return {
     apps: desk.filter((a) => a.canvas === null).slice(0, RAIL_APPS_MAX),
     canvases: canvases ? desk.filter((a) => a.canvas !== null).slice(0, RAIL_CANVASES_MAX) : [],

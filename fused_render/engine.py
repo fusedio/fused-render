@@ -1375,7 +1375,7 @@ async def run_python(path: str, params: dict) -> dict:
         logger.exception("fused engine execute failed for %s", path)
         return _error_dict(
             "EngineError",
-            f"fused-render internal error (not your script) while running {path}",
+            f"Fused Render internal error (not your script) while running {path}",
             traceback.format_exc(),
         )
 

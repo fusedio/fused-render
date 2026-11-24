@@ -11,7 +11,12 @@ Build workspace for the Map Viewer's browser rendering stack, committed under
     drawn on the GPU via deck.gl; band choice, rescale, colormap, stretch,
     gamma and nodata are shader uniforms, so restyling never refetches
   - `maplibre-gl-vector` — GeoJSON as-is; GeoParquet, Shapefile, GeoPackage,
-    FlatGeobuf, CSV, KML… through DuckDB-WASM, tiled in the browser
+    FlatGeobuf, CSV, KML… through DuckDB-WASM, tiled in the browser. A file
+    holding several layers (a GeoPackage with several tables, a zip of
+    shapefiles, a KML with folders) is never expanded by the library: the page
+    answers its `selectLayers` hook itself, so the library's own layer picker
+    never opens, and the map document gets one layer per source layer, each
+    with `options.source_layer` (the `split_layer` command)
   - `@carbonplan/zarr-layer` + `zarrita` — Zarr v2/v3 as a MapLibre custom layer
   - `pmtiles` — the `pmtiles://` protocol
   - `maplibre-gl-lidar` — LAS/LAZ/COPC/EPT point clouds through deck.gl's
@@ -20,9 +25,13 @@ Build workspace for the Map Viewer's browser rendering stack, committed under
     layer and hides its panel
 - `map.worker.bundle.mjs` — the GeoTIFF tile decoder the raster reader runs off
   the main thread.
+- `parquet.worker.bundle.mjs`: the streaming GeoParquet reader
+  (`parquet-worker.mjs`, on `hyparquet` + `hyparquet-compressors`). See
+  "Streaming a big GeoParquet" below.
 - `laz-perf.wasm` — the LAZ decoder the point-cloud library loads; `build.sh`
   points the bundle at this copy instead of unpkg, so LAZ/COPC opens offline.
-- `map.bundle.css` — MapLibre's and the point-cloud library's stylesheets.
+- `map.bundle.css` — MapLibre's, the vector library's and the point-cloud
+  library's stylesheets.
 
 ## Point-cloud rendering
 
@@ -53,6 +62,29 @@ Run the buffer reuse, lookup and picking tests with:
 node --test pointcloud-gpu.test.mjs
 ```
 
+## Streaming a big GeoParquet
+
+A remote GeoParquet, or a local one over 256 MB, is first offered to
+`parquet.worker.bundle.mjs` rather than DuckDB. The worker reads the footer
+(a HEAD for the size, then one range request for the last 512 KB) and indexes
+every row group by its bounding box: the GeoParquet 1.1 `covering` column's
+statistics, an Overture-style `bbox` struct's, or native Parquet geospatial
+statistics. The layer is ready as soon as that index exists; the map shows the
+row-group footprints until the view is close enough that the row groups under
+it fit a 48 MB budget, then fetches only those (geometry plus the light
+primitive columns, two at a time, nearest the centre first), decodes them in
+the worker and hands each to MapLibre as its own GeoJSON source. A read whose
+row group leaves the view before it lands is aborted, and a failed one is
+retried after 10 s. Loaded row groups stay cached up to 256 MB of decoded
+GeoJSON. Columns averaging more than 8 bytes a row (an id, a long text) are
+left out of what is drawn and read for one feature when it is clicked.
+
+The worker declines, and the file goes to DuckDB as before, when the geometry
+is not WKB, is in a projected CRS, the row groups carry no longitude/latitude
+bounding boxes, or they are too broad to narrow a view down (over the budget
+in total, with one row group over it or the median row group covering more
+than a quarter of the extent). The page logs the reason.
+
 ## Why the map renders in the browser
 
 The previous viewer tiled everything in a Python daemon: a describe call, then
@@ -68,7 +100,8 @@ read — striped/non-TIFF rasters (to COG), NetCDF/HDF5 (to Zarr), a user's `.py
 deck.gl, MapLibre and the readers are all in the bundle. Two things still come
 from a CDN on first use, by the vector library's design: DuckDB-WASM
 (jsDelivr) and its `spatial` extension (extensions.duckdb.org). Offline, the
-page falls back to `prepare.py`'s GeoJSON conversion for vectors.
+page falls back to `prepare.py`'s GeoJSON conversion for vectors, which lists
+a multi-layer file's layers the same way and then converts each one.
 
 ## Rebuild
 

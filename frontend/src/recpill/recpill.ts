@@ -3,7 +3,6 @@
 // last) / window.pillHidden(); the page polls GET /api/capture/{id}/state for each one's clock, paused flag and
 // level, and talks back over window.webkit.messageHandlers.recpill ({type: ready|stop|open|gone|drag|size}).
 // Nothing here needs a newer WebKit than macOS 13 ships.
-import botHomeImg from "@assets/fusedbot-icon-1024.png";
 import renderHomeImg from "@assets/fusedrender-icon-1024.png";
 import { bars, combineStates, formatElapsed, iconFor, shapeLevel, smoothLevel, visibleApps, type PillInfo, type PillState } from "./lib";
 
@@ -36,7 +35,7 @@ let polling = false;
 let displayed = 0;
 const BAR_MAX_PX = 24;
 
-const artKey = (i: PillInfo) => i.flavor + "|" + JSON.stringify(i.icon ?? null);
+const artKey = (i: PillInfo) => JSON.stringify(i.icon ?? null);
 
 function appEl(i: PillInfo): HTMLElement {
   const art = iconFor(i);
@@ -51,8 +50,8 @@ function appEl(i: PillInfo): HTMLElement {
   const img = document.createElement("img");
   img.alt = "";
   img.draggable = false;
-  img.src = art.src ?? (i.flavor === "bot" ? botHomeImg : renderHomeImg);
-  // An app icon that fails to load falls back to the flavor's card rather than a broken glyph.
+  img.src = art.src ?? renderHomeImg;
+  // An app icon that fails to load falls back to the home card rather than a broken glyph.
   if (art.kind === "app") img.onerror = () => {
     const fb = appEl({ ...i, icon: null });
     fb.dataset.key = artKey(i); // keep the key so a reconcile does not retry the broken icon
@@ -210,6 +209,6 @@ if (!INAPP) {
   const cid = new URLSearchParams(location.search).get("cid");
   if (cid) {
     window.pillSet?.(cid.split(",").filter(Boolean).map((id) => (
-      { id, name: id, app: "", icon: null, flavor: "render" as const, canPause: true, mode: "audio" })));
+      { id, name: id, app: "", icon: null, canPause: true, mode: "audio" })));
   }
 }

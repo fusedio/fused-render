@@ -1649,7 +1649,7 @@ def api_index_scan_folder(body: dict = Body(default={}),
     if MountGuard().blocks(root):
         logger.info("index: not scanning %s on demand (inside a home tree)", root)
         return {"ok": True, "started": False, "why": "refused",
-                "error": f"{root} is inside a fused-render data folder; it is "
+                "error": f"{root} is inside a Fused Render data folder; it is "
                          "not indexed",
                 "run_id": None, "root": root}
     # ...and then the filesystem it lives on — see index_touch.foreign_device

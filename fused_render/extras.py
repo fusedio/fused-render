@@ -23,7 +23,8 @@ asks whether a group is present:
 Only import names are listed in `EXTRAS`, one or two per group, enough to tell
 the group was installed. Platform-only members (pyobjc on macOS, dbus-fast on
 Linux) are not in the list: their own modules already report `supported: false`
-where they are absent, and `[desktop]` counts as present once zeroconf is.
+where they are absent, and `[desktop]` counts as present once pillow is
+(the one member every platform installs).
 """
 
 from __future__ import annotations
@@ -35,7 +36,7 @@ from functools import lru_cache
 EXTRAS: dict[str, tuple[str, ...]] = {
     "index": ("duckdb", "pyarrow", "watchfiles"),
     "data": ("pyarrow",),
-    "desktop": ("zeroconf",),
+    "desktop": ("PIL",),
     "hf": ("huggingface_hub",),
     "fused": ("boto3", "mcp", "anthropic"),
 }

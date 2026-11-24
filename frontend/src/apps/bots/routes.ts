@@ -8,13 +8,12 @@
 //   /bots/tasks[?task=<key>]   the Tasks page: the shell's Tasks UI framed and filtered to builds (builds/TasksPage)
 //   /bots/apps                 the Apps gallery (apps/AppsPanel)
 //   /bots/apps/<folder>        one app full-size (apps/AppViewer); `folder` is the basename under the apps root
-//   /bots/preferences          Preferences framed (components/PrefsPanel; the Fused Bot flavor, which has no sidebar)
 //
 // Until 2026-10-14 these were in-page state: `?bot=<id>` written with replaceState and a `ui.panel` slot in the
 // store for the three overlays. The selected bot and the open page are now the URL and nothing else (I5 in the
 // design page): the store reads `sel` from the path, a bot click is a pushState, Back steps between bots.
 //
-// A reserved first segment (`tasks`, `apps`, `preferences`) can never be a bot id: ids are eight hex characters,
+// A reserved first segment (`tasks`, `apps`) can never be a bot id: ids are eight hex characters,
 // and a bot imported from FusedBot (its directory's basename, any characters) is still refused these names. An
 // unknown shape (`/bots/<id>/x`, `/bots/tasks/x`) falls back to the nearest page rather than erroring — the same
 // forgiving posture AI Models takes for an unknown tab.
@@ -27,14 +26,13 @@
 export const BOTS_PREFIX = "/bots";
 
 /** First segments that are pages, not bot ids. */
-export const RESERVED = ["tasks", "apps", "preferences"] as const;
+export const RESERVED = ["tasks", "apps"] as const;
 
 export type BotsRoute =
   | { kind: "list" }
   | { kind: "bot"; id: string }
   | { kind: "tasks"; task: string | null }
-  | { kind: "apps"; folder: string | null }
-  | { kind: "prefs" };
+  | { kind: "apps"; folder: string | null };
 
 /** Anywhere on the Bots page: the bare prefix or anything beneath it. */
 export function isBotsPath(pathname: string): boolean {
@@ -62,7 +60,6 @@ export function parseBotsPath(pathname: string, search: string = ""): BotsRoute 
     return { kind: "tasks", task };
   }
   if (head === "apps") return { kind: "apps", folder: second ? decode(second) : null };
-  if (head === "preferences") return { kind: "prefs" };
   const id = decode(head);
   if (isBotId(id)) return { kind: "bot", id };
   return { kind: "list" };
@@ -81,7 +78,6 @@ export const tasksHref = (task?: string | null, search = ""): string => {
   return withSearch(`${BOTS_PREFIX}/tasks`, q.toString());
 };
 export const appsHref = (folder?: string | null, search = ""): string => withSearch(`${BOTS_PREFIX}/apps${folder ? "/" + encodeURIComponent(folder) : ""}`, search);
-export const prefsHref = (search = ""): string => withSearch(`${BOTS_PREFIX}/preferences`, search);
 /** The query minus the Tasks page's own `task` key: what a hop OFF that page carries. */
 export function searchSansTask(search: string): string {
   const q = new URLSearchParams(search);

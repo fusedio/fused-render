@@ -33,13 +33,8 @@
 // and reopening on EITHER surface (a click, or a deep link that opens: see
 // `sideReopenedByUrl`) clears it so the next silent URL opens the sidebar again.
 
-import { getUiLayout, patchUiLayout } from "@platform/lib/ui-layout";
-
-export function getSideHidden(): boolean {
-  return getUiLayout().explorerSide?.hidden === true;
-}
-
-export function setSideHidden(next: boolean): void {
-  if (getSideHidden() === next) return;
-  patchUiLayout((d) => ({ ...d, explorerSide: { ...d.explorerSide, hidden: next } }));
-}
+// SINCE 2026-11-03 THE BIT IS EVERY CLAUDE COLUMN'S, not the explorer's alone
+// (platform/lib/side-hidden.ts): the canvas page's pane and the app page's
+// read and write the same flag, so shutting the column on one page shuts it
+// on the next. This module keeps its name for the explorer's own readers.
+export { getSideHidden, setSideHidden } from "@platform/lib/side-hidden";

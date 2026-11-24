@@ -1,5 +1,5 @@
 // The Home hero — wordmark, headline, and the prompt-first composer that
-// names (haiku via /api/ai), scaffolds (POST /api/apps/new), and lands in the
+// names (app-name.ts: haiku via /api/ai, else the prompt's words), scaffolds (POST /api/apps/new), and lands in the
 // new app's agent chat. Shared by Home ("/") and the /apps hub, which is why
 // it lives in the builder app rather than the shell.
 //
@@ -10,7 +10,6 @@
 // "building an app is Claude's" line that closed the composer).
 import { useCallback, useEffect, useRef, useState, type MutableRefObject } from "react";
 import {
-  aiComplete,
   createApp,
   getHomeApps,
   rawUrl,
@@ -29,6 +28,7 @@ import {
   isBackendEnabled,
   isUnlistedEffort,
   modelLabelsOf,
+  modelTagOf,
   modelsOf,
   useAgentBackends,
 } from "@platform/lib/agent-backends";
@@ -41,10 +41,13 @@ import { appLandingUrl } from "@platform/lib/appLanding";
 import { ErrorBanner } from "@platform/ui/ErrorBanner";
 import { TroubleCard } from "@platform/ui/TroubleCard";
 import { useAutoGrow } from "@platform/lib/autoGrow";
+import { effortLabel, modelDescription } from "@platform/lib/model-vocab";
+import { Popover, PopoverContent, PopoverTrigger } from "@platform/shadcn/ui/popover";
 import { startersFor } from "./starterPrompts";
+import { suggestAppName, type ClaudeGap } from "./app-name";
 import logoMarkDark from "@assets/logo-black-bg-transparent.png";
 import logoMarkLight from "@assets/logo-white-bg-transparent.png";
-import { Select, TextArea, TextInput } from "@platform/ui/field/fields";
+import { TextArea, TextInput } from "@platform/ui/field/fields";
 import { type AppAnnotation } from "@platform/lib/appAnnotation";
 import { announceTasksChanged } from "@platform/lib/tasksChanged";
 
@@ -52,28 +55,6 @@ import { announceTasksChanged } from "@platform/lib/tasksChanged";
 // `appLandingUrl` (platform/lib/appLanding) — shared with the Migrate buttons.
 
 // -- Prompt-first creation (the hero composer) --------------------------------
-
-// Kebab-case whatever the model gave us into a safe app folder name:
-// lowercase, [a-z0-9-] only, at most five words. Returns "" when nothing
-// usable survives.
-function kebabName(text: string): string {
-  return text
-    .toLowerCase()
-    .replace(/[^a-z0-9]+/g, "-")
-    .replace(/^-+|-+$/g, "")
-    .split("-")
-    .filter(Boolean)
-    .slice(0, 5)
-    .join("-")
-    .slice(0, 48);
-}
-
-// What HAIKU's answer must look like: lowercase kebab-case, letters and digits
-// only, no leading/trailing/double hyphens — the standard the model is asked
-// for, so prose ("sure, call it...") is caught. A name the USER types is not
-// held to this: any folder name the server takes is fine (spaces, capitals,
-// underscores); see userNameError.
-const KEBAB_RE = /^[a-z0-9]+(-[a-z0-9]+)*$/;
 
 // Why a user-typed name cannot be a folder, or null. Mirrors the server's
 // _app_name_error (server/routers/apps.py), which stays authoritative — this
@@ -86,75 +67,22 @@ function userNameError(name: string): string | null {
   return null;
 }
 
-// The refusal token. Asked for explicitly so a request that is not an app
-// description gets a deterministic answer the code can act on (ask the user)
-// instead of an invented brand — Haiku, given nothing concrete, will happily
-// produce "flux-name-bot" and that passes every syntactic check.
-const NAME_NONE = "none";
-
 // The banner a hosted composer shows when it hands naming to the host's field
 // (onNameNeeded). A constant so the clear-on-edit effect can tell it apart
 // from every other message `error` carries.
 const NAME_ABOVE_MSG = "Couldn't name it automatically — type a name above.";
 
-// The ask is a folder name, so it reads like one: the subject first, 2-3
-// words, no filler. Examples carry more of the standard than the rules do —
-// without them the model pads ("expense-tracker-app") or leads with the verb
-// ("track-my-expenses"). A name the description itself states wins outright.
-const NAME_SYSTEM_PROMPT =
-  "You name software projects. Given a description of an app, reply with a " +
-  "short folder name for it in kebab-case: 2-3 lowercase words joined by " +
-  "hyphens, letters and digits only, at most 4 words when 3 cannot say it.\n" +
-  "Rules:\n" +
-  "- Lead with the subject (what it is about), then what it does: " +
-  "\"expense-tracker\", not \"track-expenses\".\n" +
-  "- Use words from the description or plain words for what the app does. " +
-  "Never invent brand words or puns.\n" +
-  "- No filler: never app, tool, my, simple, new, basic, project, helper, " +
-  "manager (unless the thing IS a manager), or the user's name.\n" +
-  "- If the description names the app itself, use that name, kebab-cased.\n" +
-  "- If the text is not a description of an app to build, reply with " +
-  "exactly: " + NAME_NONE + "\n" +
-  "Examples:\n" +
-  "\"a page that shows my monthly spending by category\" -> spending-by-category\n" +
-  "\"something to track which plants I watered and when\" -> plant-watering-log\n" +
-  "\"a kanban board for my reading list, call it Shelf\" -> shelf\n" +
-  "\"hello, what can you do?\" -> " + NAME_NONE + "\n" +
-  "Reply with ONLY the name — no quotes, no prose, no explanation.";
-
-// The relay alias the naming call pins. Named explicitly so the call never
-// depends on the relay's own default: when that followed a model preference, a
-// preference of fable/opus turned a two-second utility call into a
-// twenty-second one. Haiku is the right model for a folder name whatever the
-// chat runs on.
-const NAME_MODEL = "haiku";
-
-// A kebab-case folder name for an app described by `prompt`: ask the AI relay
-// on haiku (cheap and fast). null when the relay is down or answers garbage —
-// the caller then ASKS the user for a name. It used to slug the prompt's own
-// words instead, which produced folders like "make-me-a-tool-that" and nobody
-// could tell that naming had failed at all.
-async function suggestAppName(prompt: string): Promise<string | null> {
-  try {
-    // Lowercased before the check: a name the description states ("call it
-    // Shelf") comes back with its capital, and that is a name, not prose.
-    const text = await aiComplete(prompt, NAME_SYSTEM_PROMPT, NAME_MODEL).then(
-      (t) => t.trim().toLowerCase(),
-    );
-    // NAME_SYSTEM_PROMPT asks for a bare kebab-case reply; if the model added
-    // prose instead (common even with "no prose" in the ask), `text` won't be
-    // pure lowercase-and-hyphens. Taking the first token then would name the
-    // folder after whatever word led the prose (e.g. "sure").
-    if (text.replace(/[.\s]+$/, "") === NAME_NONE) return null;
-    if (KEBAB_RE.test(text)) {
-      const name = kebabName(text);
-      if (name) return name;
-    }
-  } catch {
-    // relay down / claude missing — fall through to null
-  }
-  return null;
-}
+// Why the composer is asking for a name. Claude Code missing or signed out is
+// said outright: auto-naming is Claude's (haiku) whichever agent builds the
+// app, and "couldn't name it" would send the user looking for a bug.
+const NAME_WHY: Record<ClaudeGap | "none", string> = {
+  none: "Couldn't name it automatically",
+  install: "Auto-naming needs Claude Code, which isn't installed",
+  login: "Auto-naming needs Claude Code, which isn't signed in",
+};
+const nameAboveMsg = (why: ClaudeGap | "none") =>
+  why === "none" ? NAME_ABOVE_MSG : `${NAME_WHY[why]} — type a name above.`;
+const NAME_ABOVE_MSGS = new Set((["none", "install", "login"] as const).map(nameAboveMsg));
 
 // The prefill offered when naming failed: "my-app-<n>", n one past the highest
 // my-app-N already on the home row. Cosmetic only — createAppUnderFreeName
@@ -214,18 +142,21 @@ const SAMPLE_ROW = 4;
 // settings page. Another agent's pair is its own catalog default; the global
 // pair is Claude's and is neither read nor written for it.
 //
-// The labels are BARE — "Opus", "high" — not "high effort": each pill's glyph
-// names its axis, so repeating it in the text is the same word twice.
-const modelChoices = (agent: string): { value: ComposerPicks["model"]; label: string }[] =>
-  modelsOf(agent).map((m) => ({
-    value: m,
-    label: modelLabelsOf(agent)[m] ?? m,
-  }));
+// The labels are BARE — "Opus", "High" — not "High effort": each pill's glyph
+// names its axis, so repeating it in the text is the same word twice. The
+// menu says them the way the New task card does (Akshil, 2026-11-07): models
+// lightest first with a word on what each is for, levels in the card's words.
+const modelChoices = (agent: string): PickChoice<ComposerPicks["model"]>[] =>
+  modelsOf(agent).map((m) => {
+    // OpenCode's `fused/…` rows say "local" (docs/OPENCODE_BACKEND.md D20).
+    const desc = modelDescription(m) || modelTagOf(agent, m);
+    return { value: m, label: modelLabelsOf(agent)[m] ?? m, ...(desc ? { desc } : {}) };
+  });
 
 // THE CHOSEN MODEL'S levels (per model where the catalog knows them per
 // model — a Copilot model may take none, and then no effort pick is drawn).
-const effortChoices = (agent: string, model: string): { value: ComposerPicks["effort"]; label: string }[] =>
-  effortsForModel(agent, model).map((e) => ({ value: e as ComposerPicks["effort"], label: e }));
+const effortChoices = (agent: string, model: string): PickChoice<ComposerPicks["effort"]>[] =>
+  effortsForModel(agent, model).map((e) => ({ value: e as ComposerPicks["effort"], label: effortLabel(e) }));
 
 // A composer attachment — NewJobModal's TaskImage shape. `path` is "" until the
 // upload answers; `thumb` is a blob: URL for a picture the browser can draw.
@@ -290,10 +221,26 @@ export const PICK_GLYPHS = {
   ),
 };
 
-// One borderless picker: glyph, then a native select carrying its own chevron.
-// A <label> around both so the glyph is part of the control's hit area rather
-// than decoration beside it — the pill has no border to aim at, so the target
-// has to be the whole thing.
+interface PickChoice<T extends string> {
+  value: T;
+  label: string;
+  /** A word or two printed small beside the label in the open menu. */
+  desc?: string;
+}
+
+const PICK_CHECK = (
+  <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+       strokeWidth="3.5" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+    <polyline points="20 6 9 17 4 12" />
+  </svg>
+);
+
+// One borderless picker: glyph, word, chevron — and on press the SAME MENU the
+// New task card's pills open (Akshil, 2026-11-07: one look for every model and
+// thinking list): the list's name as a heading, one row per choice, a model's
+// word on what it is for, a tick on the current one. A button rather than the
+// native select it used to be, because the OS popup can print neither the
+// heading nor a description.
 function ComposerPick<T extends string>({
   glyph,
   label,
@@ -305,40 +252,69 @@ function ComposerPick<T extends string>({
   glyph: keyof typeof PICK_GLYPHS;
   label: string;
   value: T;
-  choices: { value: T; label: string }[];
+  choices: PickChoice<T>[];
   disabled: boolean;
   onPick: (next: T) => void;
 }) {
+  const [open, setOpen] = useState(false);
+  const said = choices.find((c) => c.value === value)?.label ?? value;
   return (
-    <label className="home-composer-pick">
-      <span className="home-composer-pick-glyph" aria-hidden="true">
-        <svg
-          width="13"
-          height="13"
-          viewBox="0 0 24 24"
-          fill="none"
-          stroke="currentColor"
-          strokeWidth="2"
-          strokeLinecap="round"
-          strokeLinejoin="round"
-        >
-          {PICK_GLYPHS[glyph]}
-        </svg>
-      </span>
-      <Select
-        className="home-composer-pick-sel"
-        aria-label={label}
-        value={value}
-        disabled={disabled}
-        onChange={(e) => onPick(e.target.value as T)}
+    <Popover open={open && !disabled} onOpenChange={setOpen}>
+      <PopoverTrigger
+        render={
+          <button
+            type="button"
+            className={"home-composer-pick" + (open ? " is-open" : "")}
+            aria-label={`${label}: ${said}`}
+            aria-haspopup="menu"
+            disabled={disabled}
+          />
+        }
       >
-        {choices.map((c) => (
-          <option key={c.value} value={c.value}>
-            {c.label}
-          </option>
-        ))}
-      </Select>
-    </label>
+        <span className="home-composer-pick-glyph" aria-hidden="true">
+          <svg
+            width="13"
+            height="13"
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            strokeWidth="2"
+            strokeLinecap="round"
+            strokeLinejoin="round"
+          >
+            {PICK_GLYPHS[glyph]}
+          </svg>
+        </span>
+        <span className="home-composer-pick-val">{said}</span>
+      </PopoverTrigger>
+      <PopoverContent
+        side="bottom"
+        align="start"
+        sideOffset={6}
+        className="home-pick-pop w-auto min-w-[180px] gap-0 p-1"
+      >
+        <div className="home-pick-head">{label}</div>
+        <div role="menu" aria-label={label}>
+          {choices.map((c) => (
+            <button
+              key={c.value}
+              type="button"
+              role="menuitemradio"
+              aria-checked={c.value === value}
+              className="home-pick-opt"
+              onClick={() => {
+                setOpen(false);
+                onPick(c.value);
+              }}
+            >
+              <span>{c.label}</span>
+              {c.desc ? <span className="home-pick-desc">{c.desc}</span> : null}
+              {c.value === value ? PICK_CHECK : null}
+            </button>
+          ))}
+        </div>
+      </PopoverContent>
+    </Popover>
   );
 }
 
@@ -372,7 +348,7 @@ export function HeroComposer({
   givenName?: string;
   /**
    * The host OWNS A NAME FIELD (the New-app modal's heading input). Called
-   * when the app needs a name from the user — haiku could not name it, or the
+   * when the app needs a name from the user — the prompt gave none, or the
    * exact name the host gave is already taken — instead of unfolding the
    * composer's own ask row: the host marks its field and focuses it, and the
    * next Build goes through `givenName`. Absent on the hostless composers
@@ -491,8 +467,10 @@ export function HeroComposer({
     "idle" | "naming" | "askName" | "creating"
   >("idle");
   // The name the user is typing while phase === "askName" — only reached when
-  // haiku could not name the app; see suggestAppName.
+  // no rung of the naming ladder produced a name; see app-name.ts.
   const [nameDraft, setNameDraft] = useState("");
+  // Why it is asking (NAME_WHY) — set on the way into "askName".
+  const [nameWhy, setNameWhy] = useState<ClaudeGap | "none">("none");
   const nameRef = useRef<HTMLInputElement>(null);
   const [error, setError] = useState<string | null>(null);
   // Claude would not start for an app that WAS created — see the submit path.
@@ -639,7 +617,7 @@ export function HeroComposer({
   };
 
   // Second half of a create: the app has a name, scaffold it and land in its
-  // chat. Shared by the automatic path (haiku named it) and the ask path (the
+  // chat. Shared by the automatic path (app-name.ts named it) and the ask path (the
   // user did), so both end up in exactly the same place. `back` is where a
   // failure returns to: the ask row keeps the name the user typed (a retry
   // from idle would re-run naming and overwrite it with a fresh my-app-N),
@@ -726,10 +704,11 @@ export function HeroComposer({
     }
   };
 
-  // First half: name the app. A host-given name is used as-is and haiku is
-  // never asked. Otherwise haiku names it and creation follows at once; when
-  // it cannot, the composer says so and asks for a name instead of quietly
-  // shipping a slug of the prompt.
+  // First half: name the app. A host-given name is used as-is and no model
+  // is asked. Otherwise app-name.ts names it (haiku, then the prompt's own
+  // subject words when haiku cannot) and creation follows at once; only a
+  // prompt with no subject word at all leaves it empty-handed, and the
+  // composer then asks for a name.
   const submit = async () => {
     if (!canSubmit) return;
     setError(null);
@@ -740,24 +719,28 @@ export function HeroComposer({
       return;
     }
     setPhase("naming");
-    const name = await suggestAppName(prompt.trim());
+    const named = await suggestAppName(prompt.trim());
     if (!alive.current) return;
-    if (name) {
-      await createNamed(name, "idle");
+    if (named.name) {
+      await createNamed(named.name, "idle");
       return;
     }
+    const why = named.claude ?? "none";
     // A host with a name field takes it from here: its field goes red and
     // takes focus, the prompt stays put, and the next Build arrives with
     // `givenName` set. No ask row — the modal would then have two name inputs.
     if (onNameNeeded) {
-      setError(NAME_ABOVE_MSG);
+      setError(nameAboveMsg(why));
       setPhase("idle");
       onNameNeeded();
       return;
     }
-    const generic = await genericAppName();
+    // Offer the prompt's own subject words when there are any (Claude Code
+    // unavailable), else "my-app-<n>".
+    const offered = named.suggestion || (await genericAppName());
     if (!alive.current) return;
-    setNameDraft(generic);
+    setNameWhy(why);
+    setNameDraft(offered);
     setPhase("askName");
     requestAnimationFrame(() => nameRef.current?.select());
   };
@@ -769,7 +752,7 @@ export function HeroComposer({
   // THAT message when the host's name changes, and only that one — an
   // attachment failure in `error` is still news.
   useEffect(() => {
-    setError((e) => (e === NAME_ABOVE_MSG ? null : e));
+    setError((e) => (e !== null && NAME_ABOVE_MSGS.has(e) ? null : e));
   }, [givenName]);
 
   const nameOk = userNameError(nameDraft) === null;
@@ -910,7 +893,7 @@ export function HeroComposer({
               aria-label="Name your app"
             >
               <span className="home-composer-name-why">
-                Couldn't name it automatically — pick a name:
+                {NAME_WHY[nameWhy]} — pick a name:
               </span>
               <TextInput
                 ref={nameRef}

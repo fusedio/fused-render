@@ -1,8 +1,8 @@
 // The bot-level flows behind the dialogs and the bot menu (OpenBot dialogs.js): create, save settings, delete,
-// clone, export. Each runs its calls through act() so the page shows the effect and errors land in the banner.
-import { api, type AllowRule, type Bot, type Face } from "../lib/api";
+// clone, export (transcript, and the opener of the Export bot… dialog). Each runs its calls through act() so the page shows the effect and errors land in the banner.
+import { api, expertApi, type AllowRule, type Bot, type Face } from "../lib/api";
 import { loginValue } from "../lib/botform";
-import { act, cur, getState, select, setState } from "../state/store";
+import { act, cur, getState, openDialog, select, setState } from "../state/store";
 import { askConfirm } from "./ask";
 
 /** What the bot dialogs hand back on OK (OpenBot botDialog's read()). CreateBot fills the fields it does not show
@@ -30,6 +30,10 @@ export interface BotDialogValue {
   /** The same list as the dialog opened: Save sends the additions and removals against it, never the full list, because
    *  a build finishing and a card answered "Always approve" also tick apps while Settings is open (it is non-modal). */
   trustedAppsWas: string[];
+  /** Connected services this bot may use (Settings > Connections), and the list as the dialog opened: Save sends the
+   *  diff, never the full list, because a card answered "Always approve" ticks a service while Settings is open. */
+  connections: string[];
+  connectionsWas: string[];
   /** Calls approved forever from a card (Settings > Permissions > Approved forever) the user removed in the dialog.
    *  Removals only: the task thread writes new rules while Settings is open (it is non-modal), so a full list would
    *  overwrite them; the backend drops these from the list as it stands at Save. */
@@ -69,7 +73,9 @@ export async function saveSettings(id: string, v: BotDialogValue): Promise<void>
   const encrypt = switched && v.encrypt === !!was?.encrypt ? {} : { encrypt: v.encrypt };
   const rules = v.allowRulesRemoved.length ? { allow_rules_remove: v.allowRulesRemoved } : {};
   const apps = { trusted_apps_add: v.trustedApps.filter((a) => !v.trustedAppsWas.includes(a)),
-    trusted_apps_remove: v.trustedAppsWas.filter((a) => !v.trustedApps.includes(a)) };
+    trusted_apps_remove: v.trustedAppsWas.filter((a) => !v.trustedApps.includes(a)),
+    connections_add: v.connections.filter((a) => !v.connectionsWas.includes(a)),
+    connections_remove: v.connectionsWas.filter((a) => !v.connections.includes(a)) };
   await act(() => api.settings(id, { name: v.name, model: v.model, effort: v.effort, instructions: v.instructions, memory: v.memory, approval: v.approval,
     build_access: v.buildAccess, ...(v.terminal !== undefined ? { terminal: v.terminal } : {}), ...encrypt, ...phone(v), super_access: v.superAccess,
     ...(v.maxSteps !== undefined ? { max_steps: Number(v.maxSteps) || 0 } : {}),
@@ -96,12 +102,19 @@ export async function cloneBot(id: string | undefined = getState().sel || undefi
   if (r?.id) select(r.id);
 }
 
-/** Export transcript…: the thread as Markdown, downloaded. Defaults to the selected bot. */
+/** Export transcript: the thread as Markdown, downloaded. Defaults to the selected bot. */
 export async function exportBot(b: Bot | undefined = cur()): Promise<void> {
   if (!b) return;
-  const r = await act(() => api.exportTranscript(b.id), true);
+  // An expert with no chat yet answers "There is no chat to export yet."; say so instead of doing nothing.
+  const r = await act(() => (b.expert ? expertApi.exportChat(b.id) : api.exportTranscript(b.id)), !b.expert);
   if (!r?.text) return;
   const a = document.createElement("a");
   a.href = URL.createObjectURL(new Blob([r.text], { type: "text/markdown" })); a.download = r.name; a.click();
   setTimeout(() => URL.revokeObjectURL(a.href), 5000);
+}
+
+/** Export bot…: the `.fusedbot` package dialog (dialogs/ExportBot.tsx), from the bot menu and Settings' footer. A
+ *  request, not a call: the dialog reads the plan itself. Defaults to the selected bot. */
+export function exportBotFile(id: string | undefined = getState().sel || undefined): void {
+  if (id) openDialog({ kind: "exportBot", id });
 }

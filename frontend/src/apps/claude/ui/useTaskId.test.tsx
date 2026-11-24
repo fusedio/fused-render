@@ -20,7 +20,12 @@ let answer: () => Promise<unknown> = async () => ({
 const realFetch = globalThis.fetch;
 beforeEach(() => {
   calls = 0;
-  (globalThis as { fetch: unknown }).fetch = async () => {
+  // `calls` counts TASK reads. Kebab also asks `/api/agent-backends` once per
+  // process (a memo), so counting every fetch made the first number depend on
+  // whether an earlier file had already filled that memo. Anything else is
+  // refused and not counted.
+  (globalThis as { fetch: unknown }).fetch = async (u: unknown) => {
+    if (!String(u).startsWith("/api/tasks")) throw new Error("not a task read: " + String(u));
     calls += 1;
     const body = await answer();
     return { ok: true, json: async () => body } as unknown as Response;
@@ -308,7 +313,9 @@ test("Archive and Delete are refused while a mode owns the page (P3R1-5)", () =>
   // this menu owns no vocabulary of the annotation subsystem's.
   expect(src).toContain("locked?: boolean");
   expect(src).toContain("lockedReason?: string");
-  const items = src.split("<DropdownMenuItem").slice(5);
+  // The LAST two items: the host's `extraItems` row ahead of them is one more
+  // `<DropdownMenuItem` in the source, so they are counted from the end.
+  const items = src.split("<DropdownMenuItem").slice(-2);
   // Archive and Delete; full screen, the terminal/copy items and Download
   // transcript are none of them — saving a copy changes nothing.
   expect(items).toHaveLength(2);

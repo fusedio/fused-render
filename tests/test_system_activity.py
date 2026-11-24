@@ -162,7 +162,8 @@ def test_get_is_unguarded_and_has_the_documented_shape(client, fake):
 
 def test_labels_join_engine_and_model_registries(client, fake):
     procs = {r["pid"]: r for r in client.get("/api/system/activity").json()["procs"]}
-    assert (procs[ROOT]["kind"], procs[ROOT]["label"]) == ("app", "fused-render")
+    # The app is "Fused Render" on every user-visible surface (#2150).
+    assert (procs[ROOT]["kind"], procs[ROOT]["label"]) == ("app", "Fused Render")
     assert (procs[201]["kind"], procs[201]["label"]) == ("engine", "App: My Widget")
     assert (procs[202]["kind"], procs[202]["label"]) == ("model", "Model: qwen2.5-7b")
     assert (procs[203]["kind"], procs[203]["label"]) == ("other", "some.tool")

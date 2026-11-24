@@ -348,7 +348,7 @@ def _rewrite_schedule(src: str, dst: str) -> None:
 
 
 def _app_support_dir() -> str:
-    """``~/Library/Application Support/<fused-render|fused-bot>``, branch-nested.
+    """``~/Library/Application Support/fused-render``, branch-nested.
 
     A deliberate duplicate of ``app.APP_SUPPORT_DIR`` rather than an import:
     ``app`` is the desktop menu-bar entry point (heavy, AppKit-adjacent startup

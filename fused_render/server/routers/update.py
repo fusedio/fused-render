@@ -1,8 +1,9 @@
 """Self-update endpoints (update/mac.py, update/linux.py). Status itself rides
 /api/config's `update` field so the shell's existing 5s poll carries it —
-these POSTs only trigger work. Both mutate (network + an artifact swap), so
-they carry the D3 X-Fused guard; they 404 when no update manager is running
-(dev server or CLI)."""
+these POSTs only trigger work. Both mutate (network + an artifact written to
+disk — staged beside the mac bundle and applied on quit, or an AppImage
+replaced in place), so they carry the D3 X-Fused guard; they 404 when no
+update manager is running (dev server or CLI)."""
 from fastapi import APIRouter, Header, HTTPException
 from pydantic import BaseModel
 

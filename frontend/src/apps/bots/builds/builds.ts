@@ -42,7 +42,7 @@ export function useBuildsRoot(): string {
 }
 
 // A build prompt starts with one of these (old and new form); identifies builds made before builds.json existed.
-export const BUILD_MARKS = ["Build \"", "Create a new fused-render app named"];
+export const BUILD_MARKS = ["Build \"", "Create a new fused-render app named", "Create a new Fused Render app named"];
 export const marked = (s: unknown): boolean => BUILD_MARKS.some((m) => String(s || "").startsWith(m));
 /** OpenBot: local, not a preview, fused.tasks present. This page is always local and never a preview. */
 export const buildsOn = (): boolean => true;
@@ -118,8 +118,9 @@ export function botTasks(rows: TaskRow[], botId: string, botBuilds: { entry_id?:
 }
 /** Tests: forget the bots' recorded builds. */
 export function _resetBotEntryIds(): void { botEntryIds.clear(); }
-/** The name/folder a build prompt (or its title) carries. */
-export const BUILD_RE = /(?:named|Build) "([^"]+)"(?: in the folder | · (?:new fused-render app|update to the fused-render app) in )(\S+)/;
+/** The name/folder a build prompt (or its title) carries. Either spelling of the
+ *  brand: titles written before the rename say "fused-render app". */
+export const BUILD_RE = /(?:named|Build) "([^"]+)"(?: in the folder | · (?:new (?:fused-render|Fused Render) app|update to the (?:fused-render|Fused Render) app) in )(\S+)/;
 let adoptSeen: Set<string> | null = null;
 /** Returns whether builds changed (and saves them when they did). */
 export function adoptBuilds(open: boolean = panelShown()): boolean {
@@ -143,7 +144,7 @@ export function adoptBuilds(open: boolean = panelShown()): boolean {
 // belongs to the new app, every list/watch/ui call uses scope "all" and filters by builds.json.
 export function buildPrompt(name: string, dir: string, ask: string): string {
   // First line doubles as the task's title in the shell's list, so it stays short.
-  return `Build "${name}" · new fused-render app in ${dir}
+  return `Build "${name}" · new Fused Render app in ${dir}
 
 You are running inside ${dir}, an empty folder made for this app. Build the app there.
 Rules:
@@ -162,9 +163,9 @@ ${ask.trim()}`;
 
 // A task that edits an app that already exists. Same shape as buildPrompt so adoptBuilds' regex recognises it.
 export function updatePrompt(name: string, dir: string, ask: string): string {
-  return `Build "${name}" · update to the fused-render app in ${dir}
+  return `Build "${name}" · update to the Fused Render app in ${dir}
 
-You are running inside ${dir}, an existing fused-render app. Read its README.md, CLAUDE.md and index.html first, then make the change below in place.
+You are running inside ${dir}, an existing Fused Render app. Read its README.md, CLAUDE.md and index.html first, then make the change below in place.
 Rules:
 - Invoke the fused-render-authoring skill before writing any code and follow its contract.
 - Keep the single entry page ${dir}/index.html with its <meta name="fused-app" /> and <meta name="fused-api-version" /> tags.

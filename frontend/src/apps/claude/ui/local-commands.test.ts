@@ -82,6 +82,24 @@ describe("/model argument", () => {
     expect("refuse" in wt && wt.refuse).toBe("Gemini has no worktrees");
   });
 
+  test("OpenCode's shortlist and its provider/model ids, and no effort at all (OPENCODE D7)", () => {
+    expect(localModelArg("anthropic/claude-sonnet-5-5", "opencode")).toBe("anthropic/claude-sonnet-5-5");
+    expect(localModelArg("GPT-5.5", "opencode")).toBe("openai/gpt-5.5");
+    expect(localModelArg("fused/local", "opencode")).toBe("fused/local");
+    // A discovered id is passed through as typed, slash and all.
+    expect(localModelArg("fused/qwen3-8b-q4", "opencode")).toBe("fused/qwen3-8b-q4");
+    expect(localModelArg("openai/gpt-9-nova", "opencode")).toBe("openai/gpt-9-nova");
+    expect(localModelArg("openai/", "opencode")).toBe("");
+    expect(localModelArg("a/b/c", "opencode")).toBe("");
+    expect(localModelArg("gpt 5", "opencode")).toBe("");
+    // A slashed id is never Claude's.
+    expect(localModelArg("anthropic/claude-sonnet-5-5")).toBe("");
+    expect(localEffortArg("high", "opencode")).toBe("");
+    const at = (text: string) => planLocalCommand(classifyCommand(text)!, { worktreeReady: true, backend: "opencode" });
+    const wt = at("/worktree feat");
+    expect("refuse" in wt && wt.refuse).toBe("OpenCode has no worktrees");
+  });
+
   test("Codex has no worktrees and no background tasks (§7)", () => {
     const at = (text: string) => planLocalCommand(classifyCommand(text)!, { worktreeReady: true, backend: "codex" });
     const wt = at("/worktree feat");

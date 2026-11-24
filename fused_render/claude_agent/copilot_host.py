@@ -68,9 +68,9 @@ import os
 import signal
 import subprocess
 import sys
+import queue
 import threading
 import time
-import urllib.request
 import uuid
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -120,7 +120,7 @@ _INTERRUPT_MARK = "[Request interrupted by user]"
 # ACP tool kinds → the Claude tool names the page already renders (D14).
 _KIND_TO_TOOL = {"execute": "Bash", "read": "Read", "fetch": "WebFetch",
                  "search": "Grep"}
-_MCP_PREFIX = "fused_approvals-"
+_MCP_PREFIX = "fused_render-"
 _EDIT_TOOLS = frozenset({"Edit", "Write"})
 _FD_CLOSE_CAP = 65536
 
@@ -238,7 +238,7 @@ def _meta_session_id(run_dir: str) -> str:
 
 def _post_event(run_dir: str, kind: str, **extra):
     try:
-        origin = (os.environ.get("FUSED_RENDER_ORIGIN") or "").rstrip("/")
+        origin = _EVENT_ORIGIN.current()
         if not origin:
             return None
         body = {"kind": kind,
@@ -256,7 +256,7 @@ def _post_event(run_dir: str, kind: str, **extra):
 def _post_card(run_dir: str, kind: str, req_id: str) -> None:
     """permission_server's `_post_card` body: `{kind, run_id, request_id}`."""
     try:
-        origin = (os.environ.get("FUSED_RENDER_ORIGIN") or "").rstrip("/")
+        origin = _EVENT_ORIGIN.current()
         if not origin:
             return
         body = {"kind": kind,
@@ -268,24 +268,60 @@ def _post_card(run_dir: str, kind: str, req_id: str) -> None:
         pass
 
 
+def _load_event_origin():
+    """`event_origin.py` beside this file, loaded by path (this directory is
+    never a package on sys.path): where a failed post re-resolves the live
+    server from this install's server.json."""
+    path = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                        "event_origin.py")
+    spec = importlib.util.spec_from_file_location("fused_claude_event_origin", path)
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
+_EVENT_ORIGIN = _load_event_origin()
+
+
 def _send_event(url: str, body: dict) -> None:
-    data = json.dumps(body).encode("utf-8")
-    for attempt in (0, 1):
-        try:
-            req = urllib.request.Request(
-                url, data=data,
-                headers={"Content-Type": "application/json", "X-Fused": "1"},
-                method="POST")
-            with urllib.request.urlopen(req, timeout=_EVENT_TIMEOUT) as resp:
-                resp.read()
-            return
-        except Exception:
-            if attempt:
-                return
-        try:
-            time.sleep(_EVENT_RETRY_SECONDS)
-        except Exception:
-            return
+    _EVENT_ORIGIN.send(url, body, _EVENT_PATH, _EVENT_TIMEOUT,
+                       _EVENT_RETRY_SECONDS)
+
+
+# The canvas sync's session hook (canvases.py `/api/canvases/agent/hook`),
+# which a Claude session reaches through CLI hooks (canvas_hook.py). Copilot
+# has none this host can attach per run, so the host — which sees every turn
+# begin, every tool call end and every turn end — posts the same events.
+_CANVAS_HOOK_PATH = "/api/canvases/agent/hook"
+_CANVAS_HOOK_TIMEOUT = 3.0
+
+
+class _CanvasHooks:
+    """Posts a canvas-clone session's events to the server, IN ORDER, off the
+    host's threads: the sync reads "a tool call arrived after the turn end" as
+    the next turn having begun (and gives that publish up), so a turn's last
+    tool event must never overtake its end. One daemon worker, one queue.
+    Fire-and-forget, as every hook is: no origin, no server — nothing."""
+
+    def __init__(self, cwd: str):
+        self.cwd = cwd
+        self._queue: "queue.Queue[dict]" = queue.Queue()
+        threading.Thread(target=self._work, daemon=True,
+                         name="fused-canvas-hooks").start()
+
+    def post(self, event: str, session_id: str) -> None:
+        self._queue.put({"event": event, "session_id": session_id, "cwd": self.cwd})
+
+    def _work(self) -> None:
+        while True:
+            body = self._queue.get()
+            try:
+                origin = _EVENT_ORIGIN.current()
+                if origin:
+                    _EVENT_ORIGIN.send(origin + _CANVAS_HOOK_PATH, body, _CANVAS_HOOK_PATH,
+                                       _CANVAS_HOOK_TIMEOUT, _EVENT_RETRY_SECONDS)
+            except Exception:
+                pass
 
 
 # ------------------------------------------------------------- the ACP wire
@@ -451,7 +487,7 @@ def _map_tool(kind: str, title: str, raw, locations=None, cwd: str = "",
     plus `_acp: {kind, title}` (and `raw`, the call's own input, only for a
     kind with no Claude twin — a mapped one already carries every field it
     has). An MCP tool reached through `--additional-mcp-config` surfaces as
-    `<server>-<tool>`; fused's own server becomes `mcp__fused_approvals__<tool>`
+    `<server>-<tool>`; fused's own server becomes `mcp__fused_render__<tool>`
     (the name agent.py pre-allows and `_segments_from_rows` strips)."""
     raw = raw if isinstance(raw, dict) else ({} if raw is None else {"value": raw})
     kind = str(kind or "")
@@ -498,7 +534,7 @@ def _map_tool(kind: str, title: str, raw, locations=None, cwd: str = "",
                 mcp = cand
                 break
         if mcp:
-            name = "mcp__fused_approvals__" + mcp[len(_MCP_PREFIX):]
+            name = "mcp__fused_render__" + mcp[len(_MCP_PREFIX):]
         else:
             name = title or kind or "tool"
     inp["_acp"] = acp
@@ -586,6 +622,9 @@ class _Host:
         # `new_session_id` is not read: that is Claude's fused-minted id.
         self.sid = str(req.get("session_id") or "")
         self.resume = bool(self.sid)
+        # A session in a canvas clone tells the sync when a turn begins, a
+        # tool call ends and the turn ends (`_CanvasHooks`); None elsewhere.
+        self.canvas_hooks = _CanvasHooks(self.cwd) if req.get("canvas_clone") else None
         self.lock = threading.RLock()
         self._out = _append_private(os.path.join(self.run_dir, "out.jsonl"))
         self.transcript_path = self._transcript_path()
@@ -760,10 +799,17 @@ class _Host:
                 "role": "user", "content": [{"type": "text", "text": text}]},
                 "entrypoint": "sdk-cli", "isMeta": False, "isSidechain": False})
             self._write_registry("busy")
+        # Before the prompt goes out: the clone's watcher is running (started
+        # here when no canvas page has it open) by the time Copilot edits.
+        self._canvas_hook("start")
         self.peer.request("session/prompt", {
             "sessionId": self.sid,
             "prompt": [{"type": "text", "text": text}]},
             on_done=self._on_prompt_reply)
+
+    def _canvas_hook(self, event: str) -> None:
+        if self.canvas_hooks is not None:
+            self.canvas_hooks.post(event, self.sid)
 
     def _open_message(self) -> None:
         if self.msg_open:
@@ -864,6 +910,7 @@ class _Host:
                        "entrypoint": "sdk-cli", "isMeta": False,
                        "isSidechain": False})
         self.tail_closed = False
+        self._canvas_hook("post")
 
     def _on_prompt_reply(self, rpc: _Rpc) -> None:
         """EVERY road a prompt can end on lands here, once: a reply of any
@@ -1003,12 +1050,19 @@ class _Host:
                            "is_error": not ok,
                            "result": (self.turn_text or "") if ok else "",
                            "stop_reason": stop})
+        # `stop_reason` rides on the turn's closing record: the transcript is
+        # what recovery reads when nothing watched this turn
+        # (`session_liveness.session_last_turn`), and a refusal or max_tokens
+        # after a streamed reply leaves a plain assistant row as the last word.
         self._emit_tx({"type": "system", "subtype": "turn_duration",
                        "durationMs": duration_ms, "isMeta": False,
-                       "isSidechain": False})
+                       "isSidechain": False,
+                       "stop_reason": result.get("stop_reason") or ""})
         self._emit_out(result)
         self.result_written = True
         self.results += 1
+        # The turn's change set is complete: the sync merges and publishes.
+        self._canvas_hook("stop")
 
     # ------------------------------------------------------- notifications
 
@@ -1711,7 +1765,10 @@ class _Host:
                            session_id=self.sid or _meta_session_id(self.run_dir))
         if last is not None:
             try:
-                last.join(_EVENT_TIMEOUT + 1.0)
+                # Long enough for the server.json fallback too (`send_budget`):
+                # a relaunched server may still be booting on its new port.
+                last.join(_EVENT_ORIGIN.send_budget(_EVENT_TIMEOUT,
+                                                    _EVENT_RETRY_SECONDS))
             except Exception:  # noqa: BLE001
                 pass
 

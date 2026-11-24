@@ -7,6 +7,7 @@ import {
   CLAUDE_INSTALL_COMMAND_WINDOWS,
   CODEX_INSTALL_COMMAND,
   GEMINI_INSTALL_COMMAND,
+  OPENCODE_INSTALL_COMMAND,
   troubleInstructions,
   resetAnnouncedTemplateErrors,
   shouldAnnounceTemplateError,
@@ -35,6 +36,9 @@ test("a signed-out claude is NOT reported as a missing one", () => {
   // The CLI's own text names itself, so it needs no help.
   expect(troubleKind("Invalid API key · Please run /login")).toBe("login");
   expect(troubleKind("Claude Code is not signed in")).toBe("login");
+  // Headless wording of an expired login: names neither Claude nor /login.
+  expect(troubleKind("Failed to authenticate: OAuth session expired and could not be refreshed")).toBe("login");
+  expect(troubleKind("Failed to authenticate: this login reached its time limit and cannot be renewed.")).toBe("login");
 });
 
 test("a sign-in problem with no subject is not assumed to be Claude's", () => {
@@ -63,6 +67,7 @@ test("a failure SHAPE about something else is not about Claude", () => {
     )
   ).toBe("raw");
   expect(troubleKind("mount probe failed: authentication failed for s3://bucket")).toBe("raw");
+  expect(troubleKind("mount probe failed: failed to authenticate to s3://bucket")).toBe("raw");
   expect(troubleKind("ffmpeg: command not found")).toBe("raw");
   expect(troubleKind("rate limit exceeded talking to the tile server")).toBe("raw");
 });
@@ -213,8 +218,9 @@ test("with no install path the brief says how to FIND the app", () => {
   });
   // /Applications first: the DMG is how people actually have this, and the
   // second line is the same bundle one level in — the Python a fix edits.
-  expect(text).toContain("/Applications/FusedRender.app");
-  expect(text.indexOf("/Applications/FusedRender.app")).toBeLessThan(
+  // Quoted: the bundle name holds a space, and the line is pasted into a shell.
+  expect(text).toContain("ls -d /Applications/'Fused Render.app' ~/Applications/'Fused Render.app'");
+  expect(text.indexOf("/Applications/'Fused Render.app'")).toBeLessThan(
     text.indexOf("brew list --cask")
   );
   // brew answers a different question: not where, but who manages it.
@@ -513,4 +519,66 @@ test("the Gemini brief installs with npm and signs in with Google", () => {
   expect(signedOut).toContain("GEMINI_API_KEY");
   expect(signedOut).not.toContain("codex login");
   expect(signedOut).not.toContain(GEMINI_INSTALL_COMMAND);
+});
+
+
+// -- OpenCode (docs/OPENCODE_BACKEND.md D13, §8) --------------------------------
+
+test("opencode's own markers classify an OpenCode session's failure", () => {
+  // The account markers, verbatim from agent_backends/opencode.py.
+  for (const msg of [
+    "No API key found for provider anthropic",
+    "Not authenticated",
+    "HTTP 401 Unauthorized",
+    "Invalid API key",
+    "ProviderNotFound: provider not found: anthropic",
+    "model not found: openai/gpt-9",
+    "opencode is not signed in to any provider",
+  ]) expect(troubleKind(msg, "opencode")).toBe("login");
+  // The limit markers, likewise.
+  for (const msg of [
+    "Rate limit exceeded",
+    "You exceeded your current quota",
+    "Too Many Requests",
+    "HTTP 429",
+    "The provider is overloaded, try again later",
+  ]) expect(troubleKind(msg, "opencode")).toBe("limit");
+  // Not failures: a bare number, a port.
+  for (const msg of [
+    "Read 429000 bytes from stdout",
+    "listening on port 14290",
+    "build 4011 done",
+  ]) expect(troubleKind(msg, "opencode")).toBe("raw");
+});
+
+test("opencode's markers are OpenCode's alone, and a shape counts when it names OpenCode or a provider", () => {
+  expect(troubleKind("provider not found", "claude")).toBe("raw");
+  expect(troubleKind("overloaded", "gemini")).toBe("raw");
+  expect(troubleKind("opencode: command not found", "opencode")).toBe("notfound");
+  expect(troubleKind("spawn opencode ENOENT", "opencode")).toBe("notfound");
+  expect(troubleKind("could not write the file: no such file or directory", "opencode")).toBe("raw");
+  expect(troubleKind("claude: command not found", "opencode")).toBe("raw");
+  // A missing file inside the CLI's own config dir is not a missing CLI.
+  expect(troubleKind("ENOENT: no such file or directory, open '/Users/me/.opencode/auth.json'", "opencode")).toBe("raw");
+  // ...while the binary itself missing still reads as notfound.
+  expect(troubleKind("/usr/local/bin/opencode: No such file or directory", "opencode")).toBe("notfound");
+  expect(troubleKind("spawn /Users/me/.opencode/bin/opencode ENOENT", "opencode")).toBe("notfound");
+  // The server's own "not found" sentence (agent.py).
+  expect(troubleKind("session start failed: opencode CLI not found — install with `npm install -g opencode-ai`", "opencode")).toBe("notfound");
+  expect(troubleKind("opencode not found", "opencode")).toBe("notfound");
+});
+
+test("the OpenCode brief installs with npm and signs in from a terminal", () => {
+  const missing = troubleInstructions({ what: "x", error: "opencode: command not found", backend: "opencode" });
+  expect(missing).toContain("which opencode");
+  expect(missing).toContain(OPENCODE_INSTALL_COMMAND);
+  expect(OPENCODE_INSTALL_COMMAND).toBe("npm install -g opencode-ai");
+  expect(missing).not.toContain("install.sh");
+  expect(missing).toContain("opencode --version");
+  const signedOut = troubleInstructions({ what: "x", error: "Not authenticated", backend: "opencode" });
+  expect(signedOut).toContain("opencode auth login");
+  expect(signedOut).toContain("local model");
+  expect(signedOut).not.toContain("codex login");
+  expect(signedOut).not.toContain("GEMINI_API_KEY");
+  expect(signedOut).not.toContain(OPENCODE_INSTALL_COMMAND);
 });

@@ -33,7 +33,7 @@ export function AccessDenied({ path }: { path: string }) {
   return (
     <div className="access-denied">
       <p className="access-denied-text">
-        The system won’t let FusedRender read <code>{path}</code>.
+        The system won’t let Fused Render read <code>{path}</code>.
       </p>
       <FdaStrip />
     </div>

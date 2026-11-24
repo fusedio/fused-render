@@ -163,7 +163,7 @@ def app_dir_for(project: str) -> str | None:
         folder = canonical_fs_path(os.path.abspath(e["path"])).rstrip("/")
         if folder and is_under(project, folder):
             return folder
-    # A canvas CLONE (`~/Fused/canvas/<env>/<name>`), or a node file in it:
+    # A canvas CLONE (`~/Fused/canvas/<env>/user/<name>`), or a node file in it:
     # the clone is the project (the sidebar's Canvases section, 2026-10-20).
     # Before the workspace climb — a clone declares no page, so the climb
     # would answer None, and a clone is under the workspace root.
@@ -194,11 +194,15 @@ def app_dir_for(project: str) -> str | None:
 # ---- the unread dot ----------------------------------------------------------
 #
 # Each desk row carries its OWN unread state (owner, 2026-09-07): ``unread`` is
-# true when a task under the folder FINISHED since the user last opened the app,
-# and opening the app — nothing else — clears it. It is decoupled from the
-# tasks' per-message read state on purpose: reading the task in the Tasks page,
-# the chat, anywhere, leaves the app's dot alone, and opening the app leaves the
-# task's messages unread.
+# true when a task under the folder FINISHED since the user last opened the app
+# AND that task still has something unread. Opening the app clears it; so does
+# reading the task anywhere — the Tasks page, the rail, the chat (owner,
+# 2026-11-11: "they should clear everywhere and should be one state only").
+# Before 2026-11-11 the dot ignored the task's read state on purpose, and a
+# task read in the peek left the desk's dot lit until the app was opened: the
+# one mark on the screen that said "unread" about a task nothing else did.
+# Opening the app still leaves the task's messages unread (one direction only:
+# the desk never writes the task's read marks).
 #
 # Two facts per row, both here, both the server's:
 #
@@ -232,6 +236,13 @@ def _unread(folder: str, opened_at: float, rows: list[dict]) -> bool:
             continue
         project = str(row.get("project") or "")
         if not project or not is_under(project, folder):
+            continue
+        # ...and the task itself must still be unread: a task read in the
+        # peek, the rail or the chat clears every mark for it at once (the
+        # row's `unread` is the listing's own count, tasks._row). A row that
+        # carries no count at all (an older caller) keeps the old rule.
+        count = row.get("unread")
+        if isinstance(count, (int, float)) and not isinstance(count, bool) and count <= 0:
             continue
         if float(row.get("happened_at") or 0.0) > opened_at:
             return True
@@ -428,20 +439,28 @@ def app_icon(folder: str) -> dict | None:
 def _canvas_of(path: str) -> dict | None:
     """`{env, name}` when the desk row IS a canvas clone (the clone dir
     itself, not a file in it), else None (see canvases.clone_dir_for)."""
-    from fused_render.canvases import canvases_root as canvases_root_for, clone_dir_for
+    from fused_render.canvases import clone_dir_for, clones_root
 
     clone = clone_dir_for(path)
     if clone is None:
         return None
     env, name, clone_dir = clone
-    # The row must BE the clone (one level under the root), not a file in
-    # it. Plain and resolved spellings of the root both name the clone;
-    # nothing here resolves `path` (see clone_dir_for).
-    real_root = os.path.realpath(canvases_root_for(env))
+    # The row must BE the clone (one level under the clones folder), not a
+    # file in it. Plain and resolved spellings of that folder both name the
+    # clone; nothing here resolves `path` (see clone_dir_for).
+    real_root = os.path.realpath(clones_root(env))
     if path.rstrip("/") not in (
         canonical_fs_path(clone_dir).rstrip("/"),
         canonical_fs_path(os.path.join(real_root, name)).rstrip("/"),
     ):
+        return None
+    # A reference copy `fused canvas mirror` left at `user/<name>` (D1476)
+    # has the shape of a clone and is not one: it has no canvas page to open
+    # until the user clones it. Only the marker says so. A folder that is
+    # gone reads as no marker, so a deleted clone keeps its canvas row.
+    from fused_render import canvas_marker
+
+    if canvas_marker.is_reference(clone_dir):
         return None
     return {"env": env, "name": name}
 
@@ -499,7 +518,7 @@ def list_apps() -> list[dict]:
             "kind": "linked" if path in linked else "workspace",
             # Which canvas this row is (`{env, name}`), None for an app
             # folder: the sidebar splits the desk into Projects and Canvases
-            # on it, and a canvas row opens the canvas's project page.
+            # on it, and a canvas row opens the canvas's editor.
             "canvas": _canvas_of(path),
             "entry": canonical_fs_path(entry) if entry else None,
             "exists": exists,

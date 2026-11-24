@@ -15,6 +15,9 @@ export interface ReactionPickerProps {
   /** The message and the button the picker anchors to; null = closed. */
   req: ReactionReq | null;
   onClose: () => void;
+  /** The bot the message belongs to; absent, the store's selection (the page). The rail's bot card names its own
+   *  (components/BotChat): off the page nothing is selected. */
+  botId?: string;
 }
 
 /** Set (or clear, with "") one message's reaction: optimistic snapshot, face, then the route. */
@@ -27,10 +30,10 @@ export async function setReaction(id: string, seq: number, emoji: string): Promi
   await act(() => api.react(id, seq, emoji));
 }
 
-export function ReactionPicker({ req, onClose }: ReactionPickerProps) {
+export function ReactionPicker({ req, onClose, botId }: ReactionPickerProps) {
   const ref = useRef<HTMLDivElement>(null);
-  const sel = useBotsSelector((s) => s.sel);
-  const now = useBotsSelector((s) => (req ? s.bots.find((b) => b.id === s.sel)?.reactions?.[req.seq] || "" : ""));
+  const sel = useBotsSelector((s) => botId ?? s.sel);
+  const now = useBotsSelector((s) => (req ? s.bots.find((b) => b.id === sel)?.reactions?.[req.seq] || "" : ""));
   useLayoutEffect(() => {
     const el = ref.current; if (!el || !req) return;
     const r = req.anchor.getBoundingClientRect(), w = el.offsetWidth, h = el.offsetHeight;

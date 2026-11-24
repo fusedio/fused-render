@@ -301,17 +301,21 @@ def pick_unix_signal_add(glib, glib_unix_loader):
     return glib_unix.signal_add
 
 
-def configure_webkit_env() -> None:
-    """Turn WebKitGTK's DMABUF renderer off: with it on, every page
-    navigation flickers. A value the user already set wins. WebKit's web and
-    network processes inherit this process's environment, so setting it here,
-    before WebKit loads, covers them."""
-    os.environ.setdefault("WEBKIT_DISABLE_DMABUF_RENDERER", "1")
+def gpu_rendering_active() -> bool:
+    """Whether WebKitGTK uses its DMABUF (GPU) renderer: on unless the user
+    set `WEBKIT_DISABLE_DMABUF_RENDERER` (WebKit reads any value other than
+    "0" as "disable")."""
+    return os.environ.get("WEBKIT_DISABLE_DMABUF_RENDERER", "0") == "0"
+
+
+# Marks the page so its stylesheets can drop the opacity fades WebKitGTK's
+# DMABUF renderer draws wrong: the faded element vanishes for a few frames as
+# the fade lands. frontend/src/styles keys those overrides on this attribute.
+_GPU_RENDERING_MARK = 'document.documentElement.setAttribute("data-gpu-rendering", "")'
 
 
 def load_toolkit() -> SimpleNamespace:
     """Import GTK3 + WebKit2 4.1 through PyGObject or say exactly why not."""
-    configure_webkit_env()
     try:
         import gi
     except ImportError as error:
@@ -368,6 +372,7 @@ class GtkBackend:
         self._context = wk.WebContext.new_with_website_data_manager(manager)
         self._context.connect("download-started", self._on_download_started)
         self._version = __version__
+        self._gpu_rendering = gpu_rendering_active()
 
     # -- threading --
     def run_on_main(self, fn):
@@ -419,8 +424,12 @@ class GtkBackend:
             settings.set_enable_media_stream(True)
         if hasattr(settings, "set_enable_webrtc"):
             settings.set_enable_webrtc(True)
+        if self._gpu_rendering:
+            view.get_user_content_manager().add_script(wk.UserScript(
+                _GPU_RENDERING_MARK, wk.UserContentInjectedFrames.TOP_FRAME,
+                wk.UserScriptInjectionTime.START, None, None))
         window = Gtk.Window()
-        window.set_title("FusedRender")
+        window.set_title("Fused Render")
         size = self._frames.get(frame_name)
         window.set_default_size(*( (size["w"], size["h"]) if size else _DEFAULT_SIZE))
         if size and size.get("x") is not None and size.get("y") is not None:
@@ -430,7 +439,7 @@ class GtkBackend:
         view.connect("decide-policy", self._on_decide_policy)
         view.connect("create", self._on_create)
         view.connect("close", lambda _v: window.destroy())
-        view.connect("notify::title", lambda v, _p: window.set_title(v.get_title() or "FusedRender"))
+        view.connect("notify::title", lambda v, _p: window.set_title(v.get_title() or "Fused Render"))
         view.connect("permission-request", self._on_permission)
         view.connect("web-process-terminated", self._on_web_process_terminated)
         window.connect("delete-event", lambda _w, _e: self.save_frame(win) and False)
@@ -582,7 +591,7 @@ class GtkBackend:
         self._log(f"web process terminated ({reason.value_nick}) at {view.get_uri()}")
         url = view.get_uri() or ""
         media = ("<p>If this page plays audio or video, this system's WebKitGTK may "
-                 "lack GStreamer plugins (see the FusedRender Linux notes).</p>"
+                 "lack GStreamer plugins (see the Fused Render Linux notes).</p>"
                  if reason.value_nick == "crashed" else "")
         safe = url.replace("&", "&amp;").replace('"', "&quot;").replace("<", "&lt;")
         view.load_html(
@@ -598,8 +607,14 @@ class GtkBackend:
         folder = (GLib.get_user_special_dir(GLib.UserDirectory.DIRECTORY_DOWNLOAD)
                   or os.path.expanduser("~/Downloads"))
         os.makedirs(folder, exist_ok=True)
-        download.set_destination(
-            GLib.filename_to_uri(window_policy.download_destination(folder, suggested), None))
+        dest = window_policy.download_destination(folder, suggested)
+        # "finished" follows "failed" too: either way the reserved name is
+        # given back (releasing twice is a no-op).
+        download.connect("finished",
+                         lambda _d: window_policy.release_download_destination(dest))
+        download.connect("failed",
+                         lambda _d, _e: window_policy.release_download_destination(dest))
+        download.set_destination(GLib.filename_to_uri(dest, None))
         return True
 
 
@@ -629,7 +644,7 @@ def main(argv: list[str] | None = None) -> int:
     # the compositor/taskbar group and icon this process under the same
     # identity the installed .desktop entry advertises.
     tk.GLib.set_prgname("fused-render")
-    tk.GLib.set_application_name("FusedRender")
+    tk.GLib.set_application_name("Fused Render")
     tk.Gtk.Window.set_default_icon_name("fused-render")
 
     holder: dict = {}

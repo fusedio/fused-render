@@ -332,6 +332,19 @@ def test_every_skill_in_the_repo_is_discovered(tmp_path, monkeypatch):
     assert "plugin.json" not in found and "not-a-skill" not in found
 
 
+def test_the_canvas_reference_skill_is_not_shipped_from_this_repo():
+    """D1480. The skill moved to the workbench plugin (fusedio/skills,
+    `workbench:canvas-reference`), which only a canvas session is handed. A
+    copy left here would ride the ungated root into every session and drift
+    from the one the seeded CLAUDE.md names."""
+    assert not [n for n in skill_sources.skill_names() if "canvas-reference" in n]
+    with open(os.path.join(REPO_ROOT, ".claude-plugin", "plugin.json"),
+              encoding="utf-8") as fh:
+        assert "reference canvases" not in json.load(fh)["description"]
+    with open(os.path.join(REPO_ROOT, "README.md"), encoding="utf-8") as fh:
+        assert "workbench/skills/canvas-reference/SKILL.md" in fh.read()
+
+
 def test_a_skill_deleted_from_the_repo_stops_shipping_even_with_a_stale_packaged_copy(
         tmp_path, monkeypatch):
     """The scenario a per-skill union would get wrong (D106): a dev checkout
@@ -666,8 +679,11 @@ def test_no_clone_is_a_normal_outcome(home, no_override):
 def test_a_valid_clone_is_the_root_and_the_export_publishes_it(home, no_override):
     root = _clone_tree(home)
     assert skill_plugin.workbench_plugin_root() == root
-    assert skill_plugin.export_workbench_plugin_env() == root
-    assert os.environ[skill_plugin.WORKBENCH_PLUGIN_DIR_ENV] == root
+    # What is exported is the SPLICED copy staged beside it, never the clone.
+    staged = skill_plugin.export_workbench_plugin_env()
+    assert os.path.dirname(staged) == skill_plugin.workbench_staged_dir()
+    assert os.environ[skill_plugin.WORKBENCH_PLUGIN_DIR_ENV] == staged
+    assert skill_plugin._is_loadable(staged, skill_plugin.WORKBENCH_SKILLS)
     # Clone gone (a wiped home dir, a failed swap) → the var must go with it, or
     # every later session is handed a --plugin-dir pointing at nothing.
     shutil.rmtree(root)
@@ -885,7 +901,9 @@ def test_the_override_bypasses_all_fetching(tmp_path, home, monkeypatch):
     monkeypatch.setenv(skill_plugin.WORKBENCH_PLUGIN_SRC_ENV, str(mine))
     assert skill_plugin.workbench_plugin_root() == str(mine)
     assert skill_plugin.fetch_workbench_skills() == str(mine)
-    assert skill_plugin.sync_workbench_plugin() == str(mine)
+    # The override is the SOURCE: what is published is its spliced copy.
+    assert os.path.dirname(skill_plugin.sync_workbench_plugin()) == \
+        skill_plugin.workbench_staged_dir()
     # An override pointing at nothing does not silently fall back to a clone.
     _clone_tree(home)
     monkeypatch.setenv(skill_plugin.WORKBENCH_PLUGIN_SRC_ENV, str(tmp_path / "nope"))
@@ -955,7 +973,8 @@ def test_both_callers_pass_their_target_to_the_gate():
     src = open(os.path.join(REPO_ROOT, "fused_render", "claude_agent",
                             "agent.py"), encoding="utf-8").read()
     assert "_plugin_argv()" not in src
-    assert src.count("_plugin_argv(file)") == 2
+    # One of them also says whether an expert's chat gets the workbench root (`workbench=`).
+    assert src.count("_plugin_argv(file)") + src.count("_plugin_argv(file, ") == 2
 
 
 def test_appenv_names_the_workbench_var_and_the_canvases_root():
@@ -1375,3 +1394,80 @@ def test_an_empty_repo_skills_dir_does_not_shadow_the_packaged_copy(monkeypatch,
     monkeypatch.setattr(skill_sources, "REPO_SKILLS_DIR", str(empty))
     monkeypatch.setattr(skill_sources, "PACKAGED_SKILLS_DIR", str(packaged))
     assert skill_sources.skill_names() == ("fused-render-usage",)
+
+
+def test_the_splice_strips_and_unwraps_marker_blocks():
+    text = ("# Canvas\n"
+            "Edit canvas.toml.\n"
+            "<!-- fused-render:strip -->\n"
+            "Pull it locally first: `fused workbench canvas pull NAME`.\n"
+            "<!-- /fused-render:strip -->\n"
+            "<!-- fused-render:only (this block applies only inside a fused-render canvas clone)\n"
+            "This folder is a live clone; never pull or push.\n"
+            "-->\n"
+            "Inline <!-- fused-render:strip --> mention stays.\n"
+            "Blocks open with `<!-- fused-render:only` on a line of their own.\n")
+    assert skill_plugin.splice_fused_render_markers(text) == (
+        "# Canvas\n"
+        "Edit canvas.toml.\n"
+        "This folder is a live clone; never pull or push.\n"
+        "Inline <!-- fused-render:strip --> mention stays.\n"
+        "Blocks open with `<!-- fused-render:only` on a line of their own.\n")
+    # The bare opener still works; strip markers must be the whole line.
+    assert skill_plugin.splice_fused_render_markers(
+        "<!-- fused-render:only\nx\n-->\n") == "x\n"
+    indented = "  <!-- fused-render:strip -->\nkept\n"
+    assert skill_plugin.splice_fused_render_markers(indented) == indented
+    # A one-line comment carrying the marker is not an opener.
+    one = "<!-- fused-render:only note -->\nkept\n"
+    assert skill_plugin.splice_fused_render_markers(one) == one
+
+
+def test_the_staged_plugin_is_spliced_and_restaged_when_the_source_changes(tmp_path, home,
+                                                                           monkeypatch):
+    mine = _plugin_tree(tmp_path / "mine", skill_plugin.WORKBENCH_SKILLS)
+    skill = mine / "skills" / "canvas-toml" / "SKILL.md"
+    skill.write_text("a\n<!-- fused-render:strip -->\npull first\n<!-- /fused-render:strip -->\n"
+                     "<!-- fused-render:only\nclone note\n-->\n")
+    readme = mine / "README.md"
+    readme.write_text("<!-- fused-render:strip -->\nprose about markers\n")
+    first = skill_plugin.stage_workbench_plugin(str(mine))
+    assert os.path.dirname(first) == skill_plugin.workbench_staged_dir()
+    assert open(os.path.join(first, "skills", "canvas-toml", "SKILL.md")).read() == \
+        "a\nclone note\n"
+    # Only skills/*/SKILL.md is spliced; the README is copied verbatim.
+    assert open(os.path.join(first, "README.md")).read() == readme.read_text()
+    # Unchanged source: the same generation, untouched.
+    before = os.stat(os.path.join(first, "skills", "canvas-toml", "SKILL.md")).st_ino
+    assert skill_plugin.stage_workbench_plugin(str(mine)) == first
+    assert os.stat(os.path.join(first, "skills", "canvas-toml", "SKILL.md")).st_ino == before
+    # The source moves (a refresh moved the clone's HEAD): a NEW generation;
+    # the live one (exported to sessions) is never rewritten and survives the
+    # switch.
+    monkeypatch.setenv(skill_plugin.WORKBENCH_PLUGIN_DIR_ENV, first)
+    skill.write_text("b\n<!-- fused-render:strip -->\nx\n<!-- /fused-render:strip -->\n")
+    second = skill_plugin.stage_workbench_plugin(str(mine))
+    assert second != first and os.path.dirname(second) == skill_plugin.workbench_staged_dir()
+    assert open(os.path.join(second, "skills", "canvas-toml", "SKILL.md")).read() == "b\n"
+    assert open(os.path.join(first, "skills", "canvas-toml", "SKILL.md")).read() == \
+        "a\nclone note\n"
+    # One more switch: the generation two back goes, the previous one stays.
+    monkeypatch.setenv(skill_plugin.WORKBENCH_PLUGIN_DIR_ENV, second)
+    skill.write_text("c\n<!-- fused-render:strip -->\nx\n<!-- /fused-render:strip -->\n")
+    third = skill_plugin.stage_workbench_plugin(str(mine))
+    assert os.path.isdir(second) and os.path.isdir(third) and not os.path.exists(first)
+    # The source itself is never edited.
+    assert readme.read_text().startswith("<!--")
+
+
+def test_skills_without_the_markers_are_published_and_logged_once(tmp_path, home, monkeypatch,
+                                                                 caplog):
+    monkeypatch.setattr(skill_plugin, "_predate_logged", False)
+    mine = _plugin_tree(tmp_path / "mine", skill_plugin.WORKBENCH_SKILLS)
+    with caplog.at_level("WARNING"):
+        staged = skill_plugin.stage_workbench_plugin(str(mine))
+        assert staged and skill_plugin._is_loadable(staged, skill_plugin.WORKBENCH_SKILLS)
+        (mine / "skills" / "canvas-toml" / "SKILL.md").write_text("# changed\n")
+        assert skill_plugin.stage_workbench_plugin(str(mine)) != staged
+    hits = [r for r in caplog.records if "predate the clone profile" in r.getMessage()]
+    assert len(hits) == 1

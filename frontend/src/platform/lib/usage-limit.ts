@@ -108,3 +108,14 @@ export function usageLimitStatusWord(facts: UsageLimitFacts | null | undefined):
   if (!isUsageLimited(facts)) return "";
   return "paused" + resumesClause(facts as UsageLimitFacts);
 }
+
+/**
+ * RETRY NOW — the one press every surface showing the pause offers (Akshil,
+ * 2026-11-23: "I can switch Claude accounts and then the limit-reset wait is
+ * gone"). It sends the continue prompt now (`api.retryAfterLimit`); the booked
+ * comeback stays until a reply retires it, so pressing it while still limited
+ * costs nothing but the attempt. One label and one hint, so the chat's banner,
+ * its limit card and the task row say the same thing.
+ */
+export const LIMIT_RETRY_LABEL = "Retry now";
+export const LIMIT_RETRY_HINT = "Continue now instead of waiting for the reset — e.g. after switching Claude accounts";

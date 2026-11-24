@@ -76,8 +76,7 @@ import { notify } from "@platform/lib/notifications";
 import { snapshotIsOpenExact } from "@platform/lib/presence";
 import { IS_EMBED, IS_TOP_EMBED } from "@platform/lib/router";
 import { useTasksPulseRows } from "@shell/tasksPulse";
-import { taskColumn } from "@shell/tasks-lib";
-import { notificationForTransition } from "@shell/task-status-notify";
+import { noticeColumn, notificationForTransition } from "@shell/task-status-notify";
 import { useTaskNotifyTerminalSessions } from "@shell/task-notify-terminal-flag";
 import { useAutoReadOpenTasks, useOpenTaskKeys } from "@shell/task-open-read";
 
@@ -136,7 +135,7 @@ export function useTaskStatusNotify(): void {
     for (const task of tasks) {
       liveKeys.add(task.key);
       const was = prev.get(task.key);
-      const column = taskColumn(task);
+      const column = noticeColumn(task);
       const input = notificationForTransition(
         was, task, watchStartS.current, notifyTerminalSessions, isOpenAnywhere);
       prev.set(task.key, column);

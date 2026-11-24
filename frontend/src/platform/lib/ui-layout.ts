@@ -63,6 +63,10 @@ export type { UiLayoutDoc };
 export const SIDEBAR_WIDTH_MIN = 180;
 export const SIDEBAR_WIDTH_MAX = 400;
 export const SIDEBAR_WIDTH_DEFAULT = 232;
+// The right rail's expanded width (shell/ui_layout.py RAIL_MIN_W / RAIL_MAX_W).
+export const RAIL_WIDTH_MIN = 180;
+export const RAIL_WIDTH_MAX = 400;
+export const RAIL_WIDTH_DEFAULT = 200;
 const VIEWSTATE_MAX_ENTRIES = 500;
 const VIEWSTATE_MAX_KEY = 4096;
 const VIEWSTATE_MAX_VALUE = 512;
@@ -72,6 +76,20 @@ const TASKS_IDENT = /^[a-z0-9_-]{1,32}$/;
 // client clamps harder on read (rail-peek-lib PEEK_MIN_*, the row's room).
 const RAIL_PEEK_MIN = 120;
 const RAIL_PEEK_MAX = 10000;
+/** The task chat's seen marks: shell/ui_layout.py MAX_CHAT_SEEN / MAX_CHAT_ID. */
+export const CHAT_SEEN_MAX = 300;
+const CHAT_ID_MAX = 128;
+
+/** The chat text zoom's steps (⌘+ / ⌘− / ⌘0 in a chat, platform/lib/chat-zoom.ts),
+ *  1 = 100 %. shell/ui_layout.py snaps to the same list. */
+export const CHAT_TEXT_SCALES: readonly number[] = [0.8, 0.9, 1, 1.1, 1.25, 1.5, 1.75, 2];
+
+/** `n` clamped to the step list's ends and snapped to its nearest step. */
+export function snapChatTextScale(n: number): number {
+  let best = 1;
+  for (const s of CHAT_TEXT_SCALES) if (Math.abs(s - n) < Math.abs(best - n)) best = s;
+  return best;
+}
 
 /** Debounce before the whole-document PUT: a resize drag or a burst of sort
  *  clicks is one write, not one per event. */
@@ -109,6 +127,13 @@ export function sanitizeUiLayout(raw: unknown): UiLayoutDoc {
     out.sidebar = {
       width: clampInt(sb.width, SIDEBAR_WIDTH_MIN, SIDEBAR_WIDTH_MAX),
       collapsed: sb.collapsed === true,
+    };
+  }
+  const rl = src.rail;
+  if (isObj(rl) && isNum(rl.width)) {
+    out.rail = {
+      width: clampInt(rl.width, RAIL_WIDTH_MIN, RAIL_WIDTH_MAX),
+      expanded: rl.expanded === true,
     };
   }
   if (typeof src.bookmarksCollapsed === "boolean") out.bookmarksCollapsed = src.bookmarksCollapsed;
@@ -149,12 +174,21 @@ export function sanitizeUiLayout(raw: unknown): UiLayoutDoc {
     out.recentPaths = paths.slice(0, RECENT_PATHS_MAX);
   }
   if (typeof src.rememberLastFolder === "boolean") out.rememberLastFolder = src.rememberLastFolder;
-  const rp = src.canvasRailPeek;
-  if (isObj(rp) && isNum(rp.width) && isNum(rp.height)) {
-    out.canvasRailPeek = {
-      width: clampInt(rp.width, RAIL_PEEK_MIN, RAIL_PEEK_MAX),
-      height: clampInt(rp.height, RAIL_PEEK_MIN, RAIL_PEEK_MAX),
-    };
+  // The rail's pinned card and the favourite's card: one shape.
+  for (const card of ["canvasRailPeek", "canvasRailFav"] as const) {
+    const rp = src[card];
+    if (isObj(rp) && isNum(rp.width) && isNum(rp.height)) {
+      out[card] = {
+        width: clampInt(rp.width, RAIL_PEEK_MIN, RAIL_PEEK_MAX),
+        height: clampInt(rp.height, RAIL_PEEK_MIN, RAIL_PEEK_MAX),
+      };
+    }
+  }
+  if (isNum(src.chatTextScale)) out.chatTextScale = snapChatTextScale(src.chatTextScale);
+  if (isObj(src.chatSeen)) {
+    const ok = (v: unknown): v is string => typeof v === "string" && v !== "" && v.length <= CHAT_ID_MAX;
+    const entries = Object.entries(src.chatSeen).filter(([k, v]) => ok(k) && ok(v)) as [string, string][];
+    if (entries.length) out.chatSeen = Object.fromEntries(entries.slice(-CHAT_SEEN_MAX));
   }
   return out;
 }
@@ -185,6 +219,7 @@ const withSide = (d: UiLayoutDoc, s: NonNullable<UiLayoutDoc["explorerSide"]>): 
  * Shape-only parsing; `sanitizeUiLayout` and the owning store's read path do
  * the rest. The owners, for whoever greps an old key:
  *   sidebar                 platform/lib/sidebarstate.ts
+ *   (rail                   platform/lib/railstate.ts — new field, no legacy key)
  *   bookmarks-collapsed     platform/ui/sidebar/sidebar-accordion.ts (was BookmarksSection.tsx)
  *   current-apps-collapsed  platform/ui/sidebar/sidebar-accordion.ts (was CurrentAppsSection.tsx)
  *   explorer-side-*         apps/explorer/lib/side-{hidden-,}store.ts, platform/lib/side-maximized-store.ts

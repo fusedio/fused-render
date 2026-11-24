@@ -181,3 +181,258 @@ describe("the task row's two-line form", () => {
     expect(VIEWS).toContain('data-hint-reply={lockedDraft ? "" : task.last_reply || ""}');
   });
 });
+
+describe("the task's row in one line (a rail ring's hover, 2026-11-16)", () => {
+  const SRC = readFileSync(new URL("./hints.ts", import.meta.url), "utf8");
+  const TASKS_CSS = readFileSync(new URL("../../styles/tasks.css", import.meta.url), "utf8");
+  const fn = (name: string) => {
+    const at = SRC.indexOf(`function ${name}(`);
+    expect(at).toBeGreaterThan(-1);
+    return SRC.slice(at, SRC.indexOf("\n}\n", at));
+  };
+  const rule = (sel: string) => {
+    const at = TASKS_CSS.indexOf(`${sel} {`);
+    expect(at).toBeGreaterThan(-1);
+    return TASKS_CSS.slice(at, TASKS_CSS.indexOf("}", at));
+  };
+
+  it("opts in on its own attribute, beside the task form's — and needs a title", () => {
+    // `data-hint-row` on a host that already carries `data-hint-title` /
+    // `data-hint-reply`: a host without it keeps the two-line caption, and a
+    // row with no title is no row (the plain hint draws).
+    const row = fn("renderRowHint");
+    expect(row).toContain('if (!el.hasAttribute("data-hint-row")) return false;');
+    expect(row).toContain("if (!title) return false;");
+  });
+
+  it("the row form is asked FIRST and the other two forms stand down for it", () => {
+    const show = fn("show");
+    expect(show).toContain("const row = renderRowHint(p, el);");
+    expect(show).toContain('p.classList.toggle("is-row", row);');
+    expect(show).toContain("const task = !row && renderTaskHint(p, el);");
+    expect(show).toContain('if (!row && !task) renderHint(p, el.getAttribute("data-hint") || "");');
+    // A host that is NOT a row must not inherit the last row's width.
+    expect(show).toContain('p.style.removeProperty("--hint-row-room");');
+    expect(show.indexOf("renderRowHint(p, el)")).toBeLessThan(show.indexOf("renderTaskHint(p, el)"));
+  });
+
+  it("draws title, count, time — no mark, number or reply (2026-11-17)", () => {
+    // "strip the left part, that is status and task id, keep the time and
+    // count as is" — and no subtitle ("not subtitle as well").
+    const row = fn("renderRowHint");
+    const order = ['"hint-row-title"', '"hint-row-count"', '"hint-row-time"'].map((c) => row.indexOf(c));
+    expect(order.every((i) => i > -1)).toBe(true);
+    expect([...order].sort((x, y) => x - y)).toEqual(order);
+    for (const gone of ["hint-row-mark", "hint-row-id", "hint-row-reply", "cloneNode"]) expect(row).not.toContain(gone);
+    for (const attr of ["data-hint-id", "data-hint-reply"]) expect(row).not.toContain(attr);
+    // A fact that was not given leaves no seat.
+    expect(row).toContain("if (count) {");
+    expect(row).toContain('if (when) row.append(span("hint-row-time", when));');
+  });
+
+  it("every word a task supplies goes in as TEXT, never as markup", () => {
+    // A title is whatever a chat said; only the count's glyph — a constant
+    // of this file — is written as HTML.
+    const row = fn("renderRowHint");
+    expect(row).toContain("s.textContent = text;");
+    expect(row).not.toContain("innerHTML");
+    expect((row.match(/insertAdjacentHTML/g) ?? []).length).toBe(1);
+    expect(row).toContain('c.insertAdjacentHTML("beforeend", ROW_COUNT_ICON);');
+    expect(SRC).toMatch(/const ROW_COUNT_ICON =\n\s*'<svg /);
+  });
+
+  it("says which window the ring opens, so only that one is dimmed (2026-11-17)", () => {
+    // "it darkens both instead of only … one of the window".
+    const row = fn("renderRowHint");
+    expect(row).toContain('else p.setAttribute("data-row-window", win === "b" ? "b" : "a");');
+    // A rail door that replaces no window (Search, the expand button, 2026-11-23) dims none.
+    expect(row).toContain('if (win === "none") p.removeAttribute("data-row-window");');
+    // The mark goes with the row: a caption that follows must not carry it.
+    expect(fn("show")).toContain('p.removeAttribute("data-row-window");');
+    expect(fn("hideHint")).toContain('panel.removeAttribute("data-row-window");');
+  });
+
+  it("is as wide as its words, not as the window — up to the caption's measure and the room beside the column (2026-11-18)", () => {
+    // "the width, make it not the same width as the window, we can have it
+    // less or more … basically it is fine if it is coincidence".
+    const row = fn("renderRowHint");
+    // No inline width, no window to copy one from.
+    expect(row).not.toContain("p.style.width");
+    expect(row).not.toContain("data-hint-width");
+    expect(SRC).not.toContain("liveWidth");
+    // All it says is the room: the panel never runs past the column's edge.
+    expect(row).toContain("const room = rowEdge(el) - 8 - EDGE;");
+    expect(row).toContain('p.style.setProperty("--hint-row-room", `${Math.max(120, Math.round(room))}px`);');
+    // …and the mark goes with the row.
+    expect(fn("show")).toContain('p.style.removeProperty("--hint-row-room");');
+    expect(fn("hideHint")).toContain('panel.style.removeProperty("--hint-row-room");');
+    // The measure is the stylesheet's: the task caption's 90ch, or the room.
+    const at = TASKS_CSS.indexOf(".hint-panel.is-row {");
+    const panel = TASKS_CSS.slice(at, TASKS_CSS.indexOf("\n}\n", at));
+    expect(panel).toContain("max-width: min(90ch, var(--hint-row-room, 80vw));");
+    expect(panel).not.toMatch(/\n  width:/);
+    // The room, worked: beside a column at x=1452 there is plenty; in a
+    // 300px-wide viewport the room rules; hard against the left edge, the floor.
+    const EDGE = Number(SRC.match(/const EDGE = (\d+);/)?.[1]);
+    expect(EDGE).toBeGreaterThan(0);
+    const room = (edge: number) => Math.max(120, Math.round(edge - 8 - EDGE));
+    expect(room(1452)).toBe(1452 - 8 - EDGE);
+    expect(room(252)).toBe(252 - 8 - EDGE);
+    expect(room(60)).toBe(120);
+  });
+
+  it("stands against the column's edge, where its windows stand — not against the one ring", () => {
+    expect(fn("rowEdge")).toContain('const col = el.closest("[data-hint-edge]") ?? el;');
+    expect(fn("rowEdge")).toContain("return col.getBoundingClientRect().left;");
+    const place = fn("placeBeside");
+    expect(place).toContain('const edge = p.classList.contains("is-row") ? rowEdge(el) : r.left;');
+    expect(place).toContain("const left = Math.max(EDGE, edge - 8 - w);");
+  });
+
+  it("a row raised by a scroll under a resting pointer is marked passing; a pointer somewhere new, or the keyboard, clears it", () => {
+    // The scroll that hides the hint also arms the mark…
+    expect(SRC).toContain('window.addEventListener("scroll", onScrolled, true);');
+    const scrolled = SRC.slice(SRC.indexOf("function onScrolled"));
+    expect(scrolled.slice(0, scrolled.indexOf("\n}"))).toContain("passing = true;");
+    // …a row shown while it is armed wears it, and only a row…
+    const show = SRC.slice(SRC.indexOf("function show("));
+    expect(show.slice(0, show.indexOf("\n}"))).toContain('p.classList.toggle("is-passing", row && passing);');
+    // …and it goes when a pointer event reports a NEW spot: the events a
+    // scroll causes under a pointer at rest carry the spot it already had.
+    const pointed = SRC.slice(SRC.indexOf("function pointed("));
+    const body = pointed.slice(0, pointed.indexOf("\n}"));
+    expect(body).toContain("if (known && e.clientX === pointerX && e.clientY === pointerY) return;");
+    expect(body.indexOf("return;")).toBeLessThan(body.indexOf("passing = false;"));
+    // The FIRST event seen is a baseline, not a move (CodeRabbit on #2320): a
+    // pointer resting on the rail at load has no earlier spot to compare
+    // with, so its first scroll-made event must record the spot and leave
+    // the mark armed.
+    expect(SRC).toContain("let pointerX = Number.NaN;");
+    expect(body).toContain("const known = !Number.isNaN(pointerX) && !Number.isNaN(pointerY);");
+    const record = body.indexOf("pointerY = e.clientY;");
+    const baseline = body.indexOf("if (!known) return;");
+    expect(record).toBeGreaterThan(-1);
+    expect(baseline).toBeGreaterThan(record);
+    expect(baseline).toBeLessThan(body.indexOf("passing = false;"));
+    expect(body).toContain('panel.classList.remove("is-passing");');
+    for (const fn of ["function onOver(", "function onMove("]) {
+      const at = SRC.indexOf(fn);
+      expect(SRC.slice(at, at + 80)).toContain("pointed(e);");
+    }
+    // The keyboard's hint is the reader's own.
+    const focus = SRC.slice(SRC.indexOf("function onFocus("));
+    const fbody = focus.slice(0, focus.indexOf("\n}"));
+    expect(fbody.indexOf("passing = false;")).toBeGreaterThan(-1);
+    expect(fbody.indexOf("passing = false;")).toBeLessThan(fbody.indexOf("show(el"));
+    // A hide takes the mark down with the row.
+    const hide = SRC.slice(SRC.indexOf("export function hideHint"));
+    expect(hide.slice(0, hide.indexOf("\n}"))).toContain('panel.classList.remove("is-passing");');
+  });
+
+  it("says which window is dimmed on the root element — while a row is up and not passing, and at no other time (2026-11-18)", () => {
+    const mark = fn("markRowDim");
+    expect(SRC).toContain('const ROW_DIM_ATTR = "data-rail-row-dim";');
+    // Up, a row, and the reader's own: all three, read off the panel.
+    expect(mark).toContain(
+      'const dims = !!panel && panel.classList.contains("is-on") && panel.classList.contains("is-row") && !panel.classList.contains("is-passing");',
+    );
+    expect(mark).toContain('const win = dims ? panel!.getAttribute("data-row-window") : null;');
+    // Written only when it changes: a pointer move over the same ring shows
+    // the same row again, and must cost no restyle.
+    expect(mark).toContain("if (root.hasAttribute(ROW_DIM_ATTR)) root.removeAttribute(ROW_DIM_ATTR);");
+    expect(mark).toContain("if (root.getAttribute(ROW_DIM_ATTR) !== win) root.setAttribute(ROW_DIM_ATTR, win);");
+    // Every place the three facts change says so: the row coming up, the row
+    // going, and the passing mark lifting under a pointer that moved.
+    const body = (name: string) => {
+      const from = SRC.slice(SRC.indexOf(name));
+      return from.slice(0, from.indexOf("\n}"));
+    };
+    const show = body("function show(");
+    expect(show.indexOf("markRowDim();")).toBeGreaterThan(show.indexOf('p.classList.add("is-on");'));
+    const hide = body("export function hideHint");
+    expect(hide.indexOf("markRowDim();")).toBeGreaterThan(hide.indexOf('panel.classList.remove("is-passing");'));
+    const pointed = body("function pointed(");
+    expect(pointed.indexOf("markRowDim();")).toBeGreaterThan(pointed.indexOf('panel.classList.remove("is-passing");'));
+  });
+
+  it("a hide takes the row form and its width with it", () => {
+    // The panel is shared: a plain hint shown next must not come up a 420px
+    // row-shaped box.
+    const hide = SRC.slice(SRC.indexOf("export function hideHint"));
+    const body = hide.slice(0, hide.indexOf("\n}"));
+    expect(body).toContain("panel.replaceChildren();");
+    expect(body).toContain('panel.classList.remove("is-row");');
+    expect(body).toContain('panel.style.removeProperty("--hint-row-room");');
+  });
+
+  it("the stylesheet: one line, only the title and the reply give", () => {
+    const panel = rule(".hint-panel.is-row");
+    expect(panel).toContain("box-sizing: border-box;");
+    // The app's own popover dress, not the window's ground (2026-11-17:
+    // "check other places in our platform … just make sure it is visible
+    // enough, doesn't mix in with the bg"): a hovered Tasks row's ground, the
+    // chat popovers' strong edge and shadow. No dimming of the window behind.
+    expect(panel).toContain("background: var(--row-bg-hover);");
+    expect(panel).not.toContain("background: var(--bg);");
+    expect(panel).toContain("border-color: var(--nt-card-border-strong);");
+    expect(panel).toContain("box-shadow: 0 6px 24px var(--shadow-md);");
+    expect(TASKS_CSS).not.toContain("is-spot");
+    // While the row is up the rail's windows stand under a light scrim
+    // (2026-11-17: "let's do scrim 30"): 55% of the app's modal scrim token —
+    // 30% black dark, 22% light — over the card, taking no pointer.
+    expect(TASKS_CSS).toContain(
+      '.claude-rail-peek > .claude-rail-peek-card::after,\n.modal-popover .modal-dialog.new-task-dialog::after {\n  content: "";\n  position: absolute;\n  inset: 0;\n  z-index: 50;\n  border-radius: inherit;\n  background: color-mix(in srgb, var(--scrim) 55%, transparent);\n  opacity: 0;\n  pointer-events: none;\n  transition: opacity var(--dur-med) var(--ease-out);\n}',
+    );
+    // It fades in and out ("a transition fade for this scrim"): only its
+    // opacity moves, and the card is never made a positioned box for it — its
+    // resize grips are earlier siblings and would end up under it.
+    // …and the + New task popover with them (2026-11-17: "scrim should apply
+    // for + new button, bots and tasks as well"): window A in the Modal
+    // chassis, named beside the cards. Its `::before` is the accent line.
+    expect(TASKS_CSS).toContain(
+      ':root[data-rail-row-dim="a"] .claude-rail-peek:not(#claude-rail-fav-peek, .claude-rail-bot-peek) > .claude-rail-peek-card::after,\n:root[data-rail-row-dim="a"] .modal-popover .modal-dialog.new-task-dialog::after,\n:root[data-rail-row-dim="b"] .claude-rail-peek:is(#claude-rail-fav-peek, .claude-rail-bot-peek) > .claude-rail-peek-card::after {\n  opacity: 1;\n}',
+    );
+    // No scrim for a row the SCROLL brought (2026-11-17: "when I scroll there
+    // is a little flash of the overlay that comes in and goes out"), and none
+    // that dims BOTH windows (2026-11-17: "it darkens both instead of only …
+    // one of the window"): every "on" rule names the window hints.ts wrote on
+    // the root, which it writes only for a row that is not passing.
+    expect(TASKS_CSS).not.toContain(":root[data-rail-row-dim] ");
+    // NEVER ASKED WITH `:has()` ON THE PAGE'S ROOT (2026-11-18: the app "feels
+    // a bit slow, especially when moving around and resizing the tasks"): a
+    // `:has()` anchored on body, html or :root with a descendant after it
+    // restyles the whole document on every element inserted or removed.
+    // (The rules, not the comments that name the mistake.)
+    const rules = TASKS_CSS.replace(/\/\*[\s\S]*?\*\//g, "");
+    expect(rules).not.toMatch(/(^|[\s,}])(body|html|:root)[^,{]*:has\([^{]*\)\s+[^,{]+[,{]/m);
+    expect(rules).not.toContain(".hint-panel.is-row.is-on[data-row-window");
+    const newTask = readFileSync(join(import.meta.dir, "../../styles/new-task.css"), "utf8");
+    expect(newTask).toContain(".new-task-dialog::before {");
+    expect(newTask).not.toContain(".new-task-dialog::after");
+    expect(newTask).toMatch(/\n\.new-task-dialog \{[^}]*overflow: hidden;/);
+    expect(TASKS_CSS).not.toContain(".claude-rail-peek-card {\n  position: relative;");
+    const rail = readFileSync(join(import.meta.dir, "../../styles/claude-rail.css"), "utf8");
+    expect(rail).toMatch(/\n\.claude-rail-peek \{[^}]*position: fixed;/);
+    const tokens = readFileSync(join(import.meta.dir, "../../styles/tokens.css"), "utf8");
+    expect(tokens).toContain("--scrim: rgba(0, 0, 0, 0.55);");
+    expect(tokens).toContain("--scrim: rgba(0, 0, 0, 0.4);");
+    // The same recipe the chat's popovers wear.
+    const composer = readFileSync(join(import.meta.dir, "../../apps/claude/styles/composer.css"), "utf8");
+    expect(composer).toMatch(/\.c-kebabpop \{[^}]*border: 1px solid var\(--c-border-strong\);[^}]*box-shadow: 0 6px 24px var\(--c-shadow\);/);
+    expect(panel).not.toContain("max-width: none;");
+    // THE NAME IS NEVER CLAMPED (2026-11-17: "get rid of truncation … don't
+    // truncate it"): the panel wraps, the title has no ellipsis and is the
+    // row's slack; the count and the time keep their width at the right end.
+    expect(panel).toContain("white-space: normal;");
+    expect(panel).not.toContain("white-space: nowrap;");
+    expect(panel).toContain("padding: 9px 12px;");
+    expect(rule(".hint-row")).toContain("display: flex;");
+    expect(rule(".hint-row")).toContain("align-items: baseline;");
+    expect(rule(".hint-row")).not.toMatch(/\n  height:/);
+    expect(rule(".hint-row-title")).toMatch(/flex: 1 1 auto;\s*min-width: 0;/);
+    expect(rule(".hint-row-title")).not.toContain("text-overflow");
+    expect(rule(".hint-row-title")).not.toContain("overflow: hidden;");
+    expect(TASKS_CSS).toMatch(/\.hint-row-count,\n\.hint-row-time \{\s*flex: 0 0 auto;/);
+    for (const gone of [".hint-row-mark", ".hint-row-id", ".hint-row-reply"]) expect(TASKS_CSS).not.toContain(gone);
+  });
+});

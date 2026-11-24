@@ -8,6 +8,7 @@ import type { CanvasShot } from "./shots/canvas-shot";
 import { TroubleCard } from "@platform/ui/TroubleCard";
 import { ChatFramePlaceholder } from "./ChatPlaceholder";
 import type { ClaudeAsk } from "./ClaudeChat";
+import type { BreakoutContext, BreakoutRequest, Turn } from "./protocol/controller-api";
 import {
   createMemoryParamsStore,
   type ParamsSnapshot,
@@ -24,6 +25,28 @@ import {
  * chunk load with the chat's own skeleton.
  */
 import { isChunkLoadError } from "@platform/lib/chunk-load";
+import { useUrlVersion } from "@platform/lib/hooks";
+import { announcePaneSession } from "@platform/lib/peek-session";
+
+/**
+ * A URL-BACKED CHAT SAYS WHICH SESSION IT SHOWS while it is mounted
+ * (platform/lib/peek-session `announcePaneSession`): the favourite's card
+ * keeps no chat of its own on a session another composer on the page holds —
+ * and keeps it whenever none does, whatever the URL still names (a shut pane
+ * leaves `session_id` behind). Its own component, so a URL event re-renders
+ * this and not the chat. Not for a thumbnail (`preview`): display-only.
+ */
+function AnnounceUrlSession() {
+  useUrlVersion();
+  let sid: string | null = null;
+  try {
+    sid = new URLSearchParams(location.search).get("session_id");
+  } catch {
+    sid = null;
+  }
+  useEffect(() => (sid ? announcePaneSession(sid) : undefined), [sid]);
+  return null;
+}
 
 const ClaudeChat = lazy(() => import("./ClaudeChat"));
 
@@ -169,11 +192,30 @@ export interface ChatMountProps {
   headerInPeek?: boolean;
   /** With `headerInPeek`: host node for the slim header's right-hand seat. */
   headerExtra?: ReactNode;
+  /**
+   * THE HOST'S HEAD HAS A SEAT FOR THE CHAT'S CHIPS (shell/TaskHead
+   * `chipsRef`): the worktree menu (or the hint chip naming where the work
+   * moved) and `headerExtra` are portaled into this node, and the chat draws
+   * no top bar of its own — the host's head is the one line. Null while the
+   * host's head has not mounted its seat yet.
+   */
+  headChipsHost?: HTMLElement | null;
+  /**
+   * THE HOST'S HEAD HAS A SEAT FOR THE PAUSE WORD (shell/TaskHead
+   * `statusRef`): "paused · resumes 4:00 AM" portals there, beside the task's
+   * identity and on no rung of the head's fold ladder — not into the chips,
+   * which fold first.
+   */
+  headStatusHost?: HTMLElement | null;
   /** Draw the task's PR chip in the chat header (the explorer's Claude pane).
    *  The peek and cards hosts pass `headerExtra` themselves instead. */
   prChip?: boolean;
   /** Fold `← Chats` and the menu into the identity row (folder sidebar). */
   mergedHead?: boolean;
+  /** The chat head's place tags (ClaudeChat `pageRoot` / `onSelectNode`;
+   *  shell/claude-rail PlaceTags). */
+  pageRoot?: string | null;
+  onSelectNode?: (udfName: string | null, sessionId?: string | null) => void;
   /** `session_id` on the frame URL (cards, peek). */
   sessionId?: string;
   /** `run` handed over by a host (the canvas fix run). */
@@ -210,6 +252,10 @@ export interface ChatMountProps {
    *  the two above: it names the agent for the frames before the chat's own
    *  history says it, and the history's answer outranks it from then on. */
   backend?: string;
+  /** `permission` — the mode a chat with nothing recorded starts in, in place
+   *  of the user's default: an expert's chats start in "auto". A seed like
+   *  `model`: the pill's own pick outranks it. */
+  permission?: string;
   /** `msg` — ONE TURN inside the conversation, to open scrolled to. The
    *  transcript stamps `data-msg` on every turn it draws and the param is spent
    *  the moment the named one is on screen (params/store.ts). Handed over by
@@ -230,6 +276,26 @@ export interface ChatMountProps {
   canvasShot?: CanvasShot;
   /** The host pane's close button at the top row's left end (ClaudeChat). */
   onHidePane?: () => void;
+  /** BREAKOUT POSTURE (a shell breakout card): a research-only side chat that
+   *  starts as a fresh session. `breakoutContext` is the parent messages it was
+   *  opened from; they ride on its first send. See ClaudeChat. */
+  breakout?: boolean;
+  breakoutContext?: BreakoutContext;
+  /** With `breakout`: sent once as the first message on mount. */
+  breakoutPrompt?: string;
+  onBreakoutPromptSent?: () => void;
+  /** Open a breakout from this chat (its message / composer Breakout seats). */
+  onBreakout?: (req: BreakoutRequest) => void;
+  /** The host's ⋮ reads Breakout's availability / pick state from here. */
+  onBreakoutControl?: (ctl: { available: boolean; picking: boolean; toggle: () => void } | null) => void;
+  /** With `breakout`: the chat's own session id + transcript, for Send back. */
+  onBreakoutState?: (s: { sessionId: string; turns: readonly Turn[]; running?: boolean; stop?: () => void }) => void;
+  /** Fields merged into every `start` body: an expert's chat sends
+   *  `{expert: "<id>:main"}` or `"<id>:breakout"`. Such a chat opens as a
+   *  chat and has no Schedule seat. */
+  extraParams?: Record<string, string>;
+  /** `/clear` calls this instead of going back to Chats. */
+  onClear?: () => void;
   /** `_noopen=1` — do not record an app open (the listing pane). */
   noOpen?: boolean;
   /** "url" for sidebar / content / canvas; "memory" for cards / peek / panel /
@@ -265,6 +331,12 @@ export interface ChatMountProps {
    * a peek, a thumbnail or a listing preview.
    */
   recap?: boolean;
+  /** THE RAIL CARDS' COMPOSER (ClaudeChat / ComposerCard `smallCard`): one
+   *  line while typing; opens on the model · effort label or a draft longer
+   *  than the line, and stays open until the card shows another chat. */
+  smallCard?: boolean;
+  /** With `smallCard`: this chat is the one the card shows. */
+  smallCardShown?: boolean;
 }
 
 export function ChatMount(props: ChatMountProps) {
@@ -286,12 +358,14 @@ export function ChatMount(props: ChatMountProps) {
     if (props.model) seed.model = props.model;
     if (props.effort) seed.effort = props.effort;
     if (props.backend) seed.backend = props.backend;
+    if (props.permission) seed.permission = props.permission;
     return createMemoryParamsStore(seed);
   });
   useHostIds(memory, props.sessionId, props.runId, props.msgAnchor);
 
   return (
    <ChatChunkBoundary>
+    {props.paramsSource === "url" && !props.preview && <AnnounceUrlSession />}
     <div className={props.mountClassName ? `chat-mount ${props.mountClassName}` : "chat-mount"}>
      <Suspense fallback={<ChatFramePlaceholder />}>
       <ClaudeChat
@@ -301,7 +375,11 @@ export function ChatMount(props: ChatMountProps) {
         peek={!!props.peek}
         {...(props.headerInPeek ? { headerInPeek: true } : {})}
         {...(props.mergedHead ? { mergedHead: true } : {})}
+        {...(props.pageRoot !== undefined ? { pageRoot: props.pageRoot } : {})}
+        {...(props.onSelectNode ? { onSelectNode: props.onSelectNode } : {})}
         {...(props.headerExtra ? { headerExtra: props.headerExtra } : {})}
+        {...(props.headChipsHost ? { headChipsHost: props.headChipsHost } : {})}
+        {...(props.headStatusHost ? { headStatusHost: props.headStatusHost } : {})}
         {...(props.prChip ? { prChip: true } : {})}
         params={props.paramsSource === "url" ? "url" : memory}
         // WHOSE `?model=`/`?effort=` the composer is looking at. These two props
@@ -321,6 +399,15 @@ export function ChatMount(props: ChatMountProps) {
         {...(props.noAnnTools ? { noAnnTools: true } : {})}
         {...(props.canvasShot ? { canvasShot: props.canvasShot } : {})}
         {...(props.onHidePane ? { onHidePane: props.onHidePane } : {})}
+        {...(props.breakout ? { breakout: true } : {})}
+        {...(props.breakoutContext ? { breakoutContext: props.breakoutContext } : {})}
+        {...(props.breakoutPrompt ? { breakoutPrompt: props.breakoutPrompt } : {})}
+        {...(props.onBreakoutPromptSent ? { onBreakoutPromptSent: props.onBreakoutPromptSent } : {})}
+        {...(props.onBreakout ? { onBreakout: props.onBreakout } : {})}
+        {...(props.onBreakoutControl ? { onBreakoutControl: props.onBreakoutControl } : {})}
+        {...(props.onBreakoutState ? { onBreakoutState: props.onBreakoutState } : {})}
+        {...(props.extraParams ? { extraParams: props.extraParams } : {})}
+        {...(props.onClear ? { onClear: props.onClear } : {})}
         {...(props.noOpen ? { noOpen: true } : {})}
         {...(props.onReady ? { onReady: props.onReady } : {})}
         {...(props.onEscape ? { onEscape: props.onEscape } : {})}
@@ -329,6 +416,7 @@ export function ChatMount(props: ChatMountProps) {
         {...(props.onNavigate ? { onNavigate: props.onNavigate } : {})}
         {...(props.onWorktreeRemoved ? { onWorktreeRemoved: props.onWorktreeRemoved } : {})}
         {...(props.recap ? { recap: true } : {})}
+        {...(props.smallCard ? { smallCard: true, smallCardShown: !!props.smallCardShown } : {})}
       />
      </Suspense>
     </div>

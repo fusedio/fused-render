@@ -46,12 +46,13 @@ test("rowNeed charges no gap for a single seat", () => {
   expect(rowNeed(box, [pill(40)])).toBe(40);
 });
 
-test("the ladder is full -> compact -> tight -> slim -> bare -> stack and stops at the first fit", () => {
+test("the ladder is full -> compact -> tight -> slim -> lean -> bare -> stack and stops at the first fit", () => {
   const needs: Record<RowFit, number> = {
     full: 420,
     compact: 400,
     tight: 370,
     slim: 330,
+    lean: 315,
     bare: 300,
     stack: 200,
   };
@@ -78,13 +79,18 @@ test("the ladder is full -> compact -> tight -> slim -> bare -> stack and stops 
   expect(asked).toEqual(["full", "compact", "tight", "slim"]);
 
   asked.length = 0;
+  // The mic goes before the calendar and the paperclip do.
+  expect(pickRowFit(320, probe)).toBe("lean");
+  expect(asked).toEqual(["full", "compact", "tight", "slim", "lean"]);
+
+  asked.length = 0;
   expect(pickRowFit(300, probe)).toBe("bare");
-  expect(asked).toEqual(["full", "compact", "tight", "slim", "bare"]);
+  expect(asked).toEqual(["full", "compact", "tight", "slim", "lean", "bare"]);
 
   asked.length = 0;
   // Below even the bare line: stack is the last resort and is NOT re-measured.
   expect(pickRowFit(290, probe)).toBe("stack");
-  expect(asked).toEqual(["full", "compact", "tight", "slim", "bare"]);
+  expect(asked).toEqual(["full", "compact", "tight", "slim", "lean", "bare"]);
 });
 
 test("a need exactly equal to the box fits — the browser wraps only past it", () => {
@@ -92,23 +98,26 @@ test("a need exactly equal to the box fits — the browser wraps only past it", 
   expect(pickRowFit(399, () => 400)).not.toBe("full");
 });
 
-test("fitFlags is cumulative: stack is a bare slim tight compact row that folded", () => {
-  const off = { compact: false, tight: false, slim: false, bare: false, stack: false };
+test("fitFlags is cumulative: stack is a bare lean slim tight compact row that folded", () => {
+  const off = { compact: false, tight: false, slim: false, lean: false, bare: false, stack: false };
   expect(fitFlags("full")).toEqual(off);
   expect(fitFlags("compact")).toEqual({ ...off, compact: true });
   expect(fitFlags("tight")).toEqual({ ...off, compact: true, tight: true });
   expect(fitFlags("slim")).toEqual({ ...off, compact: true, tight: true, slim: true });
+  expect(fitFlags("lean")).toEqual({ ...off, compact: true, tight: true, slim: true, lean: true });
   expect(fitFlags("bare")).toEqual({
     ...off,
     compact: true,
     tight: true,
     slim: true,
+    lean: true,
     bare: true,
   });
   expect(fitFlags("stack")).toEqual({
     compact: true,
     tight: true,
     slim: true,
+    lean: true,
     bare: true,
     stack: true,
   });
@@ -125,6 +134,15 @@ test("the home title picks the largest step the name fits on (T:12430)", () => {
   // Nothing fits on one line: the smallest step, wrapping.
   expect(pickHomeTitleStep(1200, base, 200)).toBe("c-t-min");
   expect(HOME_TITLE_STEPS.map(([px]) => px)).toEqual([26, 21, 17]);
+});
+
+test("a zoomed title prices each step at the same zoom", () => {
+  // At 150 % chat text the base step computes to 39px and the text measured at
+  // it is 1.5x as wide; the 21px step renders at 31.5px, so it must be priced
+  // there and not at 21px (300*39/26 = 450 base, 450*21/26 = 363).
+  expect(pickHomeTitleStep(450, 39, 460)).toBe("");
+  expect(pickHomeTitleStep(450, 39, 400)).toBe("c-t-mid");
+  expect(pickHomeTitleStep(450, 39, 300)).toBe("c-t-min");
 });
 
 test("a zero base font falls back to the first step's size", () => {

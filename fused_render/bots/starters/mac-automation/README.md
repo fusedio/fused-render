@@ -22,7 +22,7 @@ with Build / Run / Delete.
 carries the tested snippets and the rules from the `mac-automation` skill.
 
 **Permissions.** Automation (Apple Events) is granted per *host process*, not
-per user. The first script against an app makes macOS ask "FusedRender wants to
+per user. The first script against an app makes macOS ask "Fused Render wants to
 control X" once; a `-1743` error means the grant is missing and the tool says so
 in `hint` instead of guessing. `~/Fused/tools/grant_automation.py`, run from
 Terminal, grants or audits every app at once. Notifications, volume, dark mode

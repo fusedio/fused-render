@@ -156,6 +156,13 @@ def is_user_requester(requester_id: str) -> bool:
     return requester_id == USER_REQUESTER_ID
 
 
+#: The `/v1` gateway's own requester identity (docs/LOCAL_MODEL_GATEWAY.md
+#: §2, "Eviction"): a non-user requester like any page, so a cold load it
+#: triggers for an agent CLI goes through `_request_path_conflict` exactly as
+#: a Playground load would — and is refused the same way once it loops.
+GATEWAY_REQUESTER_ID = "gateway"
+
+
 JOB_PREFIX = jobs.SERVER_ID_PREFIX + "ai-model:"
 #: One row per RENDER, not per model: two images from the same pipeline are two
 #: pieces of work with two progress bars, and a shared id would have the second
@@ -330,6 +337,10 @@ class Worker:
     #: take" — see `_request_path_conflict`.
     requester_id: str = ""
     requester_label: str = ""
+    #: The context window the loader was asked for (`load(n_ctx=)`), carried
+    #: into the worker's environment as `FUSED_AI_N_CTX` by `_child_env`.
+    #: None leaves the runner on its own default (8192 for `llama_text`).
+    n_ctx: int | None = None
     #: Unique per bring-up, and the reason the status and log files are named
     #: after it rather than after the capability. Two workers for one capability
     #: DO overlap — an eviction's replacement starts while the old one is still
@@ -411,9 +422,69 @@ class Worker:
     #: thread checks it at every step so an evicted load stops downloading
     #: instead of finishing into a table it no longer belongs to.
     stopping: bool = False
+    #: Memo for `_resolved_code`: the (prefs.json stat + write generation, repo signature, availability epoch) key the
+    #: last resolution was computed under, and what it answered. A request path
+    #: re-resolves only when one of those inputs moved.
+    resolution_key: tuple | None = field(default=None, repr=False)
+    resolved_code: str | None = field(default=None, repr=False)
+    #: `time.monotonic()` after which the memo is stale whatever its key says.
+    resolution_expiry: float = field(default=0.0, repr=False)
 
 
 _lock = threading.RLock()
+
+
+#: Bumped when a runner becomes available in THIS process (a venv build
+#: finishing). Part of every `_resolution_key`, so a worker memoised while its
+#: pin pointed at a not-yet-runnable engine re-resolves once that engine lands.
+_RESOLUTION_EPOCH = 0
+
+#: How long a memoised resolution is trusted regardless of its key: the backstop
+#: for availability flips this process cannot see (a venv built by another
+#: process, a device appearing, a mount coming back).
+_RESOLUTION_TTL = 30.0
+
+
+def _bump_resolution_epoch() -> None:
+    global _RESOLUTION_EPOCH
+    _RESOLUTION_EPOCH += 1
+
+
+def _resolution_key(worker: "Worker") -> tuple | None:
+    """What `resolve_for_model` reads, as cheap public probes: prefs.json (stat
+    plus the in-process write generation, which sees same-size writes inside one
+    mtime tick), the model's cache folder signature (format evidence) and the
+    runner-availability epoch. None when it cannot be taken, which never matches
+    a memo."""
+    try:
+        from fused_render.ai import hub_cache
+        from fused_render.shell import prefs
+
+        try:
+            st = os.stat(prefs.path())
+            prefs_key = (st.st_mtime_ns, st.st_size)
+        except FileNotFoundError:
+            prefs_key = None
+        return (prefs_key, prefs.write_generation(),
+                hub_cache.repo_signature(worker.model), _RESOLUTION_EPOCH)
+    except Exception:  # noqa: BLE001 - no key means no memo, never a failure
+        return None
+
+
+def _resolved_code(worker: "Worker") -> str | None:
+    """The runner code `resolve_for_model` gives this worker's model, memoised
+    on the worker under `_resolution_key`. Call OUTSIDE `_lock`."""
+    key = _resolution_key(worker)
+    now = time.monotonic()
+    if (key is not None and key == worker.resolution_key
+            and now < worker.resolution_expiry):
+        return worker.resolved_code
+    runner = registry.resolve_for_model(worker.capability, worker.model).runner
+    code = runner.code if runner is not None else None
+    worker.resolution_key = key
+    worker.resolution_expiry = now + _RESOLUTION_TTL
+    worker.resolved_code = code
+    return code
 #: capability -> the one Worker resident for it.
 _workers: dict[str, Worker] = {}
 #: model -> the weights-only fetch running for it right now.
@@ -922,7 +993,8 @@ def _await_hardware_cache() -> hw_detect.HardwareInfo | None:
     return None
 
 
-def _child_env(token: str, model: str = "", capability: str = "") -> dict:
+def _child_env(token: str, model: str = "", capability: str = "",
+               n_ctx: int | None = None) -> dict:
     """Environment for a worker process.
 
     The PYTHON* vars are stripped for the reason `local_chat/chat.py` documents
@@ -976,6 +1048,13 @@ def _child_env(token: str, model: str = "", capability: str = "") -> dict:
     for name in ("PYTHONHOME", "PYTHONPATH", "PYTHONEXECUTABLE", "PYTHONSTARTUP"):
         env.pop(name, None)
     env["FUSED_AI_WORKER_TOKEN"] = token
+    # The requested context window (docs/LOCAL_MODEL_GATEWAY.md §3): the text
+    # runners read it at load time. POPPED when unset, for the same "this
+    # environment is a copy of the server's" reason the two below are.
+    if n_ctx:
+        env["FUSED_AI_N_CTX"] = str(int(n_ctx))
+    else:
+        env.pop("FUSED_AI_N_CTX", None)
     permitted = _mirror_ok(model)
     if permitted:
         # The id the WORKER will name to the mirror, which is not always the id
@@ -1070,7 +1149,7 @@ def refuse_new_workers() -> None:
 
 def _refuse_if_quitting() -> None:
     if _stopping.is_set():
-        raise SupervisorError("fused-render is quitting; not starting a worker")
+        raise SupervisorError("Fused Render is quitting; not starting a worker")
 
 
 def _spawn(runner: registry.Runner, worker: Worker, python: str) -> None:
@@ -1090,7 +1169,8 @@ def _spawn(runner: registry.Runner, worker: Worker, python: str) -> None:
 
     job = job_id_for(worker.model)
     log = _log_path(worker)
-    env = _child_env(worker.token, worker.model, worker.capability)
+    env = _child_env(worker.token, worker.model, worker.capability,
+                     n_ctx=worker.n_ctx)
     # The bundled interpreter's stdlib dir carries the app's own packages and
     # precedes the venv's site-packages, shadowing the runner's pins (Pillow 13
     # breaking mflux's `_IntegralLike` import). See `prefer_venv_site_packages`.
@@ -1402,6 +1482,9 @@ def _ensure_venv(runner: registry.Runner, worker: Worker, job: str) -> str:
             # "3.4 GB / 3.4 GB" bar sitting under that sentence until the
             # runner's own first weight tick overwrote it.
             _report(job, done=None, total=None, unit="")
+            # A runner that could not run a moment ago can now: every memoised
+            # resolution made while it was unavailable is stale.
+            _bump_resolution_epoch()
             return envinstall.venv_python_for(runner.folder)
     raise SupervisorError(f"the environment for {runner.short} did not build")
 
@@ -1644,7 +1727,7 @@ def _fetch_only(runner: registry.Runner, model: str, job: str,
         hub_cache.discard_empty_shell(model)
 
 
-def _runner_or_raise(capability: str) -> registry.Runner:
+def _runner_or_raise(capability: str, model: str | None = None) -> registry.Runner:
     """The runner serving `capability`, or a SupervisorError saying why there isn't
     one — the machine's reason ("needs Apple Silicon") where a runner exists but
     cannot run here, and a bare "no runner provides …" where none is registered.
@@ -1656,7 +1739,11 @@ def _runner_or_raise(capability: str) -> registry.Runner:
     three wrong answers the moment text generation had two — all three named the
     Apple Silicon runner on machines that were never going to use it.
     """
-    runner = registry.for_capability(capability)
+    # With a MODEL in hand the runner follows the model (D1456): a pin, then
+    # the runners that read it, with the capability's preference as the
+    # tie-breaker. Without one it is the capability-level answer as before.
+    runner = (registry.resolve_for_model(capability, model).runner if model
+              else registry.for_capability(capability))
     if runner is None:
         raise SupervisorError(registry.unavailable_reason(capability)
                               or f"no runner provides {capability!r}")
@@ -1782,8 +1869,13 @@ def _start_resident(model: str, capability: str, *,
                     request_path: bool = False,
                     respect_holds: bool = False,
                     hold: "ConflictState | None" = None,
-                    requester_id: str = "", requester_label: str = "") -> tuple[dict, Worker]:
+                    requester_id: str = "", requester_label: str = "",
+                    n_ctx: int | None = None) -> tuple[dict, Worker]:
     """`load`'s residency path, handing back the WORKER RECORD beside the reply.
+
+    `n_ctx` (docs/LOCAL_MODEL_GATEWAY.md §3) is stamped on the new worker
+    record and reaches the runner as `FUSED_AI_N_CTX`; a join onto a model
+    already loading/loaded keeps that worker's own value.
 
     Two callers, two needs. `load` is answering an endpoint, so the reply is all
     it wants. `_wait_ready` is about to sit and watch — and watching the
@@ -1823,7 +1915,7 @@ def _start_resident(model: str, capability: str, *,
     when `request_path` is set, and stamped onto the new `Worker` either way,
     so a LATER request-path eviction of this worker knows who loaded it.
     """
-    runner = _runner_or_raise(capability)
+    runner = _runner_or_raise(capability, model)
     _require_build_tools()
 
     # A worker is about to become resident (joined below, or spawned fresh) —
@@ -1939,7 +2031,8 @@ def _start_resident(model: str, capability: str, *,
 
         worker = Worker(model=model, capability=capability, runner_code=runner.code,
                         token=secrets.token_urlsafe(24),
-                        requester_id=requester_id, requester_label=requester_label)
+                        requester_id=requester_id, requester_label=requester_label,
+                        n_ctx=n_ctx)
         _workers[capability] = worker
         _worker_tokens.add(worker.token)
 
@@ -1991,8 +2084,13 @@ def _start_resident(model: str, capability: str, *,
 def load(model: str, capability: str, *, weights_only: bool = False,
          file: str | None = None, request_path: bool = False,
          hold: "ConflictState | None" = None,
-         requester_id: str = "", requester_label: str = "") -> dict:
+         requester_id: str = "", requester_label: str = "",
+         n_ctx: int | None = None) -> dict:
     """Make `model` resident for `capability`; returns `{jobId, model, state}`.
+
+    `n_ctx` is the context window to allocate (docs/LOCAL_MODEL_GATEWAY.md
+    §3) — forwarded to `_start_resident` and from there into the worker's
+    `FUSED_AI_N_CTX`; None leaves the runner on its own default.
 
     `weights_only` downloads and stops — the AI Models page's "Download", which
     must not evict whatever is currently loaded.
@@ -2027,9 +2125,9 @@ def load(model: str, capability: str, *, weights_only: bool = False,
     if not weights_only:
         return _start_resident(model, capability, request_path=request_path,
                                hold=hold, requester_id=requester_id,
-                               requester_label=requester_label)[0]
+                               requester_label=requester_label, n_ctx=n_ctx)[0]
 
-    runner = _runner_or_raise(capability)
+    runner = _runner_or_raise(capability, model)
     _require_build_tools()
 
     job = job_id_for(model)
@@ -2107,7 +2205,7 @@ def _start_render(capability: str, model: str, request: dict, job: str,
     """
     # `_runner_or_raise`, not a third copy of the same lookup — which is what
     # this was, and it drifted the moment a capability grew a second runner.
-    _runner_or_raise(capability)
+    _runner_or_raise(capability, model)
     _require_build_tools()
 
     # A model-slot conflict is checked HERE too, for the reason the runner
@@ -2362,7 +2460,7 @@ def start_transcribe(model: str, request: dict, job: str, page: str = "",
     identity (`transcribe_row_fields`) rather than as a one-off, the same as
     every other field a rebuilt row must not lose.
     """
-    _runner_or_raise(registry.SPEECH_TO_TEXT)
+    _runner_or_raise(registry.SPEECH_TO_TEXT, model)
     _require_build_tools()
     # See `_start_render`'s identical pre-check: a transcription that loses a
     # standoff answers with it before the row opens, not as a generic error
@@ -2695,11 +2793,16 @@ def evict_stale_engines() -> list[str]:
     switches engines mid-download almost certainly wants the download.
     """
     with _lock:
-        stale = []
-        for worker in list(_workers.values()):
-            resolved = registry.for_capability(worker.capability)
-            if resolved is not None and resolved.code != worker.runner_code:
-                stale.append(worker)
+        workers = list(_workers.values())
+    stale = []
+    for worker in workers:
+        # The resolution FOR THE RESIDENT MODEL (D1456): the capability-level
+        # answer would call a model stale whenever its serving runner is
+        # not the one the preference names, and restart it forever. Resolved
+        # OUTSIDE `_lock`: it reads prefs.json and the cache folder.
+        resolved = _resolved_code(worker)
+        if resolved is not None and resolved != worker.runner_code:
+            stale.append(worker)
     for worker in stale:
         unload(model=worker.model, capability=worker.capability)
     return [worker.model for worker in stale]
@@ -3297,8 +3400,11 @@ def ready_worker(capability: str, model: str | None = None) -> Worker | None:
 
     The resolution happens OUTSIDE `_lock` — it reads prefs.json off disk, and
     that is not something to do while holding the table every other thread
-    wants. It costs one small JSON read per generation request, which is the
-    price of the preference meaning something between PUTs.
+    wants. The answer is memoised on the worker, keyed on prefs.json's mtime and
+    size plus the model's cache-folder signature (two cheap stats per request),
+    so the full resolution reruns only when a preference, a pin or the cached
+    files actually changed — which is what keeps the preference meaning
+    something between PUTs.
     """
     with _lock:
         worker = _workers.get(capability)
@@ -3318,8 +3424,8 @@ def ready_worker(capability: str, model: str | None = None) -> Worker | None:
     if _exited(worker):
         _drop_gone(worker)
         return None
-    resolved = registry.for_capability(capability)
-    if resolved is not None and resolved.code != worker.runner_code:
+    resolved = _resolved_code(worker)
+    if resolved is not None and resolved != worker.runner_code:
         evict_stale_engines()
         return None
     return worker
@@ -3339,6 +3445,12 @@ def generate_text(model: str, body: dict, *,
     `requester_id`/`requester_label` identify who is asking (SPEC-model-
     slot-conflict.md §1) — forwarded to the miss-handling `load()` below so a
     contending eviction can be attributed to them.
+
+    `body` reaches the worker's `/generate` VERBATIM — so the gateway's
+    `tools` (OpenAI function schemas, rendered by the model's own chat
+    template) and `stop` (strings that end a generation) pass through here
+    with nothing to add (docs/LOCAL_MODEL_GATEWAY.md §3); a runner that
+    does not read them simply ignores them.
     """
     worker = ready_worker(registry.TEXT_GENERATION, model)
     if worker is None:
@@ -3368,6 +3480,54 @@ def generate_text(model: str, body: dict, *,
                     continue
                 _touch(worker)
                 yield event
+
+
+def await_loaded(model: str, capability: str = registry.TEXT_GENERATION, *,
+                 timeout: float = 600.0, n_ctx: int | None = None,
+                 requester_id: str = GATEWAY_REQUESTER_ID,
+                 requester_label: str = "Local model gateway",
+                 poll: float = 0.5) -> Worker:
+    """Make `model` resident and BLOCK until it is ready — the `/v1`
+    gateway's cold-load path (docs/LOCAL_MODEL_GATEWAY.md §2).
+
+    Unlike `generate_text`, which fails fast with a job id for a page to
+    watch, an agent CLI holding an open HTTP request has nowhere to go but
+    wait; the router keeps its socket alive with SSE comments while this
+    sits here. Unlike `_wait_ready`, there is no caller row to merge into:
+    the load's own row is the only one, and it is what the AI Models page
+    shows. A request-path load (`request_path=True`), so the one-resident-
+    model rule and `ModelSlotConflict` apply exactly as to any page.
+
+    Raises `ModelSlotConflict` (terminal, from the load itself) and
+    `SupervisorError` for a failed load, an eviction mid-wait, or `timeout`
+    seconds elapsed — the router maps all three to its own envelopes.
+    """
+    worker = ready_worker(capability, model)
+    if worker is not None:
+        return worker
+    started, pending = _start_resident(model, capability, request_path=True,
+                                       requester_id=requester_id,
+                                       requester_label=requester_label,
+                                       n_ctx=n_ctx)
+    deadline = time.monotonic() + timeout
+    while True:
+        worker = ready_worker(capability, model)
+        if worker is not None:
+            return worker
+        # One critical section for the same reason `_wait_ready` gives: the
+        # failure path stamps the error and drops the record under one lock.
+        with _lock:
+            state, error = pending.state, pending.error
+            evicted = _workers.get(capability) is not pending
+        if state == "error":
+            raise SupervisorError(error or "the model failed to load")
+        if evicted:
+            raise SupervisorError(f"{model} was unloaded before it could be used")
+        if time.monotonic() >= deadline:
+            raise SupervisorError(
+                f"{model} did not finish loading within {int(timeout)}s "
+                f"(job {started['jobId']} is still running)")
+        time.sleep(poll)
 
 
 def _generate_sync(capability: str, model: str, body: dict,

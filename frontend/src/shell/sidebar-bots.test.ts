@@ -15,6 +15,7 @@ import {
   botsPulseTitle,
   botsRunningLabel,
   botsWaitingLabel,
+  carryPins,
   sameBotsPulse,
 } from "@platform/lib/botsPulse";
 import type { BotPulseRow } from "@platform/lib/botsPulse";
@@ -22,6 +23,9 @@ import { botsAvailable } from "@platform/lib/api";
 
 const SHELL = new URL(".", import.meta.url).pathname;
 const SIDEBAR = readFileSync(join(SHELL, "GlobalSidebar.tsx"), "utf8");
+// THE BOTS DOOR IS THE CLAUDE RAIL'S (owner, 2026-11-07): the sidebar has no
+// Bots row; the rail's door wears the dot the row did.
+const RAIL = readFileSync(join(SHELL, "claude-rail/ClaudeRail.tsx"), "utf8");
 const STORE = readFileSync(join(SHELL, "../platform/lib/botsPulse.ts"), "utf8");
 const BOTS_STORE = readFileSync(join(SHELL, "../apps/bots/state/store.ts"), "utf8");
 const BOTS_APP = readFileSync(join(SHELL, "../apps/bots/App.tsx"), "utf8");
@@ -72,6 +76,18 @@ describe("botsPulse", () => {
   });
 });
 
+describe("carryPins (a failed enrichment is no answer about pins)", () => {
+  it("rows without a pin take the previous row's pin, name and face; a pin carried is kept; unknown bots stay unpinned", () => {
+    const prev = [bot({ id: "a", pinned: true, name: "A", face: { k: 1 } }), bot({ id: "b", pinned: false })];
+    const next = [bot({ id: "a", status: "running" }), bot({ id: "b" }), bot({ id: "c" }), bot({ id: "d", pinned: false })];
+    const out = carryPins(next, prev);
+    expect(out[0]).toMatchObject({ id: "a", status: "running", pinned: true, name: "A", face: { k: 1 } });
+    expect(out[1].pinned).toBe(false);
+    expect(out[2].pinned).toBeUndefined();
+    expect(out[3].pinned).toBe(false);
+  });
+});
+
 describe("the words", () => {
   it("use the status's own word with no plural fork, like the Tasks row", () => {
     expect(botsWaitingLabel(1)).toBe("1 waiting");
@@ -89,26 +105,17 @@ describe("the words", () => {
 });
 
 describe("wiring", () => {
-  it("the Bots row wears the Tasks row's dot, words and chip — the same classes", () => {
-    const row = SIDEBAR.slice(SIDEBAR.indexOf("const botsPulse = useBotsPulse(botsOn)"), SIDEBAR.indexOf("const menuEntries"));
+  it("the rail's Bots door wears the Tasks door's dot — the same classes", () => {
+    const at = RAIL.indexOf("const botsDot =");
+    const dot = RAIL.slice(at, RAIL.indexOf(";", at));
     // One dot, red over yellow over green — the Tasks precedence.
-    expect(row.indexOf('"sidebar-rail-dot is-attention"')).toBeLessThan(row.indexOf('"sidebar-rail-dot is-running"'));
-    expect(row.indexOf('"sidebar-rail-dot is-running"')).toBeLessThan(row.indexOf('"sidebar-rail-dot is-unread"'));
-    // Waiting words replace running words; the chip is the shared count chip.
-    expect(row).toContain('"sidebar-running is-attention"');
-    expect(row).toContain("botsWaitingLabel(botsPulse.waiting)");
-    expect(row).toContain("botsRunningLabel(botsPulse.running)");
-    expect(row).toContain('"sidebar-count-chip"');
+    expect(dot.indexOf('"is-attention"')).toBeLessThan(dot.indexOf('"is-running"'));
+    expect(dot.indexOf('"is-running"')).toBeLessThan(dot.indexOf('"is-unread"'));
     // Nothing is gated on being on /bots: the dot clears when the BOT is opened,
     // not when the page is (Akshil, 2026-10-21).
-    expect(row).toContain("botsPulse.unread > 0 ?");
-    expect(row).not.toContain("botsActive ?");
-  });
-
-  it("both widths show it: the rail badge + tooltip, the expanded extra + trailing", () => {
-    expect(SIDEBAR).toContain("label: botsTip ? `Bots — ${botsTip}` : \"Bots\"");
-    expect(SIDEBAR).toContain("badge: botsDot,");
-    expect(SIDEBAR).toMatch(/id="bots-link"[\s\S]*?extra=\{botsDot\}[\s\S]*?trailing=\{botsTrailing\}[\s\S]*?title=\{botsTip\}/);
+    expect(dot).toContain("botsPulse.unread > 0 ?");
+    expect(dot).not.toContain("botsHere");
+    expect(RAIL).toContain("{botsDot && <span className={`sidebar-rail-dot ${botsDot}`}");
   });
 
   it("one poll, two readers: the Bots page feeds the store and the store stands down", () => {
@@ -128,7 +135,9 @@ describe("wiring", () => {
     release();
     expect(botsPulseFeeders()).toBe(0);
     // The self-poll never runs beside a feeder, and never for no reader.
-    expect(STORE).toContain("if (listeners.size === 0 || feeders > 0) return;");
+    // …a reader being either kind: the sidebar's summary or the Claude
+    // rail's rows (`useBotsRows`, 2026-11-05).
+    expect(STORE).toContain("if (listeners.size + rowListeners.size === 0 || feeders > 0) return;");
     // A stale self-poll that lost to a fresher publish is dropped, not applied.
     expect(STORE).toContain("if (feeders === 0 && generation === departed) publishBots(");
   });
@@ -153,15 +162,17 @@ describe("Bots are hidden where the server runs none (Windows)", () => {
     expect(botsAvailable(null)).toBe(true);
   });
 
-  it("the sidebar drops the row, the rail item and the poll", () => {
-    expect(SIDEBAR).toContain("useBotsPulse(botsOn)");
-    expect(SIDEBAR).toContain("{botsOn && (");
-    expect(SIDEBAR).toMatch(/\.\.\.\(botsOn\s*\?\s*\[\s*\{\s*key: "bots"/);
+  it("the sidebar drops the poll there, and has no Bots row or rail item (the Claude rail carries the door)", () => {
+    expect(SIDEBAR).toContain("useBotsPulse(botsAvailable(config))");
+    expect(SIDEBAR).not.toContain('id="bots-link"');
+    expect(SIDEBAR).not.toContain('key: "bots"');
   });
 
-  it("the route redirects Home and the page never mounts", () => {
-    expect(APP).toContain("isBotsPath(pathname) && botsOn");
-    expect(APP).toMatch(/!botsOn && isBotsPath\(location\.pathname\)/);
+  it("the route redirects Home and the page never mounts — once Experts are KNOWN off", () => {
+    // Not on the first render: the experts flag is "not read yet" there, and a bookmarked /bots must survive it.
+    expect(APP).toContain("const botsPageOn = botsOn || expertsKnown !== false;");
+    expect(APP).toContain("isBotsPath(pathname) && botsPageOn");
+    expect(APP).toMatch(/!botsPageOn && isBotsPath\(location\.pathname\)/);
   });
 
   it("onboarding hides the Chrome group on n/a", () => {

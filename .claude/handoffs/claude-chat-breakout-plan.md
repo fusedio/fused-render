@@ -1,0 +1,195 @@
+# Claude chat "Breakout" — plan
+
+Worktree: `/Users/iamsdas/Work/fused-render-breakout`, branch `claude-chat-breakout` (from main 08ea4ebdf).
+Append a **Decisions log** section at the bottom of this file as you go (what you chose, dead ends, anything this plan got wrong). Do not start `scripts/dev.sh`; the user runs it. Use `bun`, never npm/npx.
+
+## Goal
+
+Let the user fork the current Claude chat into an ephemeral "breakout" side conversation that can research with skills, MCP and read tools but cannot build, then hand a summary back to the main chat's composer.
+
+Approach: reuse the existing per-message fork path (`--fork-session`), add a tip-fork variant, mark the run `breakout` so the server's permission bridge refuses edits and shell (except markdown under the chat folder's `.claude/handoffs/`), hide it from the Tasks list and the folder queue, and host it in a pinned rail-style card beside the chat with a "Send back" that drafts into the parent composer.
+
+## Scope (settled; do not widen)
+
+- Trigger: a Breakout button on every user turn beside Fork, plus a composer Breakout button that forks from the latest message. Works while the main chat is running.
+- Card: a pinned, resizable rail-style card; several may be open at once; shell-level so navigation does not unmount it.
+- Powers: seeded with parent context up to the chosen message; skills, MCP, Read/Grep/Glob, web allowed. Write/Edit/MultiEdit/NotebookEdit and every Bash call are refused outright with no approval card. Exception: `.md` files under `<chat folder>/.claude/handoffs/` may be written/edited.
+- Lifetime: never in the fused-render Tasks list; never takes the folder queue slot. The Claude transcript on disk stays.
+- Send back: puts a draft (last assistant reply, plus "Handoff file: <absolute path>" when one was written) into the parent chat's composer, not auto-sent; card closes. Close without Send back → confirm → discard (card only; transcript stays).
+- Out of scope: non-Claude backends (copilot/codex → refuse like fork does), read-only shell, auto-send, nesting (no Breakout buttons inside a breakout), non-md or out-of-folder files.
+
+## Tasks
+
+### Task 1 — Backend: breakout start, tip fork, hidden from Tasks and the queue
+
+Test first in `tests/test_claude_fork.py` (fixtures `agent`, `start`; pattern `test_argv_fork_flags`, `test_start_fork_resumes_at_parent`, `test_start_fork_missing_uuid_refused`, `test_start_fork_copilot_refused`), `tests/test_tasks_store.py` (pattern: the deleted.json tests), `tests/test_tasks_api.py` (pattern: whatever test covers `_deleted`/`deleted.json` filtering of `/api/tasks`), `tests/test_run_folder_gate.py` (pattern `test_the_chats_own_run_is_never_refused`:147).
+
+- `fused_render/claude_agent/agent.py`
+  - `_claude_argv` (~3770): add a `breakout: bool = False` kwarg. When breakout: (a) the `--allowed-tools` list (~3855-3865) drops `Bash(fused:*)`; (b) `--permission-mode` is forced to `default` regardless of `cli_mode` (~3883), so every Write/Edit/Bash goes through the approve tool; (c) a new fork branch for "fork at tip": `session_id and new_session_id and not resume_at` → `--resume <sid> --fork-session --session-id <new>` (no `--resume-session-at`), placed before the existing `elif session_id:` at ~3895. Keep the existing `resume_at` branch (3885-3894) for per-message breakouts.
+  - `_appended_prompt` (~3921): when breakout, append one paragraph telling Claude it is a research-only breakout of the main chat, that edits and shell are refused by policy, that it may write a markdown handoff under the exact absolute `.claude/handoffs/` directory, and that the user will send a summary back to the main chat.
+  - `_start` (~4829): add `breakout: bool = False` param. When breakout: require `backend == "claude"` (refuse otherwise, same shape as the copilot fork refusal), require `session_id`; if `fork_at` is empty, fork at tip (skip `_fork_point`, do not raise `fork_target_missing`); mint `new_session_id` as the fork block does. Run meta (~4995-5045) gets `"breakout": True`. Pass `breakout` to `_claude_argv`, and set env `FUSED_BREAKOUT_HANDOFF_DIR=<abs chat folder>/.claude/handoffs` on the MCP server env block in `_write_mcp_config` (~2166-2193) the same way `FUSED_PERM_ALLOW_FILE` is passed (thread it via whatever parameter `_write_mcp_config` already receives from `_start`). After the run record is written, call `tasks_store.mark_breakout(<transcript path>)` (see below) so the Tasks scan can hide it even if meta is not consulted.
+  - `main` (~12562): accept `breakout` (string "1"/"" from params, like `fork_at`) and forward to `_start` at ~12591.
+- `fused_render/server/routers/claude_agent.py` `agent_dispatch` (~322): read `params.get("breakout")` and forward it to `main` wherever `fork_at` is forwarded. Sibling: if there is a second dispatch path that forwards `fork_at` (grep `fork_at` in this file), change it too.
+- `fused_render/claude_agent/gate.py` `_folder_busy` (~221): return `""` immediately when `params.get("breakout") == "1"`; a breakout never claims or waits on the folder slot.
+- `fused_render/tasks_store.py`: add `BREAKOUTS_FILE = "breakouts.json"`, `breakout_state()`, `is_breakout(path)` and `mark_breakout(path)` following the `DELETED_FILE` trio at ~930-963 (`load_state`, `_update`). Key by the same transcript identity `deleted.json` uses.
+- `fused_render/server/routers/tasks.py` `_collect` (~3091): add `and not _breakout(task, breakouts)` to the final filter at ~3184-3186, loading `breakouts = tasks_store.breakout_state()` next to `deleted`. Write `_breakout` beside `_deleted` (~3288) with the same signature. Also check the run meta `breakout` flag in `_is_task` (~3055) if meta is available there, so a stale `breakouts.json` is not the only guard.
+
+Verify: `.venv/bin/python -m pytest tests/test_claude_fork.py tests/test_tasks_store.py tests/test_tasks_api.py tests/test_run_folder_gate.py -n 0 -q` → all pass, new tests included.
+Commit: `Claude chat: breakout start forks the session, hides the run from Tasks and the queue`
+
+### Task 2 — Permission bridge: refuse edits and shell in a breakout, allow handoff markdown
+
+Test first in `tests/test_claude_permission_bridge.py` (fixtures `agent`, `server(tmp_path)`; helpers `_Server(perm_dir, env)`, `_wait_for_request`, `_result_payload`). Cases: Bash denied with no `perm/*.req.json` written; Write to `<handoff>/x.md` allowed without a card; Write to `<handoff>/x.txt` denied; Edit to `<handoff>/../other.md` (path escapes after `os.path.realpath`) denied; Write anywhere else denied; Read/Grep/WebFetch untouched (fall through to `_chat_allows`); with the env var unset nothing changes.
+
+- `fused_render/claude_agent/permission_server.py`
+  - Read `FUSED_BREAKOUT_HANDOFF_DIR` once at import next to the other env reads (~100-115).
+  - `_handle_approve` (~770): before `_chat_allows`, when the env var is set, apply `_breakout_policy(tool_name, tool_input)`: returns an allow result for Write/Edit/MultiEdit/NotebookEdit whose `file_path` (or `notebook_path`) realpath is inside the handoff dir and ends with `.md`; a deny result with a one-line message ("Breakout chats are research-only; edits and shell are refused. Markdown under <dir> is the one exception.") for those tools elsewhere and for every `Bash` call; `None` for everything else (normal flow). Build results with `_permission_result` (~562). Add the new tools to nothing else; `_NEVER_AUTO_ALLOWED` (~747) stays as is.
+  - A denied call must not `_register_inflight`, `_post_card_raised` or write a req card.
+
+Verify: `.venv/bin/python -m pytest tests/test_claude_permission_bridge.py -n 0 -q` → pass.
+Commit: `Permission bridge: breakout policy refuses edits and shell, allows handoff markdown`
+
+### Task 3 — Frontend: controller + Breakout triggers in the transcript and composer
+
+Test first in `frontend/src/apps/claude/protocol/run-controller.fork.test.ts` (add breakout cases next to the fork ones) and the existing Turn/Transcript tests if any pin the fork button (grep `turn-fork` under `frontend/src`; memory says tests pin literal source substrings, so keep the existing fork button markup byte-identical).
+
+- `frontend/src/apps/claude/protocol/controller-api.ts`: add `breakout?: boolean` to the controller deps/options (next to where `fork` state lives at ~381) and a `breakoutAt?: string` start option; export a `BreakoutRequest { sessionId: string; file: string; forkAt?: string; forkKey?: string }` type for the card store.
+- `frontend/src/apps/claude/protocol/run-controller.ts` start path (~2640-2720): when the controller is in breakout posture, skip the `live_host` probe at ~2645 (a breakout must never `send` into the parent's live run), skip queue admission / `queue_claim`, and add `breakout: "1"` plus `fork_at` (empty string allowed, meaning tip) to the start body. The `fork spent` reset at ~2788 stays. The breakout's own later messages go through the normal `send` to its own run.
+- `frontend/src/apps/claude/ui/Turn.tsx` (~96-130 props, button at ~203-213): add `onBreakout?: (turnKey: string) => void`; render a second button `turn-breakout` (`aria-label="Breakout from here"`, `data-hint` same, a lucide icon such as `ExternalLink` or `Split`) immediately after the fork button, only when `onBreakout` is given. Do not alter the fork button line.
+- `frontend/src/apps/claude/ui/Transcript.tsx` (~115-116, 175, 964): thread `onBreakout` exactly as `onFork` is threaded.
+- `frontend/src/apps/claude/ClaudeChat.tsx`: new prop `breakout?: boolean` (card posture) and `onBreakout?: (req: BreakoutRequest) => void`. Pass `onBreakout` to Transcript (next to `onFork` at ~5420) when `chatBackend === "claude"`, when a session id exists, and when not already in breakout posture; unlike fork, do NOT gate on `!running`. Each click resolves the turn's uuid the same way `beginFork` does in run-controller.ts ~1033 (reuse that lookup, do not copy it) and calls `onBreakout({sessionId, file, forkAt: uuid})`. Add a composer Breakout button (near the existing composer action buttons; find where the model/effort/permission controls render) that calls `onBreakout({sessionId, file})` with no `forkAt`. Hidden when `breakout` posture or no session.
+- `frontend/src/apps/claude/ChatMount.tsx` (props 159-246): add `breakout?: boolean` and `onBreakout?` passthrough to `ClaudeChat` (~296-320); breakout posture forces `paramsSource: "memory"` seeding `session_id` via `useHostIds` and passes `breakout` into the controller deps.
+
+Verify: `cd frontend && bun test src/apps/claude/protocol/run-controller.fork.test.ts src/apps/claude/ui` (narrow to the touched test files) and `bunx tsc --noEmit` from `frontend/` → pass.
+Commit: `Claude chat: Breakout buttons on turns and the composer; controller starts a breakout run`
+
+### Task 4 — Frontend: shell-level breakout cards with Send back and discard
+
+Test first: a bun test for the store (`frontend/src/shell/breakout/breakouts.test.ts`: open adds a card with a unique id, close removes, sendBack dispatches the composer event with the draft text and clears the card) and one for the draft builder (last assistant text + detected handoff path → expected draft string).
+
+- New `frontend/src/shell/breakout/breakouts.ts`: tiny store (`useSyncExternalStore` pattern used by other shell stores; grep `useSyncExternalStore` under `frontend/src/shell` and follow one) holding `{ id, sessionId, file, forkAt?, parentSessionId }[]`, `openBreakout(req)`, `closeBreakout(id)`, and `buildHandoffDraft(messages, handoffDir)` which takes the breakout transcript's last assistant text and, if any Write/Edit tool_use targeted a path under `handoffDir`, appends a line `Handoff file: <absolute path>`.
+- New `frontend/src/shell/breakout/BreakoutCards.tsx`: renders one card per store entry. Card chrome copies the rail peek card: use `peekPlacement`, `dragResize`, `PEEK_WIDTH`, `PEEK_MAX_HEIGHT` from `frontend/src/shell/claude-rail/rail-peek-lib.ts` and the classes in `frontend/src/styles/claude-rail.css` (add a `breakout-card` modifier there, no new stylesheet). Cards stack with a fixed offset per index. Body is `<ChatMount file sessionId breakout chatOnly peek headerInPeek paramsSource="memory" />` with `headerExtra` holding two buttons: **Send back** and **Close**. Mount `<BreakoutCards />` once in `frontend/src/shell/App.tsx` beside the other shell overlays (~1274-1385).
+- Send back: read the breakout's transcript via the controller/ChatMount `onReady` handle (expose the messages the way RailPeek or TaskPeek reads them; grep `onReady` in `RailPeek.tsx`), call `buildHandoffDraft`, then dispatch a `window` CustomEvent `fused:composer-draft` `{ sessionId: parentSessionId, file, text }` AND call `saveChatDraft(chatDraftKey(parentSessionId, file), text)` from `frontend/src/platform/lib/drafts.ts` (~205, ~720) as the persisted fallback; then `closeBreakout(id)`.
+- `ClaudeChat.tsx`: listen for `fused:composer-draft` whose `sessionId` matches this chat's session (and `file` matches); set the composer text through the same path `draftSyncer(...).setText` uses (~4549) so the textarea and draft stay in sync; append to existing text with a blank line between if the composer is not empty.
+- Close: if the breakout has at least one user message, `window.confirm("Discard this breakout? The chat is not sent back.")` before `closeBreakout`; otherwise close directly.
+- `ClaudeChat.tsx` wiring: the explorer-level `ClaudeChat`/`ChatMount` instances (grep `ChatMount` and `ClaudeRail` in `frontend/src/apps/explorer/Preview.tsx` ~95-101 and the side-pane chat mount) pass `onBreakout={openBreakout}`. Breakout cards pass no `onBreakout` (no nesting).
+
+Verify: `cd frontend && bun test src/shell/breakout` and `bunx tsc --noEmit` → pass. Also `bun run build` once at the end of this task (the CSS edit; a `*/` in comment prose breaks only the build).
+Commit: `Claude chat: breakout cards with Send back into the parent composer`
+
+## Decisions & risks
+
+- Enforcement is server-side in the permission bridge, not in the CLI flag list: `--disallowed-tools` cannot express "md under one dir", and `auto`/`acceptEdits` would bypass the approve tool, hence forced `default` mode.
+- Dropping `Bash(fused:*)` and appending a breakout prompt paragraph changes the tool roster, which is a prompt-cache miss on the forked session (headsup.py's comment). Accepted; a breakout is a fresh session anyway.
+- A breakout must never attach to the parent's live run: the controller skips the `live_host` probe and queue admission, and the card seeds only `session_id` (never `run`).
+- `breakouts.json` mirrors `deleted.json` so the Tasks scan stays meta-blind; the meta flag is a second guard, not the primary one.
+- Send back uses an in-page event plus a persisted draft fallback because the parent chat may be inside a different mount (side pane vs. rail) than the card.
+- Per-message breakout uses the existing `resume_at` fork path; only the tip fork is new on the CLI side.
+- Not done: Breakout for copilot/codex backends, a Breakout entry in the Tasks list, nested breakouts, read-only shell.
+
+## How we'll know it works
+
+1. In a Claude chat with a session, every user turn shows Fork and Breakout; the composer shows a Breakout button while the chat is running.
+2. Clicking either opens a card beside the chat whose transcript is the parent's up to that message; asking it a question answers in the card; the main chat is untouched and still runnable.
+3. Asking the breakout to run a shell command or edit a file produces an immediate refusal in-chat with no approval card; asking it to write `.claude/handoffs/notes.md` succeeds without a card.
+4. `/api/tasks` does not list the breakout; the parent still shows.
+5. Send back closes the card and the parent composer contains the summary and the handoff path; nothing is sent.
+6. Close on a used breakout asks to confirm, then the card is gone.
+
+## Decisions log
+
+### Task 1
+- `agent.py` cannot import `tasks_store` (template outside the package import graph), so the plan's "call `tasks_store.mark_breakout` after the run record is written" moved to the router: `routers/claude_agent.py::_mark_breakout` files the session from the start's answer (normal path and the late-start path). Keyed by SESSION id (what `deleted.json` uses), not transcript path.
+- The Tasks scan has no cheap access to run metas, so the plan's second guard (meta `breakout` flag in `_is_task`) was not added; `breakouts.json` is the only guard. The meta flag is still written (diagnosis, future use).
+- Added a `breakout="resume"` value beside `"1"` (plan said only "1"/""): a later turn of an existing breakout whose host died restarts through `start` with the breakout's own session id, and a plain `"1"` would fork the breakout again. `"resume"` keeps the policy (default mode, no `Bash(fused:*)`, handoff env, prompt note) but continues the session. The frontend controller must send `"1"` on the first start and `"resume"` for later starts. `gate._folder_busy` and `_file_owner` skip both values (sends carrying `breakout` are also exempt from the queue).
+- `session_host.py` needed two edits the plan did not list: it builds argv from the launch request (`breakout` is now in `req`), and `own_sid` treated only `resume_at` as a fork, so a tip fork would have reported the PARENT's id as its own.
+- `headsup.py` left alone (it appends its own `--permission-mode dontAsk`).
+- Handoff dir = `<_workdir(file)>/.claude/handoffs` (`agent._breakout_handoff_dir`).
+
+### Task 2
+- Policy is `permission_server._breakout_policy(tool_name, tool_input, handoff_dir=None)`, run first in `_handle_approve` (before `_chat_allows`, so an "always approve" grant cannot widen a breakout). The allow result is built inline in the same shape as `_permission_result`'s plain allow rather than through it (it needs a decision dict with no scope, and the deny has a fixed message).
+- Suite-wide: the file runs ~30 s in whole; the 9 new red tests took 93 s before the fix because each waited the 10 s response timeout.
+
+### Task 3 (frontend controller + triggers)
+- Per-message breakout hides turn X and everything after it (same as the existing fork's `--resume-session-at` semantics); implemented by reusing `state.fork` so `fork_at` is read from the parked uuid.
+- Controller breakout posture: `deps.breakout`/`deps.breakoutAt`; first start sends `breakout:"1"`, no live_host probe, never adopts the parent's live run; once spent, every start/send carries `breakout:"resume"`. A failed first start leaves it unspent.
+- `ClaudeChat` skips queue admission and the fork notice in breakout posture; `onBreakout` is available while a run is active (unlike `onFork`).
+- Breakout button hangs one lane left of the fork button (net zero flex width).
+
+### Task 4 (shell cards, store, Send back)
+- The store lives in `frontend/src/platform/lib/breakouts.ts` (test beside it), not `shell/breakout/`: the import-boundary check (run by `bun run build`) forbids `apps/*` importing `@shell/*`, and ClaudeChat/explorer/canvases all need `openBreakout` and the draft event. `BreakoutRequest` moved there too; `controller-api` re-exports it. `buildHandoffDraft` takes a structural `HandoffTurn` for the same reason.
+- Cards use a fixed bottom-right box with a per-index offset, not `peekPlacement`/`dragResize` (those place against a rail anchor; a breakout has none). Reuses `.claude-rail-peek-card` chrome plus a `.breakout-card` modifier. No drag/resize.
+- Handoff dir is not known to the client (server derives `_workdir/.claude/handoffs`), so the draft builder matches any `.claude/handoffs/*.md` Write/Edit path when no dir is passed.
+- Send back goes through the existing `stranded`/`restore` composer seat (appends after a single newline, draft stays synced) rather than a separate `setText` path; plan said a blank line, single newline is what the seat does.
+- Card reads its session and transcript through a new `onBreakoutState` prop on ClaudeChat/ChatMount (fires on turns change, breakout posture only). "Used" for the Close confirm = the breakout has a user turn with a live-send key (`u:`).
+- `onBreakout` wired on: Preview (2 mounts), ListingPreviewPane, AppPage, CanvasWorkspace, TaskPeek. Not on TaskCards/RailPeek. A composer-side Breakout button sits in the chat's top strip (`.c-breakout`).
+
+### Review fix round
+- session_host `own_sid`: a breakout only takes `new_session_id` when one was minted (`resume_at` or breakout with a minted id); a `breakout: resume` start keeps `req["session_id"]`. Test reads host.json.
+- agent `_start`: a bad session id on a breakout now returns `malformed session id` (the existing bad-session error), not `fork_target_missing`.
+- breakouts.ts `lastHandoffPath`: with a dir, any `.md` under the trailing-slash-stripped dir counts (nested allowed), matching the server policy; the broken slice is gone.
+
+### Fix round 2
+- Defect 1: a breakout's Bash call executed because the CLI evaluates the user's settings allow rules (`Bash(ls *)`, transcript `source: config`) before it calls `--permission-prompt-tool`, so `_breakout_policy` never saw it. `_claude_argv` now also passes one `--settings` element (`json.dumps`) denying `Bash`, `Edit`, `MultiEdit`, `NotebookEdit` for a breakout. `Write` stays on the bridge for the handoff `.md` exception. No other `--settings` element existed in argv, so nothing to merge. Bridge policy kept as the second guard. Tests in `tests/test_claude_fork.py`.
+- Defect 2: the composer Breakout button lived only in the `.c-anntools` strip, absent in the merged head row (side pane). Hoisted to a `breakoutBtn` const beside `backBtn`/`kebabEl`; rendered in the strip and as `tail: <>{breakoutBtn}{kebabEl}</>` in the merged head. CSS: `.c-topbar-merged .c-breakout` is `flex: 0 0 auto; align-self: center`. Test in `ClaudeChat.boot.test.tsx`. Not visually verified (orchestrator to check glyph alignment against the kebab).
+
+### Round 3
+- Card drag: `Card` keeps `pos` (null = default right/bottom slot; once dragged, left/top). Pointer capture on the head row, skipped when the target is inside a button; moves coalesced to one rAF; clamped to the viewport on move and on window resize. In-memory only. `Card` is now exported so the test can render it with a stubbed `@apps/claude` (react-test-renderer, handlers called with fake events; no DOM).
+- Send back bug: parent turns restored from history were counted. New pure `ownTurns(turns)` in `breakouts.ts` (turns from the first `u:` user turn; empty before) feeds both `canSend` and `buildHandoffDraft`; `buildHandoffDraft` unchanged.
+
+### Fix round 4
+- CI frontend lane: `BreakoutCards.test.tsx` used `mock.module("@apps/claude", ...)`, which is process-wide and irreversible in bun, so later files (`ChatMount.render.test.tsx`, `paneState.test.tsx`) got the stub and failed. Removed. `Card` now takes an optional `mount` prop (default the real `ChatMount`); the test passes `mount={NoChat}` and imports `Card` statically. Production path unchanged. Dropped the empty `afterEach`.
+
+- Fix round 5: CI frontend lane failed JobPopupCard "iframe taking focus" because `bun test` shares one globalThis and draft-run/new-task-form tests set `window = globalThis`; BreakoutCards.test.tsx and breakouts.test.ts then overwrote `addEventListener`/`removeEventListener` (and rAF) at module scope, so later suites registered blur listeners on a private bus. Both files now save the originals, install stubs in `beforeAll`, and restore (or delete if absent) in `afterAll`.
+
+### Fix round 6
+- CLI limit: `--resume-session-at <uuid>` only resolves records after the latest compaction summary row (`isCompactSummary: true`); an older uuid dies with "No message found with message.uuid of". Resuming at the summary row itself works.
+- Clamp: `_fork_point` now returns `(point, clamped)`; a prompt before the last compaction row yields `(summary_row_uuid, True)`. `_start` records `meta["fork_clamped"]` and answers `fork_clamped: true` (only when clamped).
+- Flag path: `fork_clamped` in the start response -> `state.forkClamped` (run-controller, set once, never cleared) -> `onBreakoutState` payload -> card note "research only · forked at the last compaction" with an explanatory title.
+- Boundary: a prompt AT the compaction summary row itself clamps to that row (`<=`, not `<`); its own parentUuid is pre-compaction and unresolvable.
+
+### Fix round 8
+- Decision changed: every chat surface gets the Breakout button (composer + per-turn), user request 2026-11-04. `onBreakout={openBreakout}` now also on CanvasPage, TaskCards (2 mounts) and RailPeek, superseding the Task 4 note "Not on TaskCards/RailPeek". Still not wired in BreakoutCards (a breakout never nests).
+
+### Round 9 — feature flag
+- Breakout is now an opt-in beta: pref `breakout_enabled` (prefs.json), default off; only a stored `true` is on. GET `/api/prefs` carries `breakout: {enabled}`; PUT takes booleans only (400 otherwise).
+- Frontend gate sites in `ClaudeChat.tsx` (`useBreakoutEnabled()` in ChatBody): the composer `breakoutBtn` and the per-turn `onBreakout` spread both require it. Flag state lives in `apps/claude/feature-flag.ts` (`publishBreakoutEnabled`, broadcast key `fused-render:breakout`).
+- Server refusal: `agent._start` returns `reason: "breakout_disabled"` for any `breakout` start (fresh or resume) while the pref is off, before any run dir is made. `agent.py` reads the pref with its own stdlib `_breakout_pref()` (it cannot import the package), like `_backend_enabled`.
+- Toggle: Preferences page, "Chats & tasks" group (registry group `tasks`, section Running), "Breakout side chats", badge Beta (`BreakoutControl` in `shell/settings/toggles.tsx`).
+
+### Round 10 — Agent peek card
+- Store: `platform/lib/agent-peeks.ts` (module store like breakouts.ts): `openAgentPeek` dedupes on `sessionId + toolUseId`, `closeAgentPeek`, `useAgentPeeks`, `resetAgentPeeks`. No fetch: a subagent's rows are the Agent tool segment's `children` in the parent chat's turns.
+- Publish path: `ClaudeChat` effect calls `publishPeekTurns(sessionId, state.turns)` whenever turns, session or the peek count change, only while `hasAgentPeeks(sessionId)`; the store drops a session's turns on its last close. `useAgentSegment` / `findAgentSegment` walk assistant turns for the tool segment with that id (a synthetic orphan parent matches the same way).
+- Chrome: `BreakoutCards.tsx` now has `FloatingCard` (drag/clamp/stack/head/Close/body); Breakout `Card` is a user of it, same DOM and classes. `AgentPeekCard` (aria-label "Agent peek", body `.chat-root.agent-peek-body`) draws `seg.children` through `SegmentView`, lazy-imported so the markdown stack stays out of the shell chunk; `renderSegments` is the test seam. Peeks stack after breakouts in the one portal. CSS `.agent-peek-body` (absolute, inset 0, overflow auto) in claude-rail.css.
+- Gate: `TasksPanel` `onPeekAgent` is passed only when `breakoutOn && !props.breakout`; an agent row with a `tool_use_id` then opens the peek (no `aria-expanded`, no inline note). Otherwise unchanged.
+- NOT done: no peek from the transcript's Agent chip; no peek inside a breakout card; not visually verified in a browser.
+
+## Round 11 — review fixes (Python)
+
+- T19/T20/T22b: the breakout `--settings` JSON now carries a `hooks.PreToolUse` entry (matcher `Write|Edit|MultiEdit|NotebookEdit`, `onFailure: "block"`, timeout 10) running `sys.executable -I permission_server.py --breakout-hook=<handoff dir>`. The hook mode (`_breakout_hook`) reads the hook JSON from stdin, calls `_breakout_policy`, exits 2 with the refusal on stderr for a deny (and for malformed stdin or an empty dir, fail closed), exit 0 silently otherwise. It runs before the permission system, so a user `Write` allow rule cannot bypass the handoff path limit; the bridge check stays as defense in depth. `permissions.deny` is unchanged. STILL NEEDS A LIVE CLI CHECK (hook schema, `onFailure`, quoting on a real Claude Code run).
+- T25: `_breakout_policy` allows the handoff `.md` exception only for `Write`; Edit/MultiEdit/NotebookEdit get the deny. (Committed together with the hook.)
+- T22a: `_set_mode` returns `{"error": "Breakout chats stay in Ask mode", "reason": "breakout_locked"}` for a run whose meta has `breakout: true`, before any control request or host.json write.
+- T21/T23: `breakout: "resume"` is trusted only for a session `tasks_store.is_breakout` records: `gate._breakout_label` (both gate sites) and `_start` (`_breakout_recorded`, a stdlib read of `$FUSED_RENDER_HOME|~/.fused-render` / `claude-sessions/breakouts.json`, answers `breakout_missing`).
+- T24: the router's task dicts do not carry run meta, so no guard was added; the agent.py comment now says `breakouts.json` is the guard and `meta["breakout"]` is a record for the peek and `_set_mode`.
+
+## Round 12 — review fixes (frontend)
+
+- T12/T15 own-turn boundary: `run-controller` keeps `breakoutSends` (bumped on every successful breakout start, first fork and each resume) and emits it on state; `ClaudeChat` forwards it as `sends` in `onBreakoutState`. `ownTurns(turns, sends)` slices from the `sends`-th user turn counted from the END, so it survives `refreshHistory` swapping `u:` keys for uuids. `Card.close` confirms when `sends > 0`.
+- T8/T9/T10 Send back: the composer-draft event is cancelable; `ClaudeChat` calls `preventDefault()` when it seated the text. Handled means no persisted write (the composer syncer owns the draft). Unhandled: `fetchChatDraft`, save `existing + "\n\n" + text` with attachments kept. `sendBackBreakout` is async, resolves boolean (false on unreadable draft or `{ok:false}`); the card stays open and shows a `.breakout-error` line (reuses `.claude-rail-peek-rename-error`). Seams: `save(key, text, attachments)`, `load(key)`.
+- T1/T3/T5 guards: `refreshHistory` returns early for an unspent breakout; `scheduleComeback` returns false in breakout posture; `/clear` in a breakout notifies "Breakout chats cannot be cleared; close the card instead" and refuses. No `/clear` boot test (no existing test drives slash commands).
+- T7: reopening a matched card moves it to the end (top of the stack) and emits once.
+- T11: `lastHandoffPath` skips tool segments with `status === "error"`.
+- T13: `breakoutOpener(embed = IS_EMBED)` in breakouts.ts; all 10 `onBreakout={openBreakout}` host sites use it, so embedded documents get no Breakout seats.
+- T14: the slim TaskPeek head (`peek` + `headerInPeek`) seats `breakoutBtn` through `Topbar`'s `tail`; the slim branch of Topbar now renders `tail` after `extra`.
+- T16: `onBreakoutState` also carries `running` and `stop`; closing a used card mid-run calls `stop()` after the confirm.
+- T17: the default card slot is clamped so the card's top/left stay on screen.
+- T6: `@media (hover: none)` keeps `.turn-breakout` visible on touch.
+- T18: settings description updated (compaction clamp, handoff-notes exception).
+- T2: `breakoutPublishedAt` stamp (Breakout only; shared `generation` untouched): `read()` skips `setBreakout` when a publish happened after it departed. `publishQueueEnabled`/recap have no equivalent, nothing mirrored.
+- NOT done: no browser pass; no `/clear` test; the cross-tab `storage` path still sets the flag without the stamp.
+
+## Round 13 — agent-peek store moved into apps/claude (import boundary)
+
+- CI's `scripts/check-boundaries.mjs` failed: `platform/lib/agent-peeks.ts` imported `@apps/claude/protocol/types` and `controller-api`, and platform may only import platform.
+- Moved the store and its test to `frontend/src/apps/claude/agent-peeks{,.test}.ts` (git mv, contents unchanged except the two type imports, now relative). apps/claude may import itself and the shell may import anything, so `BreakoutCards.tsx`/test import `@apps/claude/agent-peeks` and `ClaudeChat.tsx` uses `./agent-peeks`.
+- Earlier rounds above that mention `platform/lib/agent-peeks.ts` are stale; the path is now `apps/claude/agent-peeks.ts`.

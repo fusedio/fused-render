@@ -38,8 +38,13 @@ const STATUS: Record<McpStatus, { label: string; tone: PillTone }> = {
   "needs-auth": { label: "needs auth", tone: "ro" },
   failed: { label: "failed", tone: "err" },
   pending: { label: "pending approval", tone: "neutral" },
+  disabled: { label: "disabled", tone: "neutral" },
   unknown: { label: "unknown", tone: "neutral" },
 };
+
+// A claude.ai connector is authorised on claude.ai, not by `claude mcp login`
+// (Claude Code's own startup notice says as much), so its row links there.
+const CONNECTOR_SETTINGS = "https://claude.ai/settings/connectors";
 
 const GROUPS: { kind: McpKind; heading: string }[] = [
   { kind: "user", heading: "Your servers" },
@@ -281,7 +286,9 @@ export default function McpSection({ filter = "", title, blurb }: HeadedSectionP
                   // there is anything to do: a connected stdio-less server with
                   // no auth state offers neither button, and the row must then
                   // have no action bar at all rather than an empty one.
-                  const showLogin = s.canAuth && s.needsAuth;
+                  const isConnector = s.kind === "connector";
+                  const showLogin = s.canAuth && s.needsAuth && !isConnector;
+                  const showConnectorLogin = s.needsAuth && isConnector;
                   const showLogout = s.canAuth && s.connected;
                   return (
                     <ListRow
@@ -327,6 +334,17 @@ export default function McpSection({ filter = "", title, blurb }: HeadedSectionP
                             <button type="button" className="btn" onClick={() => login(s)}>
                               Authenticate
                             </button>
+                          )}
+                          {showConnectorLogin && (
+                            <a
+                              className="btn"
+                              href={CONNECTOR_SETTINGS}
+                              target="_blank"
+                              rel="noreferrer"
+                              style={{ textDecoration: "none" }}
+                            >
+                              Sign in on claude.ai
+                            </a>
                           )}
                           {showLogout && (
                             <button type="button" className="btn" onClick={() => logout(s)}>

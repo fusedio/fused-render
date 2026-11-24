@@ -161,6 +161,15 @@ function start(app: AppEntry, opts: InstallOpts = {}) {
     .catch(() => {});
 }
 
+/** The failed job's way out (`job.code === "replace"`): the user has this
+ *  app as a plain copy elsewhere in the workspace, which held the install's
+ *  place. Install over it — the reviewed copy lands under app/, that copy's
+ *  `.fused/` data moves along with everything that names the folder, and
+ *  the old folder is hidden (its files stay). No sheet: nothing is deleted. */
+export function replaceInstall(app: AppEntry, path: string): void {
+  start(app, { replace: path });
+}
+
 /** A reviewed copy: "Check for a new release", its outcome as a toast (the
  *  server's sentence when it sends one). */
 export function checkRelease(app: AppEntry): void {

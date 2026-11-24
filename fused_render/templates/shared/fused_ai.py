@@ -628,6 +628,10 @@ def stream(prompt: str, model: str | None = None, effort: str | None = None,
         for frame in _parse_ndjson(_chunks()):
             ftype = frame.get("type")
             if ftype == "chunk":
+                # A reasoning model's deliberation rides a `channel`; a page
+                # streaming the answer into a DOM node never sees it.
+                if frame.get("channel") == "reasoning":
+                    continue
                 yield frame.get("text") or ""
             elif ftype == "done":
                 if not frame.get("ok"):

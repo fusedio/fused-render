@@ -13,19 +13,18 @@ import {
   ThemeControl,
 } from "./general";
 import {
-  AgentSigninPointer,
   ClaudeAgentControl,
-  ClaudeModelPointer,
   CodexAgentControl,
   CopilotAgentControl,
   DefaultAgentControl,
-  EnginesPointer,
   GeminiAgentControl,
+  OpencodeAgentControl,
+  CursorAgentControl,
 } from "./ai";
 import {
   CanvasesControl,
   CanvasesEmbedProxyControl,
-  CanvasRailPeekControl,
+  RailExtrasControl,
   GitSyncControl,
   LivePreviewsControl,
   MonitorControl,
@@ -33,7 +32,9 @@ import {
   ProjectQueueControl,
   ReaderControl,
   ShareSheetControl,
-  TaskRecapsControl,
+  ChatRecapControl,
+  BreakoutControl,
+  ExpertsControl,
   TaskSummaryTitlesControl,
   ClaudeStrictMcpControl,
   ContribRemixControl,
@@ -47,6 +48,7 @@ import {
   SkippedFoldersControl,
 } from "./indexing";
 import { LanControl } from "./lan";
+import { ConnectionsPointer } from "../Connections";
 import { ClaudeCliMissing } from "./claude";
 import { FusedAccountControl, HuggingFaceControl, WorkbenchEnvControl } from "./accounts";
 import {
@@ -55,6 +57,7 @@ import {
   CallRetentionControl,
   ClaudeMaxSessionsControl,
   DiagnosticsControl,
+  UdfSavedControl,
   IndexQueryControl,
 } from "./advanced";
 import { CanvasScreenshotsControl, CanvasScreenshotsFallbackControl } from "./screenshots";
@@ -70,12 +73,14 @@ export const CONTROLS: Record<SettingId, ComponentType<PrefControlProps>> = {
   "agent-copilot": CopilotAgentControl,
   "agent-codex": CodexAgentControl,
   "agent-gemini": GeminiAgentControl,
+  "agent-opencode": OpencodeAgentControl,
+  "agent-cursor": CursorAgentControl,
   "agent-default": DefaultAgentControl,
-  "claude-model": ClaudeModelPointer,
   "claude-cli-missing": ClaudeCliMissing,
-  engines: EnginesPointer,
   "project-queue": ProjectQueueControl,
-  "task-recaps": TaskRecapsControl,
+  "chat-recap": ChatRecapControl,
+  breakout: BreakoutControl,
+  experts: ExpertsControl,
   "task-summary-titles": TaskSummaryTitlesControl,
   "claude-strict-mcp": ClaudeStrictMcpControl,
   "claude-default-permission": ClaudeDefaultPermissionControl,
@@ -94,18 +99,19 @@ export const CONTROLS: Record<SettingId, ComponentType<PrefControlProps>> = {
   "rebuild-index": RebuildIndexControl,
   canvases: CanvasesControl,
   "canvases-embed-proxy": CanvasesEmbedProxyControl,
-  "canvases-rail-peek": CanvasRailPeekControl,
+  "rail-extras": RailExtrasControl,
   monitor: MonitorControl,
   reader: ReaderControl,
   "chromium-windows": ChromiumWindowsControl,
   lan: LanControl,
+  connections: ConnectionsPointer,
   "fused-account": FusedAccountControl,
   "workbench-env": WorkbenchEnvControl,
   huggingface: HuggingFaceControl,
-  "agent-signin": AgentSigninPointer,
   "call-log": CallLogControl,
   "call-params": CallParamsControl,
   "call-retention": CallRetentionControl,
   "index-query": IndexQueryControl,
+  "udf-saved": UdfSavedControl,
   diagnostics: DiagnosticsControl,
 };

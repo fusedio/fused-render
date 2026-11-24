@@ -39,6 +39,9 @@ class FRCefApp : public CefApp,
 
   // CefBrowserProcessHandler
   void OnScheduleMessagePumpWork(int64_t delay_ms) override;
+  // Profile settings the windows need before the first page loads (the
+  // automatic-downloads limiter; see the definition).
+  void OnContextInitialized() override;
   // A second process started on the same profile (a relaunch successor
   // racing the predecessor): the default would open a Chrome-style window
   // in THIS process; true says "handled" (the successor falls back to

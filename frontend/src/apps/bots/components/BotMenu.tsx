@@ -2,10 +2,11 @@
 // or the preview header's ☰ (live, alignRight). Rows and icons come from menuIcons.tsx. Clamped into the window
 // once laid out; closes on an outside click, Escape and window blur.
 import { useEffect, useLayoutEffect, useRef } from "react";
-import { cloneBot, deleteBot, exportBot } from "../dialogs/actions";
-import { api, type Bot } from "../lib/api";
+import { cloneBot, deleteBot, exportBot, exportBotFile } from "../dialogs/actions";
+import { askConfirm } from "../dialogs/ask";
+import { api, expertApi, type Bot } from "../lib/api";
 import { openLive } from "../lib/cdp";
-import { act, botById, closeMenu, cur, getState, markSeen, openDialog, select, useBotsSelector } from "../state/store";
+import { act, actExpert, botById, closeMenu, cur, getState, markSeen, openDialog, select, useBotsSelector } from "../state/store";
 import { menuItems, type MenuAction } from "./menuIcons";
 
 export { exportBot };
@@ -13,6 +14,12 @@ export { exportBot };
 
 export function runMenuAction(a: MenuAction, b: Bot): void {
   const id = b.id;
+  if (b.expert) {
+    if (a === "export") void exportBot(b);
+    else if (a === "delete") void askConfirm(`Delete "${b.name}"?`, "It leaves the Bots list, and its folder moves to the experts' trash folder.").then((ok) => { if (ok) void actExpert(() => expertApi.remove(id)); });
+    else openDialog({ kind: "settings", id });
+    return;
+  }
   if (a === "pin") { void act(() => api.flag(id, { pinned: !b.pinned })); return; }
   if (a === "hide") { void act(() => api.flag(id, { hidden: !b.hidden })); return; }
   if (a === "read") { markSeen(id, b.seq); return; }
@@ -20,6 +27,7 @@ export function runMenuAction(a: MenuAction, b: Bot): void {
   if (a === "clone") { void cloneBot(id); return; }  // shares this bot's logins
   if (a === "cloneCopy") { void cloneBot(id, false); return; }
   select(id);
+  if (a === "exportFile") { exportBotFile(id); return; }
   if (a === "export") { void exportBot(cur()); return; }
   if (a === "delete") { void deleteBot(cur()); return; }
   openDialog({ kind: "settings", id, ...(a === "settings" ? {} : { tab: a }) });  // settings, or its Skills / Routines section

@@ -67,11 +67,11 @@ test("default layout is the Builder preset (units), version 5, stable default-<s
   expect(DEFAULT_LAYOUT.widgets.map((x) => [x.source, x.size, x.x, x.y, x.format])).toEqual([
     ["search", "4x1", 0, 0, "bar"],
     ["build", "2x1", 0, 1, SOURCES.build.formats[0]],
-    ["apps", "2x2", 4, 1, "icons"],
-    ["bots", "2x2", 0, 5, "list"],
+    ["bots", "2x2", 4, 1, "list"],
+    ["apps", "2x2", 0, 5, "icons"],
     ["tasks", "2x2", 4, 5, "list"],
   ]);
-  expect(ids(DEFAULT_LAYOUT)).toEqual(["default-search", "default-build", "default-apps", "default-bots", "default-tasks"]);
+  expect(ids(DEFAULT_LAYOUT)).toEqual(["default-search", "default-build", "default-bots", "default-apps", "default-tasks"]);
 });
 
 test("defaultLayout has no overlaps", () => {
@@ -908,11 +908,11 @@ test("Mission control counts Bots, lists Claude Sessions, cards recents; Files s
   expect(f.find((w) => w.source === "recents")!.format).toBe("cards");
 });
 
-test("Builder preset shows Bots at 0,5 and no recent files", () => {
+test("Builder preset shows Bots at 4,1 (top right) and no recent files", () => {
   const ws = presetLayout("builder").widgets;
   expect(ws.some((w) => w.source === "recents")).toBe(false);
   const bots = ws.find((w) => w.source === "bots")!;
-  expect([bots.x, bots.y]).toEqual([0, 5]);
+  expect([bots.x, bots.y]).toEqual([4, 1]);
 });
 
 test("no preset has a playground tile", () => {

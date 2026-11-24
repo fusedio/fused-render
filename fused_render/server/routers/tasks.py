@@ -37,6 +37,10 @@ this file is written around:
 * ``POST /api/tasks/archive`` — file one task away. ONE gesture with two halves
   (cancel the work, archive the session), which is why it is a verb here rather
   than a triage write the client composes. See the archiving section at the end.
+* ``POST /api/tasks/favourite`` — star or unstar one task (the rail card's star),
+  and say whether its card is open; at most one favourite is open at a time
+  (a star opens its card and closes the other).
+  See `api_task_favourite`.
 * ``POST /api/tasks/unarchive`` — take that filing back, and nothing else: the
   work archiving cancelled stays cancelled, no run starts, and the task lands in
   whatever lane it DERIVES into rather than one a caller names. Same section.
@@ -507,7 +511,97 @@ def _mark_fate(prompts: list[dict], fate: bool, line: str = "") -> None:
     but wait. See `_LIMIT_HINTS` and the row's `blocked_reason`."""
     if prompts:
         prompts[-1]["failed"] = fate
-        prompts[-1]["limit"] = bool(fate) and _limit_hit(line)
+        limit, resets_at = _limit_facts(line) if fate else (False, 0.0)
+        prompts[-1]["limit"] = limit
+        # WHEN THE WINDOW REOPENS, as the CLI wrote it on the failed row
+        # (`quotaLimits.resetsAt`) — 0.0 when it did not. The chat drops a
+        # limit row whose reset is behind us (agent.py
+        # `_drop_resolved_errors`), and the row has to stop saying blocked at
+        # the same moment (`_limit_resolved`).
+        prompts[-1]["resets_at"] = resets_at
+
+
+def _limit_facts(line: str) -> tuple[bool, float]:
+    """(is this API-error line the plan's usage limit, the epoch its window
+    reopens — 0.0 when the row does not say).
+
+    The same test agent.py `_is_limit_turn` applies to the row the chat draws:
+    the limit's own words, OR the CLI's `quotaLimits.status == "rejected"`
+    riding on it (a bare "API Error: 429" with a rejected window is the limit
+    too). Parsed, unlike every other line here: an API-error row is rare, and
+    the reset is a number only the JSON holds."""
+    words = _limit_hit(line)
+    try:
+        obj = json.loads(line)
+    except ValueError:
+        return words, 0.0
+    limits = obj.get("quotaLimits") if isinstance(obj, dict) else None
+    if not isinstance(limits, dict):
+        return words, 0.0
+    try:
+        resets_at = float(limits.get("resetsAt") or 0.0)
+    except (TypeError, ValueError):
+        resets_at = 0.0
+    return words or limits.get("status") == "rejected", resets_at
+
+
+def _limit_resolved(prompt: dict, now: float | None = None) -> bool:
+    """Is this prompt's usage-limit failure OVER by the clock — its reset (the
+    CLI's own number) behind us? The chat stops drawing the limit row at that
+    moment (`_drop_resolved_errors`), so nothing on screen explains a blocked
+    row any more and the row must not say blocked."""
+    if not prompt.get("limit"):
+        return False
+    resets_at = float(prompt.get("resets_at") or 0.0)
+    return 0.0 < resets_at <= (time.time() if now is None else now)
+
+
+def _assistant_row(line: str) -> bool:
+    """Is this raw line an assistant row of THIS conversation (any content —
+    text or a bare tool call)? Substring screen, like `_reply_fate`'s."""
+    if any(hint in line for hint in _USER_HINTS):
+        return False
+    if any(hint in line for hint in _SIDECHAIN_HINTS):
+        return False
+    return any(hint in line for hint in _ASSISTANT_HINTS)
+
+
+def _note_served(prompts: list[dict], rec: dict | None, line: str,
+                 fate: bool | None) -> None:
+    """What a NON-ERROR assistant row says that `_reply_fate` does not.
+
+    * THE API SERVED A REQUEST, so the plan's window is open: a usage-limit
+      mark on the newest prompt is cleared by ANY later assistant row — a bare
+      tool call included — exactly as the chat retires the limit row
+      (`_drop_resolved_errors`: "the API served the retry"). Cleared back to
+      None, not False: the turn is in flight again, the same reading a prompt
+      had before any reply landed (`_dead_turn` asks for exactly that).
+    * WHEN — `served_at` on the scan record, the newest such row's own stamp.
+      A comeback booked before it is for a chat that has since gone on
+      (`_stale_comebacks`)."""
+    if fate is True or not _assistant_row(line):
+        return
+    if fate is None and prompts and prompts[-1].get("limit"):
+        prompts[-1]["failed"] = None
+        prompts[-1]["limit"] = False
+        prompts[-1]["resets_at"] = 0.0
+    if rec is not None:
+        at = _line_ts(line)
+        if at > float(rec.get("served_at") or 0.0):
+            rec["served_at"] = at
+
+
+_TS_RE = re.compile(r'"timestamp"\s*:\s*"([^"]+)"')
+
+
+def _line_ts(line: str) -> float:
+    """A raw record's own `timestamp`, without parsing the record: Claude Code
+    writes it as the record's LAST key, so it is looked for from the end."""
+    at = line.rfind('"timestamp"')
+    if at < 0:
+        return 0.0
+    match = _TS_RE.match(line, at)
+    return (tasks_store.epoch(match.group(1)) or 0.0) if match else 0.0
 
 
 # A GitHub PR URL as it sits in a transcript line. The trailing lookahead keeps
@@ -723,6 +817,7 @@ def _absorb(rec: dict, line: str) -> None:
     # whether the newest prompt's last answer was an API error. Substring tests
     # only, and it stays on this side of `json.loads`. See `_reply_fate`.
     fate = _reply_fate(line)
+    _note_served(rec["tail"], rec, line, fate)
     if fate is not None:
         _mark_fate(rec["tail"], fate, line)
         # An ordinary reply is also the newest thing Claude has said: keep the
@@ -807,6 +902,7 @@ def _new_scan() -> dict:
     # condensed `reply`; nothing reads it any more, so it is inert.
     return {"offset": 0, "size": -1, "count": 0, "tail": [], "title": "",
             "command": "", "reply_line": "", "reply": "", "reply_at": 0.0,
+            "served_at": 0.0,
             "prs": [], "gh_pr_tool_ids": [], "worktrees": []}
 
 
@@ -1040,6 +1136,7 @@ def _full_prompts(path: str) -> list[dict]:
                 # have to agree about a failed turn or the row and the messages
                 # it opens contradict each other.
                 fate = _reply_fate(line)
+                _note_served(prompts, None, line, fate)
                 if fate is not None:
                     _mark_fate(prompts, fate, line)
                     continue
@@ -1182,7 +1279,28 @@ def _entry_turn(entry: dict) -> str:
 
 
 def _scheduled_message(entry: dict, at: float, ran_at: float,
-                       anchor: str) -> dict:
+                       anchor: str, prompt: dict | None = None) -> dict:
+    state, turn = _entry_state(entry), _entry_turn(entry)
+    limited = False
+    # THE TRANSCRIPT HAS THE LAST WORD ON A FINISHED TURN (Akshil, 2026-11-23:
+    # "even when my task is done it shows blocked … if it is blocked there must
+    # be an error at the bottom of the chat"). The watcher's verdict is a
+    # second-hand reading of the same turn — `unknown` when it lost track,
+    # `failed` off a closing record — while the chat draws what the transcript
+    # holds. So once the turn is over (never while it runs, never over a
+    # Stop) and the prompt it became has a reply on file, that reply decides:
+    # an answer is done, an error row (`_reply_fate`) is blocked — and a
+    # usage-limit row is `limited`, the same fact `_chat_message` carries. A
+    # prompt nothing answered keeps the watcher's word: the chat draws its own
+    # red line for a turn that died (agent.py `_died_mid_turn`).
+    fate = _prompt_fate(prompt)
+    if (fate is not None and str(entry.get("state") or "") == schedule.SENT
+            and turn not in ("", "cancelled")):
+        if fate:
+            state = "error"
+            limited = bool(prompt.get("limit"))
+        else:
+            state, turn = schedule.SENT, "done"
     return {
         "message_id": "",
         "kind": "scheduled",
@@ -1197,11 +1315,10 @@ def _scheduled_message(entry: dict, at: float, ran_at: float,
         # tell a queued message from one scheduled for later: a Run-now on
         # tomorrow's message is in the line today.
         "queue_at": _queue_at(entry),
-        "state": _entry_state(entry),
-        # One shape for both kinds. A scheduled run's verdict comes from the
-        # watcher and not from the transcript, so nothing sets this on that
-        # road; the field is here so no reader has to branch on `kind` to ask.
-        "limited": False,
+        "state": state,
+        # One shape for both kinds: true when the transcript says this run
+        # ended on the plan's usage limit (see above).
+        "limited": limited,
         # When the turn's verdict LANDED — 0.0 until it has (and for entries a
         # pre-stamp version of the store wrote). `ran_at` is when the run
         # started; this is when it was pronounced over, which is the moment
@@ -1217,12 +1334,25 @@ def _scheduled_message(entry: dict, at: float, ran_at: float,
         # False for every entry stored before the flag existed, which is the
         # right reading: they all came from a form that asked for a time.
         "immediate": bool(entry.get("immediate")),
-        "turn": _entry_turn(entry),
+        "turn": turn,
         "anchor": anchor,
     }
 
 
+def _prompt_fate(prompt: dict | None) -> bool | None:
+    """What the CHAT shows under this prompt, as the status reads it: True for
+    an error row at the bottom of its turn, False for an answer (or a limit row
+    the chat has stopped drawing — `_limit_resolved`), None for nothing yet."""
+    if prompt is None:
+        return None
+    fate = prompt.get("failed")
+    if fate and _limit_resolved(prompt):
+        return False
+    return fate
+
+
 def _chat_message(prompt: dict) -> dict:
+    fate = _prompt_fate(prompt)
     return {
         "message_id": "",
         "kind": "chat",
@@ -1247,14 +1377,14 @@ def _chat_message(prompt: dict) -> dict:
         # `done` here was the whole of R2-3/R2-14: a turn that died with the
         # Wi-Fi sat in the Done lane looking answered. `state` stays `sent` —
         # the message really was delivered, and the verdict is what changes.
-        "turn": "error" if prompt.get("failed") else "done",
+        "turn": "error" if fate else "done",
         # …AND WHETHER THAT FAILURE WAS THE PLAN'S USAGE LIMIT, which is a
         # different thing to a reader and to the row: nothing is broken, there
         # is nothing to retry, and the chat has already scheduled the
         # continuation for the moment the window reopens (PR #1107). The row
         # turns it into `blocked_reason: "usage_limit"` and `resumes_at`; the
         # verdict itself stays `error`, because the turn really did not finish.
-        "limited": bool(prompt.get("limit")),
+        "limited": bool(fate) and bool(prompt.get("limit")),
         "anchor": prompt["anchor"],
     }
 
@@ -1374,6 +1504,7 @@ def _merge(prompts: list[dict], entries: list[dict]) -> list[dict]:
         at = _entry_at(entry)
         ran_at = _entry_ran_at(entry)
         anchor = ""
+        matched = None
         if str(entry.get("state") or "") in _IN_TRANSCRIPT:
             body = _body_key(entry.get("message"))
             best = None
@@ -1388,7 +1519,7 @@ def _merge(prompts: list[dict], entries: list[dict]) -> list[dict]:
                 matched = prompts[best[1]]
                 ran_at = matched["at"] or ran_at
                 anchor = matched["anchor"]
-        messages.append(_scheduled_message(entry, at, ran_at, anchor))
+        messages.append(_scheduled_message(entry, at, ran_at, anchor, matched))
     for j, prompt in enumerate(prompts):
         if j not in taken:
             messages.append(_chat_message(prompt))
@@ -1870,6 +2001,10 @@ def _attention_of(agent, perm: dict) -> dict:
     tool = str(perm.get("tool") or "")
     inp = perm.get("input") if isinstance(perm.get("input"), dict) else {}
     summary = ""
+    if tool == getattr(agent, "CANVAS_OPEN_TOOL", None):
+        # The open-canvas ask (D1471) is not a tool the user knows: the line
+        # alone ("Open demo to take a screenshot") says what it waits on.
+        return {"tool": "", "summary": agent._tool_detail(tool, inp)}
     if tool == getattr(agent, "ANSWERABLE_TOOL", "AskUserQuestion"):
         questions = inp.get("questions")
         if isinstance(questions, list) and questions:
@@ -1913,7 +2048,9 @@ _BG_COLD_TAIL = 16 * 1024 * 1024
 
 def _bg_pending_since(path: str, offset: int, jobs: tuple) -> tuple:
     """`(new offset, jobs)` after parsing `path` from `offset` on — `jobs` the
-    CLI's background list as `((task_id, description), ...)`, () for none.
+    CLI's background list as `((task_id, description, is_subagent), ...)`, ()
+    for none. `is_subagent` is the CLI's `task_type == "local_agent"` — a
+    background Agent, as against a Bash, a Monitor or a workflow.
 
     INCREMENTAL, because a background Agent streams rows into `out.jsonl` for
     as long as it runs and `agent._turn_state` re-parses the whole file: only
@@ -1956,7 +2093,8 @@ def _bg_pending_since(path: str, offset: int, jobs: tuple) -> tuple:
                 # long is not one a row could print anyway.
                 jobs = tuple(
                     (str(x["task_id"])[:200],
-                     str(x.get("description") or "")[:200])
+                     str(x.get("description") or "")[:200],
+                     x.get("task_type") == "local_agent")
                     for x in arr
                     if isinstance(x, dict) and x.get("task_id"))[:_BG_JOBS_CAP]
     return offset, jobs
@@ -2299,12 +2437,14 @@ def _background_jobs(held: tuple | None) -> dict | None:
 
     `run_id` is the run dir's own name — the id the agent's `task_stop` takes
     beside a job's `id` — so the row's Stop needs no second lookup. `title` is
-    the CLI's own description of the job ("" when it sent none)."""
+    the CLI's own description of the job ("" when it sent none). `agent` is
+    True for a background subagent (`_bg_pending_since`)."""
     if not held or not held[2]:
         return None
     run_dir, _offset, jobs = held
     return {"count": len(jobs), "run_id": os.path.basename(run_dir),
-            "jobs": [{"id": tid, "title": title} for tid, title in jobs]}
+            "jobs": [{"id": tid, "title": title, "agent": agent}
+                     for tid, title, agent in jobs]}
 
 
 def _held_requests(run: dict) -> set:
@@ -2875,6 +3015,11 @@ def _title(task: dict, rec: dict | None, first_prompt: str,
         # forever. Only an EXACT match of that derivation is skipped: a title
         # that merely shares a prefix with the message ("Fix" over "Fix the
         # login redirect") is a name a bot or API caller chose, hence `user`.
+        # The usage-limit comeback's title is the chat's fixed label for that
+        # one entry, not a name for the task: taken as `user`, it would replace
+        # the session's real title and block AI titles from then on.
+        if title == COMEBACK_TITLE:
+            continue
         t = title.rstrip("…").strip()
         if t:
             first = next((ln.strip() for ln in
@@ -2913,7 +3058,8 @@ def _new_task(key: str, session_id: str, path: str | None,
     # for a task with no session to file on; `_collect` fills it, `_row` reads
     # it. 0.0 everywhere else, which reads as "not filed".
     return {"key": key, "session_id": session_id, "path": path, "entries": [],
-            "backend": backend, "key_filed_at": 0.0}
+            "backend": backend, "key_filed_at": 0.0,
+            "starred": False, "starred_open": False, "starred_at": None}
 
 
 def _entry_session(entry: dict, by_id: dict | None = None) -> str:
@@ -3105,8 +3251,22 @@ def _collect() -> dict[str, dict]:
     # session's transcript sits under fused's own root in Claude's shape, so
     # it is a task like any other, and which root it came from is the one
     # fact about its agent that costs nothing to know.
+    #
+    # ONE SESSION CAN HAVE TWO FILES: EnterWorktree moves the conversation into
+    # `<munge(root)>--claude-worktrees-<name>/`, and the CLI's exit bookkeeping
+    # then re-creates `<munge(root)>/<sid>.jsonl` with no conversation in it.
+    # That stub sorts AFTER the worktree bucket (`-` < `/`), so the plain
+    # last-wins below would file the task on it and its thread would be empty.
+    # A later path only replaces an earlier one that holds a conversation when
+    # it holds one too (`tasks_store.holds_conversation`, read for duplicates
+    # only).
     for backend, path in tasks_store.transcripts_by_backend():
         session_id = os.path.splitext(os.path.basename(path))[0]
+        prior = tasks.get(session_id)
+        if (prior is not None and prior["path"]
+                and not tasks_store.holds_conversation(path)
+                and tasks_store.holds_conversation(prior["path"])):
+            continue
         tasks[session_id] = _new_task(session_id, session_id, path, backend)
     # A SEND IS A TASK BEFORE ANY FILE SAYS SO. `tasks_watch.sent_marks()` is
     # the page that made the send telling this process it made it (see
@@ -3168,6 +3328,7 @@ def _collect() -> dict[str, dict]:
     # user deleted — is absent from every one of them and no view has to know
     # why.
     deleted = tasks_store.deleted_state()
+    breakouts = tasks_store.breakout_state()
     # THE KEY-KEYED FILING, for the rows that have no session to file on
     # (`tasks_store.ARCHIVED_FILE`): read once per pass like the tombstones,
     # stashed on the task so `_row` needs no new parameter. A task WITH a
@@ -3175,12 +3336,20 @@ def _collect() -> dict[str, dict]:
     # record, if one exists under a pending key the row has since left, is
     # an orphan nothing consults.
     archived = tasks_store.archived_state()
+    # THE FAVOURITES (`tasks_store.FAVOURITES_FILE`): global and keyed by task
+    # key, so unlike the filing above EVERY task reads it, session or not.
+    favourites = tasks_store.favourites_state()
     for key, task in tasks.items():
         if not task["session_id"]:
             task["key_filed_at"] = tasks_store.archived_at(archived, key)
+        task["starred"], task["starred_open"] = tasks_store.favourite_of(
+            favourites, key)
+        task["starred_at"] = tasks_store.favourite_at(favourites, key)
     return {key: task for key, task in tasks.items()
             if _is_task(task) and not _deleted(task, deleted)
-            and not _bot_session(task) and not _merge_session(task)}
+            and not _breakout(task, breakouts)
+            and not _bot_session(task) and not _merge_session(task)
+            and not _expert_session(task)}
 
 
 def _bot_session(task: dict) -> bool:
@@ -3201,6 +3370,20 @@ def _bot_session(task: dict) -> bool:
     from fused_render.bots import paths as bot_paths  # noqa: PLC0415
     cwd = tasks_store.head(task["path"])[0]
     return bot_paths.is_bot_workdir(cwd)
+
+
+def _expert_session(task: dict) -> bool:
+    """A transcript of an expert's own session (its main chat, a breakout, an update; all run in its home):
+    a conversation on the Bots page or a breakout card, not a task. Hidden whether the flag is on or off: a
+    string test on the transcript's cwd, then the experts root must exist, so a user who never turned
+    experts on has nothing hidden. `paths` imports nothing heavy."""
+    if not task["path"]:
+        return False
+    try:
+        from fused_render.experts import paths as sp_paths  # noqa: PLC0415
+        return sp_paths.hidden_from_tasks(tasks_store.head(task["path"])[0])
+    except Exception:  # noqa: BLE001 — "cannot tell" must not hide a task
+        return False
 
 
 def _merge_session(task: dict) -> bool:
@@ -3283,6 +3466,13 @@ def _rekeyed_pendings(keys) -> dict[str, str]:
         if listing_key and listing_key != key:
             out[key] = listing_key
     return out
+
+
+def _breakout(task: dict, breakouts: dict) -> bool:
+    """Is this transcript a breakout — a side chat opened from another chat's
+    messages, which keeps its transcript but is never a task (`tasks_store.BREAKOUTS_FILE`)?
+    Keyed by session, no revival: a breakout stays one."""
+    return isinstance(breakouts.get(str(task["session_id"])), dict)
 
 
 def _deleted(task: dict, deleted: dict) -> bool:
@@ -3368,7 +3558,9 @@ def _canvas_roots(canvases) -> dict[str, set[str]]:
     if roots is None:
         roots = {}
         for env in WORKBENCH_ENV_CHOICES:
-            root = canvases.canvases_root(env)
+            # Where clones live (`<env>/user`, D1476): a task under `team/`
+            # or `public/` — reference copies — is on no canvas page.
+            root = canvases.clones_root(env)
             roots[env] = {os.path.normpath(root), os.path.realpath(root)}
         _CANVAS_ROOTS_MEMO[base] = roots
     return roots
@@ -3386,8 +3578,8 @@ def _is_canvas_node_file(file: str) -> bool:
 def _task_canvas(target: str) -> dict | None:
     """The canvas a task is on — `{env, name, file}` — or None.
 
-    A task whose target is a canvas CLONE (`~/Fused/canvas/<env>/<name>`,
-    canvases.canvases_root) or a NODE in it (a top-level file of the clone,
+    A task whose target is a canvas CLONE (`~/Fused/canvas/<env>/user/<name>`,
+    canvases.clones_root) or a NODE in it (a top-level file of the clone,
     `<udf>.py` / `<widget>.json`) opens on the canvas page, not in the
     explorer: the shell's door (`tasks-lib.taskHref`) lands on `/canvases/
     <env>/<name>` with the node selected and the chat on the task's session
@@ -3402,11 +3594,14 @@ def _task_canvas(target: str) -> dict | None:
     the plain path because the CLI wrapper reaches a clone through `pwd -P`,
     and a task made from inside one may name it either way. No existence
     check: a task on a deleted clone still names the door that was its own.
+    A reference copy at `user/<name>` (marker `mirror`) is no clone: None.
     """
     target = str(target or "").rstrip("/\\")
     if not target:
         return None
     from fused_render import canvases
+
+    from fused_render import canvas_marker
 
     cands = {os.path.normpath(target), os.path.realpath(target)}
     for env, bases in _canvas_roots(canvases).items():
@@ -3425,6 +3620,12 @@ def _task_canvas(target: str) -> dict | None:
                 # select, and a task on one keeps the explorer door.
                 if file and not _is_canvas_node_file(file):
                     continue
+                # A reference copy at `user/<name>` (marker `mirror`) is
+                # read-only and not opened on the canvas page (D1478). A
+                # folder that is gone keeps its door.
+                if canvas_marker.folder_state(
+                        os.path.join(base, name)) == canvas_marker.STATE_MIRROR:
+                    return None
                 return {"env": env, "name": name, "file": file}
     return None
 
@@ -3539,6 +3740,19 @@ def _place(task: dict) -> None:
                 os.path.basename(os.path.dirname(task["path"])))
             task["project_guessed"] = bool(cwd)
     task["project"] = tasks_store.project_of(cwd or "")
+    # AN ENTRY'S TARGET THAT IS GONE falls back to its folder too (Akshil,
+    # 2026-11-08), the rule the pane file below already follows: a scheduled or
+    # page-made task whose file a turn renamed or split still opens — and
+    # follows up — on the folder, which is where `agent._start` runs it. Only
+    # while that folder is there: a deleted folder keeps naming the door that
+    # was its own (`_task_canvas`, the missing-folder chip), and so does a gone
+    # path with no extension — that was a folder, not a file in one.
+    if target and not os.path.exists(target):
+        gone = target.rstrip("/\\")
+        parent = os.path.dirname(gone)
+        if (os.path.splitext(os.path.basename(gone))[1]
+                and parent and os.path.isdir(parent)):
+            target = parent
     task["target"] = target or (
         pane if pane and os.path.isfile(pane) else task["project"])
     if first_ts is None and entries:
@@ -3823,7 +4037,7 @@ def _next_run(entries: list[dict]) -> tuple[float, str, bool]:
 # CONTINUE_TITLE, restated here because it is a wire fact between the chat that
 # schedules the continuation and the row that times it. The chat is the only
 # thing that writes it, and it writes it on that entry alone.
-COMEBACK_TITLE = "Continue after usage limit"
+COMEBACK_TITLE = schedule.COMEBACK_TITLE
 
 
 def _comeback_at(entries: list[dict]) -> float:
@@ -3855,20 +4069,46 @@ def _comeback_at(entries: list[dict]) -> float:
     return best
 
 
-# ------------------------------------------------------ turn recaps as titles
+def _stale_comebacks(task: dict) -> list[str]:
+    """THE COMEBACKS THIS CONVERSATION HAS OUTLIVED — pending usage-limit
+    continuations booked BEFORE the newest row the API served into its
+    transcript (`served_at`, `_note_served`).
+
+    A reply after the limit means the window is open again — another account,
+    the terminal, a Retry now, the reset — and "continue where it stopped"
+    fired into a chat that already went on redoes work. The chat used to be the
+    only thing that cancelled it (`run-controller.retireErrors`), which needed
+    that chat mounted and watching the reply land; this is the same rule read
+    off the transcript, so a task finished elsewhere or a page reloaded later
+    drops it too. Read off the scan the row was just built from — no IO."""
+    rec = _SCAN.get(task["path"]) if task.get("path") else None
+    served = float((rec or {}).get("served_at") or 0.0)
+    if not served:
+        return []
+    stale = []
+    for entry in task["entries"]:
+        if str(entry.get("state") or "") != schedule.PENDING:
+            continue
+        if not schedule.is_comeback(entry):
+            continue
+        booked = tasks_store.epoch(entry.get("created")) or 0.0
+        if booked and served > booked:
+            stale.append(str(entry.get("id") or ""))
+    return [entry_id for entry_id in stale if entry_id]
+
+
+# ---------------------------------------------- stable AI titles (haiku queue)
 #
-# Behind `task_recap_titles_enabled` (default off): every finished Claude turn
-# gets the away fold's short haiku recap (claude_sessions `_recap`), chat open
-# or not, and the row carries it as `recap` for the title line to show
-# (tasks-lib `cardTitleLine`). The recap is stored on the session's record in
-# `session_settings.json`, keyed by the turn's anchor — the uuid of its newest
-# USER prompt, the same `for_uuid` the fold asks with (protocol/recap.ts
-# `recapAnchor`: assistant turns carry no uuid there), so one call serves both.
+# Behind `task_summary_titles_enabled` (default off): a session's stable AI
+# title is (re)written by haiku (claude_sessions `_session_title`) and stored
+# on the session's record in `session_settings.json` (`ai_title`). This queue
+# carries titles ONLY: the in-chat recap fold is produced on demand by the
+# chat itself (`chat_recap_enabled`), never from here, and never titles a row.
 #
-# The listing only FEEDS this: `_recap_candidate` is a dict lookup and an
-# append, the queue push is O(1), and ONE daemon thread runs haiku one turn at
+# The listing only FEEDS this: `_title_candidate` is a dict lookup and an
+# append, the queue push is O(1), and ONE daemon thread runs haiku one job at
 # a time, newest reply first. A turn is asked about once per server life
-# (`_recap_seen`), failures included. EVERY eligible turn is queued, not a
+# (`_recap_seen`), failures included. EVERY eligible session is queued, not a
 # capped few: the queue drains newest-first, so the rows at the top of the list
 # get theirs first and an old backlog trickles in behind them.
 
@@ -3885,9 +4125,8 @@ def _comeback_at(entries: list[dict]) -> float:
 #     while any task on the machine is `in_progress` — a running Claude turn
 #     means the user is working, and the old history can wait.
 
-# A turn is queued only this long after its reply. Someone who answers inside a
-# minute makes the recap stale before anyone reads it, and the row's title shows
-# the reply line meanwhile.
+# A settled-turn title refresh is queued only this long after the turn ended.
+# Someone who answers inside a minute makes it stale before anyone reads it.
 _RECAP_SETTLE_S = 60.0
 _RECAP_FRESH_WINDOW_S = 3600.0
 _RECAP_BACKFILL_DELAY_S = 120.0
@@ -3914,81 +4153,11 @@ _recap_seq = 0
 _recap_thread: threading.Thread | None = None
 
 
-def _recap_candidate(task: dict, rec: dict | None, status: str, reply: str,
-                     settings: dict | None, out: list) -> dict | None:
-    """The row's `recap` field, and — through `out` — whether this turn still
-    needs one.
-
-    The stored recap is shown only for the turn it is about (`for_uuid` equal
-    to the row's anchor); a newer send makes it `None` until its own lands.
-    A turn wants a recap when it has ended (`done`, `blocked`, `archived`) and
-    the store has nothing for its anchor, or has one taken before the turn's
-    newest event landed (`at < ended_at`: a fold recap asked mid-reply).
-    A REPLY LINE IS NOT REQUIRED (2026-10-19): a turn that ended on tool calls,
-    a usage limit, an API error or a crash has no prose newer than the reader's
-    message (`_last_reply` is ""), and until then it was never asked — the one
-    class of finished turn that titled itself by the reader's own words for
-    good. `_recap_tail(ended=True)` reaches back to the newest prose for
-    exactly these, and a transcript with none anywhere is marked `empty` by
-    the worker rather than refused here. `ended_at` is the newer of the reply
-    and the reader's message, so the settle minute and the "already recapped"
-    test are measured from whatever ended the turn. Decided on the uuid and
-    the clocks, never on the scan record's identity — `_SCAN` is rebuilt from
-    disk on every boot."""
-    sid = task["session_id"]
-    tail = rec["tail"] if rec else []
-    anchor = str(tail[-1].get("anchor") or "") if tail else ""
-    if not sid or not anchor:
-        return None
-    stored = tasks_store.session_recap(settings or {}, sid)
-    same = stored is not None and stored["for_uuid"] == anchor
-    reply_at = float(rec.get("reply_at") or 0.0) if rec else 0.0
-    said_at = float(tail[-1].get("at") or 0.0)
-    # The reply only counts when it answers THIS message; otherwise the
-    # message is the newest thing that happened (`_last_reply`'s own rule).
-    reply_at = reply_at if reply and reply_at >= said_at else said_at
-    # The transcript path rides on the job, so a task whose folder the disk
-    # has lost is still recapped (`_recap_generate` reads the file directly).
-    folder = task["project"]
-    path = task.get("path") or ""
-    # A real failure (CLI error, timeout) is retried after a cooldown; an
-    # `empty` mark (Claude never said anything in prose) is not a failure and
-    # is final for this turn until a newer reply lands.
-    failed = same and not stored["text"] and not stored["empty"]
-    # Done for this turn: recapped after its reply landed, or failed recently.
-    settled = same and stored["at"] >= reply_at and (
-        not failed or time.time() - stored["at"] < _RECAP_RETRY_S)
-    now = time.time()
-    if (status in ("done", "blocked", "archived") and reply != _QUEUED_REPLY
-            and (folder or path) and not settled):
-        # `stale_before` makes `_recap` skip its in-memory cache entry for the
-        # key, which is where a failed ask's `""` is remembered.
-        job = {"key": task["key"], "file": folder or os.path.dirname(path),
-               "transcript": path, "session_id": sid,
-               "for_uuid": anchor, "reply_at": reply_at,
-               "stale_before": max(reply_at, stored["at"]) if failed
-               else reply_at if same else 0.0,
-               "want_recap": True, "want_title": False}
-        if now - reply_at < _RECAP_SETTLE_S:
-            # Too fresh to ask (`_RECAP_SETTLE_S`): reported with its `due`
-            # time, neither queued nor marked seen. `_recap_feed` keeps the
-            # earliest due time so the worker can wake the page when it passes
-            # — an idle page has no listing rebuild to find it otherwise.
-            job["due"] = reply_at + _RECAP_SETTLE_S
-        out.append(job)
-    if same and stored["text"]:
-        return {"text": stored["text"], "for_uuid": anchor}
-    return None
-
-
 def _title_candidate(task: dict, rec: dict | None, status: str, reply: str,
                      settings: dict | None, title: str, source: str,
                      out: list) -> None:
     """Whether this session wants a (re)titled stable AI title, and if so the
-    job goes into `out` — MERGED into the recap job for the same turn when
-    `_recap_candidate` already queued one (matched on session and anchor), so
-    a turn wanting both costs ONE haiku call (`want_recap` / `want_title` say
-    what the call is for).
+    job goes into `out`.
 
     Wanted when: there is a session and an anchor; the name is not one the
     person chose (`renamed` / `user` — never spend a call on it); the turn has
@@ -3997,11 +4166,16 @@ def _title_candidate(task: dict, rec: dict | None, status: str, reply: str,
     reader's first message, instead of waiting out its first turn) and is not a
     queued reply; and EITHER nothing is stored, or the
     reader has sent `TITLE_REFRESH_PROMPTS` more prompts since the stored one
-    (`turns`), or the last attempt failed and `_RECAP_RETRY_S` has passed. A
-    failure inside that cooldown holds every trigger off, so a broken CLI is
-    not asked on each listing. A title-only job has no settle minute (that is
-    the recap's, for a reply still being written); merged into a recap job it
-    keeps that job's `due`. The current title handed to the model is the
+    (`turns`), or the last attempt failed and `_RECAP_RETRY_S` has passed, or
+    the SETTLE trigger: the turn has ended (`done`, `blocked`, `archived`) and
+    the stored title predates the turn's prompt, so the reader need not wait
+    three prompts for a title that follows the finished work. It runs once per
+    turn: a title written mid-turn (the 3-prompt refresh) already covers it,
+    except on the first turn, which settles once after its reply. A failure inside
+    the cooldown holds every trigger off, so a broken CLI is not asked on each
+    listing. Only the settle trigger waits `_RECAP_SETTLE_S` after the turn
+    ended (the job carries a `due` until then; someone who answers inside a
+    minute makes the refresh stale); the others ask at once. The current title handed to the model is the
     stored AI title, else the row's own (`title`: the first message line, a
     slash command, or Claude Code's `ai-title`)."""
     sid = task["session_id"]
@@ -4018,27 +4192,42 @@ def _title_candidate(task: dict, rec: dict | None, status: str, reply: str,
     stored = tasks_store.session_ai_title(settings or {}, sid)
     prompts = int(rec.get("count") or 0) if rec else 0
     now = time.time()
-    if stored is not None:
-        if stored["failed_at"] and now - stored["failed_at"] < _RECAP_RETRY_S:
-            return
-        if not (not stored["text"] or stored["failed_at"]
-                or prompts < stored["turns"]  # scan record reset
-                or prompts - stored["turns"] >= TITLE_REFRESH_PROMPTS):
-            return
     reply_at = float(rec.get("reply_at") or 0.0) if rec else 0.0
     said_at = float(tail[-1].get("at") or 0.0)
     reply_at = reply_at if reply and reply_at >= said_at else said_at
-    fields = {"want_title": True, "prompts": prompts,
+    # Settle: once per turn, and only when the stored title predates the turn's
+    # prompt. A title written mid-turn (the 3-prompt refresh runs at once) has
+    # already titled this turn. The FIRST turn is the exception: its title came
+    # from the first message alone, so it settles once after the reply.
+    first_title = stored is not None and stored["turns"] <= 1
+    settle_due = (status in ("done", "blocked", "archived")
+                  and stored is not None and bool(stored["text"])
+                  and (stored["at"] < said_at
+                       or (first_title and stored["at"] < reply_at)))
+    due = 0.0
+    if stored is not None:
+        if stored["failed_at"] and now - stored["failed_at"] < _RECAP_RETRY_S:
+            return
+        existing = (not stored["text"] or stored["failed_at"]
+                    or prompts < stored["turns"]  # scan record reset
+                    or prompts - stored["turns"] >= TITLE_REFRESH_PROMPTS)
+        if not (existing or settle_due):
+            return
+        if not existing and now - reply_at < _RECAP_SETTLE_S:
+            # Wanted only because the turn ended: too fresh to ask. Reported
+            # with its `due` time, neither queued nor marked seen;
+            # `_recap_feed` keeps the earliest so the worker wakes the page
+            # when it passes (an idle page has no listing to find it).
+            due = reply_at + _RECAP_SETTLE_S
+    fields = {"prompts": prompts,
               "current_title": (stored or {}).get("text") or title,
               "first_message": str(task.get("first_prompt") or "")}
-    for job in out:
-        if job["session_id"] == sid and job["for_uuid"] == anchor:
-            job.update(fields)
-            return
     job = {"key": task["key"], "file": folder or os.path.dirname(path),
            "transcript": path, "session_id": sid, "for_uuid": anchor,
-           "reply_at": reply_at, "stale_before": 0.0, "want_recap": False,
-           **fields}
+           "reply_at": reply_at, "stale_before": 0.0, "want_title": True,
+           "turns": prompts, **fields}
+    if due:
+        job["due"] = due
     out.append(job)
 
 
@@ -4046,13 +4235,8 @@ _recap_due = 0.0  # epoch: the earliest settle window still open, 0 = none
 
 
 def _job_seen(job: dict) -> tuple:
-    """The dedupe mark for a job: the turn, plus a `"title"` tag for a job that
-    is ONLY a title, so a title wanted after the same turn's recap job already
-    ran (the flag came on later) is not mistaken for it."""
-    base = (job["session_id"], job["for_uuid"], job["reply_at"])
-    if job.get("want_title") and not job.get("want_recap", True):
-        return base + ("title",)
-    return base
+    """The dedupe mark for a job: the session, its turn anchor and reply time."""
+    return (job["session_id"], job["for_uuid"], job["reply_at"])
 
 
 def _recap_feed(wants: list, machine_busy: bool | None = None,
@@ -4175,60 +4359,44 @@ def _recap_worker() -> None:
 
 
 def _recap_run(job: dict) -> None:
-    """One queued turn: ask haiku, then wake the Tasks page so the row
-    re-titles. What the call is FOR is decided per flag, now, not when the job
-    was queued: the recap half only with `task_recap_titles_enabled` (the job
-    carries `want_recap`), the title half only with
-    `task_summary_titles_enabled` (`want_title`). A job whose flags are both
-    off by now was never asked. With a title wanted the ONE call returns the
-    title and — when the recap is also wanted — the recap (`_title_and_recap`,
-    which stores both); otherwise it is the recap alone (`_recap`). Neither
-    raises."""
+    """One queued job: ask haiku for the session's stable AI title (stored by
+    `_session_title`), then wake the Tasks page so the row re-titles. Only
+    with `task_summary_titles_enabled` NOW, not when the job was queued; with
+    it off the job is never asked and is un-marked so a later listing can queue
+    it. Never raises."""
     agent = _agent_module()
-    want_recap = (bool(job.get("want_recap", True))
-                  and shell_prefs.task_recap_titles_enabled())
-    want_title = (bool(job.get("want_title", False))
-                  and shell_prefs.task_summary_titles_enabled())
-    if agent is None or not (want_recap or want_title):
+    want_title = shell_prefs.task_summary_titles_enabled()
+    if agent is None or not want_title:
         # Never asked: forget it was queued so a later listing can queue it.
         with _recap_cond:
             _recap_seen.discard(_job_seen(job))
         return
     try:
-        if want_title:
-            title, text = sessions._title_and_recap(
-                agent, job["file"], job["session_id"], job["for_uuid"],
-                job.get("transcript", ""), want_recap=want_recap,
-                current=job.get("current_title", ""),
-                first=job.get("first_message", ""),
-                prompts_seen=int(job.get("prompts") or 0))
-            failed = not title or (want_recap and not text)
-        else:
-            text = sessions._recap(agent, job["file"], job["session_id"],
-                                   job["for_uuid"], stale_before=job["stale_before"],
-                                   transcript=job.get("transcript", ""), ended=True)
-            failed = not text
+        stored = tasks_store.session_ai_title(tasks_store.settings_state(),
+                                              job["session_id"])
+        if (stored is not None and stored["text"] and not stored["failed_at"]
+                and "turns" in job and stored["turns"] == job["turns"]
+                and stored["at"] >= job["reply_at"]):
+            return  # another job already produced this exact title
+        started = time.time()
+        title = sessions._session_title(
+            agent, job["file"], job["session_id"], job["for_uuid"],
+            job.get("transcript", ""),
+            current=job.get("current_title", ""),
+            first=job.get("first_message", ""),
+            prompts_seen=int(job.get("prompts") or 0),
+            started_at=started)
+        failed = not title
     except Exception:  # noqa: BLE001 — a title nicety, never a fault
-        logger.debug("tasks recap failed for %s", job["session_id"], exc_info=True)
+        logger.debug("tasks title failed for %s", job["session_id"], exc_info=True)
         return
     if failed:
         # Failed: forget it was asked, so a listing after `_RECAP_RETRY_S` can
-        # queue it again (the stored `""` holds it off until then).
+        # queue it again (the stored failure holds it off until then).
         with _recap_cond:
             _recap_seen.discard(_job_seen(job))
-        # Said out loud: a failure here is otherwise invisible — the row just
-        # keeps its reply line — and "some chats never get a recap" was the
-        # report that had no log to read (2026-10-19). An `empty` mark (no
-        # prose anywhere) is not a failure and stays quiet.
-        try:
-            stored = tasks_store.session_recap(tasks_store.settings_state(),
-                                               job["session_id"])
-        except Exception:  # noqa: BLE001
-            stored = None
-        if not (stored and stored["for_uuid"] == job["for_uuid"] and stored["empty"]):
-            logger.warning("tasks recap/title failed for session %s (turn %s); "
-                           "retry in %ds", job["session_id"], job["for_uuid"],
-                           int(_RECAP_RETRY_S))
+        logger.warning("tasks title failed for session %s (turn %s); retry in %ds",
+                       job["session_id"], job["for_uuid"], int(_RECAP_RETRY_S))
     tasks_watch.notify({job["key"], job["session_id"]})
 
 
@@ -4255,8 +4423,15 @@ def _row(task: dict, number: str, triage: dict, read: dict, now: float,
          recaps: list | None = None,
          pending: dict | None = None,
          summary_titles: bool = False,
-         recap_titles: bool = True) -> dict:
+         icons: dict[str, tuple[int, bool]] | None = None) -> dict:
     """One listing row. The tail parse only: three messages, and a count.
+
+    `icons` is `_icon_faces()`, read once per listing: every task that WEARS
+    a face (picked by hand, or starred and not removed — 2026-11-16), computed
+    from its number RECORD (the project the number was minted in, plus a
+    pick), never from this row's own project spelling — so the face cannot
+    change between two listings of one task. A task that wears the ring is
+    not in it.
 
     `parked` is `_parked_runs()` — every session whose live run is waiting on a
     card — computed once by the caller for the same reason `busy` is: it is one
@@ -4539,6 +4714,20 @@ def _row(task: dict, number: str, triage: dict, read: dict, now: float,
     row = {
         "key": task["key"],
         "task_id": number,
+        # THE TASK'S FACE (task icons, 2026-11-10; always on since 2026-11-23):
+        # which of the 299 glyphs this row wears, from its number record — see
+        # `_icon_faces`. None on a task that wears the ring (not starred and
+        # never given one, or its icon removed — 2026-11-16) and while it has
+        # no number. `icon_picked`: the user gave it that face by hand, so it
+        # shows even with the favourites switch off (`_icon_face`).
+        **_icon_face(icons, task["key"]),
+        # THE RAIL CARD'S STAR, and whether that favourite is the one expanded
+        # card (`tasks_store.favourite_of`). Global, so every row answers.
+        "starred": bool(task.get("starred")),
+        "starred_open": bool(task.get("starred_open")),
+        # When it was starred (`tasks_store.favourite_at`): the rail's
+        # favourites stand newest star first. None unstarred.
+        "starred_at": task.get("starred_at"),
         # THE LEADER ENTRY BEHIND A TASK THAT HAS NO CONVERSATION YET, and ""
         # for every task that has a session. A `pending:<entry>` row is a chat
         # whose first message is still waiting: there is no transcript to open
@@ -4650,7 +4839,7 @@ def _row(task: dict, number: str, triage: dict, read: dict, now: float,
         "live": live,
         # A live session host is still holding background work for this
         # conversation — a `run_in_background` Bash, a background Agent, a
-        # Monitor (`_hosted_runs`): `{count, run_id, jobs: [{id, title}]}`,
+        # Monitor (`_hosted_runs`): `{count, run_id, jobs: [{id, title, agent}]}`,
         # or None. A badge, never a status: the status reads the messages as
         # before (`_status` rule 2) and stays `done`; the UI draws it In Progress
         # (tasks-lib `liveJobRow`). `run_id` +
@@ -4784,11 +4973,6 @@ def _row(task: dict, number: str, triage: dict, read: dict, now: float,
         # The peek header's hint and every view's title line read it — see
         # `said` above for where it is decided.
         row["last_message"] = said
-    if recaps is not None and recap_titles:
-        # `task_recap_titles_enabled` only: the key is ABSENT with the flag
-        # off, and the client reads its presence as "the flag is on".
-        row["recap"] = _recap_candidate(task, rec, status, row["last_reply"],
-                                        settings, recaps)
     if summary_titles:
         # `task_summary_titles_enabled` only: the key is ABSENT with the flag
         # off. The client then titles the row by `title` alone.
@@ -4959,7 +5143,8 @@ def _draft_title(text, fallback: str) -> str:
     return line or fallback
 
 
-def _draft_row(ident: str, record: dict, number: str = "") -> dict:
+def _draft_row(ident: str, record: dict, number: str = "",
+               face: dict | None = None) -> dict:
     """One task draft as a listing row.
 
     THE SAME FIELD SET AS `_row`, deliberately and in full: the List, the Board
@@ -5002,7 +5187,9 @@ def _draft_row(ident: str, record: dict, number: str = "") -> dict:
     and fetching it separately would mean a request between the click and the
     modal, which is exactly the pause the feature exists to remove.
     """
-    title = str(record.get("title") or "").strip()
+    # A NAME TYPED INTO THE CARD'S HEAD wins over the words' first line
+    # (drafts.TASK_FIELDS `name`, 2026-11-09).
+    title = str(record.get("name") or "").strip() or str(record.get("title") or "").strip()
     if not title:
         title = _draft_title(record.get("description"), "")
     target = str(record.get("target") or "")
@@ -5019,6 +5206,9 @@ def _draft_row(ident: str, record: dict, number: str = "") -> dict:
         # is scheduled. "" only when the state dir is unwritable, which is the
         # same "" every other row falls back to.
         "task_id": number,
+        # A draft can wear a face picked by hand (2026-11-16); never a
+        # star's — only a started chat can be starred.
+        **(face or _icon_face(None, "")),
         "draft_id": ident,
         "kind": "draft",
         # WHICH composer this draft belongs to. The two are opened by different
@@ -5093,7 +5283,8 @@ def _draft_row(ident: str, record: dict, number: str = "") -> dict:
     }
 
 
-def _new_chat_draft_row(key: str, record: dict, number: str = "") -> dict:
+def _new_chat_draft_row(key: str, record: dict, number: str = "",
+                        face: dict | None = None) -> dict:
     """One UNSENT CHAT as a listing row — a draft keyed `new:<file>`.
 
     Round 1 gave this key no row: it names no session, so there was nothing for
@@ -5133,6 +5324,7 @@ def _new_chat_draft_row(key: str, record: dict, number: str = "") -> dict:
     return {
         "key": key,
         "task_id": number,
+        **(face or _icon_face(None, "")),
         # There is no `draft:<id>` behind this one — the store keys it on the
         # folder. "" rather than the key so a client testing `draft_id` cannot
         # send this to the task-draft routes, which would 400 on the shape.
@@ -5529,6 +5721,7 @@ def _draft_rows(only: frozenset | set | None = None,
         if chat_drafts is None:
             chat_drafts = loaded_chat
     numbers = _draft_numbers(task_drafts, chat_drafts)
+    icons = _icon_faces()
     # Which sessions this machine has ERASED — read at most once per build, and
     # only when a bound draft is actually seen, because it is a file read and
     # nearly every listing has nothing bound at all. See the skip below.
@@ -5573,13 +5766,13 @@ def _draft_rows(only: frozenset | set | None = None,
                     erased = set()
             if bound not in erased:
                 continue
-        rows.append(_draft_row(ident, record, numbers.get(key, "")))
+        rows.append(_draft_row(ident, record, numbers.get(key, ""), _icon_face(icons, key)))
     for key, record in chat_drafts.items():
         if not drafts.is_new_chat_key(key):
             continue
         if only is not None and key not in only:
             continue
-        rows.append(_new_chat_draft_row(key, record, numbers.get(key, "")))
+        rows.append(_new_chat_draft_row(key, record, numbers.get(key, ""), _icon_face(icons, key)))
     return rows
 
 
@@ -6293,6 +6486,7 @@ def _build_task_rows(only: frozenset | set | None = None) -> list[dict]:
     for task in listed.values():
         _place(task)
     numbers = _numbers(listed)
+    icons = _icon_faces()
     # The number and the name of whoever is in front, once the listing's own
     # allocation has run: a task seeing its first listing gets its number HERE,
     # and a holder outside a narrowed answer is named from the stored table.
@@ -6303,14 +6497,10 @@ def _build_task_rows(only: frozenset | set | None = None) -> list[dict]:
     # Collected across the loop and written once, after it, so the listing is
     # not doing IO in the middle of building rows.
     revived: list[str] = []
-    # Turns wanting a haiku recap (`_recap_candidate`), or None with
-    # `task_recap_titles_enabled` off — and then no row carries `recap`.
-    # Read once per listing, not per row.
-    recap_titles = shell_prefs.task_recap_titles_enabled()
+    # Sessions wanting a stable AI title (`_title_candidate`), or None with
+    # `task_summary_titles_enabled` off. Read once per listing, not per row.
     summary_titles = shell_prefs.task_summary_titles_enabled()
-    # The same queue also carries the stable AI titles, so it is fed with
-    # EITHER flag on; only the recap flag puts `recap` on the rows.
-    recap_wants = [] if (recap_titles or summary_titles) else None
+    recap_wants = [] if summary_titles else None
     if recap_wants is None:
         _recap_drop_queue()
     t2 = time.monotonic()
@@ -6319,7 +6509,7 @@ def _build_task_rows(only: frozenset | set | None = None) -> list[dict]:
             row = _row(task, numbers.get(task["key"], ""), triage, read, now,
                        busy, revived, parked, queue, queue_on,
                        chat_drafts, bound_chips, settings, last_message,
-                       recap_wants, pending, summary_titles, recap_titles)
+                       recap_wants, pending, summary_titles, icons)
         except (OSError, ValueError, KeyError, TypeError):
             continue  # one unreadable task, not an unreadable page
         rows.append(row)
@@ -6337,6 +6527,19 @@ def _build_task_rows(only: frozenset | set | None = None) -> list[dict]:
             "slow tasks build: %.1fs for %d rows (collect %.1fs, parked %.1fs, "
             "rows %.1fs)%s", total, len(rows), t_collect, t_parked, t_rows,
             "" if only is None else " [narrowed]")
+    # COMEBACKS THE CONVERSATION OUTLIVED, called off (`_stale_comebacks`).
+    # After the loop for the same reason `revived` is: the rows are built,
+    # and a cancel that fails costs one poll, never the listing.
+    retired: set[str] = set()
+    for task in listed.values():
+        for entry_id in _stale_comebacks(task):
+            try:
+                if schedule.cancel(entry_id) is not None:
+                    retired.add(task["key"])
+            except OSError:
+                pass
+    if retired:
+        tasks_watch.notify(retired)
     for session_id in revived:
         # THE WAY OUT OF ARCHIVE IS ACTIVITY, and it has to be a real way out:
         # the row already reads as its derived lane above, and leaving the
@@ -6861,7 +7064,7 @@ async def api_tasks_changes_ws(ws: WebSocket):
 # which is where a task listing's weight actually is.
 _PULSE_FIELDS = (
     "key", "status", "unread", "last_active", "project",
-    "task_id", "title", "target", "session_id",
+    "task_id", "icon_slot", "icon_picked", "title", "target", "session_id",
     # The desk's change detector (shell/CurrentAppsSection `pulseSignal`): the
     # sidebar refetches the projects table when a task's `happened_at` moves,
     # since that is exactly when `current_apps.observe` can have flipped a
@@ -6924,6 +7127,9 @@ _PULSE_FIELDS = (
     # In Progress (tasks-lib `liveJobRow`). The sidebar must apply the same rule
     # or it paints running work as "finished, not read".
     "background_jobs",
+    # The rail's favourites (`_row`): the Claude rail paints its star list off
+    # the pulse, so the two booleans ride it.
+    "starred", "starred_open", "starred_at",
 )
 
 
@@ -7356,7 +7562,8 @@ def _export_markdown(task: dict, turns: list[dict], backend: str) -> str:
     """The turns as Markdown, in the Bots export's vocabulary. Lossy by
     design (tool results are not inlined); `format=json` is the full record."""
     who = {"copilot": "Copilot", "codex": "Codex",
-           "gemini": "Gemini"}.get(str(backend or ""), "Claude")
+           "gemini": "Gemini", "opencode": "OpenCode",
+           "cursor": "Cursor"}.get(str(backend or ""), "Claude")
     title = " ".join(str(task.get("title") or "Task").split())
     out = [f"# {title} — transcript", ""]
     if task.get("target"):
@@ -7926,6 +8133,133 @@ def api_task_archive(patch: ArchivePatch,
             "stopped": stopped, "teardown": task.get("teardown") or {}}
 
 
+def _filed_on_disk(key: str) -> bool:
+    """Is this task key filed away, read off the filing records themselves?
+
+    The favourites route's under-the-lock check (`force_closed`), so it must
+    NEVER build a row: `_task_rows`/`_collect` wait on `_BUILD_LOCK`, which
+    the warm build holds while it auto-files a missing-folder task — and that
+    filing (`archive_task`) waits on the favourites lock (deadlock,
+    CodeRabbit PR #2100). Same split `_row` reads: a session-less task (its
+    key `pending:`-prefixed) is filed on its KEY (`ARCHIVED_FILE`), any other
+    on its session's triage record — its key IS the session id.
+
+    The revival rule (`_revived`) is not asked: a filing the thread has since
+    overtaken reads as filed until the next build drops it, which only ever
+    costs an open card, never a star."""
+    if key.startswith(tasks_store.PENDING_PREFIX):
+        return tasks_store.archived_at(tasks_store.archived_state(), key) > 0
+    return _archive_record(key, sessions._load_state("triage.json")) is not None
+
+
+class FavouritePatch(BaseModel):
+    key: str
+    # True = star, False = unstar, omitted = leave the star alone and set only
+    # `open` (a no-op on a task that is not starred).
+    on: bool | None = None
+    open: bool | None = None
+
+
+@router.post("/api/tasks/favourite")
+def api_task_favourite(patch: FavouritePatch,
+        x_fused: str | None = Header(default=None)):
+    """Star or unstar one task — the rail preview card's star.
+
+    `on` is the state asked for, not a toggle, so a double click or a second
+    window cannot invert it. `open` says whether the favourite's card is the
+    expanded one. An explicit `open: true` opens it and closes every other,
+    which is why the watcher is told about EVERY key whose record flipped and
+    not only the one named; a star with `open` omitted opens its card too
+    (`tasks_store.set_favourite`). With `on` omitted only `open` moves, and
+    only on a starred key, so a stale window can never re-star.
+
+    THE CLIENT NO LONGER DRIVES `open` (2026-11-04): which favourite's card
+    is open is per browser window now (frontend platform/lib/last-chat
+    `useFavOpen`), so the shell sends the star alone and never reads
+    `starred_open` back. The `open` handling and the record stay for older
+    clients; the one-open-at-a-time rule is the window's now.
+
+    Only a STARTED chat can be starred (a session-less row rekeys on dispatch,
+    see `tasks_store.FAVOURITES_FILE`). An ARCHIVED task keeps or gets its
+    star but never an open card: a star on one is recorded closed, and an
+    open-only write on one is a 409, and one on a starred orphan (its row
+    erased) a 404. Unstarring and closing touch the store alone — no task
+    build — so they never 404 and an orphan record can still be dropped.
+    Answers the record as it now stands.
+    """
+    guard = _require_fused(x_fused)
+    if guard is not None:
+        return guard
+    key = patch.key.strip()
+    if not key:
+        raise HTTPException(status_code=400, detail="missing task key")
+    if patch.on is None and patch.open is None:
+        raise HTTPException(status_code=400, detail="nothing to set: give 'on' or 'open'")
+
+    def _archived() -> bool:
+        return _filed_on_disk(key)
+
+    # Asked by the store under the favourites lock (`set_favourite`), not
+    # read here: an archive filed between this route's checks and the write
+    # would otherwise leave an archived task with an open card.
+    force_closed = None
+    if patch.on is True:
+        task = _collect().get(key)
+        if task is None:
+            raise HTTPException(status_code=404, detail=f"no task with key {key!r}")
+        # STARTED = a transcript on disk (`path`), not a session name alone:
+        # a scheduled message that names a session it has not begun is a
+        # session-keyed row with nothing to show in a card.
+        if not (task.get("session_id") and task.get("path")):
+            raise HTTPException(status_code=400,
+                                detail="only a started chat can be a favourite")
+        # Handed in as the check itself, so the store records the star
+        # closed under its own lock whatever `open` asked.
+        force_closed = _archived
+    elif patch.on is None and patch.open:
+        # Cheap first: an open-only write on a key that is not starred is a
+        # no-op in the store, so it needs no task build to answer.
+        starred, _open = tasks_store.favourite_of(
+            tasks_store.favourites_state(), key)
+        if not starred:
+            return {"ok": True, "key": key, "starred": False, "open": False}
+        # A starred ORPHAN (its row erased) has no card to open — and
+        # opening it would close the real open favourite: a 404.
+        row = _task_rows(only=frozenset({key}))
+        if not row:
+            raise HTTPException(status_code=404, detail=f"no task with key {key!r}")
+        # An archived favourite keeps its star but never an open card
+        # (`archive_task`); an open-only write must not put one back — nor
+        # one filed after this check (`force_closed`, under the lock).
+        if row[0].get("status") == "archived":
+            raise HTTPException(status_code=409,
+                                detail="an archived favourite has no open card")
+        force_closed = _archived
+    # A STAR GIVES THE ICON BACK (owner, 2026-11-16): a task whose icon was
+    # removed (`icon: "off"`) follows the star again once it BECOMES starred.
+    # Only on that flip, read before the write: a second `on: true` from a
+    # stale window onto a task already starred must not undo a Remove made
+    # since. An unstar writes nothing to the icon — a face that came with the
+    # star leaves with it, a picked one stays (`tasks_store.worn_icons`).
+    newly_starred = patch.on is True and not tasks_store.favourite_of(
+        tasks_store.favourites_state(), key)[0]
+    # `on=False` (unstar) and `on=None, open=False` (close) only ever remove
+    # or close a record: the store alone answers them.
+    result = tasks_store.set_favourite(key, patch.on, patch.open,
+                                       force_closed=force_closed or False)
+    if newly_starred and result["starred"]:
+        try:
+            tasks_store.clear_icon_off(key)
+        except OSError:
+            # The star stands; the icon simply stays removed until the next
+            # star — not worth failing the star over.
+            logger.warning("favourite: could not give %s its icon back", key)
+    # After both writes, so the repaint the watcher triggers sees the icon too.
+    tasks_watch.notify(set(result["changed"]) | {key})
+    return {"ok": True, "key": key, "starred": result["starred"],
+            "open": result["open"]}
+
+
 class WorktreeRemovePatch(BaseModel):
     key: str
     paths: list[str] | None = None
@@ -7987,6 +8321,76 @@ def api_task_rename(patch: RenamePatch,
     stored = tasks_store.record_title(session_id, first[:200])
     tasks_watch.notify({key})
     return {"ok": True, "title": stored}
+
+
+def _icon_faces() -> dict[str, tuple[int, bool]]:
+    """`{key: (slot, picked)}` for every task that WEARS a face — owner,
+    2026-11-16: the icon and the star are two things (`tasks_store.worn_icons`
+    holds the rule: picked by hand, or starred and not removed by hand).
+    Every other row carries no face and draws the ring. {} when the state dir
+    cannot be read.
+
+    NOT gated on the favourites switch here: a listing is cached until a task
+    changes, and a preference flip changes none — the shell reads that
+    switch live instead (ScheduleTaskViews `StatusIcon`), and `picked` is
+    what it needs to know to keep a hand-picked face with the switch off."""
+    try:
+        state = tasks_store.favourites_state()
+        # Starred by the row's own reading (`favourite_of`): a record that is
+        # not a dict reads as not starred there, so it wears no star's face.
+        starred = {key for key in state if tasks_store.favourite_of(state, key)[0]}
+        return tasks_store.worn_icons(starred)
+    except OSError:
+        return {}
+
+
+def _icon_face(icons: dict[str, tuple[int, bool]] | None, key: str) -> dict:
+    """The two row fields for one key, out of `_icon_faces()`: `icon_slot`
+    (None: the ring) and `icon_picked`."""
+    slot, picked = (icons or {}).get(key) or (None, False)
+    return {"icon_slot": slot, "icon_picked": picked}
+
+
+class IconPatch(BaseModel):
+    key: str
+    # The slot picked (0..ICON_COUNT-1), or None: Remove — the ring again.
+    slot: int | None = None
+
+
+@router.post("/api/tasks/icon")
+def api_task_icon(patch: IconPatch, x_fused: str | None = Header(default=None)):
+    """Give one task the FACE THE USER PICKED, or take its face away
+    (task icons; owner, 2026-11-11: "instead of giving a random
+    one, we let user pick"; 2026-11-16: the icon is not the star's). Pressing
+    the status ring or icon of ANY task opens a picker over the whole set;
+    the choice is stamped on the task's number record
+    (`tasks_store.set_icon`), so it never changes again by itself, and the
+    task wears it starred or not. `slot` null is the picker's Remove: the
+    ring again, starred or not, until a star gives the icon back.
+
+    Any numbered task can hold one; one without a number yet is refused with
+    a 409 the shell swallows (there is nothing to stamp it on — the press
+    goes quiet and works a listing later). Answers what the task wears now:
+    `icon_slot` null after a Remove, and `icon_picked`."""
+    guard = _require_fused(x_fused)
+    if guard is not None:
+        return guard
+    key = patch.key.strip()
+    if not key:
+        raise HTTPException(status_code=400, detail="missing task key")
+    slot = patch.slot
+    if slot is not None and not 0 <= slot < tasks_store.ICON_COUNT:
+        raise HTTPException(status_code=400, detail="no such icon")
+    try:
+        worn = tasks_store.set_icon(key, slot)
+    except OSError:
+        return _error("the task store is not writable right now")
+    if worn is None:
+        return _error("this task has no number yet; try again in a moment",
+                      status=409)
+    tasks_watch.notify({key})
+    return {"ok": True, "icon_slot": worn["icon_slot"],
+            "icon_picked": worn["picked"]}
 
 
 def archive_task(task: dict, parked: dict, *,
@@ -8066,6 +8470,16 @@ def archive_task(task: dict, parked: dict, *,
         # drops it if the task ever runs, and Unarchive clears it.
         tasks_store.mark_archived(task["key"])
         task["key_filed_at"] = time.time()
+    # A filed favourite keeps its star but not its open card: the rail draws
+    # no ring for an archived chat, so a card open on it would stand on
+    # nothing. Here, not in the route, so a folder removal or the
+    # missing-folder pass files it the same way — and never in the way of
+    # the filing itself: a refused write costs the card, not the archive.
+    try:
+        tasks_store.set_favourite(task["key"], None, False)
+    except OSError as e:
+        logger.warning("archive: could not close the favourite card for %s: %s",
+                       task["key"], e)
     if teardown:
         task["teardown"] = _teardown_task(task, pre_tree=pre_tree)
     return cancelled, survives, stopped
@@ -8501,6 +8915,10 @@ def api_task_delete(patch: DeletePatch,
     # OUT OF THE QUEUE BEFORE THE TOMBSTONE, so nothing can be handed a folder
     # or a held answer for a row that is on its way out.
     _queue_drop_task(key)
+    # The star goes with the row (tasks_store.FAVOURITES_FILE) — BEFORE the
+    # tombstone: a refused star write then leaves a row still visible and
+    # deletable, not a tombstoned row whose star a revival would restore.
+    tasks_store.set_favourite(key, False)
     tasks_store.mark_deleted(key)
     # BOTH HALVES OF THIS SESSION'S UNSENT TEXT GO WITH THE ROW (design.md,
     # PR C). The row is the only place either could ever have been drawn — the
@@ -8695,6 +9113,8 @@ def erase_task(key: str, task: dict) -> dict:
         # it, so the keys the store hands back are announced with the task's.
         dropped = drafts.delete_bound(session_id)
 
+    # The star first, then the tombstone (as `api_task_delete`).
+    tasks_store.set_favourite(key, False)
     tasks_store.mark_deleted(key)
     tasks_watch.notify({key} | set(dropped))
     return {"ok": True, "key": key, "cancelled": cancelled,
@@ -8750,6 +9170,12 @@ def _erase_session_files(session_id: str, path: str | None) -> tuple[int, bool, 
     (`.json` for older releases). Found by `_gemini_chat_files` under the same
     discipline — a leaf named by the id's first eight characters whose text
     carries the whole id, resolving inside the dir it was globbed under.
+
+    A transcript from under the OPENCODE root takes NOTHING else with it
+    (docs/OPENCODE_BACKEND.md D15): OpenCode's own record is one SQLite
+    store shared by every session, and deleting rows from it is not ours.
+    Nor does one from under the CURSOR root (docs/CURSOR_BACKEND.md D15):
+    Cursor's chat stores under `~/.cursor/chats` are its own.
     """
     if not _SESSION_ID_SHAPE.match(session_id) or session_id in (".", ".."):
         logger.warning("erase: refusing session id %r", session_id)
@@ -9486,6 +9912,10 @@ def api_queue_admit(body: dict = Body(...),
     if refusal is not None:
         return refusal
     key = project_queue.queue_key(resolved)
+    if not key:
+        # A folder with no queue (an expert's home): nothing to claim and nothing to wait behind. Without this
+        # the claim below refuses the empty key and the message is stored as if the folder were busy.
+        return {"run": True}
     # The store, read once, and ONLY where this send has something to be behind:
     # a brand-new chat's first message names neither a session nor a leader and
     # pays nothing for either question.
@@ -9927,6 +10357,65 @@ def api_queue_skip(body: dict = Body(...),
             "ahead_title": place["ahead_title"],
             "ahead_session": place["ahead_session"],
             "ahead_target": place["ahead_target"]}
+
+
+@router.post("/api/tasks/limit/retry")
+def api_limit_retry(body: dict = Body(...),
+                    x_fused: str | None = Header(default=None)):
+    """RETRY NOW on a conversation the plan's usage limit paused (Akshil,
+    2026-11-23: "add retry / force start when I have a message queued because
+    I hit my session limit — I can switch Claude accounts and then the wait is
+    gone"). `{key}` → `{"ok", "entry", "note", "queued", "comeback"}`.
+
+    Sends the continue prompt NOW, into the same session, and leaves the booked
+    comeback in place: `schedule.retry_after_limit` says why that is what keeps
+    one comeback whichever way the retry goes. `note` is the scheduler's
+    sentence when the message could not go this second (a turn is still
+    closing, the folder is held — `queued`) and "" when it went.
+
+    A conversation with no comeback booked may still be retried, but only one
+    the transcript says the limit stopped (`_scan`'s newest prompt): this
+    endpoint sends a fixed "continue" prompt, which into any other chat is a
+    message nobody wrote.
+
+    404 for no such task, 409 for one that is not paused on the limit, 400 for
+    a body without a key or a key with no conversation behind it yet."""
+    guard = _require_fused(x_fused)
+    if guard is not None:
+        return guard
+    key = str(body.get("key") or body.get("session_id") or "").strip()
+    if not key:
+        return _error("key: required", status=400)
+    if tasks_store.pending_entry(key):
+        return _error("this task has no conversation to continue yet",
+                      status=400)
+    session = key
+    target = backend = ""
+    if not schedule.pending_comebacks(session):
+        task = _collect().get(key)
+        if task is None:
+            return _error(f"no task with key {key!r}", status=404)
+        rec = _scan(task["path"]) if task["path"] else None
+        newest = rec["tail"][-1] if rec and rec["tail"] else None
+        if newest is None or not _prompt_fate(newest) or not newest.get("limit"):
+            return _error("This task is not paused on the usage limit",
+                          status=409)
+        _place(task)
+        target = str(task.get("target") or task.get("project") or "")
+        backend = _row_backend(task, tasks_store.settings_state())
+    try:
+        result = schedule.retry_after_limit(session, target=target,
+                                            backend=backend)
+    except schedule.BackendRefused as exc:
+        return JSONResponse(exc.body, status_code=400)
+    except ValueError as exc:
+        return _error(str(exc), status=400)
+    if not result["ok"]:
+        return _error(result["reason"],
+                      status=404 if not result["found"] else 409)
+    tasks_watch.notify({key})
+    return {"ok": True, "entry": result["entry"], "note": result["reason"],
+            "queued": result["queued"], "comeback": result["comeback"]}
 
 
 @router.post("/api/tasks/queue/force")
@@ -10504,6 +10993,15 @@ def api_task_create(body: dict = Body(...),
     guard = _require_fused(x_fused)
     if guard is not None:
         return guard
+    return _create_task(body, x_fused_page)
+
+
+def _create_task(body: dict, x_fused_page: str | None, origin: str = "page"):
+    """`api_task_create`'s body, past the `X-Fused` guard: validate, store and
+    dispatch. `origin` is stamped on the entry — "page" for the desktop's own
+    door, "phone" for the iOS app's (`routers/phone_tasks.py`), which is why
+    this is a seam and not a body field: a page must not be able to claim it
+    is the phone."""
     prompt = body.get("prompt")
     if not isinstance(prompt, str) or not prompt.strip():
         return _error("prompt: required", status=400)
@@ -10544,6 +11042,9 @@ def api_task_create(body: dict = Body(...),
     resolved, refusal = schedule_api.resolve_target(target, "target")
     if refusal is not None:
         return refusal
+    refusal = schedule_api.expert_home_refusal(resolved)
+    if refusal is not None:
+        return refusal
     # Fused Web (the sandbox/showcase app) keeps its own local canvas clones
     # at `~/Fused/canvas/<name>` and starts tasks against them right here,
     # through `fused.tasks.create` — never through `canvases.py`'s own
@@ -10581,7 +11082,7 @@ def api_task_create(body: dict = Body(...),
         entry = schedule.create(
             resolved, prompt, when, immediate=immediate,
             title=fields["title"] or None, model=fields["model"],
-            effort=fields["effort"], permission_mode=mode, origin="page",
+            effort=fields["effort"], permission_mode=mode, origin=origin,
             bot=fields["bot"], backend=fields["backend"])
     except schedule.BackendRefused as exc:
         return JSONResponse(exc.body, status_code=400)

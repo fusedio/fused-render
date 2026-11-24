@@ -99,6 +99,7 @@ enum FRMenuCommand {
 - (void)popupAborted;
 - (void)popupCreationStarted;
 - (void)addressChanged:(const CefString &)url;
+- (void)mainFrameLoaded;
 - (CefRefPtr<CefClient>)client;
 - (FRChromiumEngine *)engine;
 - (cef_color_t)backgroundCefColor;
@@ -262,6 +263,12 @@ class FRClient : public CefClient,
     view_.canGoForward = canGoForward;
   }
 
+  void OnLoadEnd(CefRefPtr<CefBrowser> browser,
+                 CefRefPtr<CefFrame> frame,
+                 int httpStatusCode) override {
+    if (frame->IsMain()) [view_ mainFrameLoaded];
+  }
+
   void OnLoadError(CefRefPtr<CefBrowser> browser,
                    CefRefPtr<CefFrame> frame,
                    ErrorCode errorCode,
@@ -374,6 +381,7 @@ class FRClient : public CefClient,
         destinationForDownloadWithSuggestedFilename:FRString(suggested_name)
                                                 URL:FRURL(download_item->GetURL())];
     if (!dest) return false;  // cancelled
+    download_paths_[download_item->GetId()] = dest.UTF8String;
     callback->Continue(dest.UTF8String, false);
     return true;
   }
@@ -382,15 +390,30 @@ class FRClient : public CefClient,
                          CefRefPtr<CefDownloadItem> download_item,
                          CefRefPtr<CefDownloadItemCallback> callback) override {
     id<FRChromiumViewDelegate> d = delegate();
+    // A finished download is reported once, under the path OnBeforeDownload
+    // chose: GetFullPath() of an interrupted download can be an intermediate
+    // name or empty, and the delegate releases the name it reserved.
+    bool ended = download_item->IsComplete() || download_item->IsInterrupted() ||
+                 download_item->IsCanceled();
+    if (!ended) return;
     NSString *path = FRString(download_item->GetFullPath());
+    auto chosen = download_paths_.find(download_item->GetId());
+    if (chosen == download_paths_.end()) {
+      if (!download_item->IsComplete()) return;  // never ours, or already reported
+    } else {
+      path = [NSString stringWithUTF8String:chosen->second.c_str()];
+      download_paths_.erase(chosen);
+    }
     if (download_item->IsComplete()) {
       if ([d respondsToSelector:@selector(chromiumView:downloadDidFinish:)]) {
         [d chromiumView:view_ downloadDidFinish:path];
       }
-    } else if (download_item->IsInterrupted()) {
+    } else if (download_item->IsInterrupted() || download_item->IsCanceled()) {
       if ([d respondsToSelector:@selector(chromiumView:downloadDidFail:error:)]) {
-        NSString *msg = [NSString stringWithFormat:@"interrupted (%d)",
-                         (int)download_item->GetInterruptReason()];
+        NSString *msg = download_item->IsCanceled()
+            ? @"cancelled"
+            : [NSString stringWithFormat:@"interrupted (%d)",
+                                         (int)download_item->GetInterruptReason()];
         [d chromiumView:view_ downloadDidFail:path error:msg];
       }
     }
@@ -515,8 +538,14 @@ class FRClient : public CefClient,
                               const CefString &requesting_origin,
                               uint32_t requested_permissions,
                               CefRefPtr<CefPermissionPromptCallback> callback) override {
+    // MULTIPLE_DOWNLOADS is Chromium's automatic-downloads limiter: after a
+    // page's first download, the next one prompts. Denying it latches the
+    // tab to "downloads not allowed" until it navigates, so every later
+    // download fails silently until a reload — it needs its own kind for the
+    // delegate to grant.
     NSString *kind = @"other";
-    if (requested_permissions & CEF_PERMISSION_TYPE_GEOLOCATION) kind = @"geolocation";
+    if (requested_permissions & CEF_PERMISSION_TYPE_MULTIPLE_DOWNLOADS) kind = @"multiple_downloads";
+    else if (requested_permissions & CEF_PERMISSION_TYPE_GEOLOCATION) kind = @"geolocation";
     else if (requested_permissions & CEF_PERMISSION_TYPE_NOTIFICATIONS) kind = @"notifications";
     else if (requested_permissions & CEF_PERMISSION_TYPE_CLIPBOARD) kind = @"clipboard";
     else if (requested_permissions & CEF_PERMISSION_TYPE_MIDI_SYSEX) kind = @"midi";
@@ -715,6 +744,10 @@ class FRClient : public CefClient,
   // Weak: a popup that was created and closed normally leaves a dead entry
   // behind, read only on abort (ids are unique per opener).
   std::map<int, __weak FRChromiumView *> pending_popups_;
+  // Download id -> the path the delegate chose (and reserved) for it in
+  // OnBeforeDownload; reported back once the download ends so the delegate
+  // can give that exact name back.
+  std::map<uint32_t, std::string> download_paths_;
 
   IMPLEMENT_REFCOUNTING(FRClient);
   DISALLOW_COPY_AND_ASSIGN(FRClient);
@@ -735,6 +768,8 @@ class FRClient : public CefClient,
   BOOL _closing;
   BOOL _closeWhenCreated;  // closeBrowser before OnAfterCreated
   id _fullscreenObserver;
+  id _occlusionObserver;
+  BOOL _occluded;  // what the page was last told (syncOcclusion)
 }
 
 @synthesize URL = _URL;
@@ -762,13 +797,66 @@ class FRClient : public CefClient,
         me->_browser->GetHost()->ExitFullscreen(true);
       }
     }];
+    // The window going out of sight (covered, minimised, another Space) or
+    // back: the page pauses its CSS loops meanwhile (syncOcclusion).
+    _occlusionObserver = [[NSNotificationCenter defaultCenter]
+        addObserverForName:NSWindowDidChangeOcclusionStateNotification
+                    object:nil
+                     queue:nil
+                usingBlock:^(NSNotification *note) {
+      FRChromiumView *me = weakSelf;
+      if (me && note.object == me.window) [me syncOcclusion];
+    }];
   }
   return self;
 }
 
 - (void)dealloc {
   if (_fullscreenObserver) [[NSNotificationCenter defaultCenter] removeObserver:_fullscreenObserver];
+  if (_occlusionObserver) [[NSNotificationCenter defaultCenter] removeObserver:_occlusionObserver];
   [_engine unregisterView:self];
+}
+
+// ---- a covered window pauses the page's CSS loops ----
+//
+// `disable-backgrounding-occluded-windows` (FRCefApp.cc) keeps a covered
+// window rendering so Mission Control shows its last frame, and with it every
+// infinite CSS animation on the page keeps ticking (WKWebView throttles such a
+// window itself). The page cannot see occlusion — Chromium still reports it
+// visible — so the view tells it: `data-fused-occluded` on the root element,
+// which the shell's base.css answers with `animation-play-state: paused`.
+// Nothing else changes: the window still composites, its frame stays live.
+
+/// YES when this view's window is out of sight: fully covered, minimised or on another Space.
+- (BOOL)windowOccluded {
+  NSWindow *w = self.window;
+  return w != nil && !(w.occlusionState & NSWindowOcclusionStateVisible);
+}
+
+/// Tell the page when its window's visibility changed since the last time it was told.
+- (void)syncOcclusion {
+  BOOL occluded = [self windowOccluded];
+  if (occluded == _occluded) return;
+  _occluded = occluded;
+  [self tellPageOccluded:occluded];
+}
+
+/// A main-frame document finished loading: re-tell it if the window is hidden.
+- (void)mainFrameLoaded {
+  // A new document starts without the attribute, so only a hidden window
+  // has anything to say to it.
+  if (_occluded) [self tellPageOccluded:YES];
+}
+
+/// Set or clear `data-fused-occluded` on the current document's root element.
+- (void)tellPageOccluded:(BOOL)occluded {
+  if (!_browser) return;  // mainFrameLoaded tells the first document
+  CefRefPtr<CefFrame> frame = _browser->GetMainFrame();
+  if (!frame) return;
+  NSString *js = [NSString stringWithFormat:
+      @"document.documentElement&&document.documentElement.toggleAttribute('data-fused-occluded',%@)",
+      occluded ? @"true" : @"false"];
+  frame->ExecuteJavaScript(js.UTF8String, frame->GetURL(), 0);
 }
 
 - (BOOL)isFlipped {
@@ -907,6 +995,7 @@ class FRClient : public CefClient,
   [super viewDidMoveToWindow];
   [self layoutBrowserView];
   [self focusBrowserView];
+  [self syncOcclusion];
 }
 
 // ---- WKWebView-shaped API ----

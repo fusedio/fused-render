@@ -105,3 +105,20 @@ def test_non_parquet_bytes_fail_closed(main, tmp_path):
     p = tmp_path / "bad.parquet"
     p.write_text("not parquet at all")
     assert main(str(p)) is False
+
+
+@pytest.mark.parametrize("sql, expected", [
+    (f"SELECT CASE WHEN range = 3 THEN '0' ELSE printf('%x', {H3_BASE} + range) END::BLOB AS hex FROM range(1000)", True),
+    (f"SELECT unnest([{H3_BASE}, 5])::UBIGINT AS hex", False),
+    (f"SELECT CASE WHEN range = 3 THEN 18446744073709551615 ELSE {H3_BASE} + range END::UBIGINT AS h3 FROM range(1000)", True),
+])
+def test_sampled_columns_decode_blobs_and_need_ninety_percent(main, parquet, sql, expected):
+    assert main(parquet(sql)) is expected
+
+
+def test_a_column_too_wide_in_any_row_group_is_not_footer_accepted(main, tmp_path):
+    p = str(tmp_path / "wide.parquet")
+    duckdb.connect().execute(
+        f"COPY (SELECT CASE WHEN range < 2048 THEN printf('%x', {H3_BASE} + range) ELSE repeat('x', 200) || range END"
+        f" AS label FROM range(4096)) TO '{p}' (FORMAT PARQUET, ROW_GROUP_SIZE 2048)")
+    assert main(p) is False

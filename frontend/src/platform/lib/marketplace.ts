@@ -25,6 +25,7 @@ import { getJson, postJson } from "@platform/lib/api";
 import { BACKEND_CANVAS_BASE, listingPageUrl } from "@platform/lib/backend-canvas";
 import { notify } from "@platform/lib/notifications";
 import { CURRENT_APPS_CHANGED_EVENT } from "@platform/lib/tasksChanged";
+import { publishMarketplace } from "@platform/lib/marketplacePulse";
 import { encodeFsPathSegments, navigateUrl, urlForFsPath, viewUrlForFsPath } from "@platform/lib/router";
 
 // -- Wire types (the API contract) -------------------------------------------
@@ -219,6 +220,12 @@ export interface InstallJob {
   message: string;
   path?: string;
   error?: string;
+  /** `replace`: the install refused because another copy of this app,
+   *  installed another way, holds its place at `replace_path`; posting the
+   *  install again with `replace: <that path>` installs over it (its data
+   *  moves along, the old folder is hidden). */
+  code?: "replace";
+  replace_path?: string;
 }
 
 // -- Fetchers ----------------------------------------------------------------
@@ -263,6 +270,8 @@ export type InstallAnswer =
 export interface InstallOpts {
   switch?: boolean;
   overwrite?: boolean;
+  /** The failed job's `replace_path`: install over that copy. */
+  replace?: string;
 }
 
 export function postInstall(slug: string, opts: InstallOpts = {}): Promise<InstallAnswer> {
@@ -270,6 +279,7 @@ export function postInstall(slug: string, opts: InstallOpts = {}): Promise<Insta
     slug,
     ...(opts.switch ? { switch: true } : {}),
     ...(opts.overwrite ? { overwrite: true } : {}),
+    ...(opts.replace ? { replace: opts.replace } : {}),
   });
 }
 
@@ -512,6 +522,9 @@ export function refreshCatalog(opts: { force?: boolean; again?: boolean } = {}):
           reconciled.add(slug);
         }
         setSnapshot({ catalog: c, error: null, loading: false });
+        // The sidebar's Community dot reads the same rows (marketplacePulse):
+        // an Update that just landed clears it on this very read.
+        publishMarketplace(c.apps);
         emitJobs();
       }
     })

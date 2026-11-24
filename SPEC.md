@@ -267,7 +267,22 @@ const { text, usage, response, provider } = await fused.ai.text({
   shape — only an explicit `provider` reaches them. They are also the AI gateway
   the canvas host runs for the embedded workbench (CanvasWorkspace.tsx module
   doc, host-ai.ts): the host posts the enabled agents' models to the frame and
-  relays its inline AI requests to this route. **The same `provider` option is on `.image`, `.video`, `.transcribe`,
+  relays its inline AI requests to this route. **Native tools (D1460):** `tools:
+  [{name, description, parameters}]` (AI SDK definitions, names `[A-Za-z0-9_-]{1,64}`,
+  at most 64) on the four agent tiers, `stream: true` required and no `history`
+  (send the conversation as the prompt). The model calls them natively through
+  a per-turn stdio MCP bridge (`claude_agent/ai_tools_server.py`) and the
+  **caller runs them**: the stream opens with `{type:"turn", id}`, each call is a
+  `{type:"tool_call", id, name, input}` frame, one at a time, and the caller answers
+  `POST /api/ai/turns/<turn>/results {id, content, isError?}` (404 after the turn
+  ends, 409 for a call it is not waiting on); the bridge reads `GET
+  /api/ai/turns/<turn>/tools` and parks on `POST /api/ai/turns/<turn>/call`. An
+  unanswered call fails after the relay's timeout; closing the stream fails every
+  parked call and kills the CLI. The Claude tier runs a tools turn on an instance
+  of its own (the bridge is fixed at spawn), discarded after; every Claude spawn
+  now carries `--strict-mcp-config` so the user's claude.ai connectors never
+  attach. `local`/`apple` refuse `tools` with a 400. The canvas host relays the
+  frames as `fused-embed-ai-tool-call` / `fused-embed-ai-tool-result`. **The same `provider` option is on `.image`, `.video`, `.transcribe`,
   `.embed` and `.decide`** (their D413 envelopes grow that one key), and every reply of the six
   carries `provider`; those five have only a local tier today, so omitted means
   `"local"` and `"claude"` answers `unavailable` on a 409 — a well-formed request
@@ -525,7 +540,7 @@ const page = await fused.runPython("./reader.py",
 ```
 
 - **PT-4** Template UI state (current page, selected columns, sort) uses normal params → survives refresh, e.g. `?_file=…&offset=500&sort=fare`.
-- **PT-6** **One name-resolution rule everywhere:** a template name resolves to `~/.fused-render/templates/<name>/template.html` if that exists, else `fused_render/templates/<name>/template.html`, else it is unusable (error). A user folder **shadows** a built-in of the same name — the deliberate override channel. The template **name is public stable API**: it is the registry reference, the `_mode` URL value, and the switcher tooltip label. (`fused_render/templates/vendor/` has no `template.html`, so it can never resolve as a template name — the `/template-assets` mount is unchanged.) **Native templates (D1310):** a folder with no `template.html` but a `native` marker file also resolves, to `<folder>/native`, and its stat entry carries `"native": true`. Its UI is the React shell's, not an iframe page — `claude` is the one such template — and the folder exists only for registry identity, the `condition.py` gate (CT-12) and `icon.svg` (PT-11), both of which hang off `dirname(path)` exactly as for a page. Order is user `template.html`, user `native`, core `template.html`, core `native`, so a user folder of either form still shadows core. `/render` on a native folder or its marker is a 404 `{"error": "served by the shell"}`, and the template inventory counts native folders. A user fork `~/.fused-render/templates/claude/template.html` resolves like any user template, but the shell renders mode `claude` natively regardless, so it cannot revive the iframe chat.
+- **PT-6** **One name-resolution rule everywhere:** a template name resolves to `~/.fused-render/templates/<name>/template.html` if that exists, else `fused_render/templates/<name>/template.html`, else it is unusable (error). A user folder **shadows** a built-in of the same name — the deliberate override channel. The template **name is public stable API**: it is the registry reference, the `_mode` URL value, and the switcher tooltip label. (`fused_render/templates/vendor/` has no `template.html`, so it can never resolve as a template name — the `/template-assets` mount is unchanged.) **Native templates (D1310):** a folder with no `template.html` but a `native` marker file also resolves, to `<folder>/native`, and its stat entry carries `"native": true`. Its UI is the React shell's, not an iframe page — `claude` is the one such template (the canvas node view was the second until D1490; since D1495 a canvas node is drawn by ordinary template pages, §53) — and the folder exists only for registry identity, the `condition.py` gate (CT-12) and `icon.svg` (PT-11), both of which hang off `dirname(path)` exactly as for a page. Order is user `template.html`, user `native`, core `template.html`, core `native`, so a user folder of either form still shadows core. `/render` on a native folder or its marker is a 404 `{"error": "served by the shell"}`, and the template inventory counts native folders. A user fork `~/.fused-render/templates/claude/template.html` resolves like any user template, but the shell renders mode `claude` natively regardless, so it cannot revive the iframe chat. **Streaming templates (D1485, D1486, D1492):** a template whose `pyproject.toml` lists extensions under `[tool.fused-render.template] stream` (e.g. `stream = [".parquet"]`) reads an `s3://` address in `_file` itself for those files (signing it with `fused.s3.sign` / `fused_s3`). `/api/remote/stat` returns a bucket object's `templates`: the same registry resolution, without native entries, conditional ones that do not stream, or the text sniff, each marked `stream`. A streaming conditional entry stays `conditional`: `/api/fs/conditions` on the `s3://` address applies `sign_read_url`'s checks (Canvases on) and runs only those gates, each `main(path)` getting the signed `https://` URL, so such a gate must read a URL or return false. The explorer opens an uncached object in the ordinary viewer with its mode switcher: a `stream` mode frames the address with no download; any other mode shows the download card in its pane and opens on the cached copy once it lands. A cached object opens on its copy in every mode.
 
 ### 7.2 Template set — modes per extension
 
@@ -538,15 +553,15 @@ const page = await fused.runPython("./reader.py",
 | `.parquet` | `duckdb`, `structure`, `h3`, `claude`, `geometry_editor` | paged grid + SQL over the file; binary — no `code` mode. `claude` is the authored-file companion of PT-14 |
 | `.csv .tsv` | `duckdb`, `excel` (`.csv` only), `code`, `claude`, `reader` | paged table + SQL over the file |
 | `.xlsx` | `xlsx`, `excel`, `reader` | sheet select + paged table. No authored-file pair (PT-14): a spreadsheet is not authored text |
-| `.json` | `tree`, `code`, `duckdb`, `claude`, `reader` | collapsible tree; the dominant hand-authored config format, so it carries the authored-file pair (PT-14) |
+| `.json` | `tree`, `canvas_widget`, `code`, `duckdb`, `claude`, `reader` | collapsible tree; the dominant hand-authored config format, so it carries the authored-file pair (PT-14); `canvas_widget` (a canvas node template, §53.2 NT-1: gated, and offered only on a node file of a `user/` canvas folder) |
 | `.geojson` | `vector`, `map`, `tree`, `code`, `claude`, `geometry_editor` | map + tree over the same bytes |
-| `.md` | `markdown`, `code`, `claude`, `reader` | notes editor (§32) + raw source + the authored-file companion (PT-14): chat about the note with the note itself in the left pane |
+| `.md` | `markdown`, `canvas_note`, `code`, `claude`, `reader` | notes editor (§32) + raw source + the authored-file companion (PT-14): chat about the note with the note itself in the left pane; `canvas_note` (a canvas node template, §53.2 NT-1: gated, and offered only on a node file of a `user/` canvas folder) |
 | `.svg` | `image`, `code`, `claude` | `<img>` via raw endpoint; svg source is text, so it is authored and carries the chat (PT-14) |
 | `.png .jpg .jpeg` | `image`, `photos`, `pano`, `claude` | `<img>` via raw endpoint; an image asset is committed and discussed like any other authored file (PT-14) |
 | `.gif .webp` | `image`, `photos` (`.webp` also `pano`) | `<img>` via raw endpoint |
 | `.pdf` | `pdf`, `pdf_studio`, `reader` | browser-native embed. No authored-file pair (PT-14): a PDF is a published artefact, not authored source |
 | `.mp4 .mov .m4v .webm .mp3 .wav .m4a .ogg .flac` | `media` | raw endpoint w/ Range |
-| `.py` | `code`, `api`, `claude`, `reader` | editable CodeMirror; `api` = swagger-style run form over the `main()` entry point (D63) |
+| `.py` | `code`, `canvas_udf`, `api`, `claude`, `reader` | editable CodeMirror; `api` = swagger-style run form over the `main()` entry point (D63); `canvas_udf` (a canvas node template, §53.2 NT-1: gated, and offered only on a node file of a `user/` canvas folder) |
 | `.js .ts .tsx .jsx .cjs .mjs .cts .mts .sh .zsh .fish .ps1 .csh .zsh-theme .vim .yaml .yml .toml .ini .cfg .conf .tf .hcl .css .plist` | `code`, `claude`, `reader` | editable CodeMirror. `.toml` leads with `canvas` (§28) and `.plist` with `plist`, then the same tail |
 | `.txt .log` | `code`, `text`, `claude`, `reader` | editable CodeMirror, with the plain `<pre>` view a click behind it; `.log` leads with `log_studio`. `code` outranks `text` on every key that offers both: they render the same bytes, and `code` renders them better |
 | `.jsonl .ndjson` | `code`, `duckdb`, `claude`, `reader` | append-only record streams. They carry the chat like any other text key: PT-14's question is "is this authored", not "does this diff well". No `git`, for the reason no file key has it (GT-2): the working tree is the folder's, not the file's |
@@ -554,7 +569,7 @@ const page = await fused.runPython("./reader.py",
 | `.nc .nc4 .cdf` | `netcdf` | NetCDF-3 via vendored netcdfjs (HDF5/NetCDF-4 → graceful card); leading-dim sliders, colormaps + stretch, histogram, hover |
 | `.zarr/` (directory) | `zarr_aoi`, `_listing` | Zarr v2/v3 store — a *directory*, bound by the trailing-`/` directory key (PT-13). `zarr_aoi` is the server-side AOI tile-streaming map viewer (opened via zarr-python, tiles streamed as PNG); it ships a `condition.py` store-detection gate (CT-12), so it is a conditional peer rather than the immediate default — the built-in `_listing` (PT-12) shows first and the map joins the switcher when the background gate confirms the store. `_listing` also stays reachable as the raw member listing, replacing the old "Browse contents" escape hatch (D81) |
 | `/` (any directory) | `claude`, `_listing`, `git`, `graph`, `zarr_aoi`, `model_card` | The **universal directory key** (CT-3) — the built-in default for *every* folder. `_listing` is a sentinel (PT-12), not a template folder: the shell's built-in directory listing (sortable columns, in-folder search, file ops, and the optional split preview pane — FS-1, FS-9..FS-15). Zero segments, so any dot-anchored directory key (`.zarr/`) beats it (D81). Every entry but `_listing` is a `condition.py`-gated peer (CT-12) — the AOI map here is the same viewer the `.zarr/` row describes, offered to *any* folder its store-detection gate confirms — and each joins the switcher only where its background gate allows. **`claude` LEADS the row and `_listing` follows it (D280), and the two surfaces read that order differently — deliberately.** The full-screen folder view resolves the first entry *without* a gate (PT-8), so it lands on `_listing` from second place and opening a folder still shows its file table; the listing's preview pane takes the first offered mode *literally*, so a selected folder row lands on the chat. **Which is why `_listing` is DEMOTED here and never dropped:** as the row's one unconditional entry it is what keeps every folder browsable, and a key without it resolves five gated templates, sends the full-screen route to `visible[0]` — a chat — and leaves a folder with no listing and a one-entry mode menu that hides itself. **There is exactly one chat entry, and as of D237 it is `claude` for both kinds of target** (this key used to carry both `claude_split` and `claude`, the second of which is deleted). Its gate is the *weakest* on this row — any existing directory passes — but it is a real gate and not the "no gate at all" D235 specified (PT-16). The order is deliberate and reads left to right: **the chat** — where a folder's contents get built, and now the row's lead (D280) — then the built-in listing, then the folder-wide views. *The row used to close with `history`, the per-path timeline: directly after the chat at first, because for an app folder the version timeline was the answer and the raw commit log one click further (#361), then moved to the END by #434. The mode is deleted (PT-14) and the row no longer carries it.* `model_card` joined the row with §37 (D249) — another `condition.py`-gated peer, answering only for a Hugging Face cache folder or a model checkout, so an ordinary folder pays a verdict and nothing else. **This row used to open with `app`** — the folder rendered full-bleed as its own page, gated to a workspace app folder or a registered linked app, and pinned with `claude`/`history` into an `APP_MODES` allowlist by a route of its own. The route went with D262 and the template with D264: there is no app VIEW, and D269 brought none back — what it restored is the DESTINATION, an ordinary file view of the folder's entry page, which is where an app CARD lands. *D269 also gave that destination to the preview pane, which resolved a selected folder to its entry page and rendered it; **D280 deleted that half** — merely selecting a row ran the folder's app — so a folder previews as a folder here (FS-11) while the cards are untouched.* A folder with no top-level page is a listing, and this key is unchanged either way: **six** directory modes, no `app` row. A folder's history answer is `git` (the repo-wide Source Control view, §33, directory-only as of D235/GT-2); the single-file `history` timeline is deleted (PT-14). The chat is **full width** on a folder as of D239 — it is the one target of this mode with no left pane (PT-16). `graph` is MD-2's link graph. The `preview` folder-preview template that also sat here is **deleted** — its split pane is now `_listing`'s (D185) |
-| `.html .htm` | `_render`, `code`, `claude`, `reader` | defaults shipped in the built-in registry like any other key — user-rebindable since D73 (CT-4 revised); `_render` is a shell sentinel (PT-12) rendering the file itself live (§4). A page is authored, so it carries the authored-file pair (PT-14): the chat's left pane renders the page itself and the chat edits it. This is also the key where a `?_mode=claude` link written before D235 works again for free, because D237's rename put the chat back on the file keys (`examples_seed/tutorial/`) |
+| `.html .htm` | `_render`, `code`, `claude`, `reader` (`.html`: `_render`, `canvas_widget`, `code`, `claude`, `reader`) | defaults shipped in the built-in registry like any other key — user-rebindable since D73 (CT-4 revised); `_render` is a shell sentinel (PT-12) rendering the file itself live (§4). A page is authored, so it carries the authored-file pair (PT-14): the chat's left pane renders the page itself and the chat edits it. This is also the key where a `?_mode=claude` link written before D235 works again for free, because D237's rename put the chat back on the file keys (`examples_seed/tutorial/`); `canvas_widget` (a canvas node template, §53.2 NT-1: gated, and offered only on a node file of a `user/` canvas folder) |
 | unknown | shell fallback | metadata + raw/download link (built into shell, not a template) |
 
 - **PT-14** **ONE chat template serves both kinds of target, and the companion that used to split by kind is GONE (D235, chat half overturned by D237; the timeline half removed with the `history` template).** *Original (D235) form: four companion modes split by target kind — a directory offered `claude` + `git`, a file offered `claude_split` + `history`, with two separate chat templates. **The two-chat premise is void, and so is the second companion.*** There is now a single chat template, **`claude`** (`claude_split` renamed after the plain full-width `claude` was deleted, D237), and it is bound to **both** the universal `/` directory key and all 47 authored-file keys — 48 keys in all. The other companion those keys used to carry, `history` (a per-path commit timeline that also materialised a commit as a browsable tree), **is deleted**: the `git` view answers the same question without a second surface, because its commit list is SCOPED to whatever target it was opened on and selecting a commit puts the whole shell into `_snapshot=<sha>` (§33, GT-17), materialising the enclosing APP FOLDER at that commit (`git archive`d into `~/.fused-render/app-versions/<key>/<sha>/`, `server/routers/git_snapshot.py`) so every read the app makes — not only the open file — renders as of it (D243's reversal: see that entry). So the companion set is now the chat plus `git`, and **`git` (the Source Control view, §33, GT-2) is FOLDER-ONLY: the universal `/` directory key and no file extension at all.** Everything `git` offers — staging, discarding, stashing, committing, branches, push/pull — is a REPOSITORY-level act, and the working tree a file sits in is its FOLDER's working tree, not the file's: you do not stash a file, you stash a tree. A file therefore has no binding of its own for it; what a file's reader wants — "what happened to this file" — is served by the SAME view borrowed from the file's parent folder into the preview sidebar (`apps/explorer/lib/dir-mode.ts`), scoped to the open path. `git` did briefly ride along on all 48 keys, and the reason was a gap in a different surface rather than anything about the mode: the explorer gave a FOLDER no mode switcher of its own, the only mode surface a browsing user had was the preview pane's, and the pane acted on the SELECTED ROW, always a file — so a mode bound to `/` alone was unreachable without hand-writing `?_mode=git`. The pane selects and previews FOLDER rows now (the folder peek, FS-10/FS-11), so the folder has a mode surface and the workaround is retired. Two rules, not 47 table rows: the per-extension lists above simply say *which* extensions count as authored files. The **authored-file set** — source, config, prose, notebooks, record streams, tabular data, geo data and image assets, 47 keys — is deliberately withheld from spreadsheets, PDFs, media, archives, 3D and generated tool files: a chat is for bytes a human authors or analyses, and those lists are left alone rather than churned. The `/` key's gating asymmetry is the visible consequence of D237 (its third party, `app`, is gone entirely — D262 deleted the app-builder route and D264 the template): the chat's gate accepts **any** directory, while `git`'s takes any folder in a work tree and refuses a file outright (GT-3), which is the binding stated a second time — so a hand-written `?_mode=git` on a file is not offered a repository-level view of something that is not a repository. The chat's own contract (its gate, its left pane's three shapes, and the system prompt that must agree with the pane) is **PT-16**. **What the deleted timeline mode leaves behind, and what has a producer again (D243's reversal).** The original per-path timeline mode materialised a commit by `git archive`-ing it into `~/.fused-render/app-versions/<key>/<sha>/` and framing that directory; two of its mechanisms outlived it through the resolve-on-read design that replaced it (`/api/git/show`, itself since deleted) with nothing written to disk: (1) `server/mount.py::_is_under_snapshot_root` makes every `/api/fs` mutation handler refuse a path under that root with the existing `readonly` contract (403 + `{"error": "readonly"}`) and makes `_writable` report `false` there, so a framed editor draws read-only mode up front instead of only failing at Cmd+S; a **copy out** is still allowed — read-only, not sealed. (2) `?snapshot=1` on an embed URL (`router.ts` `IS_SNAPSHOT` → `body.snapshot`) still says FROZEN TREE, NOT A LIVE FOLDER: it opens no preview pane of its own and suppresses the breadcrumb and the corner chips, all of which would act on a frozen copy as though it were live. **`app-versions/` has a producer again**: `server/routers/git_snapshot.py` extracts the enclosing APP FOLDER (not an arbitrary path — GT-17's `_snapshot` is app-scoped) at a commit, so every read under it — `readFile`/`rawUrl`/`stat` and `runPython` alike — resolves against a real file rather than a special endpoint. The two guardrails above are exactly what let this producer come back safely: they never had a matching writer to police in between, and now they do again. What is **still rejected**: (a) keeping `git` on file keys. The original argument was "two commit-log modes for one story", which stopped applying the moment `git` dropped its commit log (GT-2) — and on that basis the mode WAS bound to every file key for a while. The reason it is rejected again is not about duplication: a file key is the wrong place for a repository-level view. Staging, stashing and pushing are done to a tree, the tree in question is the folder's, and putting that behind a single file offers the user a control whose scope is not the thing they selected. What the file-key binding was really buying was REACHABILITY, back when a folder had no mode surface — and that is now bought properly, by the preview pane peeking folder rows and the file sidebar borrowing the parent's entry, rather than by binding the mode to the wrong target. (b) keeping `annotate` as a standalone mode — its tools live in the chat's pane, so the mode was deregistered from every core key rather than left as a second, staler way in (§17), and its comment handoff is now doubly unreachable (no binding, no receiver). What is **no longer** rejected, and is the reversal itself: D235 rejected "binding ONE chat template to both kinds" on the grounds that the split pane renders a target and an ordinary folder has no app entry to render, so one template would have to branch on kind and carry a dead pane for half its bindings. It does branch on kind, in two places — the pane and the prompt — and D239 has since conceded half of D235's premise while leaving its conclusion overturned: an ordinary folder really does have nothing to render, so it gets **no pane**, not a substitute for one (PT-16). What that does not follow is that the template must therefore fork. A no-pane target is a *layout* the one template resolves — the pane is removed and the conversation takes the width — and everything the two kinds actually SHARE is the part that costs something to duplicate: the transcript, the composer, the approval cards, the permission modes, the run/resume/stop machinery, the session list and the transcript restore. D235's own evidence is the argument here: the second chat template WAS that fork, and it drifted into the feature-poor twin (8 mentions of the annotation machinery against 277) precisely because a fork's two halves are maintained by whoever happens to be editing one of them. So the branch is one predicate read in two places, and the cost of the case that has no pane is a flag and a removal — not a second copy of a chat.
@@ -563,19 +578,18 @@ const page = await fused.runPython("./reader.py",
   - **The gate** (`claude/condition.py`, CT-12) accepts **any existing regular file and any existing directory**, and nothing else: `os.path.isfile` / `os.path.isdir`, never `not isdir` (the loose form also swallows every path that does not exist, and "cannot tell" must read as "refuse"), and it never lists, walks, globs or resolves symlinks, because it runs for every path the explorer stats. That reduces to "the path exists", which the shell already knows.
   - **The left pane, TWO shapes and a no-pane case (D239).** A **file** → the file in its OWN default template: `GET /api/fs/stat` for the target, drop `conditional` entries (their verdict lives behind `/api/fs/conditions` and is deliberately not fetched — an unresolved gate reads as "not offered") and drop the chat mode itself (a pane framing the chat again is a mirror, not a preview), then frame `/render?path=<that template>&_file=<file>` — or the file itself when the entry is the `_render` sentinel. That is the shell's own `defaultTemplate` rule (PT-8) reused rather than a per-extension table inside the chat, which would drift from the registry on the next rebinding and ignore a user override (§16); and it is a **default, not a lock** — the pane-local `leftmode` param (PT-15) selects any other offerable entry from that same stat payload, unknown values falling back silently as in PT-9. **The picker sits on the pane it controls, at the RIGHT-HAND end of it:** in the split layout it is a row across the top of the LEFT column, not a control in the chat pane's strip across the divider — and it is pushed to that row's far end (`margin-left: auto`, scoped to `#leftbar`), because the bar exists to carry this one control and a lone control hard against the left edge reads as a LABEL for the pane rather than as a switch on it. It is a **listbox, not a `<select>`**, and the reason is the ICON: its rows show each template's own `icon.svg` beside the mode name, exactly as the shell's mode menu does (`templateModeIcon`), and an `<option>` renders text in every engine. The icon needs no new server plumbing — stat's `templates` entries already carry the icon's absolute path (PT-11), `/api/fs/raw` serves it, and it is drawn as a mask filled with `currentColor` so one flat glyph follows the row's ink in both themes; a template with no `icon.svg` (and the `_render` sentinel) falls back to the shell's own lettered box. The rows are real `<button>`s inside a `role="listbox"` popup under an `aria-haspopup` trigger — the idiom the `reader` template's voice menu already uses here — so focus, Enter and Space stay the platform's job and only the arrows and Escape are the template's — the same grammar the explorer's own preview pane follows (FS-10). Below the 800px breakpoint there is no persistent left column to hang a bar on, so the *same* element moves back into the shared `#anntools` strip, the one row both narrow views keep; crossing the breakpoint relocates it live, with no reload and no effect on `leftmode` itself. It is hidden entirely when the target offers fewer than two views. An **app folder** (an entry page resolves) → that entry page, via `/render`. **The entry rule is `index.html`, else the FIRST top-level `.html` in name order** (`shared/app_entry.entry_html`, `sorted` so two consumers cannot land on different pages). It used to call several pages without an `index.html` *ambiguous* and resolve to None, which meant every consumer dead-ended on such a folder — this pane drew nothing, the `app` mode drew "no entry page", and a materialised snapshot of one showed that notice instead of the app at that commit. Owner call on the user's own wording ("for multiple html files, just pick the first one"): a deterministic first page is one click from any of the others once the folder is open, and None was one click from nowhere. The consequence here is that a folder with several pages and no index now HAS a pane (and the `app_state` tool with it) where it previously had none. Everything the pane implies rides on those two and nothing else: the annotation layer (§17), the 800px collapse (PT-15) and the `app_state` tool (below). A folder with **no** app entry → **no pane at all**: no `#leftframe`, no `#divider`, no view toggle, no annotate affordance, and the conversation owns the full width. *What this overturns.* D237 framed **`/explorer/embed/<dir>?preview=false&modechip=false`** there — the chrome-free navigable shell (LM-4/D39), a real file browser beside the chat — and it was chosen as the fix for code that used to `throw` (`no app entry…`, a permanent error panel beside a working chat). It fixed the throw and left the real problem untouched: **nothing flowed back from that pane.** The template has no `postMessage` and no message listener, so selecting a file in the browser attached nothing, fed nothing to the composer and changed no agent context; annotate was hard-disabled over it by construction (no element of a file listing is a thing a pin could mean anything about); and the `leftmode` picker was inert for it, since neither directory branch populates `paneEntries`. So it was half the width of a folder chat spent on a view that reported to nobody, for a question the agent's ordinary file tools already answer. **Deliberately given up:** the `state.url` backchannel — embed navigation rewrote the iframe's path, so `app_state` could tell the agent which folder or file the user had walked into. It was the one signal that did flow back, and it goes with the pane. **Both embed params go too, and they go differently:** `modechip=false` loses its only producer in the codebase, so its plumbing is **removed from its consumer** as well (`Preview.tsx` no longer reads it and the corner chip has no opt-out) — a URL param no caller can produce is a branch nothing can test, and if another template ever frames an embed of its own counterpart's target the opt-out returns with that caller; `preview=false` was kept at the time, because the listing wrote it for itself when the user closed the pane (`listing/pane.ts`), and it has since gone the same way — the pane lost its toggle (first to a measurement of the split container, then to nothing at all — D282 deleted the measurement too, so a Listing that has a pane simply has one), and with the toggle went the only writer of that param. What the param MEANT survives it: a framed listing still may not open a pane of its own, and that rule now rides on `snapshot=1` (PT-14 above), the flag the one remaining framer already writes. With the folder embed gone, `/embed` is **no longer used as a pane by any template**, so D235's rejection of it for a FILE target stands unqualified. *The no-pane case is a designed ABSENCE, not a missing element, and the difference is load-bearing.* Shipping the markup without `#leftframe` cannot work: the frame's `load` hook is wired at top level, so with no element to wire that statement throws a `TypeError` and aborts **every declaration after it** — the agent poll loop, the annotate switch, the composer wiring — and the boot `catch` cannot report it either, because its own first statement removes that same missing element, so the throw lands inside the catch and neither the error panel nor `pushAppLog` runs. A blank page with a working-looking composer. So the markup ships the column exactly as it does for a file, every declaration initialises against it, and `enterNoPane()` takes it away **afterwards** — ordering that is guaranteed rather than hoped for, since the template is one `<script>` and the loader reaches that branch only after `await`ing a fetch. Three subtrees are removed (`#left`, `#divider`, and `#anntools` — which is a child of `#chat`, so it survives removing the column and would otherwise sit there as an empty bordered row of controls for a pane that is not there). One `noPane` flag then short-circuits `applySplit`, `applyNarrowView`, `renderAnn` and `annSetMode`, so nothing writes to a detached node or to a param describing a layout this target does not have. **Stale params are ignored SILENTLY and never stripped:** `split`, `paneview`, `leftmode`, `annmode` and `annotations` left on a folder URL by an old bookmark open a full-screen chat with no error — the same forgiving posture PT-9 takes for an unknown `_mode` — and rewriting them would break that bookmark's round trip for the day the folder grows an `index.html` and gets its pane back. **Also enforced, not documented:** `appEntry` (the only field in the app-state payload that distinguishes the user's real app from our own UI) is never set on this path, and the "pane unreadable" sentence no longer names "no app entry" among its causes, because that condition now produces no pane and therefore no tool to ask. **The composer's screenshot BUTTON (D285), which is the second version of this control.** ONE `#viewshot` button, a camera that **captures on click** — it sat beside Send in both composers until D621 moved it into the `#anncta` strip between Comment and Record, since it acts on the pane like they do and the strip is the one row the home card and the chat both keep (hidden while a mode is armed, like the mic; gated by `annPollTarget` / `enterNoPane` exactly as they are): one picture of the entire visible pane (`shotCapturePane`, caps `SHOT_VIEW_EDGE` 1600 / `SHOT_VIEW_BYTES` 900 KB, uploaded into the same shots directory the crops use) which then hangs above the composer as a **chip with a thumbnail**, in the same row as the annotation chips and removable with the same ✕. On send it rides the message as the `<pane-shot>` block (`paneShotBlock`, `composeOutgoing`'s fourth argument), placed after the app-state block and before the annotations — an order that is now a READING order for the model rather than a constraint on the readers, because the annotation block has a tag of its own (`<annotations>`, holding one markdown stanza per pin — so all three strips are position-independent). It used to be a hard constraint: `stripAnnBlock` matched only a position-zero preamble, so anything wedged in front of the notes silently no-opped that strip and leaked raw JSON into the transcript as the user's own words. The first version was a per-message **toggle**, and it was deleted — "it doesn't make sense": what went out was a picture nobody had seen, of a moment nobody chose, behind a switch that had to be noticed, armed and re-armed every turn, and the capture ran during the send where a failure could only degrade silently. Capturing on click answers each of those in turn — the picture is visible before it goes, the moment is the user's, a failure becomes a chip that says so, and nobody who does not press the button pays a rasterise, an encode or a file. **Seeing the picture (D286), the pass that followed the first user test — which shipped the feature and failed the user: "not obvious that it took a screenshot", "no way to preview it before sending", "not intuitive".** Four answers, all in the template. (1) A **shutter flash** — a white sheet over the photographed pane, 340ms, opacity-only, appended to `annHl.parentNode` (our `#leftview` split, the injected shadow root hosted) and animated with the Web Animations API rather than from either stylesheet; it fires on the click, BEFORE the capture, and cannot reach the capture because `cloneNode` does not clone a shadow tree. The chip's own entrance animation is the second half, for the eye that has already moved to the composer. (2) A **viewer** (`#shotview`): every thumbnail this template draws — the pending chip's and every sent turn's — is a real `<button>` built by one `shotThumbBtn`, and opens the picture full size with the path, the `viewNote` caveat that had ridden the wire since D208 with nowhere to be said, Discard (offered only while the shot is still `paneShot`, by identity) and Close; Escape leads the `escapeAction` precedence because it is modal. Clicking the picture swaps fitted ⇄ natural size with the box scrolling, because `position: fixed` is the TEMPLATE's viewport and in the sidebar that is a ~440px column a 1600px capture fits into at ~330px. (3) A **sent turn keeps its picture**: one `shotReceipt` builds the row for a live send and for a restored one, and `paneShotIn` reads `{view, viewNote}` back out of the `<pane-shot>` block so a reopened session renders the shot from `fused.rawUrl(path)` → `/api/fs/raw` (verified end-to-end), with a pruned temp file saying so in words rather than showing a broken-image glyph. (4) **Discoverability**: the button moved from among the three dropdowns (where it read as a fourth setting) to the seat beside Send, the glyph became a camera rather than a framed landscape, and the tooltip became one verb-first sentence. Shipped with it, because the same wire was leaking one surface over: **`sessionTitle`** — the chat list named conversations "<pane-shot> The user attached a pi…" and "The user annotated 1 element in the l…", since a session preview is the head of a message that BEGINS with a machine-written block and is truncated before the closing tag any strip matches on. **Visibility follows `annCapable()`**, the annotate switch's own question, so the buttons are hidden where the host shows nothing marked and removed outright by `enterNoPane`; the narrow chat view hides the BUTTON (a view showing no preview offers no features of the preview) and keeps the CHIP (it is chat content, about to be sent). **The pixels come off the SCREEN first (D621):** `shotPane` — the one rasteriser every capture shares (the button, the send-time overview, the crops) — now tries `shotNativePane` before anything else: the frame's content box in screen units (a pointer-learned top-viewport origin walked up through `frameElement` offsets, the same arithmetic as the shell's `appShot.ts`) to `POST /api/capture/shot-region`, the §45 still, with our own pin layer, ring and flash hidden for the two frames the shot takes and the shell's `data-capture-shooting` hook stamped on the frame's document. No share prompt, any browser, and WebGL maps are real pixels rather than a blank region with a caveat. Every refusal — a 409 (remembered as `shotNativeOff`, also set from the `sources().screenshot` probe), a 400 for a rect off the display, a hidden or too-small frame, a cross-origin ancestor, an unreachable server — is a `null` that falls through to the two paths that were there before: the getDisplayMedia tab share for a cross-origin pane (whose arm-time pre-warm now runs only when the native still is off) and the clone-and-rasterise for a readable one. **What was already there and was reused rather than reinvented:** the whole capture machinery (`shotPane`, `shotEncode`, the shots directory and its one `Read(//<shots>/**)` grant) is SHARED with the annotation crops (§17); and `stripPaneBlock` / `MARKER_VIEW` / `PANE_SHOT_TAG` never left, because sessions on disk carry those blocks and a restored transcript must show what the user typed rather than a screenful of JSON — so the button rewrote an existing wire format instead of inventing a second one. Reading an old wire format is a permanent obligation; writing one again is a choice this control made deliberately. **A capture that is actually a picture of the screen (D287), and the two ways it was not.** *Scroll.* `cloneNode` copies attributes and `scrollTop`/`scrollLeft` are PROPERTIES, so the clone of a scrolled page was a clone of that page at the top; `shotPane` compensated only for `win.scrollX/Y`, which covers a document that scrolls itself and no app in this repo, all of which scroll an inner `overflow: auto` box. `shotInlineStyles` now records `{clone, x, y}` for every scrolled element as it walks (the same guarded descent that already pairs a live node with its clone — a second walk would pair by index and land one element's offset on another), never for the root (`src` is `<body>`, whose scroll IS the window's), and `shotApplyScroll` puts each box back by prepending `transform: translate(-x, -y)` to each CHILD's inline style — expressible in markup, which is all the serialized SVG carries, layout-neutral so a flex scroller is not rearranged, composed with (never replacing) any transform the walk already wrote, and skipped for `position: sticky`/`fixed` children, which do not move with a scroll. *Images.* An `<svg>` loaded through an `<img>` renders with external resource loading disabled at every origin, so every `<img src="http…">` in the clone drew as a broken glyph — including one served by our own `/api/fs/raw`. `shotInlineImages` fetches each distinct URL (from `img.currentSrc` and from every `url(…)` in the clone's inline styles, which is where the computed `background-image` already sits) and rewrites it to a `data:` URL, capped at `SHOT_IMG_MAX` 30 distinct URLs and re-encoded through a canvas past `SHOT_IMG_MAX_BYTES` 256 KB; the style walk now stops `SHOT_IMG_MS` 1500 ms before the capture's deadline so the fetches have a tail. A cross-origin URL with no CORS headers falls back to drawing the already-loaded element into a canvas; a genuine failure becomes a dashed "image not captured" box the size of the picture (a broken glyph reads as a bug in the page being photographed, and removing the element would redraw the layout around a hole the screen did not have) and is counted into `shotImageNote` — a caveat that rides the pane shot AND every crop, and that is deliberately not one of `shotPaneNote`'s `incomplete` causes, because it is BOUNDED and visible where those are unbounded. `<picture><source>` and the `srcset`/`sizes` attributes are dropped so nothing re-resolves over the rewritten `src`. Order inside `shotPane` is load-bearing: styles → images → `shotRasterise` (whose own data:-URL `<img>`s would otherwise be paired against the source's real images) → scroll (so a canvas swapped for an `<img>` moves with its box). The annotation crops inherit both fixes, being cuts out of that one bitmap. **Pictures the user already HAS (D287): paste and drag-and-drop — ANY file type since D612.** Both textareas take a `paste`, and `#chat` takes a drag (four listeners, all gated on `shotDragHasAttachment`: `dataTransfer.types` containing `Files` **or** `application/x-fused-path`, with a COUNTED `dropping` class because dragenter/dragleave fire per child element); anything in either is uploaded through the existing `fused.uploadFile` into the SAME shots directory — already the one path `--allowed-tools` pre-approves a `Read` of, already pruned, already served back by `/api/fs/raw` — and becomes a chip beside the camera's. `preventDefault` fires only once a picture has actually been found, so an ordinary text paste still reaches the box. Caps: **NONE, since D617** — no count cap and no byte cap. `SHOT_ATTACH_MAX` (4 per message) went the way D615's 25 MB did: every file in a paste or a drop attaches, sequentially, each with its own chip, and there is no overflow chip left because there is nothing for it to stand in for. One byte number survives, `SHOT_ATTACH_MAX_BYTES` 4 MB, and it is a **downscale trigger** for a picture (below) rather than a limit on anything: an 8 MB PNG shows nothing its 4 MB self does not, so it is resized. The 25 MB `SHOT_ATTACH_MAX_FILE_BYTES` that governed everything else (D612) is gone, along with `shotCapFor`: a log's, a dump's or a parquet's extra bytes ARE the content, and the ceiling protected nothing that was not already protected — the shots directory prunes itself (12h/200 files), the agent's `Read` truncates a long file at its own end, and `/api/fs/upload` enforces no size limit of its own. **Over the picture cap is a DOWNSCALE, not a refusal (D613):** every image's decodability is probed (`shotPixels` — `createImageBitmap`, then an `<img>` decode), and one whose pixels are readable is re-encoded through `shotEncode`'s own ladder at `SHOT_VIEW_EDGE` (1600px, the same edge a whole-pane capture is capped at) and uploaded as that copy — original `name`, extension from `shotExt` of the new blob, a `viewNote` saying what was done, a thumbnail of what actually went. An image this engine cannot decode (.tiff, .heic) has no downscale available and so travels WHOLE, with a `size` and NO thumbnail — answering, since D615, to no cap either. **An image this engine cannot decode (.tiff, .heic) is TRANSCODED BY THE SERVER (D614):** after the raw upload the page calls `agent.py`'s new `image_to_png` action, which re-checks the path is inside SHOTS (`_in_shots` — abspath/realpath/normcase/commonpath, so `shots-evil` is refused), decodes with Pillow (first frame of a multi-frame TIFF, mode coerced to RGB/RGBA) and on macOS falls back to `/usr/bin/sips -s format png` (20 s timeout) for the HEIC Pillow cannot open without `pillow-heif`, caps the longest edge at `SHOT_PNG_EDGE` (1600, the page's own `SHOT_VIEW_EDGE`) and writes a SIBLING `.png` beside the original — a JPEG quality ladder 90→60 `.jpg` where the PNG misses `SHOT_PNG_MAX_BYTES` (4 MB) — returning `{path, width, height, bytes, source_w, source_h}` or `{error}`, never raising. On success the attachment becomes an ordinary picture: `view` is the CONVERTED path (that is what the agent Reads), `thumb` is that file through `fused.rawUrl` (a URL a reload survives), no `size`, and a `viewNote` naming both formats and both pixel sizes. On failure it keeps the bytes-and-a-glyph shape above and the note says the agent probably cannot read the format either. Nothing is deleted — the original is what the user attached and the pruner already owns the directory. Exactly ONE thing still refuses — an upload that failed — and it becomes a chip in the `{view: null, viewNote, why}` shape a failed capture already wears, `why` being one short clause the chip and the receipt print INLINE (`shotFailLabel`: "no file — could not be saved") instead of hiding it in a `title`. Wherever there is a picture to show, the 🖼/📄 glyph is not drawn: a picture or a glyph, never both. `paneShot` is now `shotAttached`, a LIST of `{kind, view, viewNote, thumb?, name?, size?}` — one list because the chip, the viewer, the ✕, the receipt, the wire block and the restore treat both kinds identically and `kind` decides only the words, with the pane keeping ONE seat inside it (a second camera click replaces it, D285's rule intact). The `<pane-shot>` payload is now always a JSON ARRAY carrying `kind` per entry, so the model can tell a picture of this pane from a photo the user brought in; `paneShotIn` reads that AND the bare object every older session holds, returning a one-element list either way, and `MARKER_IMG` ("🖼 images") joins `MARKER_ANN`/`MARKER_VIEW` in the `MARKERS` set for a wordless send of pasted pictures alone — with `MARKER_FILE` ("📄 files") beside it since D612, for the send that carried a spreadsheet and no picture at all. **The fourth `kind`, and the one attachment that is NOT a copy (D612).** `shotIsImage` no longer GATES the attachment — only which cap applies, whether a thumbnail is made, and which word the wire uses: a non-picture rides the identical pipeline as `kind: "file"`, keeps its own extension (and none when it has none), carries its `size`, wears a doc glyph that is itself the button into the viewer (no thumbnail, and the viewer drops its `<img>` for a name/path/size line). **AND THE VIEWER PREVIEWS IT IN ITS OWN TEMPLATE (D616):** the glyph is what the chip and the receipt show — always, for every file — and the CLICK is what renders the thing. `shotViewOpen` asks `GET /api/fs/stat` for the attachment and takes the left pane's own decision about it through the left pane's own two functions (`paneOfferable`: drop the `conditional` entries and the chat mode, first one wins; then `paneSrcFor`), frames `/render?path=<that template>&_file=<the attachment>` — never `/embed`, which serves the React shell and nests the target one iframe deeper — with the shell's own display-only stamps (`_preview=1`, `_nofocus=1`) and its `THUMB_SEAL` sandbox (`allow-scripts allow-same-origin`, `allow=""`, `tabindex=-1`) mirrored into the vanilla-JS markup. The frame fills the same footprint the picture gets, a "loading preview…" line stands until its `load` fires (a folder venv's first render takes seconds), and EVERY close — scrim, Close, Discard, Escape — runs `shotViewUnframe`, which writes `src` back to `about:blank`: a template is a running document, and one left mounted behind a hidden modal keeps its warm worker and its polling alive for a preview nobody is looking at. No template for the extension, or a copy the pruner has deleted, is a `null` and the viewer is exactly what it was before this existed. An IMAGE keeps the picture viewer (a template is a worse view of pixels than the pixels), a refusal has no path to frame, and there is no iframe in a chip or a receipt at all — a composer holding a dropped folder would otherwise boot a template per file to draw icon-sized pictures nobody can read, and gets a `<pane-shot>` sentence saying it is not a picture at all, is read as TEXT, and will not parse if it is a binary format. A drop that carries `application/x-fused-path` (an absolute path per line) is preferred over `files` and attaches the REAL path with NO upload — the user already has that file, the agent is likely to EDIT it next, and a copy in a 12-hour-pruned directory cannot survive that; the page then sends `read_dirs` (a JSON array, the dirnames of its real-path attachments minus the shots dir) on the same `start` call as the message, and `agent.py`'s `_attach_dirs` validates it — absolute, existing, non-root, deduplicated, and since D617 UNCOUNTED (`_ATTACH_DIRS_MAX` is gone: the dirnames dedupe, so a multi-row drop out of one folder was always one rule) — into one `_read_rule` each on the spawn line beside the standing shots-dir rule. Per TURN, because the spawn is per turn. **No fused-render surface produces that payload yet:** the explorer's row drag is pointer-driven with no `dataTransfer` at all (FS-*), so the internal-drop half is a contract the chat honours and nothing currently exercisesREMOVED (owner call): the composer's whole-pane screenshot pill.** Both composers carried a per-message toggle (`#viewshot`, `#hviewshot`) that attached one picture of the entire visible pane to the next send, as its own `<pane-shot>` wire block with its own caps and its own receipt row. It is gone — "it doesn't make sense": the question it answered ("the whole layout is wrong") is one the agent can ask about by reading the page, and the cost was a per-send rasterise, encode and uploaded file behind a toggle a user had to notice, arm and re-arm. **What stays, and why the difference matters:** the capture machinery itself (`shotPane`, `shotEncode`, the shots directory) is SHARED with the annotation crops (§17), which are the user's own act of pointing at something, so none of it moves; and `stripPaneBlock` / `MARKER_VIEW` / `PANE_SHOT_TAG` stay although nothing writes one any more, because sessions already on disk carry those blocks and a restored transcript must still show what the user typed rather than a screenful of JSON. Reading an old wire format is a permanent obligation; being able to write it is not. **Rejected:** the `throw` (an error panel for the ordinary case of a folder that is not an app); keeping the embed as a read-only browser (it is the reporting-to-nobody problem, restated as a feature); and hiding the column with CSS while leaving it in the document (the elements would stay live, `shotPane` would still rasterise them and the removed controls would still be focusable — a hidden pane is a pane).
   - **The system prompt** (`_split_system_prompt`) has a shape per pane shape, and is decided **per run, never cached**, so a folder being scaffolded into starts being described as a project the moment it becomes one. An **app folder** keeps the project wording (its HTML is an app fused-render serves through the `runPython` bridge; naming fused-render here rather than leaving it to the user's own `CLAUDE.md`, which we do not own — the D216 reliability argument). A **file** says whose page the pane is and that the viewer is never to be edited. An **ordinary folder** gets the folder-scoping instruction and **nothing about a pane** (D239): the paragraph that used to be here described fused-render's own file browser beside the chat and warned that `app_state` "reports the **browser**, not the folder", and it went with the pane it described — a prompt that tells the model what the user can see beside the conversation, when there is nothing beside the conversation, is a false claim about the screen. The **composer's placeholder** names the same three kinds and is set from the same resolution the pane already performs (stat's `is_dir`, then whether an entry html resolves) — *"Ask Claude about this **project** / **folder** / **file**…"*, with the markup shipping the kind-free *"Ask Claude…"* until stat answers; it was hardcoded to "this project", which was the wrong noun for an ordinary folder and for all 47 file keys, and the rule is the prompt's rule: the UI does not claim a kind the target does not have. That rule is **general, not just the placeholder's** — the footnote under the composer and the annotation block's own preamble both said "project" unconditionally too, so every piece of chrome that names the target reads one writer, and a test asserts no kind noun is hardcoded in the markup. The **app_state disclosure** rides the two shapes that HAVE a pane, for D235's reason (an un-announced tool is a tool that never gets called) — and only those two, since the ordinary folder is not offered the tool at all. Saying "this is a fused-render project" over `~/Downloads` is rejected as a lie that costs something — it invites the agent to hunt for a bridge that is not there and to read a folder of PDFs as a codebase.
-  - **The tool roster varies by target kind (D239).** `mcp__fused_approvals__app_state` reads the page beside the chat; a target with no pane has no such page, so the tool is **not offered** there — absent from `tools/list`, absent from the dispatch, and absent from the spawn line's pre-allowance. One switch decides all of it, and it is the **channel's own existence**: `agent.py` spawns `permission_server.py` with the app-state directory only when `_has_pane` (the same `entry_html` predicate), and the server keys both its roster and its dispatch on having that directory. A roster that could vary independently of the channel would advertise a tool the server cannot serve. **Rejected:** offering it and answering with an explanatory error — the model would call it after every edit and spend the 20-second app-state timeout discovering the same thing once per turn; and offering it and answering instantly with "there is no pane" — a tool whose only possible answer is that it does not apply is a tool that should not be in the list. The `Read` rule for the screenshot directory stays unconditional, because it is a rule about a directory and not a claim that this target can annotate.
+  - **The tool roster varies by target kind (D239).** `mcp__fused_render__app_state` reads the page beside the chat; a target with no pane has no such page, so the tool is **not offered** there — absent from `tools/list`, absent from the dispatch, and absent from the spawn line's pre-allowance. One switch decides all of it, and it is the **channel's own existence**: `agent.py` spawns `permission_server.py` with the app-state directory only when `_has_pane` (the same `entry_html` predicate), and the server keys both its roster and its dispatch on having that directory. A roster that could vary independently of the channel would advertise a tool the server cannot serve. **Rejected:** offering it and answering with an explanatory error — the model would call it after every edit and spend the 20-second app-state timeout discovering the same thing once per turn; and offering it and answering instantly with "there is no pane" — a tool whose only possible answer is that it does not apply is a tool that should not be in the list. The `Read` rule for the screenshot directory stays unconditional, because it is a rule about a directory and not a claim that this target can annotate.
 - **PT-17** **A template never spends a history entry on a value the URL already MEANS, and the guard that decides sits at ONE funnel per template rather than at each call site (D271, D272; generalises PT-15's `annmode`).** **PR-3's gesture gate cannot catch these**, because the gate is read when the write LANDS and not when boot started: a boot path continuing behind an `await` is already post-gesture, so a click anywhere during engine warm-up — the Browse button, the explorer row that chose this file — opens the gate before the seed arrives. **Absent is a value:** a missing param means its default, so writing the default over it is a no-op the runtime's byte comparison cannot see (`set(k, '')` on an absent key appends `k=`), which is what `{default: d}` (PR-3) exists to declare. An audit of **65 `fused.params.set()` call sites across 20 templates** found 39 genuine navigations — left alone, since a working Back is the whole point — and 19 writes that cost an entry for nothing, in six shapes worth recognising: a **re-entrant boot path reached through a gesture** (`latex`'s `startWorkspace` re-running the boot block on Home ▸ open project; `slides`' `openLibrary` ▸ File ▸ New blank deck); an **async callback a click started** (`latex`'s clean compile collapsing an already-collapsed drawer); a **multi-param write whose UNCHANGED half fires first**, takes the push, and leaves the real write to merely coalesce (`las`/`vector`/`pmtiles` writing `dir` before `file` when the file is picked from the folder already being browsed; `xlsx` `offset` before `sheet`; `slides` `slide` before `mode`); a **sweep rewriting every field on every submit** (`api`'s Execute); a **control clamped at its limit** (`pyramid` re-analysing an unchanged path; `pano` comparing the raw param instead of the read-back value, so a drag ending at the default wrote over an absent param); and a **write loop** (`zip`'s `params.onChange` → `openPreview` → `writeLocation`, writing the same pair straight back). The always-live controls D272 closed — a Reset that is not disabled when there is nothing to reset, a Load button over a box seeded from the resolved path, a "back to the list" that is live on a list you never left — are the same rule at the other end of the visit. **The guard goes at the funnel** because a check per call site is a check the next call site forgets — and a key the view leaves OUT of its own repaint comparison (a draft written per keystroke, like `git`'s `msg`) must never push at all, because Back across that entry clears the param while the repaint short-circuits and the stale text stays on screen. **A write's history cost is judged from the state it CAN be reached in, not the state it is normally reached in:** `git` clears `ask` at the end of every mutation and the confirmation has almost always cleared it already, so the no-op guard hides the cost — but `ask` is in the URL precisely so a pending question survives a refresh, and a page reloaded with `?ask=…` arrives with the question live and the entry pristine, so any action clicked from there clears it for real, post-gesture and post-`await`, and takes the push. `history` is outside the audit on the owner's instruction; `git` was too while its rewrite was in flight, and the reworked file has since been reviewed (D271).
 - **PT-18** **A view re-runs for the params it READS, and a listener wired straight to a reload is a bug (D356).** `params.onChange` fires on the visible snapshot of the HOST url (PR-4/LM-8), and that URL is not the pane's private property: in the single-file view the content pane and the `claude` sidebar are both children of the shell window with no param boundary between them (only the layout panes mark one, LM-3), so a param either of them writes notifies BOTH. The sidebar writes one — `annotations`, on every note made, edited or deleted — so `fused.params.onChange(load)` in the `duckdb` and `sqlite` grids re-ran their reader once per pin, and on a non-parquet file rebuilt the grid from "Loading…" while the reader was annotating it. The fix belongs in the view, not in the runtime or the writer: **compare a key of the params the view's own work is built from and return early when it has not moved** (`las`, then `duckdb`/`sqlite`; the `claude` template guards its own listener the same way). Keying on the VALUES rather than subscribing per key also makes a no-op rewrite free, and it is what lets a view carrying its state in the URL sit beside another that does the same. Order matters where a view stamps its own defaults at boot (PT-17): register the listener AFTER the stamps and snapshot the params as they then stand, or the stamp spends a reload restating what the first one already read.
-- **PT-8** `GET /api/fs/stat` carries the resolved mode list as **`templates`**: an array of `{"mode": <name>, "path": <abs template.html>, "icon": <abs icon.svg|null>}`, in order, first = default. An entry whose folder ships a `condition.py` gate (CT-12) additionally carries **`"conditional": true`** — stat only *marks* it (the gate is **not** evaluated at stat time; it may do real I/O), and the verdict arrives via `GET /api/fs/conditions` (CT-12). A conditional entry is **never the default while an unconditional entry exists**: the default is the first entry *without* `conditional`, falling back to the first (verdict-allowed) entry only when the whole list is conditional. `templates: []` when nothing applies — an unmapped file extension or a `null` binding. A **directory** always resolves at least the universal `/` key's `["_listing"]` (PT-13, D81), so it is empty only when a `null` binding disables it, whereupon the shell falls back to the built-in listing anyway (a folder must always render something). The old singular `template` field is **removed**.
-- **PT-9** **`_mode` param (shell URL):** non-default modes are selected via reserved param `_mode=<template name>` on the **shell URL** (bookmarkable, same URL-is-state pattern D40 established for the old HTML `_mode=render|source` toggle — that toggle itself is now the ordinary `["_render", "code"]` mode list, PT-12; old `_mode=source` bookmarks fall to the default, accepted break). Absent `_mode` = default = the first non-`conditional` entry (PT-8; `templates[0]` when none is conditional); selecting the default **deletes** the param (clean URLs); an unknown/stale value falls back to the default with no error. Switching swaps the iframe src to the selected template's `/render?path=<template>&_file=<file>` with a fresh document per switch. A sentinel mode may render a **shell view instead of an iframe**: `_listing` (PT-12) mounts the shell's built-in listing component (no iframe, no `_file`) in place of the preview body, selected by `_mode=_listing` like any other mode (D81). Known accepted quirk: template params (e.g. `offset`) persist on the shell URL across mode switches; a param name used differently by two modes collides — documented, not prevented.
+- **PT-8** `GET /api/fs/stat` carries the resolved mode list as **`templates`**: an array of `{"mode": <name>, "path": <abs template.html>, "icon": <abs icon.svg|null>}`, in order, first = default. An entry whose folder ships a `condition.py` gate (CT-12), or a sentinel with a server-side gate (PT-12), additionally carries **`"conditional": true`** — stat only *marks* it (the gate is **not** evaluated at stat time; it may do real I/O), and the verdict arrives via `GET /api/fs/conditions` (CT-12). A conditional entry is **never the default while an unconditional entry exists**: the default is the first entry *without* `conditional`, falling back to the first (verdict-allowed) entry only when the whole list is conditional. **One exception, `"prefer": true`:** stat may mark a conditional entry as the file's default *candidate*, and only a built-in canvas node template's entry (`canvas_widget`, `canvas_note`, `canvas_udf`; §53.2 NT-3) on a node-shaped path with `canvases_enabled` on ever carries it. Those entries also carry **`"node": true`** on every path: the shell lists such an entry only on its gate's explicit yes (a failed conditions call hides it) and never under a git snapshot. The shell holds the pane on its "checking" placeholder while that verdict is out, makes the entry the default on an explicit yes, and falls back to the ordinary default on a no, a missing verdict or a failed call. No other entry carries the key, so every other file's stat is unchanged. `templates: []` when nothing applies — an unmapped file extension or a `null` binding. A **directory** always resolves at least the universal `/` key's `["_listing"]` (PT-13, D81), so it is empty only when a `null` binding disables it, whereupon the shell falls back to the built-in listing anyway (a folder must always render something). The old singular `template` field is **removed**.
+- **PT-9** **`_mode` param (shell URL):** non-default modes are selected via reserved param `_mode=<template name>` on the **shell URL** (bookmarkable, same URL-is-state pattern D40 established for the old HTML `_mode=render|source` toggle — that toggle itself is now the ordinary `["_render", "code"]` mode list, PT-12; old `_mode=source` bookmarks fall to the default, accepted break). Absent `_mode` = default = the first non-`conditional` entry (PT-8; `templates[0]` when none is conditional; a `prefer` entry on its explicit yes, PT-8's exception); selecting the default **deletes** the param (clean URLs); an unknown/stale value falls back to the default with no error. Switching swaps the iframe src to the selected template's `/render?path=<template>&_file=<file>` with a fresh document per switch. A sentinel mode may render a **shell view instead of an iframe**: `_listing` (PT-12) mounts the shell's built-in listing component (no iframe, no `_file`) in place of the preview body, selected by `_mode=_listing` like any other mode (D81). Known accepted quirk: template params (e.g. `offset`) persist on the shell URL across mode switches; a param name used differently by two modes collides — documented, not prevented.
 - **PT-10** **Mode switcher (shell, preview header):** rendered only when `templates.length > 1`, right side of the preview header bar. *One qualification, from the listing pane's self target (FS-11): "one mode is not a choice" holds because that one mode is the ACTIVE one — so when the caller's surface has **no** active mode, a single entry still renders, because the trigger is then the only way to pick anything. Nothing is marked active in that state: no checkmark, no accent row, and the trigger names the action ("Choose view") rather than reporting a mode it is not in.* Its contents are exactly the resolved list — the **available width is never an input** to it, so a mode cannot appear or vanish as a divider is dragged (PT-15). **Icon-only buttons**, mode name via native `title` tooltip, active mode in accent color. When an entry's `icon` is `null`, the shell renders a placeholder: the first letter of the mode name in a small rounded box. The `.html` Rendered|Source pair is **not a special case**: it is the ordinary mode list `["_render", "code"]` (PT-12) riding this same switcher — `_render` gets a shell-baked eye icon (sentinels have no folder to ship `icon.svg`); `code` gets its real folder icon. The `_listing` sentinel likewise gets a shell-baked list icon (D81). **No two modes a key BINDS together may be indistinguishable in one list.** This is a constraint on the bindings (PT-7/CT-3), not on the wording — display names live in `platform/lib/mode-name.ts` and are that module's business — and it is easy to break from a distance, because a name that is not in the table falls through to a humanizer: adding a mode to a key, or naming a new template folder into a string the humanizer already produces, is enough. Dispatch keys on `mode`, so a collision breaks nothing and is invisible to every other test, which is why it needs its own: `listing/mode-labels.test.ts` derives every co-offered set from the shipped registry — per key, and per preview-pane list (FS-11/`listing/pane-modes.ts`) across its `isDir` permutations — and fails on any duplicate. *One pair used to be named alike on purpose — the `app` template and the pane-only `_app` sentinel, the same view from two surfaces, of which the pane offered exactly one carrier and never both. D264 deleted both, so the guard has no sanctioned duplicate left and the pane's list is the registry's own.*
 - **PT-11** **Icons:** a template folder may ship `icon.svg` — **monochrome** (single fill; the shell tints it via CSS `mask-image` + `currentColor`, so only alpha matters), square viewBox (24×24 suggested), legible at 16px. `icon` in the stat entry is the abs path of the `icon.svg` sitting next to the *resolved* `template.html` (the user folder's icon when a user template resolved), or `null`. The shell loads it through the existing `/api/fs/raw` endpoint — no new routes. Every built-in folder ships one. Sentinel modes (`_render`, `_listing`) have no folder, so the shell bakes their icons in (PT-12).
 - **PT-12** **Sentinel modes:** a mode name starting with `_` is a **shell sentinel** — no template folder backs it; the shell knows what it means. Server resolution special-cases sentinels: the stat entry is emitted as `{"mode": "_<name>", "path": null, "icon": null}` without touching the filesystem. The `_` prefix matches the reserved-param convention (`_mode`, `_file`). The sentinel namespace is **shell-owned**; since D73 the server keeps a **known-sentinel set** (`KNOWN_SENTINELS = {"_render", "_listing"}`, D81) and a name in that set is referenceable from **any** registry list, built-in or user — any other `_`-prefixed name is invalid (dropped + `template_error`, CT-6). Two sentinels exist:
   - **`_render`** — "render the file itself" — the default mode of the built-in `.html`/`.htm` list `["_render", "code"]`. Shell handling: iframe src `/render?path=<the file itself>` (no `_file`), shell-baked eye icon.
   - **`_listing`** — "the shell's built-in directory listing" (sortable columns + in-folder search, FS-1/§13.4, plus the optional split preview pane, FS-9..FS-15) — the default of the universal `/` directory key (PT-13, D81), and a peer mode of `.zarr/`'s `["zarr_aoi", "_listing"]`. It backs no folder and takes no `_file`: when it is the active mode the shell **mounts its Listing component in place of the preview iframe** (no iframe at all). Shell-baked list icon.
 
-  Users **can** rebind any registry key — including `.html`/`.htm` (CT-4 revised, D73) and the directory keys (D81) — dropping a sentinel, then listing it explicitly brings it back. Unknown sentinel entries (path `null`, mode not in the set) are filtered out defensively. Non-sentinel entries in the same list (e.g. `code`, `zarr_aoi`) work exactly like any template mode. Future modes are added to the server-side registry and flow through the framework normally.
-- **PT-13b** **An explorer folder has no top-bar mode control.** Directories resolve modes like anything else (PT-13), but the shell's title-bar switcher is **not rendered for a directory, full stop** — the folder's mode control is the preview pane's own (FS-10/FS-11), which sits with the thing it changes. It once carried an exception for the app-builder route, which kept the control because under that route the folder was the whole subject rather than a listing beside a preview; D262 deleted the route and the `appChrome` flag that named it, so the rule is one clause with no carve-out and `Preview.tsx` keys on `!stat.is_dir` alone. **The accepted consequence, stated rather than discovered:** nothing in the explorer switches a folder INTO one of its other modes. The pane's menu writes **`_side`** — which of the PANE's three companions is showing (Preview / Claude / Git, FS-10) — never `_mode`, so the folder itself stays on `_listing` while the pane changes. *The menu used to write `_panelMode`, which named which of the SELECTED ROW's templates the pane previewed; that switcher is retired (FS-11) and the param with it.* Two of the folder's own peers are consequently reachable without touching `_mode` at all — `claude` and `git`, which the pane borrows from the folder as companions — while its `graph`/`model_card` views are still **entered** by an explicit `?_mode=` (a typed URL, a bookmark, the file menu's **Open With**), or by a registry default that is not `_listing` (a `.zarr` store opens on `zarr_aoi`). **Getting back out is the BROWSER'S BACK BUTTON, and deliberately nothing else** (owner call). Every one of the ways in is a *navigation* — a typed `?_mode=`, a bookmark, Open With — so the navigation that got the user there is what undoes it, and it is already at the top of the window. This rule briefly shipped a second answer: the `Browse contents` chip (PT-13/D65) revealed in the explorer by an `is-exit` modifier. It is **removed**. Pinned absolutely over the template's iframe it landed on whatever that template drew in its own top-right corner — over the full-width timeline view since removed it sat across that view's own header and the newest commit — so in the folder modes people actually open it read as a stray tooltip rather than as a control. A bespoke affordance that has to be explained is worse than the standard one every user already has, and "the view must supply its own way back" was never the requirement; "the state must not be a dead end" was, and Back satisfies it. **This rule leaves a folder no bar control at all.** It briefly left one — "Open as app", which D262 made the only way into a folder's app view once cards stopped carrying `?_mode=app`, and whose gate therefore had to match the server's exactly. D264 removed the app view instead: there is no destination left for that button to guard, and a folder's modes are entered the way this rule already says every other one is. The chip keeps its **embed** reveal untouched — a different surface, where `.preview-header` and its switcher are hidden outright, so there the chip is the whole affordance rather than a second one. This is an owner call: two mode switchers in one view, a few hundred pixels apart and governing different halves, is not a choice a user should have to work out, and for a folder the pane is the explorer while its peers are opt-in tools rather than other ways of looking at the listing. Files keep the top-bar control; nothing else does.
+  *The `_node` sentinel (the canvas node view) and the conditional-sentinel mechanism that existed for it (D1490: a gate function per sentinel, `SENTINEL_CONDITIONS`) are removed (D1495): a canvas node is now drawn by three gated template folders (§53), which gate themselves with an ordinary `condition.py`. A sentinel is unconditional again; a `_node` in a user registry is an unknown sentinel (dropped + `template_error`, CT-6).*
 - **PT-13** **Directory views (D65, revised by D73 and D81):** a preview target may be a **directory**. Directories resolve through the **same registry** as files (PT-7, CT-3): a key with a **trailing `/`** binds a directory's basename, and the **universal `/` key** (zero segments, CT-3) matches *every* directory at lowest specificity. The built-in registry ships `"/": ["claude", "_listing", "git", "graph", "zarr_aoi", "model_card"]` — **`claude` leads it as of D280** — *this clause used to add that the listing's preview pane read this order for its default literally (`activePaneMode` takes the first offered mode), so the lead was what a SELECTED folder row previewed as; D460 deleted that entire reading (the pane never previews a selected row's templates any more, FS-11), so the lead's only remaining consumer of this order is the FULL-SCREEN folder route below* — which resolves "first entry without `conditional`" instead (PT-8), so `_listing` still wins there from second place and opening a folder still lands on its file table. **Dropping `_listing` rather than demoting it is what would break that** — every folder would open on a gated chat with no listing at all — so it stays, and the reorder is the whole of the change (D185 removed `preview` and D264 removed `app` — the mode and its template folder are deleted, so a folder is its listing; `model_card` joined the row with D249/§37; `graph` per MD-2; `git` per §33/D193, directory-only per D235/GT-2 and gated to a folder in a work tree; the per-path timeline mode that used to close this row is deleted (PT-14); `claude` — the one chat template since D237, which deleted the second one this key used to carry — gated only on the path existing, §7.2's `/` row and PT-14/PT-16) and `".zarr/": ["zarr_aoi", "_listing"]` — so **every** directory carries a non-empty `templates` list (≥ `["_listing"]`), and dispatch is uniform: a directory previews its default mode exactly like a file. The built-in **listing is itself a mode** — the `_listing` sentinel (PT-12) — so it rides the ordinary mode switcher (PT-10) and `_mode` selection (PT-9): a plain folder's single-mode `["_listing"]` shows the listing with no switcher; a `.zarr` store shows the listing by default with the `zarr_aoi` map joining as a `condition.py`-gated peer (CT-12) once its background verdict confirms the store (`_mode=zarr_aoi` selects it). This replaces D65's one-way `?listing=1` "Browse contents" escape hatch, which is **removed** (D81) — the only way to the listing is now the `_listing` mode. In **embed** (the preview header, hence the switcher, is hidden), a corner chip toggles the `_listing` mode (writing/deleting `_mode`) so an embedded directory preview can still reach its members. Annotate (§17) is not offered for `_listing` (no iframe to overlay) — moot in the core registry since D235, where `annotate` is bound to nothing at all, but still the rule for a user who re-binds it (§16). A directory resolves to an **empty** list only when a `null` binding disables it (CT-2); the shell then falls back to the built-in listing regardless (a folder must always render something). Users bind directory views like any other key — `"/": ["_listing", "gallery"]` lists the built-in listing plus a gallery mode for every folder (built-in names are listed explicitly — there is no splice, D94); dropping `_listing` from a list forgoes the file listing for those directories (owner call, same "user can shoot themselves" posture as D73's `.html` rebind). Accepted break: old `?listing=1` bookmarks ignore the dropped param — a plain folder still lists (its default), and a `.zarr` bookmark also lists by default now (the `zarr_aoi` map is a gated peer reached via `_mode=zarr_aoi`, not the default). Accepted break (D185): the `preview` folder-preview template is **deleted** and gone from this key, and the two ways a leftover reference surfaces are **different mechanisms** — a **`?_mode=preview` URL or bookmark** is an unknown `_mode` value, so it falls back to the default (`_listing`) **silently, with no error** per PT-9 (and lands on the listing that now carries the split pane, FS-9..FS-15, which is what such a URL was asking for); a **user registry** still listing `"preview"` is instead a dangling name per CT-6/D95 — dropped from the mode list with `template_error` naming it on the stat payload and a broken (`exists:false`) row in the Templates view (§23).
 - **PT-5** **User overrides:** DECIDED and specced as §16 (M7, extended by M8) — user template folders under `~/.fused-render/templates/` bound to extensions by `~/.fused-render/templates/registry.json`, replacing or extending the built-in mode list, using the exact same mechanism.
 
@@ -2060,7 +2074,7 @@ one gate before anything runs. Three payloads on the one `open` action:
 - **DL-1** Link shape: `fused-render://open?<kind>=<payload>`. The action
   sits in host position (`open`) and payloads are query params; the value is
   taken verbatim to end-of-string (an unencoded URL with `&`/`+` survives).
-  The scheme is the flavor's (`fused-render`, `fused-bot`).
+  The scheme is `_flavor.scheme()` (`fused-render`).
 - **DL-2** OS registration: macOS via `CFBundleURLTypes` in the py2app plist
   (scheme deliberately not branch-suffixed, like the bookmark UTI — every
   build speaks the same links), delivered to `application:openURLs:` in
@@ -10806,7 +10820,7 @@ our vocabulary, with nowhere to go. Four failures, one answer.
   with no directory is a brief an agent answers by guessing or by asking. So the
   location is a FACT when the snapshot carries it (`- The installed app: …`) and
   a TASK when it does not — and the order is the order
-  people actually install this. `/Applications/FusedRender.app` first, because
+  people actually install this. `/Applications/Fused Render.app` first, because
   the DMG is the install; then the same bundle one level in
   (`Contents/Resources/lib/python3.*/fused_render`), which is the code a fix
   session edits and not something anyone would guess from the .app; then `brew
@@ -11588,6 +11602,8 @@ and `retry_post` (whether a proxied POST to it is safely re-runnable).
   `_resolve` falls back to `sys.executable` when the folder's project venv
   isn't built yet, the same fallback `/api/run`'s builtin engine takes
   (D500), rather than blocking a POST for the minutes a venv build can take;
+  start/restart then begin that build (`installing`/`install` in the response)
+  and a watcher respawns the daemon on the venv once it exists (D1482);
   `POST /stop`
   kills the running daemon, also without touching autostart — if it's on,
   the startup hook (or a later `start`/`restart`) brings it back; if it's
@@ -11658,7 +11674,8 @@ and `retry_post` (whether a proxied POST to it is safely re-runnable).
   startup event (beside `_startup_sync_user_plugin`'s D228 precedent — never
   the pre-bind path) walks `autostart_paths()` and brings each one up,
   logging-and-skipping a folder whose manifest went dead or whose project
-  venv isn't built rather than letting one bad folder block the others or
+  venv isn't built (it starts the venv build and brings the daemon up when it
+  lands, D1482) rather than letting one bad folder block the others or
   delay server readiness. Only paths explicitly present in the autostart
   store ever come back here — a folder that was only `start()`ed, with
   autostart never turned on, does not.
@@ -12130,7 +12147,7 @@ disk and leaves only inside a zip the user chooses to send (D421's posture).
   `LOGGING_CONFIG` sets `propagate=False` on `uvicorn` and gives it its own
   stderr handler, so ASGI tracebacks, bind errors and lifespan failures went
   to a stderr nobody reads on a Finder launch (D68 claimed otherwise). Every
-  `uvicorn.Config` (`app.py`, `cli.py`, `lan.py` ×2) is passed
+  `uvicorn.Config` (`app.py`, `cli.py`, `lan.py`) is passed
   `log_config=logs.uvicorn_log_config()`: `uvicorn` and `uvicorn.error`
   propagate to root; `uvicorn.access` stays silent, because
   `server/common.py`'s middleware already writes one request line with its
@@ -12231,13 +12248,13 @@ disk and leaves only inside a zip the user chooses to send (D421's posture).
     before the user commits (PF-5).
   - CLI **`fused-render diagnose [--since 2h] [--out DIR]`**. The packaged
     app puts no `fused-render` wrapper on PATH, so support instructions give
-    `/Applications/FusedRender.app/Contents/MacOS/python -m fused_render.cli diagnose`.
+    `"/Applications/Fused Render.app/Contents/MacOS/python" -m fused_render.cli diagnose`.
 
   **Rejected:** a button in the red down card — it cannot reach a dead
   server, and in the false-positive case the moment has passed by the time
   anyone clicks.
 - **DG-19 Output, window, caps.**
-  `~/Desktop/fused-render-diagnostics-<timestamp>.zip` unless `--out` says
+  `~/Downloads/fused-render-diagnostics-<timestamp>.zip` unless `--out` says
   otherwise. Window = max(24 h, since boot), widened by `--since`.
   Unbounded logs are tailed to 512 KB; the whole bundle is capped at 64 MB.
   Paths inside files are kept as they are: they are evidence.
@@ -12411,3 +12428,816 @@ and not a sync nicety.
 - **BS-5 Out of scope.** Template-side keys written by page HTML (photos
   roots, autocad recents) — no page-level pref API exists yet. LAN phone
   per-bot seen baseline (per-device origin by nature).
+
+## 53. Canvas Node Templates — A Canvas Node As Its File's Default View (D1489, D1495)
+
+Opening a node file of a cloned canvas (`~/Fused/canvas/<env>/user/<canvas>/udf_1.py`)
+opens **that node**, as the file's default view, with the file's code one mode
+switch away. It is UDF development without the canvas on screen.
+
+Three template folders draw the four kinds of node, each the lightest way that
+kind can be drawn (D1495):
+
+| Template | Node files | How it is drawn |
+|---|---|---|
+| `canvas_widget` (53.3) | a widget (`.json`), an HTML node (`.html`) | the hosted workbench's **node page** in a frame: one request for the saved canvas, one node mounted |
+| `canvas_note` (53.4) | a note (`.md`) | here, locally: the file's markdown on the card its canvas.toml row describes |
+| `canvas_udf` (53.5) | a UDF (`.py`) | one run in Fused of the file on disk, shown as a shared UDF's link would show it |
+
+None of them frames the workbench or hydrates the canvas, and none draws
+from the sync engine; each only keeps the engine running in the background
+while it is open, so edits are pushed (NT-7). *Until D1495 one "node view" (the `_node` sentinel, a React view in
+apps/canvases) drew all four by framing the whole hosted workbench in a "node
+mode": the canvas hydrated and every UDF ran, hidden, behind the one node, and
+the view was one more frame on the sync engine, fed by its deltas. That view,
+the workbench's node mode and the per-node frame scope it needed in the sync
+engine are removed.*
+
+Two parts: per-frame pictures in the sync engine (53.1, which the canvas
+workspace still uses), and the node templates (53.2 to 53.6).
+
+**Scope.** Node files of `user/` canvases only: a UDF (`.py`), a widget
+(`.json`), an HTML node (`.html`), a note (`.md`). `team/` and `public/` copies
+get no node template at all (53.7).
+
+### 53.1 Per-frame pictures (sync engine)
+
+Today the engine keeps ONE picture of "what the embedded frame holds" per
+canvas (`_embed_view` and its bookkeeping, singular on `_SyncManager`), and no
+embed endpoint says which frame is speaking. Two frames on one canvas share
+that picture: a write by one is recorded as held by "the frame", so the other
+is never sent it, and every alternation of their generations resets the view
+(`_embed_enter`). Each frame gets its own.
+
+- **FP-1 Frame id.** The page that hosts a frame mints one id per mount
+  (`newFrameId`, `crypto.randomUUID()`), and sends it as `frame` on every
+  embed call: `POST /api/canvases/snapshot`, `POST /api/canvases/body`,
+  `GET /api/canvases/delta`, `POST /api/canvases/delta/ack`,
+  `GET /api/canvases/sync/state` and the `WS /api/canvases/sync/events`
+  query. Shape `^[A-Za-z0-9_-]{1,64}$`, else 400 (the socket closes 1008).
+  The id is the page's, never the frame's: nothing the workbench posts can
+  name another frame's record. A reload of the frame is a new generation of
+  the same record.
+- **FP-2 The default record.** A call with no `frame` uses the record `""`,
+  which always exists and is never dropped. An older page keeps working
+  unchanged, so 53.1 ships before 53.2 and 53.3 exist. `CanvasWorkspace`
+  sends an id from this build on, which also makes two workspace windows on
+  one canvas correct.
+- **FP-3 What moves into the record** (`_FrameState`, one per id, in
+  `_SyncManager._frames`): `_embed_gen`, `_embed_view`, `_view_reset_pending`,
+  `_view_from_hello`, `_view_rev`, `_delta_views`, `_delta_names`,
+  `_skip_hold`, `_cut_rev`, `_skip_recut_seq`, `_recut_after_acks`,
+  `_embed_max_seq`, `_embed_applied`, `_gen_applied_max`, `_delta_error`,
+  `_rowless`, `_fileless`, and a `seen` flag. `cut_delta`, `ack_delta`,
+  `apply_snapshot`, `apply_rename`, `apply_body`, `_embed_enter`,
+  `_embed_commit_gen` and `_refresh_view_after_write` take the record they
+  act on. No logic inside them changes: each reads and writes the same
+  fields, on a record instead of on `self`.
+- **FP-4 What stays per canvas.** `disk_rev` and everything about disk, the
+  remote, the lease, pushes and pulls; `_body_written`, `_gone_trash`,
+  `_gone_kept` (the body channel is a compare-and-swap on disk and needs no
+  picture); `_rev_times`; `_last_cut_held` (its cause is the clone's
+  `canvas.toml`, not a frame).
+- **FP-5 The fences are set per canvas and lifted per frame.** A hard pull
+  sets `_hard_fence` and `_body_fence_rev` on every record that exists. Each
+  is lifted for a record by that record's own delta ack, by its own newer
+  generation, or by the deadline. A record created after the pull starts with
+  none: its first delta is a full state of the pulled clone.
+- **FP-6 One frame's write reaches the others.** A snapshot or body that
+  changes a file bumps `disk_rev` as it does today; the writer's view is
+  re-read from disk (its own edit never comes back), every other record's
+  view is untouched, so the next cut for each of them carries the change.
+  No broadcast is added: each page already cuts a delta when `disk_rev`
+  moves. Until a frame has that delta, its own snapshot must not land: a
+  snapshot or rename of one frame that changes the clone records the
+  current `disk_rev` on every OTHER record (`other_write_rev`), and a snapshot whose `body.rev`
+  (the rev the frame had applied) is below it is bounced exactly like the
+  `cut_rev` bounce (ack `stale` + `rebuild` + `rev`, nothing written) while
+  the record's view differs from disk (its own body or rename since does not
+  count as having seen the write) — its
+  edge set would otherwise replace the other frame's (nodes and row keys
+  are already kept by its view). The first such bounce per write forces a
+  re-cut, and the ack's `rev` is that re-cut's, so the frame always has a
+  delta with ops to apply before it posts again; once it has applied one
+  (its `body.rev` at or past the write), nothing bounces. A snapshot with no `body.rev` (an older
+  workbench) is applied as before, and with one record nothing changes. A
+  row a frame sent whose file never came (`fileless`) is dropped with that
+  record (FP-8) or its new generation only when no other record still owes
+  a file for the same name.
+- **FP-7 Aggregates.** `_push` reads the union of every record's `rowless`
+  and `fileless`; a file that lands, or a node that is deleted, settles
+  `fileless` on every record. `sync_state`'s disk → embed leg is the calling
+  frame's when the request names one that has a record (the events socket
+  and the page's fallback poll do), and otherwise the record worst off among
+  those that have spoken: a refused delta first, then the furthest behind.
+- **FP-8 Lifetime.** A record is created by the first call naming its id,
+  with no view (so its first cut is a full state, the rule an unknown frame
+  already gets). It is dropped once no events socket names it and it has
+  made no call for `FRAME_DROP_S` (60 s); the rows it sent whose file never
+  came are dropped with it, as its own next generation would have. All
+  records go with the manager. At most `MAX_FRAMES` (16) per canvas, `""`
+  included: the idle record that spoke longest ago is dropped to make room,
+  and with none idle the call answers 409 `too_many_frames`. A dropped frame
+  that speaks again is a new record, exactly as a frame is to a manager that
+  restarted.
+- **FP-9** *(removed, D1495.)* A record could be scoped to one node
+  (`frame_scope`), for the node view's frame; no frame is scoped now, and a
+  `frame_scope` on a call is ignored.
+- **FP-10 The page only relays its own frame.** `CanvasWorkspace` accepts
+  `fused-embed-snapshot`, `fused-embed-rename`, `fused-embed-delta-applied`
+  and `fused-embed-delta-rejected` only when `event.source` is its frame's
+  window, as it already does for `body` and `hello`.
+- **FP-11 Idle stop is unchanged.** Presence already counts events sockets
+  per canvas, so every window of a workspace keeps the engine up, and the
+  engine stops `IDLE_STOP_S` after the last one closes.
+
+### 53.2 The node templates (shared rules)
+
+- **NT-1 Three gated folders.** `canvas_widget`, `canvas_note` and
+  `canvas_udf` are ordinary template folders (`template.html`,
+  `condition.py`, `icon.svg`; PT-6, CT-12), bound after the first entry of
+  the keys they draw: `.json` and `.html` → `canvas_widget`, `.md` →
+  `canvas_note`, `.py` → `canvas_udf` (not `.*.json`: a compound stem is
+  never a node name, so the gate could only say no). They are conditional;
+  one becomes its file's default only through PT-8's `prefer` exception
+  (NT-3). The switcher names them for what the node is: "Widget", "Note",
+  "UDF" (`platform/lib/mode-name.ts`). A user registry that drops one from a
+  key simply does not offer it there, and a user folder of the same name
+  shadows it as an ordinary template (never `node`, never `prefer`).
+- **NT-2 Gate.** Each folder's `condition.py` is one call,
+  `canvases.node_template_gate(path, KINDS)`, True only when all hold,
+  cheapest first: the `canvases_enabled` preference is on; the path is
+  `<canvases root>/<env>/user/<canvas>/<stem><ext>` by shape
+  (`canvases.node_file_shape`, no syscall), `ext` one of the four and, for
+  `.py`, a stem not starting with `_`; the folder has a `canvas.toml` of at
+  most 2 MB; it parses with a node whose name is the stem and whose file is
+  this one (`canvases.canvas_node_file`); and the node's kind is one of the
+  template's (`widget`/`html`, `note`, `udf`). Any exception is False. A
+  reference copy under `user/` passes; `team/` and `public/` never do. The
+  gates import `fused_render` (they only ever run in the server process;
+  `tests/test_templates_decoupled.py` lists the three), so the rule has one
+  definition, shared with `GET /api/canvases/node`.
+- **NT-3 Where it shows: the content pane, as the default.** Stat marks a
+  built-in node template's entry `"node": true` on every path, and
+  `"prefer": true` on a path shaped like a node file (NT-2's shape,
+  canvas.toml unread) with `canvases_enabled` on (PT-8,
+  `server.templates._mark_node_templates`). A `node` entry is listed only on
+  its gate's explicit yes: a failed conditions call neither lists it nor
+  opens it, and an in-flight one lists it (as pending) only where it is the
+  default candidate. While a preferred entry's verdict is out the content
+  pane shows the "checking" placeholder, so the code editor is never painted
+  first; on a yes the node's template renders; on a no, a missing verdict or
+  a failed call the key's ordinary default (Code for `.py`) renders, with no
+  error. Being the default, it leaves `_mode` out of the URL; picking Code
+  writes `_mode=code`, which a reload honours, and picking the node's mode
+  again deletes it (PT-9). It is a content mode, never a `_side` companion.
+- **NT-4 Live, so never under a snapshot.** Each template draws the node as
+  it stands now (the saved canvas, a run of the file on disk), never as of a
+  commit: under a git snapshot (`_snapshot`) no `node` entry is offered, and
+  the pane falls back to a mode that honours the commit.
+- **NT-5 What the page starts from.** `GET /api/canvases/node?path=<file>`
+  (no guard, nothing written): `{enabled}` alone while Canvases is off;
+  `{enabled, node: null}` for a path that is no node file; else `{enabled,
+  env, name, node, kind, file, title, style, live, reference, signed_in,
+  handle?}`. `style` is the node's canvas.toml row reduced to the keys a
+  page draws a node with (`textBoxColor`, `textBoxGradient`,
+  `textBoxScaleFactor`, `textBoxAlignment`, `widgetBackgroundColor`). The
+  page parses no paths. The three pages share
+  `templates/shared/canvas-node.js` for this and the calls below.
+- **NT-6 Header strip.** Each page opens with one strip: the node's title,
+  its kind, the canvas name, and "Open in canvas", which goes to
+  `/canvases/<env>/<name>?node=<udfName>&node_file=<file>` (the whole
+  window), and the sync line (NT-7). `canvas_widget` adds the frame's status
+  and Reload; `canvas_udf` the run's status, "Auto-run" and Run.
+- **NT-7 The sync engine runs in the background.** While a node's page is
+  open on a live clone with the environment signed in, the canvas's sync
+  engine runs (`CanvasNode.sync`, shared/canvas-node.js), so an edit to any
+  file of the folder — this one, an upstream node, canvas.toml — is pushed
+  to Fused as it is made, exactly as while the canvas page is open. The page
+  does three things and no more: `POST /api/canvases/sync/start` (again, at
+  most every 5 s, while the feed says no watcher runs or the start was
+  refused); it holds the events socket (`WS /api/canvases/sync/events`, no
+  `frame`), which is the presence that keeps the engine from its idle stop
+  (it stops `IDLE_STOP_S` after the last page of the canvas closes); and it
+  reads three facts off the feed: the strip's sync line ("Saving to Fused…",
+  "Saved to Fused", "Not saved to Fused: …", "Fused has newer changes — open
+  the canvas to pull"), a finished push (`push_seq` moved) and a change on
+  disk (`disk_rev` moved). **No page draws from the engine**: none holds a
+  frame record, asks for a delta or acks one, so the engine's embed legs are
+  idle for it. Another fused-render process owning the clone is said in the
+  line ("Synced by another Fused Render window"); that process pushes. A
+  reference copy is not cloned or adopted from here ("Reference copy — not
+  syncing"), and a signed-out environment starts nothing: a page that needs
+  Fused (`canvas_widget`, `canvas_udf`) then shows that and a way to the
+  Canvases page; `canvas_note` draws regardless.
+- **NT-8 Edit loop.** Each page turns the runtime's reload off
+  (`fused.autoReload(false)`) and follows its own file with
+  `fused.onFileChanged`: a save from the Code mode, another pane or an agent
+  shows without a reload, before any push. A save that lands while that
+  watch is still coming up makes no event, so each page looks once more
+  1.5 s after it opens. What a node reads from OTHER nodes is the canvas as
+  Fused has it saved, so an edit to an upstream node shows once the engine
+  has pushed it (NT-7): at once in `canvas_widget` (NW-6), on the next Run
+  in `canvas_udf`.
+
+### 53.3 `canvas_widget`: a widget or an HTML node
+
+- **NW-1 The frame.** `<base>/embed/node/<canvas>/<node>?fused_embed_auth=1&fused_embed_v=3`,
+  `<base>` the environment's `embed_url` (the custom environment's loopback
+  proxy when that is on) else its `base_url`, from `GET /api/canvases/status`
+  — the workspace's own sources. `referrerpolicy="origin"` (the proxy admits
+  the load by it) and the clipboard permissions, as the workspace's frame.
+- **NW-2 The bearer.** On `fused-embed-auth-ready` and
+  `fused-embed-auth-refresh` from the frame the page posts
+  `fused-embed-auth-token {accessToken, caps, publicOrigin}` at the
+  frame's exact origin, the token from `GET /api/canvases/token` (guarded).
+  `caps: []`: the node page writes nothing, so it is offered no channel,
+  except the SQL engine of NW-7 (`"sql"`, when it is installed), the UDF
+  relay of NW-9 (`"udf"` and `"udf-read"`, exactly when `"sql"` is offered) and the
+  saved canvas of NW-8 (`"canvas"`, always). Every message is accepted only from the
+  frame's window on that origin.
+- **NW-3 The file's text.** After the frame's `fused-embed-node-ready` and on
+  every change of the file, the page posts `fused-embed-node-source {node,
+  kind, text}` (`kind`: `widget` or `html`; `text` null when the file is
+  gone). The node page draws that text in place of the saved code, so an
+  edit shows before it is pushed, and so does a node not pushed yet.
+- **NW-4 The frame's state.** `fused-embed-node-state {node, status,
+  message?}` sets the strip's status: `loading`, `ready`, `missing` ("Not in
+  the saved canvas"), `error` (with its message). Reload loads the frame
+  again (the saved canvas moved). While the loader of NW-10 is up, `loading`
+  sets no status text: the loader is the one sign of loading.
+- **NW-5 A workbench without the page.** No `fused-embed-node-ready` within
+  10 s of the frame's load (or 30 s of setting its address, for a frame that
+  never loads; a ready that arrives later still shows the frame): the page says "This environment's workbench
+  cannot show a single node here yet" and offers "Open in canvas" (an older
+  deployment answers 404, which a cross-origin frame cannot be asked about).
+- **NW-6 After a push.** When the feed shows a finished push (NT-7) the page
+  posts `fused-embed-pushed {push_seq}` to the frame, which loads the saved
+  canvas again in place (NP-3): an edit to a node this one reads shows
+  without Reload.
+
+- **NW-7 The SQL engine.** With the engine installed (§55) and the frame
+  loaded from the workbench's own origin (`origin == publicOrigin`, never
+  through the embed proxy), the token message is `caps: ["sql"], sqlEngine:
+  {name, version}`; `GET /api/canvases/status` carries the same pair as
+  `sql_engine` (null when the engine is not installed; the version is package metadata, and reading it starts
+  nothing). Otherwise it is `caps: []` with no `sqlEngine`, as before, and
+  every `fused-embed-sql` message is ignored, as is one for a document that
+  was not offered it (a reload of the frame offers again with its token).
+  The frame never reaches `/api/sql/*`: this page checks each message and
+  makes the call.
+  Frame to page, `fused-embed-sql {req, op, …}`, `req` matching
+  `^[A-Za-z0-9._-]{1,128}$` (a message without one is dropped):
+  `query {sql}`; `register {name, bytes | text | handle}` (`handle`:
+  `udf:<token>`, linked, not copied); `drop {name}`; `export {name}`;
+  `insert {table, ipc, create}` (`ipc`: an Arrow IPC stream); `cancel
+  {target}` (the `req` of a running query); `reset`. Names and tables follow
+  §55.2 and are refused as `invalid_args` before any call. Page to frame,
+  `fused-embed-sql-result {req, ok: true, ipc?, bytes?}` (`ipc` for a query,
+  `bytes` for an export) or `{req, ok: false, error: {code, message}}`,
+  `code` one of `invalid_args`, `not_found`, `cancelled`, `engine_error`,
+  `too_large`, `unsupported`; a route's `{code, message}` passes through,
+  a network failure is `engine_error`, and a handler that throws still
+  answers `engine_error`. Replies are posted at the frame's exact origin
+  with the buffers transferred. Each call carries `X-Fused`.
+  The session's `scope` is this node's environment name, never anything the
+  frame sends. It is created on the first message (once per page load,
+  however many arrive together), kept alive by a call every 5 minutes, and
+  deleted on `pagehide` and when the frame loads a new document; a 404 for the session itself (the engine went
+  away) forgets it, answers that request `not_found` ("the SQL session
+  ended") and lets the next message start a new one. `reset` deletes it
+  and starts none. Deleting a session does not remove registered files:
+  they stay for the engine's life (LQ-2). SQL text and file names are never
+  logged.
+
+- **NW-8 The saved canvas.** The node page is handed the canvas as Fused
+  last had it saved, so it can draw at once and then refresh itself.
+  *Stored document:* each time the sync's remote probe asks Fused
+  for the canvas by name, the service's whole JSON answer is also written,
+  as text and atomically (temp file, then rename), to
+  `<canvas root>/.sync/<canvas>.canvas.json`, beside the sync state and
+  outside the clone, readable by the user only (0600 on POSIX; it can hold
+  parameters and tokens). It is written on every probe that succeeds (every
+  `PULL_POLL_S` while the canvas's sync runs), so it is at most one poll
+  old while it runs. A canvas no sync probes (a reference copy, or a clone
+  whose sync has not yet completed a probe) is covered by the route below.
+  A failed write changes nothing else: the probe and the sync carry
+  on as without it. Deleting or renaming the clone takes the file with it.
+  The text is opaque to this app: stored, served and relayed, never parsed
+  or logged. *Route:* `GET /api/canvases/saved?env=<env>&name=<canvas>`
+  (guarded by `X-Fused`; `env` as the other canvas routes, `name` a clone or a reference copy of
+  that env): 200 with the stored text, `application/json`, `Cache-Control:
+  no-store`, when a document is stored; 404
+  `{detail}` otherwise (not a canvas folder of that env, or nothing
+  stored and none could be fetched). With none stored, the route runs the
+  same remote probe once itself, waiting at most 15 s, and serves what it
+  stored; concurrent requests for one canvas share that one probe. With a
+  document stored the route serves it at once, and when the file is more than
+  30 s old starts one background probe for that canvas so the next open is
+  fresh. Nothing is probed when signed out, with no
+  usable CLI, or while the app quits (the answer is then 404 or the stored
+  document, quietly).
+  *Message:* the token message's `caps` also holds
+  `"canvas"` (also through the embed proxy: it is data the page could fetch
+  itself with its token). Right after the first token message of a frame
+  document (the answer to `fused-embed-auth-ready`) the page posts
+  `fused-embed-canvas {canvas, json}` at the frame's exact origin:
+  `canvas` the canvas's name, `json` the stored text or `null` when there is
+  none. The text is fetched once per frame load, in parallel with the token,
+  and a document that was replaced meanwhile gets nothing. A token refresh
+  does not send it again; a new frame document does.
+  *Updates:* the sync's probes already rewrite the stored document, so the
+  page is told when it changed rather than polling. `sync/state` and the
+  events socket carry `saved_seq`, a counter that goes up by one each time a
+  probe stores a document whose bytes differ from the one before (a remote
+  change, a pull or merge landing, this host's own push); it starts at 0 with
+  each watcher. The page re-reads `GET /api/canvases/saved` (a) when
+  `saved_seq` moves, and once on the first state it sees, and (b) after each
+  push this host made (the page still posts `fused-embed-pushed` first), and
+  re-posts `fused-embed-canvas` only when the text differs from what that
+  frame document was last sent. At most one re-read runs at a time; a change
+  heard during one makes exactly one more; none starts before the document's
+  first message, and a change heard before it is read right after it. A
+  document that was replaced meanwhile gets nothing. A canvas with no
+  running sync (a reference copy) gets the one message at load and no
+  updates. The text is never logged.
+- **NW-9 The UDF relay.** With the SQL engine offered (NW-7), the token
+  message's `caps` also holds `"udf"` and `"udf-read"` (the latter advertises
+  the formats, tiles and reads below), and the page runs UDFs of this
+  node's own canvas for the frame and answers with a handle for the result,
+  which the frame can register with the engine (NW-7 `register`, `handle`)
+  instead of carrying the bytes. *Messages from the frame* (ignored unless
+  offered; accepted only from the frame's window on its origin, like every
+  message): `fused-embed-udf {req, name, params?, fresh?, format?, tile?}`: `req` matches
+  `^[A-Za-z0-9._-]{1,128}$` (dropped otherwise), `name` is a non-empty
+  string with no `/` and not ending `.py`, `params` a plain object (default
+  `{}`), `fresh` an optional boolean, `format` one of `"parquet"` (default),
+  `"png"`, `"json"`, `"html"`, `tile` `{x, y, z}` non-negative integers with
+  `z` at most 30 (a tile run of the UDF, §54); an invalid one is answered
+  `invalid_args`. `fused-embed-udf-cancel {req}` cancels that run. *The run:*
+  `fused.workbench.udf({canvas, name, env}).run(params, {format, tile?})`
+  (§54), `format` the frame's (default `"parquet"`), with `canvas` and `env`
+  always this node's own and, for `fresh: true`, cache mode `fresh` (skip the
+  saved answer). A tile run is saved like any other run, under a key that
+  includes the tile. Nothing else is taken
+  from the frame: no canvas, no environment, no file reference, and no
+  confirmation flag; the runtime's own dialogs (batch runs, large results)
+  appear as they do for any page, and a refusal there comes back as an error.
+  *Replies* through the page's `post`: `fused-embed-udf-result {req, ok:
+  true, handle, size, contentType, version, cached, final}`: `contentType` is
+  the result's own for every format; `handle` is
+  `udf:` plus the result's token, parsed from the result's `/api/udf/results/
+  <token>` address and checked against `^(?:[0-9a-f]{64}|t[0-9a-f]{32})$`;
+  `version` the result's saved-at in milliseconds (the address's `v`), which
+  changes when the stored bytes do; `cached` true unless the answer is a
+  fresh run's; `final` false for the early answer the runtime gives from its
+  saved result before the run ends (when there is one), true for the answer
+  that ends the request. Exactly one `final: true` or one `{type, req, ok:
+  false, error: {code, message}}` ends each request, the code and message the
+  runtime's own (`declined`, `signed_out`, `cancelled`, `failed`, ...); a
+  throw still answers. A reply to an older frame document is dropped, and a
+  new frame document (or this page closing) cancels the old one's runs.
+  *Reading a result:* `fused-embed-udf-read {req, handle}` (same `req` rule)
+  is answered `fused-embed-udf-read-result {req, ok: true, bytes:
+  ArrayBuffer, contentType}`, the buffer in the transfer list, with the bytes
+  fetched from this app's own `/api/udf/results/<token>`; or `{req, ok:
+  false, error: {code, message}}`: `invalid_args` for a `handle` that is not
+  `udf:` plus a token, `not_found` for a token this page did not hand to the
+  current frame document in a `fused-embed-udf-result` (the set is emptied
+  when the frame loads a new document) or whose result is gone. Only handles
+  issued to the current document are readable; the results route itself
+  stays same-origin.
+
+- **NW-10 One loader.** From the page's first paint until the frame has
+  something of its own to show, the page shows one loader over the frame: a
+  progress bar and "Loading…", drawn by the page's static markup so nothing
+  changes look while its script starts. The frame loads underneath it. The
+  loader is taken off (the bar fills, a 180 ms fade) at the first
+  `fused-embed-node-state` whose status is not `loading` (`ready`, `missing`
+  and `error` are the frame's to draw) once `fused-embed-node-ready` has
+  arrived, in either order. A frame that sends `fused-embed-node-ready` but no
+  state at all within 2 s of it is shown as it is. It happens once per frame
+  document: a later `loading` (the canvas loading again in place, NW-6) never
+  covers what is drawn, and sets the strip's status as in NW-4. The bar only
+  moves forward: it steps at what the page can see (the node read, the
+  workbench resolved, the frame's `load`, the token sent, the frame's ready,
+  the canvas posted) and creeps between steps, never past 94% before the end.
+  Reload starts it again. Any other message of the page (signed out, an
+  error, NW-5) replaces the loader. The strip takes its height from the first
+  paint with its parts hidden until the node is read, so the loader does not
+  move when they land; it is hidden for a file that is no node. Transitions
+  are off under `prefers-reduced-motion`.
+
+### 53.4 `canvas_note`: a note
+
+- **NN-1 Local.** The page reads the file (`fused.readFile`) and the row's
+  `style` (NT-5) and draws the note itself. Drawing needs no sign-in, no
+  frame of Fused and no network (the background sync, NT-7, is beside it).
+- **NN-2 The text.** The file minus the workbench's leading header lines
+  (`<!--fused:pin=…-->` to its newline, any other `<!--fused:…-->` to the
+  first blank line), rendered with the vendored `marked`
+  (`/template-assets/marked.min.js`).
+- **NN-3 The card.** As the workbench draws a note: `textBoxColor`
+  (default `#FFF9C4`; `transparent` takes the page's own colours),
+  the top-to-bottom sheen unless `textBoxGradient` is false, 14 px ×
+  `textBoxScaleFactor`, `textBoxAlignment`, and dark or light text by the
+  card's luminance. A colour that is not a hex colour or `transparent` is
+  not used.
+- **NN-4 Nothing in a note runs.** The rendered markdown goes into a frame
+  sandboxed without `allow-scripts`; links open in a new window.
+- **NN-5 Redraw.** On every change of the file the text and the row are read
+  again and the card redrawn when either moved; so is a transparent card
+  when the theme flips. The row lives in canvas.toml, which the page's own
+  file watch does not cover: a change anywhere in the folder reaches it on
+  the engine's feed (`disk_rev`, NT-7), and without the engine (signed out)
+  the page reads again when it is focused or shown.
+
+### 53.5 `canvas_udf`: a UDF
+
+- **NU-1 One run, the value.** The page runs its file through the page
+  runtime's `fused.workbench.udf({file})` (§54): the file as it stands on
+  disk, in its canvas's environment and canvas, `format: "view"` — the
+  value, not Fused's page of it, so a table needs no frame and nothing is
+  fetched from a CDN to draw it.
+- **NU-2 What shows.** A table (`application/vnd.fused-render.table+json`)
+  in ag-Grid 34.1.1, configured as the hosted workbench does its UDF tables:
+  `themeQuartz` (with `colorSchemeDark` in a dark theme) given the page's
+  colours, every community module, a filter on each column, numbers as
+  `numericColumn`, `minWidth` 135. The library is vendored
+  (`templates/vendor/ag-grid-community.esm.min.mjs`) and imported only when
+  a table is drawn; the grid follows the app's theme while open. Past the
+  rows kept, a line says how many there were. An answer whose `hash`
+  equals the one on screen is not drawn again (only the strip changes).
+  `text/html` (a UDF's own HTML) in a frame (`sandbox="allow-scripts
+  allow-popups allow-popups-to-escape-sandbox allow-downloads"`, no
+  same-origin: the page's scripts run with no reach into the app);
+  `image/*` as an image from the result's URL; JSON and text as text;
+  anything else as its type and size with a pointer to the canvas. An error
+  shows its line and message, with the run's output opened under it. The
+  strip says "Cached" (Fused answered from its cache) and the seconds, or
+  "Saved · <age>" while fused-render's saved copy (§54.3) is on screen.
+  Fused's page for a table is an ag-Grid in a container with no height,
+  which draws as a 2 px line; that page (recognised by its `myGrid`
+  container and its ag-Grid import) is given the frame's height. A UDF's
+  own HTML is shown as returned.
+- **NU-3 When it runs.** With "Auto-run" on (the default; `autorun=0` on the
+  page's URL keeps it off): on open, and 600 ms after the file last changed
+  (NT-8's one look after opening compares the file's time with the one the
+  first run started from). On open the saved copy for the file's current
+  contents is shown at once, then replaced by the fresh answer. With
+  Auto-run off nothing runs until Run, on open as on a save. A change
+  during a run queues exactly one more. A failure to run at all (signed
+  out, no SDK, a timeout) is shown in the strip and leaves the result on
+  screen in place.
+- **NU-4 No SDK.** With a `FUSED_RENDER_FUSED_BIN` override there is no
+  interpreter to run the worker in: the run fails `unavailable` (§54.4).
+- **NU-5 A run in flight.** A bar moves under the strip, Run reads
+  "Running…" and is disabled, and the strip counts the seconds. A result
+  already on screen stays as it is, not dimmed, and the strip says
+  "previous result shown" (or "saved result shown") until the new one
+  replaces it.
+- **NU-6 Runs that are asked about first (the workbench's rules).** A UDF
+  that is a batch job, starts batch work or maps is never run without the
+  user's yes; the rule and the question are §54's (SS-5). The page adds one
+  thing: on open, with a saved answer on screen, it runs with `confirm:
+  false`, so such a UDF waits for Run instead of asking the moment the file
+  opens. With nothing saved, opening asks, as a save and Run do.
+- **NU-7 A large result is asked about first.** §54's rule (SS-6): over 50
+  MB the runtime asks; past 128 MB the run is refused with its size.
+
+### 53.6 The node page (hosted workbench)
+
+`/embed/node/<canvas>/<node>` in the workbench (`fusedlabs/application`,
+`client/src/udfrun/embed-node/`). The share page's sibling, loaded with the
+signed-in user's bearer instead of a share token, so the canvas need not be
+shared.
+
+- **NP-1 What loads.** The page's own small entry; one request for the saved
+  canvas by its name (`GET /collection/by-name/<canvas>`, bearer); the one
+  node mounted through the share page's renderer; only the UDFs the node
+  reads are run, on the user's kernel. The studio is never mounted.
+- **NP-2 Auth.** The embed handshake of the workspace's frame, unchanged
+  (`fused-embed-auth-ready` → `fused-embed-auth-token`).
+- **NP-3 Messages.** Frame → host: `fused-embed-node-ready {node}` once the
+  page has mounted, and `fused-embed-node-state {node, status, message?}` on
+  every change. Host → frame: `fused-embed-node-source {node, kind, text}`
+  (NW-3), and `fused-embed-pushed`, on which the page loads the saved
+  canvas again.
+- **NP-4 It writes nothing.** No autosave, snapshot, body or rename leaves
+  the page, and nothing is saved to the server. (With the SQL engine
+  offered, NW-7, it may also send SQL and tables to the local engine; that
+  is not a write to the canvas.)
+
+### 53.7 Out of scope
+
+`team/` and `public/` canvases, in any form. Writes from a node's page
+(params, widget state, a rename). Cloning or adopting a reference copy from
+a node's page, and pulling when Fused has newer changes: the canvas page
+does both. Running a UDF again when a node it loads was pushed. A map for a UDF that
+returns geometry (NU-1 shows the table Fused's `.html` rendering gives it).
+A form for a UDF's parameters on the node page (it runs with its defaults;
+`fused.workbench.udf` takes params, §54). Upstream and
+downstream navigation. A node chat in the page (the `claude` companion in the
+`_side` column is the chat). Moving the code editor to an error's line.
+
+### 53.8 The agent's screenshot of a node, from the file view
+
+The agent's `canvas_screenshot` tool (D1471) was answered by the canvas page
+alone. A chat working on a node while the user watched that node's own file
+was therefore asked to open the canvas for a look at something already on
+screen.
+
+- **NS-1 The file view is a page that can picture its node.** While the
+  content pane of the single-file view shows a canvas node through its node
+  template (a `node` entry, NT-3; never under a snapshot), the explorer
+  mounts the canvas page's own responder
+  (`apps/claude/shots/canvas-page-shot-responder`, moved there from
+  apps/canvases so the explorer may import it) with `node` set to the file's
+  node (`GET /api/canvases/node`). Its poll is its heartbeat, which now
+  carries `node`.
+- **NS-2 It is handed its node's requests only.** `canvas_shot_inbox` lists
+  a node page the requests with `what: "udf"` and `udf` its node, and no
+  others. The permission server counts a node page as an open page for those
+  requests alone (`_page_can_answer`): the graph, or another node, still goes
+  to the canvas page, or to the open-canvas ask when none is open, and a
+  node page turning up does not end that ask. Claims and their order
+  (focused, visible, hidden) are the canvas page's, unchanged: with both
+  open, whichever is in front answers.
+- **NS-3 The picture.** The content pane's frame as it stands, taken the way
+  the chat's Screenshot seat takes the pane (`capturePane`: the native
+  capture, else a redraw of the frame's document). Its note says it is the
+  node "as its own file shows it in the file view". A node's result sits in
+  a frame of its own (a UDF's sandboxed result page, a widget's workbench
+  frame) which only the native capture sees into: a redraw says so in the
+  note ("the node's result area … is BLANK in this picture: do not read it
+  as an empty result").
+- **NS-4 What a node's own chat means by a bare call.** With no `what`, the
+  tool means the chat's node on a node's own chat (a named `udf` means that
+  node; the canvas chat still means the graph).
+- **NS-5 The graph asked for, only the node on screen.** On a node's own
+  chat, `what: "canvas"` with no canvas page open but that node's page open
+  is answered with the node's picture, and the note says the canvas is not
+  open and the node was pictured instead. Nobody is asked to open anything.
+  With the canvas open, the graph is the graph.
+- **NS-6 The agent is told.** The tool's description and the session's
+  prompt say one node's output is also taken from that node's file open in
+  the file view, and that a node's own chat should ask for `what: "udf"`.
+
+## 54. UDF Runs — `fused.workbench.udf()` For Any Page
+
+Running a Fused UDF is a service of fused-render, not of one template: any
+page — a built-in template, a user's app — gets a handle on a UDF and runs
+it in Fused with the user's `fused login`. The canvas UDF node page (§53.5)
+is its first user.
+
+### 54.1 Why
+
+Each run used to be a new Python process: the SDK import (~0.8 s), its
+per-process setup (the realtime instance lookup, ~0.85 s) and a new TLS
+connection per request (the sync `fused.run` opens a fresh session per call)
+— ~4.5 s for a result Fused already had cached. A worker that stays up and
+runs through `fused.run_async` (one shared HTTP session) answers the same
+run in ~0.65 s, and a saved copy of the last answer is shown in
+milliseconds.
+
+### 54.2 The page API (`static/runtime.js`, `fused-workbench:start…end`)
+
+- **SS-1 Handle.** `fused.workbench.udf(ref, opts?)`: `ref` is `{file}` (a
+  UDF's `.py`; a canvas node file runs in its canvas and environment, any
+  other needs `env`), `{canvas, name, env?}` (as saved on Fused; `env`
+  defaults to the workbench environment), or `"<canvas>/<udf name>"`.
+  `opts.env` fills a missing `env`. A malformed `ref` throws `TypeError`.
+  `handle.schema()` resolves to the UDF's parameters (an OpenAPI operation,
+  the CLI's `udf-schema`).
+- **SS-2 Run.** `handle.run(params?, {format, cache, confirm, signal, tile})`
+  returns a run: `run.saved` (a Promise of a Result or null, resolving at
+  once: `await run.saved`), `run.result` (a Promise of the fresh Result;
+  awaiting the run is the same), `run.onLog(fn)` (`{stdout,
+  stderr}` when the output arrives), `run.cancel()`. `format`: `auto`
+  (default), `view` (the value as a page draws it, no page of Fused's
+  around it: a table as `application/vnd.fused-render.table+json`
+  `{columns, rows, total}` with at most 20,000 rows, an HTML string as
+  HTML, text as text, a raster as Fused's PNG, anything else as JSON),
+  `html`, `png`, `json` (the value: a table as row objects, WKB geometry as
+  WKT), `parquet` (a table's Parquet bytes). `cache`:
+  `auto` (saved copy, then a fresh run), `prefer-saved` (a saved copy ends
+  the run), `fresh` (no saved copy; Fused is asked not to answer from its
+  cache). `tile`: `{x, y, z}` (non-negative integers, `z` at most 30) makes
+  it a tile run: the SDK is called with those coordinates, the run key
+  includes them, and the result is saved like any other run's.
+- **SS-3 Result.** `{url, contentType, size, hash (the bytes' sha256), source: "saved" |
+  "fused-cache" | "fresh", savedAt, seconds, fusedCached, stdout, stderr,
+  arrayBuffer(), blob(), text(), json()}`. `url` is
+  `/api/udf/results/<token>`.
+- **SS-4 Errors.** A rejection is an `Error` with `.code`: `bad_ref`,
+  `bad_env`, `env_locked`, `signed_out`, `unavailable`, `udf_error` (with
+  `.line`, `.stdout`, `.stderr`), `declined`, `too_large`, `timeout`,
+  `cancelled`, `preview`, `failed`.
+- **SS-5 Batch and map ask first.** The worker reads the loaded UDF's code
+  with `canvas_node_exec` (the hosted workbench's classifier); a batch job,
+  batch work or a map answers `needs_confirmation` unless the request is
+  `confirmed`, and nothing runs. The runtime then asks in its own dialog (a
+  closed shadow root over the page): the workbench's title, "Do you want to
+  run this UDF?" and the paused reason, Cancel / Run. Run sends the request
+  again `confirmed`; Cancel rejects `declined` with `.reason`. `confirm:
+  false` declines without asking. Nothing is remembered.
+- **SS-6 Large results ask first.** A fresh result over 50 MB is asked
+  about ("Large data warning", Don't load / Continue anyway) before the
+  promise resolves; Don't load rejects `declined`. Past 128 MB the server
+  refuses `too_large`.
+- **SS-7 Local only, never from a thumbnail.** The login stays in the
+  server. A page rendering as a preview thumbnail is refused `preview`. The
+  hosted runtime rejects `unavailable` (docs/EXPORT.md).
+
+### 54.3 Saved results (`udf/store.py`)
+
+- **SR-1 Key.** sha256 of the environment, the account (the access token's
+  `sub`, hashed), the source (a file's path and content hash, or canvas,
+  name and the hash of the code Fused holds when no file is here, SR-4a), the params, the format and, for a tile run, the tile `x, y, z`.
+  An edit, another account, other params or another tile is another key; a
+  run without a tile has the key it had before tiles existed.
+- **SR-2 What is kept.** Only successful runs; never errors or
+  confirmation answers. A run whose loaded code does not hash to the file
+  the key was built from is not filed under the key (it is served once from
+  `tmp/`).
+- **SR-3 Bounds.** No size limits: any size is kept and nothing is
+  evicted for space. An entry older than 7 days is a miss and is removed; a
+  run of the same key replaces its entry. Clearing everything is the
+  user's (SR-5).
+- **SR-3a Where.** A canvas node file's result is kept in its canvas
+  folder, `<clone>/.fused/cache/udf/<key>.body|.json` (the `.fused/cache`
+  of §47): deleting that folder drops that one canvas's saved results.
+  Only while the folder's `.fusedignore` lists `.fused/` (seeded with the
+  other clone lines), so no push ships a result; a folder without the line
+  (external `fused` binary, reference copy, not seeded yet) and every
+  other run (a UDF by canvas and name, a .py outside a canvas) keep theirs
+  in `<home>/cache/udf/results/`. Temporary results are always in
+  `<home>/cache/udf/tmp/`. A hard pull deletes the canvas folder's saved
+  results with every other file the canvas does not have. A result is
+  fetched by token alone: the store looks where it last saw the key, then
+  in `<home>`, then in every canvas folder.
+- **SR-4 Shown as saved.** The key cannot see sibling UDFs read through
+  `fused.load`, outside data or the clock, so a saved copy is always
+  labelled saved and, under `cache: "auto"`, always followed by a run.
+- **SR-4a A UDF by name.** When the canvas's folder is on this machine
+  and holds the node file `<name>.py`, the run is that file's: its code as
+  it stands on disk, its key, its saved results (the same ones the node's
+  own page shows). An edit of the file is another key at once, pushed or
+  not. Only for a canvas with no folder here is the code on Fused alone:
+  before the key is made the worker loads the UDF (`{op: "code"}`) and
+  answers the hash of its code, and the run that follows takes that same
+  load.
+- **SR-5 Clearing.** Preferences → Advanced → Debugging → "Saved UDF
+  cache" shows the results' count and size, `<home>`'s and every canvas
+  folder's (`GET /api/udf/saved`), and Clear deletes them all (`DELETE /api/udf/saved`, guarded); the next open of
+  each UDF runs it fresh. A temporary result younger than a minute is left
+  for the hourly sweep (it may be a run's body about to be filed).
+
+### 54.4 Server (`udf/service.py`, `udf/runner.py`, `udf/_worker.py`, `server/routers/udf.py`)
+
+- **SV-1 Socket.** Runs ride `/api/udf/ws` (Origin must be this server,
+  `ws_origin_ok`; the LAN listener refuses sockets): `{op: "run" |
+  "schema" | "cancel", id, …}` (a run may carry `tile: {x, y, z}`) in, `saved` / `started` / `done` / `error`
+  / `schema` frames out. A long run never holds one of WebKit's six HTTP
+  connections. A page that leaves does not cancel its runs: they finish
+  and are saved for the next open; only `{op: "cancel"}` stops one.
+- **SV-2 Bytes.** `GET /api/udf/results/<token>` serves a result with its
+  content type and `Content-Security-Policy: sandbox allow-scripts
+  allow-popups allow-popups-to-escape-sandbox allow-downloads`, so UDF HTML
+  opened there never runs as the app. Tokens are a run key or a random one.
+- **SV-3 One worker per environment.** `[sys.executable, -m,
+  fused_render.udf._worker]` with the CLI's env (`_cli_env`); JSON lines;
+  `fused.run_async` for a realtime run, the sync call on a thread for a
+  confirmed batch run. Replaced when the signed-in account changes,
+  stopped after 20 min idle, stopped on quit (a `_stop_children` rung and
+  the server's shutdown). The SDK is never imported in the server process.
+- **SV-4 Joined runs.** Two requests with the same key, `confirmed` and
+  cache flag in flight at once share one worker run; cancelling stops the
+  worker run only for the last page waiting.
+- **SV-5 Timeouts.** 330 s for a realtime run, 3600 s once the worker
+  reports a batch kind; 120 s for a schema.
+
+## 55. Local SQL Engine For Pages
+
+DuckDB in a worker process of its own, reached over loopback routes,
+answering in Arrow IPC streams; never loaded in the server process.
+
+### 55.1 Model
+
+- **LQ-1 One engine per scope.** `scope` on `POST /api/sql/session` selects
+  the engine: sessions created with the same scope string share one worker,
+  one in-memory database and one `files/` directory; a different scope has
+  its own worker, directory, lock and idle clock. The empty scope (also what
+  a caller that passes none gets) is the default engine. At most 16 engines
+  are live at once; a session for a 17th scope answers `engine_error` 503
+  ("too many SQL engines"), while a scope that already has an engine always
+  takes more sessions. A session is one cursor of its engine's database:
+  permanent tables and files are shared by the engine's sessions; temp
+  tables, variables and cancellation are the session's own. A session's
+  statements run in order; sessions run concurrently.
+- **LQ-2 Engine death ends that engine.** Worker crash, 20 min untouched
+  with nothing waiting (each engine has its own clock), or shutdown: every
+  session id of that engine answers 404, its directory and lock are removed,
+  then its waiting requests fail `engine_error`; other engines are not
+  touched. The next `POST /api/sql/session` of that scope starts a new
+  engine. `refuse_new()` and `shutdown()` cover every engine. Deleting a
+  session closes only its cursor.
+- **LQ-3 Keepalive.** `POST …/{s}/keepalive` counts as use of the session's
+  engine, so the idle reaper leaves it.
+
+### 55.2 Routes (`server/routers/sql.py`)
+
+All guarded by `X-Fused` (GETs too); none is on the LAN allowlist.
+
+| Route | Body | Answer |
+|---|---|---|
+| `POST /api/sql/session` | `{scope?}` (≤ 256 chars; selects the engine, see LQ-1) | `{session}` |
+| `POST …/{s}/query` | `{sql, query_id?}` | Arrow IPC stream (`application/vnd.apache.arrow.stream`) |
+| `POST …/{s}/cancel` | `{query_id}` | `{}`; also for an id not started yet |
+| `POST …/{s}/keepalive` | none | `{}`; 404 `not_found` for an unknown session |
+| `PUT …/{s}/file/{name}` | raw bytes | `{}` |
+| `POST …/{s}/file/{name}/link` | `{handle}` (`udf:<token>`; `idx:` → `unsupported`) | `{}` |
+| `GET` / `DELETE …/{s}/file/{name}` | | the bytes (`application/octet-stream`, nosniff + sandbox CSP) / `{}` |
+| `POST …/{s}/arrow/{table}?create=0\|1` | Arrow IPC stream | `{}`; 1 = create or replace, 0 = append |
+| `DELETE /api/sql/session/{s}` | | `{}` |
+
+Errors are `{code, message}`: `invalid_args` 400, `engine_error` 400
+(503 while quitting, when the worker cannot start or when 16 engines are
+live), `cancelled` 400, `not_found` 404, `too_large` 413 (see below),
+`unsupported` 501 (duckdb/pyarrow missing, or a duckdb older than 1.2,
+which lacks the `allowed_directories` the lockdown of §55.4 needs). Names:
+`[A-Za-z0-9._-]{1,128}`, not `.`/`..`; tables `[A-Za-z_][A-Za-z0-9_]{0,127}`;
+`query_id` `[A-Za-z0-9._-]{1,128}`, namespaced by session (one session never
+cancels another's). A caller that disconnects mid-query cancels it. Bodies
+stream to `io/`; a result is spooled there and removed once sent.
+
+Size ceilings (environment variables, read at each request; unset, empty,
+non-numeric or not positive = the default):
+
+- `FUSED_RENDER_SQL_MAX_UPLOAD_BYTES` (default 1 GiB): a `PUT …/file/{name}`
+  or `POST …/arrow/{table}` body past it answers `too_large` (413) as soon as
+  the declared length or the bytes received pass it; the partial file is
+  removed, nothing is registered, an existing file keeps its bytes.
+- `FUSED_RENDER_SQL_MAX_RESULT_BYTES` (default 256 MiB): the server passes it
+  to the worker with each query; the worker stops writing batches once the
+  Arrow stream passes it and answers `done` with `code: "too_large"`; the
+  spool is removed and the route answers `too_large` (413). The session and
+  engine go on.
+
+Request logs never carry SQL text or a registered file or table name: the
+request line logs `/file/…` and `/arrow/…` in place of the name, and the
+engine logs nothing of a statement above debug level.
+
+### 55.3 Directory and files (`sql/runner.py`, `sql/files.py`)
+
+`<home>/cache/sql/<pid>-<hex>/` per engine (one per scope): `files/` (the worker's cwd, the
+only local directory SQL reaches), `tmp/` (temp_directory), `io/` (bodies
+in, results out; not readable from SQL); same volume as `<home>/cache/udf/`. A put
+file is `os.replace`d into place, never written in place. A link is a hard link to
+the saved result's body (a copy when linking fails), read-only on POSIX: the
+name keeps its bytes for the engine's life after the store replaces or
+expires the entry, and SQL cannot write the entry through it.
+
+`<instance>.lock` beside the directory is flocked for the engine's life and
+taken before the directory exists. The startup sweep (a thread, lean too;
+safe any time) removes a directory whose lock it can take or that has none,
+and never this process's own: two servers can share one home.
+
+### 55.4 Confinement (`sql/_worker.py`)
+
+`[sys.executable, -P, -m, fused_render.sql._worker]`, cwd the instance
+directory. In order: the protocol keeps a dup of stdout and fd 1 goes to
+stderr; duckdb/pyarrow imported, relative and cwd entries dropped from
+`sys.path`, then `chdir(files/)` (a registered `numpy.py` is never
+imported); secrets in memory only (`allow_persistent_secrets=false`, set
+before anything uses the secret manager, which is then started before the
+lockdown: started after it, the first remote read and every later one
+fail); extensions best-effort (`FUSED_RENDER_SQL_EXTENSIONS`, default
+`httpfs,spatial,h3`; `h3` from community; empty = none); `SET GLOBAL`
+temp_directory, python_enable_replacements=false, autoinstall/autoload of
+known extensions off; `SET GLOBAL TimeZone` to `FUSED_RENDER_SQL_TIMEZONE`
+when it is set and non-empty (best-effort like the rest); unset or empty,
+the engine keeps its own default, so a page's SQL sees the zone of the
+machine it runs on, and the
+variable pins it for deployments that want fixed results; then `allowed_directories=[files/, tmp/, https://]` →
+`enable_external_access=false` → `lock_configuration=true`. A probe file
+outside `files/` must be unreadable or the worker reports `ready ok:false`
+and exits. Refused afterwards: local paths outside `files/`/`tmp/` (read,
+write, ATTACH, EXPORT, glob), `http://`, `s3://`, `file://`, GDAL `/vsi…`,
+loading extension files, changing any option (so no `SET` of an engine
+option works; `SET VARIABLE` does). Open: `https://` to any host (httpfs),
+and where such a host redirects to: httpfs follows a redirect to an
+`http://` address and DuckDB has no option to stop it;
+all of `files/` to every session, CPU and memory (engine defaults).
+
+### 55.5 Worker and lifecycle
+
+JSON lines, bodies as files in `io/`: `query`/`insert` → `started` (head of
+its session's queue) → `done` (`ok`, or
+`code: engine_error | cancelled | too_large`; a `query` carries `max_bytes`);
+`cancel` interrupts only that cursor while the id runs (repeated until it
+ends, checked under a lock so it never reaches the next statement) or marks
+an id not started yet; `close` interrupts and cancels a session's queue;
+stdin EOF exits at once. Spawned by the first query/insert; stopped (stdin
+closed, killed after 2 s, directory removed) by `refuse_new()` +
+`sql-engine` in `_stop_children` and an always-on shutdown hook.

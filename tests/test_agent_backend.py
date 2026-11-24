@@ -35,6 +35,8 @@ import json
 import os
 import pathlib
 import re
+import shutil
+import stat
 import sys
 import textwrap
 import types
@@ -183,17 +185,27 @@ def test_the_error_markers_and_labels_mirror_agent_backends(agent):
     from fused_render.agent_backends import gemini as backend_gemini
     assert agent._ACCOUNT_ERROR_MARKERS["gemini"] == backend_gemini.GEMINI.account_error_markers
     assert agent._LIMIT_ERROR_MARKERS["gemini"] == backend_gemini.GEMINI.limit_error_markers
+    from fused_render.agent_backends import opencode as backend_opencode
+    assert agent._ACCOUNT_ERROR_MARKERS["opencode"] == backend_opencode.OPENCODE.account_error_markers
+    assert agent._LIMIT_ERROR_MARKERS["opencode"] == backend_opencode.OPENCODE.limit_error_markers
+    from fused_render.agent_backends import cursor as backend_cursor
+    assert agent._ACCOUNT_ERROR_MARKERS["cursor"] == backend_cursor.CURSOR.account_error_markers
+    assert agent._LIMIT_ERROR_MARKERS["cursor"] == backend_cursor.CURSOR.limit_error_markers
     assert agent._BACKEND_LABELS == {"claude": backend_claude.CLAUDE.label,
                                      "copilot": backend_copilot.COPILOT.label,
                                      "codex": backend_codex.CODEX.label,
-                                     "gemini": backend_gemini.GEMINI.label}
+                                     "gemini": backend_gemini.GEMINI.label,
+                                     "opencode": backend_opencode.OPENCODE.label,
+                                     "cursor": backend_cursor.CURSOR.label}
     assert set(agent.BACKENDS) == set(agent._BACKEND_LABELS)
     assert set(agent._ACCOUNT_ERROR_MARKERS) == set(agent.BACKENDS)
     assert set(agent._LIMIT_ERROR_MARKERS) == set(agent.BACKENDS)
     # A new non-Claude chat's model pill: each catalog row's default.
     assert agent._NEW_CHAT_MODELS == {"copilot": backend_copilot.COPILOT.default_model,
                                       "codex": backend_codex.CODEX.default_model,
-                                      "gemini": backend_gemini.GEMINI.default_model}
+                                      "gemini": backend_gemini.GEMINI.default_model,
+                                      "opencode": backend_opencode.OPENCODE.default_model,
+                                      "cursor": backend_cursor.CURSOR.default_model}
     # Every backend with no fused-minted id is a non-Claude one, and every
     # non-Claude one here mints its own.
     assert set(agent._SELF_MINTED_ID_BACKENDS) == set(agent.BACKENDS) - {"claude"}
@@ -223,10 +235,19 @@ def test_copilot_account_text_names_copilots_fix_and_claudes_is_unchanged(agent)
     assert agent._account_error("premium request quota hit", "copilot") == (
         "Your GitHub Copilot plan's request budget was reached. Wait for it to "
         "reset, or upgrade the plan, then try again. (premium request quota hit)")
+    # The headless CLI's expired-login line names no `/login`; still a sign-in fix.
+    # One marker per input, so neither can be dropped unnoticed.
+    assert agent._account_error("OAuth session expired and could not be refreshed"
+                                ).startswith("Claude Code isn't logged in.")
+    assert agent._account_error("this login reached its time limit and cannot be renewed"
+                                ).startswith("Claude Code isn't logged in.")
+    # Not the bare opener: a tool says that about its own credentials.
+    assert agent._account_error("failed to authenticate to s3://bucket") == (
+        "failed to authenticate to s3://bucket")
     # Claude's, byte for byte.
     assert agent._account_error("/login") == (
-        "Claude Code isn't logged in. Open a terminal, run `claude`, type /login "
-        "and finish the sign-in, then start a new chat here. Help: "
+        "Claude Code isn't logged in. Sign in from Preferences → Agents (or "
+        "run `claude auth login` in a terminal), then start a new chat here. Help: "
         "https://render.fused.io/#troubleshooting-login (/login)")
     assert agent._account_error("usage limit reached") == (
         "Your Claude plan's usage limit was reached. Wait for it to reset, or "
@@ -296,7 +317,8 @@ def test_every_prompt_shape_says_a_blocked_turn_must_park_on_a_card(
         claude = agent._appended_prompt(target, pane)
         assert rule in claude and "`AskUserQuestion`" in claude, target
         # ... and the tool is for a BLOCKED turn only, never a closing flourish.
-        assert "only when you truly cannot proceed" in claude, target
+        assert ("only when you truly cannot proceed without the answer. Pacing "
+                "a conversation") in claude, target
         # ... and a user who answers a card with a question gets a plain-text
         # reply first, not the same card again.
         assert "answer it in plain text first" in claude, target
@@ -467,6 +489,49 @@ def _fresh_copilot_run(agent, file, name="20261016-130000-aaa", rows=()):
     return run_dir
 
 
+def test_a_run_started_at_a_moved_clones_old_path_is_live_in_the_clone(agent, tmp_path):
+    """A canvas clone moved while its session ran (D1479): the run's target
+    still names the old path, now a link to the clone. The canvas sync asks
+    about the clone's own folder and must find the session there."""
+    clone = tmp_path / "unstable" / "user" / "alpha"
+    clone.mkdir(parents=True)
+    (tmp_path / "unstable" / "alpha").symlink_to(os.path.join("user", "alpha"))
+    old_file = str(tmp_path / "unstable" / "alpha" / "udf.py")
+    run_dir = _fresh_copilot_run(agent, old_file, rows=(
+        {"type": "user", "message": {"role": "user", "content": "hi"}},))
+    name = os.path.basename(run_dir)
+    assert agent._live_session_in(str(clone)) == {"run_id": name}
+    assert agent._live_run_in(str(clone))["run_id"] == name
+    other = tmp_path / "unstable" / "user" / "beta"
+    other.mkdir()
+    assert agent._live_session_in(str(other)) == {"run_id": ""}
+
+
+def test_every_open_turn_in_a_folder_is_listed_with_the_sessions_it_answers_to(agent, tmp_path):
+    """Two sessions mid-turn in one canvas clone: the sync's turn end asks
+    for a turn of a session OTHER than the stopping one, so it needs every
+    live run, each with its own conversation id and the one it resumed."""
+    clone = tmp_path / "unstable" / "user" / "alpha"
+    clone.mkdir(parents=True)
+    user = {"type": "user", "message": {"role": "user", "content": "hi"}}
+    first = _fresh_copilot_run(agent, str(clone / "a.py"), name="20261016-130000-aaa",
+                               rows=({"type": "system", "session_id": "sess-a"}, user))
+    second = _fresh_copilot_run(agent, str(clone), name="20261016-130500-bbb", rows=(user,))
+    with open(os.path.join(second, "meta.json")) as fh:
+        meta = json.load(fh)
+    meta["resumed_from"] = "sess-b"
+    with open(os.path.join(second, "meta.json"), "w") as fh:
+        json.dump(meta, fh)
+    runs = list(agent._live_runs_in(str(clone)))
+    assert [r["run_id"] for r in runs] == [os.path.basename(second), os.path.basename(first)]
+    assert runs[0]["sessions"] == {"sess-b"} and runs[1]["sessions"] == {"sess-a"}
+    # `_live_run_in` still answers the newest one.
+    assert agent._live_run_in(str(clone))["run_id"] == os.path.basename(second)
+    other = tmp_path / "unstable" / "user" / "beta"
+    other.mkdir()
+    assert list(agent._live_runs_in(str(other))) == []
+
+
 def test_an_errored_first_turn_still_records_before_naming(agent, target):
     """The `recorded` latch skips an errored poll; the settings record does
     not — the id goes out on that poll all the same."""
@@ -508,7 +573,37 @@ def test_a_fresh_copilot_run_is_found_by_file_then_by_id(agent, target):
     _out(run_dir, [{"type": "system", "subtype": "init", "session_id": SID_COPILOT},
                    {"type": "user", "message": {"role": "user", "content": "hi"}}])
     assert agent._live_host(file, SID_COPILOT) == {"run_id": name}
-    assert agent._live_run(file, SID_COPILOT) == {"run_id": name, "backend": "copilot"}
+    found = agent._live_run(file, SID_COPILOT)
+    found.pop("turn_at")
+    assert found == {"run_id": name, "backend": "copilot"}
+
+
+def test_a_session_is_found_from_its_target_s_folder(agent, tmp_path):
+    """One session = one host. The chat page's target moved from the app's
+    entry file to its folder while the host (and a background subagent) was
+    alive: the probe with the new target and the same session must find that
+    host, or the caller starts a second `claude --resume` on the session."""
+    app = tmp_path / "mf-portfolio"
+    app.mkdir()
+    run_dir = _fresh_copilot_run(agent, str(app / "index.html"), rows=(
+        {"type": "system", "subtype": "init", "session_id": SID_COPILOT},
+        {"type": "user", "message": {"role": "user", "content": "hi"}}))
+    name = os.path.basename(run_dir)
+    assert agent._live_host(str(app), SID_COPILOT) == {"run_id": name}
+    found = agent._live_run(str(app), SID_COPILOT)
+    assert found["run_id"] == name
+    # An unrelated target is no match: a fork records its parent session in
+    # `resumed_from`, so the session alone must not adopt another chat's run.
+    assert agent._live_host(str(tmp_path / "elsewhere"), SID_COPILOT) == {"run_id": ""}
+    # Nor is a sibling file: neither is the folder of the other.
+    assert agent._live_host(str(app / "other.html"), SID_COPILOT) == {"run_id": ""}
+    # No session id: the target still decides, and a mismatch finds nothing.
+    assert agent._live_host(str(app)) == {"run_id": ""}
+    assert agent._live_run(str(app))["run_id"] == ""
+    # Another session on the same file is not this session's host.
+    other = "00000000-0000-4000-8000-00000000beef"
+    assert agent._live_host(str(app / "index.html"), other) == {"run_id": ""}
+    assert agent._live_run(str(app / "index.html"), other)["run_id"] == ""
 
 
 def test_send_keeps_the_session_id_the_copilot_host_wrote(agent, target, home,
@@ -581,7 +676,8 @@ def test_start_leaves_launch_json_for_the_headsup_fork(agent, target, tmp_path,
 def test_the_host_request_keys_are_session_hosts_plus_two(agent, target, home,
                                                           tmp_path, monkeypatch):
     """What copilot_host.py codes against: session_host's keys + argv + backend
-    (`strict_mcp` is session_host's own, the lean-session switch)."""
+    (`strict_mcp` is session_host's own, the lean-session switch;
+    `canvas_clone` tells a host whether to post the canvas sync's hooks)."""
     file, _workdir = target
     _prefs(home, copilot_enabled=True)
     _copilot_bin(tmp_path, monkeypatch)
@@ -590,7 +686,8 @@ def test_the_host_request_keys_are_session_hosts_plus_two(agent, target, home,
     req, _ = _req_of(agent, res)
     assert set(req) == {"agent", "run_dir", "file", "cwd", "pane", "cli_mode",
                         "session_id", "model", "effort", "extra_read_dirs",
-                        "new_session_id", "argv", "backend", "strict_mcp"}
+                        "new_session_id", "argv", "backend", "strict_mcp",
+                        "canvas_clone"}
 
 
 # ------------------------------------------------------- the gate (D17, #10)
@@ -752,16 +849,18 @@ def test_copilot_argv_composition(agent, target, home, tmp_path, monkeypatch):
     # Same prompt as Claude's --append-system-prompt, with the pane tool in
     # Copilot's MCP spelling (`<server>-<tool>`, §10).
     assert agent._appended_prompt(file, True, "copilot").replace(
-        "mcp__fused_approvals__", "fused_approvals-") in agent_md
-    assert "fused_approvals-app_state" in agent_md
-    assert "mcp__fused_approvals__" not in agent_md
+        "mcp__fused_render__", "fused_render-") in agent_md
+    assert "fused_render-app_state" in agent_md
+    assert "mcp__fused_render__" not in agent_md
     skills = run_dir / "plugin" / "skills"
     assert skills.is_symlink() and sorted(os.listdir(skills)) == ["a", "b"]
     # mcp.json: the pane tools only (D4) — `--no-approve` on the server argv.
     with open(run_dir / "mcp.json") as fh:
-        server = json.load(fh)["mcpServers"]["fused_approvals"]
+        server = json.load(fh)["mcpServers"]["fused_render"]
     assert "--no-approve" in server["args"]
     assert agent._state_dir(str(run_dir)) in server["args"]
+    # Never deferred behind Copilot's tool search, and no Claude-only key.
+    assert server["deferTools"] == "never" and "alwaysLoad" not in server
 
 
 def test_copilot_argv_without_a_pane_has_no_mcp_and_no_write_grant(
@@ -1290,7 +1389,8 @@ def test_registry_running_reads_every_root(agent, target):
         with open(os.path.join(sessions_dir, "p.json"), "w") as fh:
             json.dump({"pid": os.getpid(), "sessionId": "s-" + backend,
                        "cwd": workdir, "status": "busy"}, fh)
-    assert agent._registry_running(workdir) == {"s-claude", "s-copilot", "s-codex", "s-gemini"}
+    assert agent._registry_running(workdir) == {"s-claude", "s-copilot", "s-codex", "s-gemini",
+                                                "s-opencode", "s-cursor"}
 
 
 def test_defaults_carry_the_backend(agent, target, home):
@@ -1606,6 +1706,21 @@ def test_set_mode_writes_control_request_and_host_json_without_a_turn(agent, tmp
     assert agent._set_mode("nope", "auto") == {"error": "no such run"}
 
 
+def test_set_mode_refuses_a_breakout_run(agent, tmp_path, send_env):
+    run_dir = _live_run(agent, tmp_path, backend="claude", mode="default")
+    meta_path = os.path.join(run_dir, "meta.json")
+    with open(meta_path) as fh:
+        meta = json.load(fh)
+    meta["breakout"] = True
+    with open(meta_path, "w") as fh:
+        json.dump(meta, fh)
+    assert agent._set_mode("run-1", "acceptEdits") == {
+        "error": "Breakout chats stay in Ask mode", "reason": "breakout_locked"}
+    assert _inbox_rows(run_dir) == []
+    with open(os.path.join(run_dir, "host.json")) as fh:
+        assert json.load(fh)["mode"] == "default"
+
+
 def test_set_mode_copilot_plan_refused_and_accept_edits_respawns(agent, tmp_path, send_env):
     _live_run(agent, tmp_path, backend="copilot", mode="default")
     assert agent._set_mode("run-1", "plan")["reason"] == "unsupported"
@@ -1618,6 +1733,46 @@ def test_set_mode_action_records_the_permission(agent, tmp_path, send_env, home)
     assert out == {"ok": True, "mode": "auto"}
     with open(os.path.join(home["unnested"], *agent.SESSION_SETTINGS)) as fh:
         assert json.load(fh)[SID_COPILOT]["permission"] == "auto"
+
+
+def _parked_card(agent, run_dir, monkeypatch, req_id="req-1"):
+    # Live without a pid file: never write this worker's own pid where code
+    # may later signal it (writing-tests-that-dont-flake rule 9).
+    monkeypatch.setattr(agent, "_alive", lambda _run_dir: True)
+    perm = agent._perm_dir(run_dir)
+    os.makedirs(perm, exist_ok=True)
+    with open(os.path.join(perm, req_id + ".req.json"), "w") as fh:
+        json.dump({"id": req_id, "tool": "Bash", "input": {"command": "ls"}}, fh)
+    return req_id
+
+
+@pytest.mark.parametrize("backend", ["claude", "gemini", "cursor"])
+def test_a_card_that_moves_the_mode_lets_the_picker_move_it_back(agent, tmp_path, send_env,
+                                                                  monkeypatch, backend):
+    """PR #2383 review: "Allow, and stop asking" moves the LIVE session's
+    mode, but host.json kept the spawn mode, so picking Ask afterwards read
+    as no change and sent nothing; the session kept auto-approving."""
+    run_dir = _live_run(agent, tmp_path, backend=backend, mode="default")
+    req = _parked_card(agent, run_dir, monkeypatch)
+    assert agent._decide("run-1", req, "allow", "once", mode="auto")["mode"] == "auto"
+    with open(os.path.join(run_dir, "host.json")) as fh:
+        assert json.load(fh)["mode"] == "auto"
+    assert agent._set_mode("run-1", "prompt") == {"ok": True, "mode": "prompt"}
+    assert [r["request"] for r in _inbox_rows(run_dir)] == [
+        {"subtype": "set_permission_mode", "mode": "default"}]
+
+
+def test_a_card_records_only_a_mode_the_host_really_moves(agent, tmp_path, send_env,
+                                                          monkeypatch):
+    """OpenCode never moves its mode on a card (a respawn), and Copilot's
+    "accept edits" narrows to the card's own tool: host.json keeps its mode."""
+    for backend, mode in (("opencode", "auto"), ("copilot", "acceptEdits")):
+        shutil.rmtree(os.path.join(agent.RUNS, "run-1"), ignore_errors=True)
+        run_dir = _live_run(agent, tmp_path, backend=backend, mode="default")
+        req = _parked_card(agent, run_dir, monkeypatch)
+        agent._decide("run-1", req, "allow", "once", mode=mode)
+        with open(os.path.join(run_dir, "host.json")) as fh:
+            assert json.load(fh)["mode"] == "default", backend
 
 
 # ================================================== Codex (CODEX_BACKEND.md)
@@ -1719,6 +1874,43 @@ def test_the_codex_command_menu_is_its_own(agent, target, tmp_path, monkeypatch)
     assert agent._commands(file) == claude_menu
 
 
+def test_a_hookless_backends_turn_in_a_canvas_clone_starts_the_sync(
+        agent, home, tmp_path, monkeypatch):
+    """Codex, Gemini and OpenCode have no canvas hook (Claude's CLI hooks,
+    Copilot's host): `_start` itself tells the sync a turn begins in the
+    clone, so its watcher runs with no canvas page open. Claude and Copilot
+    say it themselves, and a target outside a clone says nothing."""
+    import types
+    root = tmp_path / "canvases"
+    clone = root / "unstable" / "user" / "alpha"
+    clone.mkdir(parents=True)
+    (clone / "a.py").write_text("x = 1\n")
+    monkeypatch.setattr(agent, "_canvases_root", lambda: str(root))
+    told = []
+    monkeypatch.setitem(sys.modules, "fused_render.canvases", types.SimpleNamespace(
+        session_turn_start=lambda path, backend="": told.append((path, backend))))
+    agent._canvas_turn_start(str(clone / "a.py"), "codex")
+    agent._canvas_turn_start(str(clone), "gemini")
+    agent._canvas_turn_start(str(clone), "opencode")
+    agent._canvas_turn_start(str(clone), "claude")
+    agent._canvas_turn_start(str(clone), "copilot")
+    agent._canvas_turn_start(str(tmp_path / "proj" / "index.html"), "codex")
+    assert told == [(str(clone), "codex"), (str(clone), "gemini"), (str(clone), "opencode")]
+    # ...and `_start` is where it is said.
+    _prefs(home, codex_enabled=True)
+    _codex_bin(tmp_path, monkeypatch)
+    monkeypatch.setitem(agent._HOST_FILES, "codex", _stub_host(tmp_path))
+    del told[:]
+    res = agent._start(str(clone / "a.py"), "hi", "", "gpt-6-luna", "high", "acceptEdits",
+                       has_pane=False, backend="codex")
+    assert "error" not in res, res
+    assert told == [(str(clone), "codex")]
+    # A sync that raises never fails the turn.
+    monkeypatch.setitem(sys.modules, "fused_render.canvases", types.SimpleNamespace(
+        session_turn_start=lambda *a, **k: 1 / 0))
+    agent._canvas_turn_start(str(clone), "codex")
+
+
 def test_a_fresh_codex_chat_learns_its_id_from_the_stream(
         agent, target, home, tmp_path, monkeypatch):
     """D2: Codex mints the thread id in `thread/start`, so a fresh chat has
@@ -1743,7 +1935,8 @@ def test_a_fresh_codex_chat_learns_its_id_from_the_stream(
     assert req["cli_mode"] == "acceptEdits"
     assert set(req) == {"agent", "run_dir", "file", "cwd", "pane", "cli_mode",
                         "session_id", "model", "effort", "extra_read_dirs",
-                        "new_session_id", "argv", "backend", "strict_mcp"}
+                        "new_session_id", "argv", "backend", "strict_mcp",
+                        "canvas_clone"}
     with open(os.path.join(run_dir, "launch.json")) as fh:
         assert json.load(fh)["backend"] == "codex"
     with open(os.path.join(run_dir, "meta.json")) as fh:
@@ -1902,10 +2095,10 @@ def test_codex_argv_composition(agent, target, home, tmp_path, monkeypatch):
         key, _, value = o.partition("=")
         parsed[key] = tomllib.loads("v = " + value)["v"]
     with open(run_dir / "mcp.json") as fh:
-        server = json.load(fh)["mcpServers"]["fused_approvals"]
-    assert parsed == {"mcp_servers.fused_approvals.command": server["command"],
-                      "mcp_servers.fused_approvals.args": server["args"],
-                      "mcp_servers.fused_approvals.env": server["env"]}
+        server = json.load(fh)["mcpServers"]["fused_render"]
+    assert parsed == {"mcp_servers.fused_render.command": server["command"],
+                      "mcp_servers.fused_render.args": server["args"],
+                      "mcp_servers.fused_render.env": server["env"]}
     assert "--no-approve" in server["args"]
     assert agent._state_dir(str(run_dir)) in server["args"]
     assert server["env"]["FUSED_RENDER_TERMINAL_ORIGIN"] == "http://127.0.0.1:9"
@@ -1933,7 +2126,7 @@ def test_codex_argv_without_a_pane_or_terminal_is_bare(agent, target, home,
     argv = agent._codex_argv(str(run_dir), False, None, "", "", "", [], file)
     assert len(argv) == 8
     with open(run_dir / "mcp.json") as fh:
-        args = json.load(fh)["mcpServers"]["fused_approvals"]["args"]
+        args = json.load(fh)["mcpServers"]["fused_render"]["args"]
     assert agent._state_dir(str(run_dir)) not in args
 
 
@@ -2004,6 +2197,48 @@ def test_codex_spawn_env(agent, home, tmp_path, monkeypatch):
     assert agent._spawn_env(backend="codex")["PATH"].split(os.pathsep)[0] == "/usr/bin"
     # Claude's env is untouched.
     assert agent._spawn_env()["CLAUDE_CODE_ENABLE_SDK_FILE_CHECKPOINTING"] == "1"
+
+
+def test_claude_child_env_enables_the_artifact_tools(agent, monkeypatch):
+    """`claude -p` runs as the sdk-cli entrypoint, where the CLI keeps the
+    Artifact tools off unless CLAUDE_CODE_ARTIFACT is truthy."""
+    monkeypatch.delenv("CLAUDE_CODE_ARTIFACT", raising=False)
+    assert agent._spawn_env("chat")["CLAUDE_CODE_ARTIFACT"] == "1"
+
+
+def test_an_explicit_artifact_opt_out_is_kept(agent, monkeypatch):
+    monkeypatch.setenv("CLAUDE_CODE_ARTIFACT", "0")
+    assert agent._spawn_env("chat")["CLAUDE_CODE_ARTIFACT"] == "0"
+
+
+@pytest.mark.parametrize("backend", ["codex", "gemini", "copilot"])
+def test_other_engines_do_not_get_the_artifact_flag(agent, monkeypatch, backend):
+    monkeypatch.setenv("CLAUDE_CODE_ARTIFACT", "1")
+    monkeypatch.delenv("COPILOT_GITHUB_TOKEN", raising=False)
+    monkeypatch.setattr(agent, "_gh_bin", lambda path: "")
+    monkeypatch.setattr(agent, "_gh_token", lambda gh, env=None: "")
+    assert "CLAUDE_CODE_ARTIFACT" not in agent._spawn_env("chat", backend=backend)
+
+
+def test_claude_child_env_enables_the_artifact_tools(agent, monkeypatch):
+    """`claude -p` runs as the sdk-cli entrypoint, where the CLI keeps the
+    Artifact tools off unless CLAUDE_CODE_ARTIFACT is truthy."""
+    monkeypatch.delenv("CLAUDE_CODE_ARTIFACT", raising=False)
+    assert agent._spawn_env("chat")["CLAUDE_CODE_ARTIFACT"] == "1"
+
+
+def test_an_explicit_artifact_opt_out_is_kept(agent, monkeypatch):
+    monkeypatch.setenv("CLAUDE_CODE_ARTIFACT", "0")
+    assert agent._spawn_env("chat")["CLAUDE_CODE_ARTIFACT"] == "0"
+
+
+@pytest.mark.parametrize("backend", ["codex", "gemini", "copilot"])
+def test_other_engines_do_not_get_the_artifact_flag(agent, monkeypatch, backend):
+    monkeypatch.setenv("CLAUDE_CODE_ARTIFACT", "1")
+    monkeypatch.delenv("COPILOT_GITHUB_TOKEN", raising=False)
+    monkeypatch.setattr(agent, "_gh_bin", lambda path: "")
+    monkeypatch.setattr(agent, "_gh_token", lambda gh, env=None: "")
+    assert "CLAUDE_CODE_ARTIFACT" not in agent._spawn_env("chat", backend=backend)
 
 
 def test_the_codex_host_file_is_picked_by_backend(agent):
@@ -2215,7 +2450,8 @@ def test_the_gemini_prompt_never_speaks_claude(agent, home, tmp_path, monkeypatc
     D9, `_NO_PREAPPROVE_BACKENDS`). The context dir spells the pane tool by
     its bare name, since that is how Gemini offers an MCP tool."""
     canvases = tmp_path / "canvases"
-    clone = canvases / "c1"
+    # `<root>/<env>/user/<name>`: only a fused-render clone gets the tool (D1471).
+    clone = canvases / "prod" / "user" / "c1"
     clone.mkdir(parents=True)
     (clone / "index.html").write_text("<html></html>")
     monkeypatch.setenv("FUSED_RENDER_CANVASES_DIR", str(canvases))
@@ -2235,7 +2471,7 @@ def test_the_gemini_prompt_never_speaks_claude(agent, home, tmp_path, monkeypatc
         assert body.endswith(agent._blocked_note("gemini"))
     assert agent._blocked_note("gemini") == agent._blocked_note("copilot")
     assert agent._fused_cli_note("gemini") == agent._fused_cli_note("codex")
-    assert agent._NO_PREAPPROVE_BACKENDS == ("codex", "gemini")
+    assert agent._NO_PREAPPROVE_BACKENDS == ("codex", "gemini", "opencode", "cursor")
     run_dir = tmp_path / "run"
     run_dir.mkdir()
     ctx = agent._gemini_context_dir(str(run_dir), str(page), True)
@@ -2244,8 +2480,8 @@ def test_the_gemini_prompt_never_speaks_claude(agent, home, tmp_path, monkeypatc
     # The model-facing MCP name is `mcp_<server>_<tool>` (single underscores:
     # Gemini's `generateValidName` of `<server>_<tool>`), never Claude's
     # `mcp__<server>__<tool>` and never the bare tool name alone.
-    assert "mcp__fused_approvals__" not in text
-    assert "mcp_fused_approvals_app_state" in text
+    assert "mcp__fused_render__" not in text
+    assert "mcp_fused_render_app_state" in text
     assert not claude_only.search(text)
     # A canvas target (D235): the GEMINI.md names `canvas_screenshot`, so the
     # pane server must offer it — mcp.json is written even with no pane and
@@ -2257,10 +2493,10 @@ def test_the_gemini_prompt_never_speaks_claude(agent, home, tmp_path, monkeypatc
     canvas_run.mkdir()
     agent._gemini_argv(str(canvas_run), False, "default", SID_GEMINI, "", "", [],
                        str(clone / "index.html"))
-    assert "mcp_fused_approvals_canvas_screenshot" in \
+    assert "mcp_fused_render_canvas_screenshot" in \
         (canvas_run / "gemini" / "GEMINI.md").read_text()
     with open(canvas_run / "mcp.json") as fh:
-        server = json.load(fh)["mcpServers"]["fused_approvals"]
+        server = json.load(fh)["mcpServers"]["fused_render"]
     assert any(a.startswith("--canvas-shots=") for a in server["args"])
     # ...and a plain file with neither stays without one.
     plain_run = tmp_path / "run-plain"
@@ -2408,7 +2644,7 @@ def test_gemini_argv_composition(agent, target, home, tmp_path, monkeypatch):
     assert "--approval-mode" not in agent._gemini_argv(str(other), False, "default", SID_GEMINI, "", "", [], file)
     assert (run_dir / "gemini" / "GEMINI.md").read_text().strip()
     with open(run_dir / "mcp.json") as fh:
-        server = json.load(fh)["mcpServers"]["fused_approvals"]
+        server = json.load(fh)["mcpServers"]["fused_render"]
     assert "--no-approve" in server["args"]
     assert agent._state_dir(str(run_dir)) in server["args"]
     assert server["env"]["FUSED_RENDER_TERMINAL_ORIGIN"] == "http://127.0.0.1:9"
@@ -2435,7 +2671,7 @@ def test_gemini_argv_without_a_pane_or_terminal_writes_no_mcp(agent, target, hom
     monkeypatch.setenv("FUSED_RENDER_ORIGIN", "http://127.0.0.1:9")
     agent._gemini_argv(str(run_dir), False, None, "", "", "", [], file)
     with open(run_dir / "mcp.json") as fh:
-        args = json.load(fh)["mcpServers"]["fused_approvals"]["args"]
+        args = json.load(fh)["mcpServers"]["fused_render"]["args"]
     assert agent._state_dir(str(run_dir)) not in args and "--no-approve" in args
 
 
@@ -2620,3 +2856,444 @@ def test_gemini_defaults_and_history(agent, target):
                if s.get("kind") == "notice"]
     assert notices and notices[0]["text"] == "Handled by Google Gemini · model gemini-2.5-pro"
     assert h["context"]["window"] == 1048576 and h["context"]["input_tokens"] == 4321
+
+
+# ============================================= OpenCode (OPENCODE_BACKEND.md)
+
+SID_OPENCODE = "ses_8f3a2b1c9d0e4f5a"    # OpenCode's own, as `session/new` mints
+
+
+def _opencode_bin(tmp_path, monkeypatch):
+    b = tmp_path / "bin" / "opencode"
+    b.parent.mkdir(exist_ok=True)
+    b.write_text("#!/bin/sh\nexit 0\n")
+    b.chmod(0o755)
+    monkeypatch.setenv("FUSED_RENDER_OPENCODE_BIN", str(b))
+    return str(b)
+
+
+def _opencode_config_of(env):
+    return json.loads(env["OPENCODE_CONFIG_CONTENT"])
+
+
+def test_opencode_account_text_names_opencodes_fix(agent):
+    """D13/D18: an OpenCode run reads its own provider fix and limit
+    sentence, never Claude's (and no guide link)."""
+    text = agent._account_error("ProviderError: no API key for anthropic", "opencode")
+    assert text.startswith("OpenCode has no usable provider for this model.")
+    assert "`opencode auth login`" in text and text.endswith(
+        "(ProviderError: no API key for anthropic)")
+    text = agent._account_error("429 Too Many Requests", "opencode")
+    assert text.startswith("The provider behind this OpenCode model reported a rate")
+    for raw in ("401 Unauthorized", "model not found", "overloaded_error"):
+        text = agent._account_error(raw, "opencode")
+        assert "claude" not in text.lower() and "http" not in text
+    # Each agent's markers stay its own.
+    assert agent._account_error("provider not found", "claude") == "provider not found"
+    assert agent._account_error("requiresOpenaiAuth", "opencode") == "requiresOpenaiAuth"
+
+
+def test_the_opencode_prompt_never_speaks_claude(agent, home, tmp_path, monkeypatch):
+    """`_appended_prompt(..., "opencode")` is the body of the generated
+    AGENTS.md (D8): no Claude, no CLAUDE.md, no promise that `fused` is
+    pre-approved (D9, `_NO_PREAPPROVE_BACKENDS`); the pane tool is spelled
+    `<server>_<tool>`; the readable directories are NAMED in it (D9)."""
+    monkeypatch.setenv("FUSED_RENDER_FUSED_CLI_DIR", str(tmp_path / "fused-bin"))
+    page = tmp_path / "page.html"
+    page.write_text("<html></html>")
+    claude_only = re.compile(r"claude|CLAUDE\.md|AskUserQuestion|EnterWorktree", re.I)
+    body = agent._appended_prompt(str(page), True, "opencode")
+    assert not claude_only.search(body)
+    assert "pre-approved" not in body
+    assert body.endswith(agent._blocked_note("opencode"))
+    assert agent._blocked_note("opencode") == agent._blocked_note("gemini")
+    assert agent._fused_cli_note("opencode") == agent._fused_cli_note("gemini")
+    run_dir = tmp_path / "run"
+    run_dir.mkdir()
+    extra = tmp_path / "extra"
+    extra.mkdir()
+    ctx = agent._opencode_context_dir(str(run_dir), str(page), True,
+                                      [str(extra), str(tmp_path / "gone")])
+    assert ctx == str(run_dir / "opencode")
+    text = (run_dir / "opencode" / "AGENTS.md").read_text()
+    assert "mcp__fused_render__" not in text
+    assert "fused_render_app_state" in text
+    assert not claude_only.search(text)
+    assert str(extra) in text and str(tmp_path / "gone") not in text
+
+
+def test_opencode_argv_is_bare_and_the_facts_ride_the_run_dir(
+        agent, target, home, tmp_path, monkeypatch):
+    """§3/D5/D7/D8: the argv is `opencode acp` and nothing else — the model,
+    the mode and the AGENTS.md path are written to `spawn.json` for
+    `_spawn_env(run_dir=...)` to turn into `OPENCODE_CONFIG_CONTENT`; the
+    pane `mcp.json` (`--no-approve`) is left for the HOST to hand to
+    `session/new`."""
+    file, _ = target
+    binary = _opencode_bin(tmp_path, monkeypatch)
+    monkeypatch.setenv("FUSED_RENDER_ORIGIN", "http://127.0.0.1:9")
+    run_dir = tmp_path / "run"
+    run_dir.mkdir()
+    argv = agent._opencode_argv(str(run_dir), True, "auto", SID_OPENCODE,
+                                "openai/gpt-5.5", "", [str(tmp_path)], file)
+    assert argv == [binary, "acp"]
+    with open(run_dir / "opencode" / "spawn.json") as fh:
+        facts = json.load(fh)
+    assert facts == {"model": "openai/gpt-5.5", "mode": "auto",
+                     "instructions": str(run_dir / "opencode" / "AGENTS.md")}
+    assert (run_dir / "opencode" / "AGENTS.md").read_text().strip()
+    with open(run_dir / "mcp.json") as fh:
+        server = json.load(fh)["mcpServers"]["fused_render"]
+    assert "--no-approve" in server["args"]
+    assert server["env"]["FUSED_RENDER_TERMINAL_ORIGIN"] == "http://127.0.0.1:9"
+    # The mode table: `default` for Ask, the wire names otherwise; an
+    # unknown one reads as Ask.
+    other = tmp_path / "run2"
+    other.mkdir()
+    for cli_mode, want in (("acceptEdits", "acceptEdits"), ("default", "default"),
+                           (None, "default"), ("bogus", "default")):
+        agent._opencode_argv(str(other), False, cli_mode, "", "", "", [], file)
+        with open(other / "opencode" / "spawn.json") as fh:
+            assert json.load(fh)["mode"] == want
+    # Without a pane or terminal origin: no mcp.json.
+    monkeypatch.delenv("FUSED_RENDER_ORIGIN")
+    monkeypatch.setattr(agent, "_terminal_tools_supported", lambda: False)
+    plain = tmp_path / "run3"
+    plain.mkdir()
+    assert agent._opencode_argv(str(plain), False, "default", "", "", "", [], file) == [binary, "acp"]
+    assert not (plain / "mcp.json").exists()
+    assert not (plain / "plugin").exists()
+
+
+def test_opencode_bin_ladder(agent, tmp_path, monkeypatch):
+    """FUSED_RENDER_OPENCODE_BIN → PATH → the install prefixes."""
+    on_path = _exe(str(tmp_path / "path" / "opencode"))
+    monkeypatch.setenv("PATH", str(tmp_path / "path"))
+    assert agent._opencode_bin() == on_path
+    forced = _exe(str(tmp_path / "forced" / "opencode"))
+    monkeypatch.setenv("FUSED_RENDER_OPENCODE_BIN", forced)
+    assert agent._opencode_bin() == forced
+    monkeypatch.setenv("FUSED_RENDER_OPENCODE_BIN", str(tmp_path / "gone"))
+    assert agent._opencode_bin() == on_path
+    monkeypatch.delenv("FUSED_RENDER_OPENCODE_BIN")
+    monkeypatch.setenv("PATH", str(tmp_path / "nothing"))
+    monkeypatch.setenv("HOME", str(tmp_path / "h"))
+    own = _exe(str(tmp_path / "h" / ".opencode" / "bin" / "opencode"))
+    monkeypatch.setattr(agent, "_OPENCODE_CANDIDATES",
+                        tuple(c for c in agent._OPENCODE_CANDIDATES if c.startswith("~")))
+    assert agent._opencode_bin() == own
+    os.remove(own)
+    with pytest.raises(FileNotFoundError) as exc:
+        agent._opencode_bin()
+    assert str(exc.value).startswith(
+        "opencode CLI not found — install with `npm install -g opencode-ai`")
+    assert "FUSED_RENDER_OPENCODE_BIN" in str(exc.value)
+
+
+def test_opencode_candidates_mirror_opencode_health(agent):
+    from fused_render import opencode_health
+    assert agent._OPENCODE_CANDIDATES == opencode_health.POSIX_CANDIDATES
+    assert agent._OPENCODE_CANDIDATES == (
+        "~/.opencode/bin/opencode", "~/.npm-global/bin/opencode",
+        "/opt/homebrew/bin/opencode", "/usr/local/bin/opencode",
+        "~/.local/bin/opencode", "~/.bun/bin/opencode")
+
+
+def test_opencode_spawn_env(agent, home, tmp_path, monkeypatch):
+    """§3/D19/D20: Codex's branch plus `OPENCODE_DISABLE_AUTOUPDATE=1` and
+    the injected config — CLAUDE_CODE_* stripped, the CLI's own config-dir
+    variable untouched, no gh, no terminal mirror, the fused wrapper dir
+    FIRST on PATH. With a run dir the config carries spawn.json's facts and
+    the local gateway provider with a minted key; without one, a bare
+    config (Ask, no model, no provider, no key)."""
+    cli = str(tmp_path / "fused-bin")
+    monkeypatch.setenv("FUSED_RENDER_FUSED_CLI_DIR", cli)
+    monkeypatch.setenv("PATH", os.pathsep.join(["/usr/bin", cli, "/bin"]))
+    monkeypatch.setenv("CLAUDE_CODE_SHELL_PREFIX", "/x")
+    monkeypatch.setenv("OPENCODE_CONFIG_DIR", "/somewhere/opencode-cfg")
+    monkeypatch.setenv("OPENCODE_DISABLE_AUTOUPDATE", "")
+    monkeypatch.delenv("OPENCODE_CONFIG_CONTENT", raising=False)
+    monkeypatch.delenv("FUSED_RENDER_V1_KEY", raising=False)
+    monkeypatch.delenv("COPILOT_GITHUB_TOKEN", raising=False)
+    monkeypatch.setattr(agent, "_gh_token", _no_gh)
+    monkeypatch.setattr(agent, "_gh_bin", _no_gh)
+    cfg = agent._opencode_config()
+    monkeypatch.setattr(cfg, "local_models", lambda: [
+        {"id": "qwen3-8b", "label": "Qwen3 8B", "context": 32768, "max_output": 4096,
+         "tools": True},
+        {"id": "tiny", "label": "Tiny", "context": 2048, "max_output": 512, "tools": False}])
+    minted = []
+    monkeypatch.setattr(cfg, "session_key", lambda: minted.append("k1") or "k1")
+    env = agent._spawn_env("chat", backend="opencode")
+    assert not [k for k in env if k.startswith("CLAUDE_CODE_")]
+    assert env["OPENCODE_CONFIG_DIR"] == "/somewhere/opencode-cfg"
+    assert env["OPENCODE_DISABLE_AUTOUPDATE"] == "1"
+    assert "COPILOT_GITHUB_TOKEN" not in env and "FUSED_CLAUDE_CMD_LOG" not in env
+    assert "NO_BROWSER" not in env and "GEMINI_CLI_NO_RELAUNCH" not in env
+    path = env["PATH"].split(os.pathsep)
+    assert path[0] == cli and path.count(cli) == 1 and "/usr/bin" in path
+    # No run dir: bare config, no key minted.
+    assert _opencode_config_of(env) == {"permission": {"edit": "ask", "bash": "ask",
+                                                       "webfetch": "ask"}}
+    assert "FUSED_RENDER_V1_KEY" not in env and minted == []
+    # A run dir, no origin: the facts ride, no provider (nothing to call).
+    run_dir = tmp_path / "run"
+    (run_dir / "opencode").mkdir(parents=True)
+    with open(run_dir / "opencode" / "spawn.json", "w") as fh:
+        json.dump({"model": "fused/qwen3-8b", "mode": "acceptEdits",
+                   "instructions": str(run_dir / "opencode" / "AGENTS.md")}, fh)
+    monkeypatch.delenv("FUSED_RENDER_ORIGIN", raising=False)
+    conf = _opencode_config_of(agent._spawn_env(backend="opencode", run_dir=str(run_dir)))
+    assert conf == {"permission": {"edit": "allow", "bash": "ask", "webfetch": "ask"},
+                    "model": "fused/qwen3-8b",
+                    "instructions": [str(run_dir / "opencode" / "AGENTS.md")]}
+    assert minted == []
+    # A run dir AND an origin: the provider, with the key minted once and
+    # kept 0600 under the run dir for the release.
+    monkeypatch.setenv("FUSED_RENDER_ORIGIN", "http://127.0.0.1:9")
+    env = agent._spawn_env(backend="opencode", run_dir=str(run_dir))
+    conf = _opencode_config_of(env)
+    assert env["FUSED_RENDER_V1_KEY"] == "k1" and minted == ["k1"]
+    assert conf["provider"] == {"fused": {
+        "npm": "@ai-sdk/openai-compatible", "name": "Fused Render (local)",
+        "options": {"baseURL": "http://127.0.0.1:9/v1", "apiKey": "{env:FUSED_RENDER_V1_KEY}"},
+        "models": {"qwen3-8b": {"name": "Qwen3 8B (local)",
+                                "limit": {"context": 32768, "output": 4096}},
+                   "tiny": {"name": "Tiny (local)", "limit": {"context": 2048, "output": 512},
+                            "tool_call": False}}}}
+    assert "k1" not in json.dumps(conf)
+    key_file = run_dir / "opencode" / "key"
+    assert key_file.read_text() == "k1"
+    assert stat.S_IMODE(os.stat(key_file).st_mode) == 0o600
+    # The host re-deriving its CLI's env (no run dir) keeps what `_start`
+    # handed it instead of rebuilding a bare config over it.
+    monkeypatch.setenv("OPENCODE_CONFIG_CONTENT", env["OPENCODE_CONFIG_CONTENT"])
+    monkeypatch.setenv("FUSED_RENDER_V1_KEY", "k1")
+    again = agent._spawn_env("", backend="opencode")
+    assert _opencode_config_of(again) == conf and again["FUSED_RENDER_V1_KEY"] == "k1"
+    assert minted == ["k1"]
+    # The release reads the file once and removes it.
+    released = []
+    monkeypatch.setattr(cfg, "release_key", released.append)
+    agent._opencode_release_key(str(run_dir))
+    agent._opencode_release_key(str(run_dir))
+    assert released == ["k1"] and not key_file.exists()
+    # A user's own autoupdate value never wins: a child that updates itself
+    # mid-session is nobody's wish.
+    monkeypatch.setenv("OPENCODE_DISABLE_AUTOUPDATE", "0")
+    assert agent._spawn_env(backend="opencode")["OPENCODE_DISABLE_AUTOUPDATE"] == "1"
+    # Codex's and Gemini's envs carry nothing of OpenCode's.
+    monkeypatch.delenv("OPENCODE_CONFIG_CONTENT")
+    assert "OPENCODE_CONFIG_CONTENT" not in agent._spawn_env(backend="gemini")
+    assert "OPENCODE_CONFIG_CONTENT" not in agent._spawn_env(backend="codex")
+
+
+def test_a_fresh_opencode_chat_learns_its_id_from_the_stream(
+        agent, target, home, tmp_path, monkeypatch):
+    """D2: OpenCode mints the session id in `session/new`, so a fresh chat
+    has none in `_start` (`session_id: ""`), the host gets a bare argv and
+    the config on ITS env (D19), and the first poll that sees the init row
+    records the id AS OPENCODE before naming it."""
+    file, workdir = target
+    _prefs(home, opencode_enabled=True)
+    binary = _opencode_bin(tmp_path, monkeypatch)
+    monkeypatch.setitem(agent._HOST_FILES, "opencode", _stub_host(tmp_path))
+    monkeypatch.setitem(agent._HOST_FILES, "claude", str(tmp_path / "never.py"))
+    spawned = []
+    real_popen = agent.subprocess.Popen
+
+    def popen(argv, **kw):
+        spawned.append(kw.get("env") or {})
+        return real_popen(argv, **kw)
+    monkeypatch.setattr(agent.subprocess, "Popen", popen)
+    res = agent._start(file, "hi", "", "openai/gpt-5.5", "", "acceptEdits",
+                       has_pane=False, backend="opencode")
+    assert res["backend"] == "opencode" and res["session_id"] == ""
+    req, run_dir = _req_of(agent, res)
+    assert req["backend"] == "opencode"
+    assert req["session_id"] == "" and req["new_session_id"] == ""
+    assert req["argv"] == [binary, "acp"]
+    assert req["cli_mode"] == "acceptEdits"
+    [host_env] = spawned
+    conf = json.loads(host_env["OPENCODE_CONFIG_CONTENT"])
+    assert conf["model"] == "openai/gpt-5.5"
+    assert conf["permission"] == {"edit": "allow", "bash": "ask", "webfetch": "ask"}
+    assert conf["instructions"] == [os.path.join(run_dir, "opencode", "AGENTS.md")]
+    assert host_env["OPENCODE_DISABLE_AUTOUPDATE"] == "1"
+    with open(os.path.join(run_dir, "meta.json")) as fh:
+        meta = json.load(fh)
+    assert "session_id" not in meta and meta["backend"] == "opencode"
+    assert (meta["model"], meta["effort"]) == ("openai/gpt-5.5", "")
+    with open(os.path.join(run_dir, "pid"), "w") as fh:
+        fh.write(str(os.getpid()))
+    _out(run_dir, [{"type": "system", "subtype": "init", "session_id": SID_OPENCODE,
+                    "backend": "opencode"},
+                   {"type": "result", "subtype": "success", "is_error": False,
+                    "result": "ok", "session_id": SID_OPENCODE, "backend": "opencode"}])
+    assert agent._session_backend(SID_OPENCODE) == ""
+    p = agent._poll(res["run_id"])
+    assert p["session_id"] == SID_OPENCODE and p["backend"] == "opencode"
+    assert agent._session_backend(SID_OPENCODE) == "opencode"
+    assert agent._session_settings(SID_OPENCODE) == ("openai/gpt-5.5", "")
+    assert os.path.exists(os.path.join(run_dir, "settings_recorded"))
+    # A prompt-mode start with no model: Ask on the wire, no `model` key.
+    res = agent._start(file, "hi", "", "", "", "prompt", has_pane=False,
+                       backend="opencode")
+    req, _ = _req_of(agent, res)
+    assert req["cli_mode"] == "default" and req["argv"] == [binary, "acp"]
+    conf = json.loads(spawned[-1]["OPENCODE_CONFIG_CONTENT"])
+    assert "model" not in conf
+    assert conf["permission"] == {"edit": "ask", "bash": "ask", "webfetch": "ask"}
+
+
+def test_an_opencode_resume_ignores_the_requests_backend(agent, target, home, tmp_path,
+                                                         monkeypatch):
+    file, workdir = target
+    _prefs(home, opencode_enabled=True)
+    _transcript(agent, "opencode", workdir, SID_OPENCODE, [_said("b", workdir)])
+    _opencode_bin(tmp_path, monkeypatch)
+    monkeypatch.setitem(agent._HOST_FILES, "opencode", _stub_host(tmp_path))
+    monkeypatch.setitem(agent._HOST_FILES, "claude", str(tmp_path / "never.py"))
+    res = agent._start(file, "again", SID_OPENCODE, "auto", "", "auto",
+                       has_pane=False, backend="claude")
+    assert res["backend"] == "opencode" and res["session_id"] == SID_OPENCODE
+    req, run_dir = _req_of(agent, res)
+    assert req["backend"] == "opencode" and req["session_id"] == SID_OPENCODE
+    assert req["new_session_id"] == "" and req["cli_mode"] == "auto"
+    assert agent._session_backend(SID_OPENCODE) == "opencode"
+    assert agent._backend_for_session(SID_OPENCODE, workdir) == "opencode"
+
+
+def test_the_prefs_gate_reads_five_keys(agent, home):
+    """`opencode_enabled` is off unless stored True; Claude is on unless
+    stored False, or when nothing else is on."""
+    assert not agent._backend_enabled("opencode")
+    _prefs(home, opencode_enabled=True)
+    assert agent._backend_enabled("opencode") and agent._backend_enabled("claude")
+    _prefs(home, claude_enabled=False, opencode_enabled=True)
+    assert not agent._backend_enabled("claude") and agent._backend_enabled("opencode")
+    _prefs(home, claude_enabled=False, copilot_enabled=False, codex_enabled=False,
+           gemini_enabled=False, opencode_enabled=False)
+    assert agent._backend_enabled("claude")
+    _prefs(home, opencode_enabled="yes")
+    assert not agent._backend_enabled("opencode")
+
+
+def test_a_disabled_or_plan_opencode_start_is_refused_before_a_run_dir(agent, target, home):
+    file, _ = target
+    assert agent._start(file, "hi", "", "", "", "", has_pane=False, backend="opencode") == {
+        "error": "OpenCode is turned off in Preferences",
+        "reason": "backend_disabled", "backend": "opencode"}
+    _prefs(home, opencode_enabled=True)
+    assert agent._start(file, "hi", "", "", "", "plan", has_pane=False,
+                        backend="opencode") == {
+        "error": "plan mode is not available for OpenCode",
+        "reason": "unsupported", "backend": "opencode"}
+    assert os.listdir(agent.RUNS) == []
+
+
+def test_a_missing_opencode_binary_refuses_the_start(agent, target, home, tmp_path,
+                                                     monkeypatch):
+    file, _ = target
+    _prefs(home, opencode_enabled=True)
+    monkeypatch.setattr(agent, "_opencode_bin", lambda: (_ for _ in ()).throw(
+        FileNotFoundError("opencode CLI not found — install with `npm install -g "
+                          "opencode-ai`")))
+    res = agent._start(file, "hi", "", "", "", "", has_pane=False, backend="opencode")
+    assert res["backend"] == "opencode" and "opencode CLI not found" in res["error"]
+    [run] = os.listdir(agent.RUNS)
+    assert not os.path.exists(os.path.join(agent.RUNS, run, "meta.json"))
+
+
+def test_the_opencode_host_file_is_picked_by_backend(agent):
+    assert agent._HOST_FILES["opencode"] == os.path.join(agent.HERE, "opencode_host.py")
+    assert set(agent._HOST_FILES) == set(agent.BACKENDS)
+    assert "opencode" in agent._SELF_MINTED_ID_BACKENDS
+
+
+@pytest.fixture()
+def opencode_send(agent, home, send_env):
+    _prefs(home, opencode_enabled=True)
+    return send_env
+
+
+def test_an_opencode_model_change_is_live_and_nothing_else_respawns_but_the_mode(
+        agent, tmp_path, opencode_send):
+    """D5/D7/D9/§7: a model change is a `set_model` control request ahead of
+    the user row (never a respawn); an effort says nothing on this wire; a
+    directory the spawn never saw is NO respawn (the tools are not
+    workspace-bound); a MODE change IS one (the `permission` block is fixed
+    at spawn, `caps.live_mode_switch = False`)."""
+    run_dir = _live_run(agent, tmp_path, backend="opencode", mode="default",
+                        model="anthropic/claude-sonnet-5-5")
+    assert agent._send("run-1", "m", model="openai/gpt-5.5") == {"sent": True}
+    rows = _inbox_rows(run_dir)
+    assert [r["type"] for r in rows] == ["control_request", "user"]
+    assert rows[0]["request"] == {"subtype": "set_model", "model": "openai/gpt-5.5"}
+    assert _host_json(run_dir)["model"] == "openai/gpt-5.5"
+    # Same model again: no request. An effort: no respawn, no request.
+    assert agent._send("run-1", "m", model="openai/gpt-5.5", effort="high") == {"sent": True}
+    assert [r["type"] for r in _inbox_rows(run_dir)][2:] == ["user"]
+    # A new directory: no respawn either (D9).
+    assert agent._send("run-1", "m", read_dirs=json.dumps([str(tmp_path)])) == {"sent": True}
+    assert [r["type"] for r in _inbox_rows(run_dir)][3:] == ["user"]
+    assert opencode_send == []
+    # The same mode: an ordinary send. A different one: a respawn, no row.
+    assert agent._send("run-1", "m", permission_mode="prompt") == {"sent": True}
+    assert opencode_send == []
+    before = len(_inbox_rows(run_dir))
+    assert agent._send("run-1", "m", permission_mode="acceptEdits") == {"respawn": True}
+    assert opencode_send == ["run-1"]
+    assert len(_inbox_rows(run_dir)) == before
+    assert _host_json(run_dir)["mode"] == "default"
+    res = agent._send("run-1", "m", permission_mode="plan")
+    assert res == {"error": "plan mode is not available for OpenCode",
+                   "reason": "unsupported", "backend": "opencode"}
+
+
+def test_opencode_caps_snapshots_and_background_tasks(agent, target, tmp_path):
+    file, workdir = target
+    _transcript(agent, "opencode", workdir, SID_OPENCODE, [_said("b", workdir)])
+    tl = agent._snapshots(file, False, False, session_id=SID_OPENCODE)
+    assert tl["versions"] == [] and tl["note"] == "OpenCode sessions keep no file snapshots."
+    assert agent._snapshot_plan(file, "v1", session_id=SID_OPENCODE) == {
+        "ok": False, "error": "unsupported"}
+    _live_run(agent, tmp_path, backend="opencode")
+    assert agent._task_output("run-1", "b1") == {"error": "unsupported"}
+
+
+def test_the_opencode_terminal_command_and_commit_subject(agent, target, tmp_path, monkeypatch):
+    from fused_render.agent_backends import opencode as backend_opencode
+    file, workdir = target
+    _transcript(agent, "opencode", workdir, SID_OPENCODE, [_said("b", workdir)])
+    out = agent._terminal_command(file, SID_OPENCODE, backend="claude")
+    assert out["backend"] == "opencode"
+    assert out["command"] == "cd %s && opencode --session %s" % (workdir, SID_OPENCODE)
+    assert out["command"] == backend_opencode.OPENCODE.terminal_resume(workdir, SID_OPENCODE)
+    assert agent._terminal_command(file, backend="opencode")["command"] == \
+        backend_opencode.OPENCODE.terminal_resume(workdir, "")
+    seen = []
+    monkeypatch.setattr(agent, "_app_dir_for", lambda p: str(tmp_path))
+    (tmp_path / ".git").mkdir()
+    monkeypatch.setattr(agent, "_request_sync", lambda d: None)
+
+    class Done:
+        returncode = 0
+        stdout = ""
+
+    def run(argv, **kw):
+        seen.append(argv)
+        Done.returncode = 1 if "diff" in argv else 0
+        return Done
+    monkeypatch.setattr(agent.subprocess, "run", run)
+    monkeypatch.setattr(agent.shutil, "which", lambda n: "/usr/bin/git")
+    agent._commit_turn(str(tmp_path / "f"), "fix the header", "opencode")
+    commit = [a for a in seen if "commit" in a][0]
+    assert commit[commit.index("-m") + 1] == "OpenCode: fix the header"
+
+
+def test_opencode_defaults(agent, target):
+    file, _ = target
+    d = agent._defaults(file, backend="opencode")
+    assert d == {"model": "anthropic/claude-sonnet-5-5", "effort": "", "source": "backend",
+                 "backend": "opencode", "recorded": {"model": "", "effort": ""}}

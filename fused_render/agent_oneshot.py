@@ -1,5 +1,5 @@
 """One tool-less, session-free text completion from an agent CLI — GitHub
-Copilot, OpenAI Codex or Google Gemini — the way the session recaps have
+Copilot, OpenAI Codex, Google Gemini, OpenCode or Cursor — the way the session recaps have
 always run them, lifted here so `/api/ai` can run the same thing (D1433).
 
 Two callers, one argv per backend:
@@ -75,7 +75,7 @@ logger = logging.getLogger(__name__)
 #: The backends this module runs. Claude is NOT one: `/api/ai` keeps its
 #: persistent `_AiSession` (D168/D169) and the recap keeps its own
 #: `claude -p` argv, both of which stream.
-BACKENDS = ("copilot", "codex", "gemini")
+BACKENDS = ("copilot", "codex", "gemini", "opencode", "cursor")
 
 #: `claude_health.SUBPROCESS_KWARGS` minus the text-mode keys: asyncio's
 #: `create_subprocess_exec` refuses `text` / `encoding` / `errors` with a
@@ -122,6 +122,11 @@ GEMINI_POLICY = (
     'decision = "deny"\n'
     "priority = 999\n")
 GEMINI_POLICY_NAME = "gemini-recap-policy.toml"
+
+#: What `opencode run` is told when the whole prompt rides stdin: the CLI
+#: appends the positional message after the piped input (ASSUMED,
+#: docs/OPENCODE_BACKEND.md D12; the design's own pointer rule).
+OPENCODE_POINTER = GEMINI_POINTER
 
 #: The levels the Copilot CLI's `--reasoning-effort` takes (1.0.102 `--help`).
 COPILOT_EFFORTS = ("none", "minimal", "low", "medium", "high", "xhigh", "max")
@@ -210,7 +215,9 @@ def _agent():
 def _bin(agent, backend: str) -> str:
     try:
         return {"copilot": agent._copilot_bin, "codex": agent._codex_bin,
-                "gemini": agent._gemini_bin}[backend]()
+                "gemini": agent._gemini_bin,
+                "opencode": agent._opencode_bin,
+                "cursor": agent._cursor_bin}[backend]()
     except OneShotError:
         raise
     except Exception as exc:  # noqa: BLE001 - the resolver's own "not found" text
@@ -257,9 +264,27 @@ def _copilot_effort_ok(model: str) -> bool:
 
 
 def prepare(backend: str, model: str, system: str, prompt: str,
-            effort: Optional[str] = None, agent=None) -> OneShot:
+            effort: Optional[str] = None, agent=None,
+            tools_mcp: Optional[dict] = None) -> OneShot:
     """Build the run. `model` empty means the backend's registry default.
-    Raises OneShotError(ai_unavailable) when the binary cannot be resolved."""
+    Raises OneShotError(ai_unavailable) when the binary cannot be resolved.
+
+    `tools_mcp` (D1460): `{"command", "args", "env"}` of ONE stdio MCP
+    server (`claude_agent/ai_tools_server.py`, the `/api/ai` turn's tools)
+    that the CLI may call freely, under the server name
+    `ai_tools_server.SERVER_NAME`. Absent, the run is the tool-less one-shot
+    the session recaps use — argv byte-for-byte as before. Present, each
+    backend's no-tools switch is replaced by "this server and nothing else":
+    Copilot `--additional-mcp-config` + `--allow-tool`/`--available-tools`
+    naming the server (verified 1.0.102); Codex `-c mcp_servers.<name>.*`
+    overrides (ASSUMED from Codex's config reference, no binary on the
+    build machine); Gemini a per-run SYSTEM settings file naming the server
+    (`GEMINI_CLI_SYSTEM_SETTINGS_PATH`, merged over the user's own, so the
+    credential store stays where it is) plus a policy that allows its tools
+    and denies the rest (ASSUMED likewise). No `cwd=` anywhere: the spawn
+    rule at the top of this file (posix_spawn, never fork) holds for a
+    tools run too. The run stays sandboxed, session-free and
+    instruction-free exactly as before."""
     if backend not in BACKENDS:
         raise ValueError(f"not a one-shot backend: {backend!r}")
     agent = agent or _agent()
@@ -271,13 +296,23 @@ def prepare(backend: str, model: str, system: str, prompt: str,
     common = dict(backend=backend, model=model, stdin=text,
                   account_markers=account, limit_markers=limit)
     if backend == "copilot":
-        return _prepare_copilot(agent, model, effort, common)
+        return _prepare_copilot(agent, model, effort, common, tools_mcp)
     if backend == "codex":
-        return _prepare_codex(agent, model, effort, common)
-    return _prepare_gemini(agent, model, effort, common)
+        return _prepare_codex(agent, model, effort, common, tools_mcp)
+    if backend == "opencode":
+        return _prepare_opencode(agent, model, effort, common, tools_mcp)
+    if backend == "cursor":
+        return _prepare_cursor(agent, model, effort, common, tools_mcp)
+    return _prepare_gemini(agent, model, effort, common, tools_mcp)
 
 
-def _prepare_copilot(agent, model: str, effort: Optional[str], common: dict) -> OneShot:
+def _mcp_server_name() -> str:
+    from fused_render.claude_agent import ai_tools_server
+    return ai_tools_server.SERVER_NAME
+
+
+def _prepare_copilot(agent, model: str, effort: Optional[str], common: dict,
+                     tools_mcp: Optional[dict] = None) -> OneShot:
     """`-p` mode entered by a prompt on stdin, `-s` (the reply only, no
     stats), no tools, no repo instructions, no built-in MCP servers, nothing
     it could stop to ask. The session id is MINTED here (`--session-id`) and
@@ -290,11 +325,24 @@ def _prepare_copilot(agent, model: str, effort: Optional[str], common: dict) -> 
 
     sid = str(uuid.uuid4())
     state_dir = os.path.join(copilot_health.config_dir(), "session-state")
-    argv = [_bin(agent, "copilot"), "-s", "--no-auto-update", "--model", model,
-            f"--available-tools={COPILOT_NO_TOOLS}",
-            "--no-custom-instructions", "--disable-builtin-mcps",
-            "--no-ask-user", "--session-id", sid,
-            "-C", tempfile.gettempdir()]
+    argv = [_bin(agent, "copilot"), "-s", "--no-auto-update", "--model", model]
+    if tools_mcp is None:
+        argv.append(f"--available-tools={COPILOT_NO_TOOLS}")
+    else:
+        # The turn's MCP server is the ONLY tool surface: available to the
+        # model, pre-allowed so nothing stops to ask (`--no-ask-user` would
+        # otherwise turn the first call into a denial). `type: local` is
+        # Copilot's word for a stdio server.
+        name = _mcp_server_name()
+        argv += [f"--available-tools={name}", f"--allow-tool={name}",
+                 "--additional-mcp-config", json.dumps({"mcpServers": {name: {
+                     "type": "local", "command": tools_mcp["command"],
+                     "args": list(tools_mcp["args"]),
+                     "env": dict(tools_mcp.get("env") or {}),
+                     "tools": ["*"]}}})]
+    argv += ["--no-custom-instructions", "--disable-builtin-mcps",
+             "--no-ask-user", "--session-id", sid,
+             "-C", tempfile.gettempdir()]
     dropped = ""
     if effort:
         if effort not in COPILOT_EFFORTS:
@@ -321,7 +369,8 @@ def _prepare_copilot(agent, model: str, effort: Optional[str], common: dict) -> 
     return spec
 
 
-def _prepare_codex(agent, model: str, effort: Optional[str], common: dict) -> OneShot:
+def _prepare_codex(agent, model: str, effort: Optional[str], common: dict,
+                   tools_mcp: Optional[dict] = None) -> OneShot:
     """`codex exec`, Codex's one-shot, never the app-server the sessions use.
     Flags, each checked against `codex exec --help` (0.163.0) when the recap
     was built: `--ephemeral` (no rollout under `<CODEX_HOME>/sessions/`, so
@@ -346,6 +395,16 @@ def _prepare_codex(agent, model: str, effort: Optional[str], common: dict) -> On
             argv += ["-c", f'model_reasoning_effort="{effort}"']
         else:
             dropped = f"Codex takes no effort level {effort!r}"
+    if tools_mcp is not None:
+        # ASSUMED (Codex config reference `mcp_servers.<name>`; no binary on
+        # the build machine): the same `-c` override spelling as the effort
+        # flag above, TOML on the right-hand side. The read-only sandbox
+        # stays — the server is a separate process the sandbox does not
+        # bound, and it only talks to the loopback origin.
+        name = _mcp_server_name()
+        argv += ["-c", f'mcp_servers.{name}.command={json.dumps(tools_mcp["command"])}',
+                 "-c", f'mcp_servers.{name}.args={json.dumps(list(tools_mcp["args"]))}',
+                 "-c", f'mcp_servers.{name}.env={json.dumps(dict(tools_mcp.get("env") or {}))}']
     argv += ["-o", out_path, "-"]
 
     def parse(stdout: str, stderr: str, rc: int) -> str:
@@ -370,7 +429,8 @@ def _prepare_codex(agent, model: str, effort: Optional[str], common: dict) -> On
     return spec
 
 
-def _prepare_gemini(agent, model: str, effort: Optional[str], common: dict) -> OneShot:
+def _prepare_gemini(agent, model: str, effort: Optional[str], common: dict,
+                    tools_mcp: Optional[dict] = None) -> OneShot:
     """`gemini -p`, Gemini's headless one-shot, never the ACP server the
     sessions use. `-p <pointer>` enters headless mode (the flag's text is
     appended to the stdin input); `-o json` gives one object
@@ -380,10 +440,43 @@ def _prepare_gemini(agent, model: str, effort: Optional[str], common: dict) -> O
     `--skip-trust` (a headless run in the server's untrusted cwd would
     otherwise die at startup with folder trust on). The chat file the run
     records is removed by the `session_id` the reply named."""
+    run_dir = None
+    policy = gemini_policy_path()
+    env = agent._spawn_env(backend="gemini")
+    if tools_mcp is not None:
+        # ASSUMED (no binary on the build machine): Gemini merges a SYSTEM
+        # settings file (`GEMINI_CLI_SYSTEM_SETTINGS_PATH`) over the user's,
+        # so a tools run names the server there — never under the user's own
+        # config dir, never through a cwd (the spawn rule) — and gates tools
+        # by a policy that allows that server's and denies everything else
+        # (`--allowed-mcp-server-names` narrows the roster the same way).
+        # Priorities stay <= 999: 1000 is "tier overflow" on 0.65.0 (the
+        # recap policy's note above).
+        name = _mcp_server_name()
+        run_dir = tempfile.mkdtemp(prefix="fused-gemini-tools-")
+        settings = os.path.join(run_dir, "settings.json")
+        with open(settings, "w", encoding="utf-8") as fh:
+            json.dump({"mcpServers": {name: {
+                "command": tools_mcp["command"], "args": list(tools_mcp["args"]),
+                "env": dict(tools_mcp.get("env") or {})}}}, fh)
+        env = {**env, "GEMINI_CLI_SYSTEM_SETTINGS_PATH": settings}
+        policy = os.path.join(run_dir, "policy.toml")
+        with open(policy, "w", encoding="utf-8") as fh:
+            fh.write("# fused-render: an /api/ai tools run (agent_oneshot.py).\n"
+                     "[[rule]]\n"
+                     f'toolName = "{name}__*"\n'
+                     'decision = "allow"\n'
+                     "priority = 999\n"
+                     "[[rule]]\n"
+                     'toolName = "*"\n'
+                     'decision = "deny"\n'
+                     "priority = 998\n")
     argv = [_bin(agent, "gemini"), "-p", GEMINI_POINTER, "-o", "json",
             "--approval-mode", "default", "--skip-trust",
-            "--policy", gemini_policy_path(),
+            "--policy", policy,
             "-m", model]
+    if tools_mcp is not None:
+        argv += ["--allowed-mcp-server-names", _mcp_server_name()]
     dropped = "the Gemini CLI has no reasoning effort control" if effort else ""
     found: dict = {}  # becomes `spec.extra`
 
@@ -415,6 +508,8 @@ def _prepare_gemini(agent, model: str, effort: Optional[str], common: dict) -> O
         return reply
 
     def cleanup() -> None:
+        if run_dir:
+            shutil.rmtree(run_dir, ignore_errors=True)
         sid = found.get("sid")
         if not sid:
             return
@@ -431,10 +526,169 @@ def _prepare_gemini(agent, model: str, effort: Optional[str], common: dict) -> O
             except OSError:
                 pass
 
-    spec = OneShot(argv=argv, env=agent._spawn_env(backend="gemini"),
+    spec = OneShot(argv=argv, env=env,
                    stdout=subprocess.PIPE, stderr=subprocess.PIPE,
                    parse=parse, cleanup=cleanup, effort_dropped=dropped,
                    extra=found, **common)
+    return spec
+
+
+def _opencode_reply_text(stdout: str) -> str:
+    """The assistant text out of `opencode run --format json`'s output
+    (ASSUMED shape, D12): one JSON event per line, the text riding
+    `{"type": "text", "part": {"text": ...}}` (1.x's part events); a single
+    JSON object with `response` / `text` / `content` is read too, and a
+    stream that is no JSON at all is taken as the reply itself."""
+    texts: list[str] = []
+    objects = 0
+    for line in (stdout or "").splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            event = json.loads(line)
+        except ValueError:
+            continue
+        if not isinstance(event, dict):
+            continue
+        objects += 1
+        if event.get("type") in ("error",):
+            raise OneShotError(*_opencode_error(event))
+        part = event.get("part") if isinstance(event.get("part"), dict) else event
+        kind = str(event.get("type") or part.get("type") or "")
+        if kind in ("text", "message", "assistant"):
+            text = part.get("text") or part.get("content") or part.get("response")
+            if isinstance(text, str):
+                texts.append(text)
+        elif objects == 1 and not texts:
+            for k in ("response", "text", "content"):
+                if isinstance(event.get(k), str):
+                    texts.append(event[k])
+                    break
+    if texts:
+        return "".join(texts).strip()
+    if objects:
+        return ""
+    return (stdout or "").strip()
+
+
+def _opencode_error(event: dict) -> tuple[str, str]:
+    err = event.get("error") if "error" in event else event.get("part")
+    if isinstance(err, dict):
+        said = str(err.get("message") or err.get("name") or err)
+    else:
+        said = str(err or event)
+    return "ai_error", f"opencode CLI failed: {said[:300]}"
+
+
+def _prepare_opencode(agent, model: str, effort: Optional[str], common: dict,
+                      tools_mcp: Optional[dict] = None) -> OneShot:
+    """`opencode run --format json -m <model> <pointer>`, OpenCode's headless
+    one-shot, never the ACP server the sessions use (docs/OPENCODE_BACKEND.md
+    D12/D16). The prompt rides stdin; every tool is DENIED through the
+    injected config's `permission` block (`opencode_config.build(
+    deny_all_tools=True)` on `OPENCODE_CONFIG_CONTENT`), since the text it
+    is handed is untrusted and a read-only tool would otherwise run without
+    asking. A tools run (`tools_mcp`) names the turn's MCP server in the
+    same config (`mcp.<name>: {type: local, command, environment}` —
+    ASSUMED from OpenCode's config reference) and allows only its tools.
+    Nothing persists that fused could clean: OpenCode's record of the run
+    lives in its own SQLite store, which is not ours (D15)."""
+    cfg = agent._opencode_config()
+    env = agent._spawn_env(backend="opencode")
+    config = cfg.build(model=model or None, mode="default", instructions_path=None,
+                       local=cfg.local_models(), origin=None, key=None,
+                       deny_all_tools=True)
+    if tools_mcp is not None:
+        name = _mcp_server_name()
+        config["mcp"] = {name: {
+            "type": "local",
+            "command": [tools_mcp["command"], *list(tools_mcp["args"])],
+            "environment": dict(tools_mcp.get("env") or {}),
+            "enabled": True}}
+        config["permission"][name + "*"] = "allow"
+    env[cfg.CONTENT_ENV] = json.dumps(config)
+    argv = [_bin(agent, "opencode"), "run", "--format", "json"]
+    if model:
+        argv += ["-m", model]
+    argv.append(OPENCODE_POINTER)
+    dropped = "OpenCode has no reasoning effort control" if effort else ""
+
+    def parse(stdout: str, stderr: str, rc: int) -> str:
+        if rc != 0:
+            raise OneShotError(*_failure_type(stderr or stdout, spec))
+        reply = _opencode_reply_text(stdout)
+        if not reply:
+            raise OneShotError("ai_error", "the OpenCode CLI answered nothing")
+        return reply
+
+    spec = OneShot(argv=argv, env=env,
+                   stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                   parse=parse, effort_dropped=dropped, **common)
+    return spec
+
+
+def _cursor_reply(stdout: str) -> dict:
+    """The `{type: "result", ...}` object `cursor-agent -p --output-format
+    json` prints as its last line, or {}."""
+    for line in reversed((stdout or "").splitlines()):
+        line = line.strip()
+        if not line.startswith("{"):
+            continue
+        try:
+            body = json.loads(line)
+        except ValueError:
+            continue
+        if isinstance(body, dict) and body.get("type") == "result":
+            return body
+    return {}
+
+
+def _prepare_cursor(agent, model: str, effort: Optional[str], common: dict,
+                    tools_mcp: Optional[dict] = None) -> OneShot:
+    """`cursor-agent -p --output-format json --mode ask`, Cursor's headless
+    one-shot, never the ACP server the sessions use (docs/CURSOR_BACKEND.md
+    D12/D16). `ask` is Cursor's read-only Q&A mode (no edits, no commands),
+    and `--workspace` an EMPTY mkdtemp, so there is nothing to read either;
+    `--trust` because a headless run cannot answer the workspace-trust
+    question. The prompt goes on stdin with NO positional prompt: given
+    one, the CLI ignores a piped stdin (observed on 2026.11.19-f005e9d — the
+    model answered "I didn't find any instructions on stdin"). `--model`
+    always, `auto` included (`-p` takes `auto` as an alias, unlike ACP):
+    left out, the run would take whatever model was last picked, which the
+    CLI persists. The reply is one `{type: "result", subtype, is_error, result,
+    session_id}` line. Cursor files the run's chat under that temp
+    workspace in its own store; fused never touches `~/.cursor` (D15).
+    No tools run: Cursor has no flag that limits its MCP roster to one
+    server, so a tools request is refused rather than run with the user's
+    whole MCP config."""
+    if tools_mcp is not None:
+        raise OneShotError("ai_unavailable",
+                           "the Cursor CLI cannot run a tools turn in one-shot mode")
+    workspace = tempfile.mkdtemp(prefix="fused-cursor-oneshot-")
+    env = agent._spawn_env(backend="cursor")
+    argv = [_bin(agent, "cursor"), "-p", "--output-format", "json",
+            "--mode", "ask", "--trust", "--workspace", workspace]
+    if model:
+        argv += ["--model", model]
+    dropped = "the Cursor CLI has no reasoning effort control" if effort else ""
+
+    def parse(stdout: str, stderr: str, rc: int) -> str:
+        body = _cursor_reply(stdout)
+        if rc != 0 or body.get("is_error"):
+            said = str(body.get("result") or "") if body else ""
+            raise OneShotError(*_failure_type(said or stderr or stdout, spec))
+        reply = body.get("result")
+        if not isinstance(reply, str) or not reply.strip():
+            raise OneShotError("ai_error", "the Cursor CLI answered nothing")
+        return reply
+
+    def cleanup() -> None:
+        shutil.rmtree(workspace, ignore_errors=True)
+
+    spec = OneShot(argv=argv, env=env,
+                   stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                   parse=parse, cleanup=cleanup, effort_dropped=dropped, **common)
     return spec
 
 

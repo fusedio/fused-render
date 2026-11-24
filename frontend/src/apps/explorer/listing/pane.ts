@@ -50,6 +50,7 @@ import {
   subscribeSideWidth,
 } from "@apps/explorer/lib/side-store";
 import { dragPaneFrac, paneDragCloses, paneFracFromSharedWidth } from "@apps/explorer/listing/pane-math";
+import { railInset } from "@shell/claude-rail/ClaudeRail";
 
 // THE ONE-TIME PURGE of the per-folder width, run at module init — which is the
 // first time anything in the app cares about a pane at all, and the only place
@@ -107,6 +108,39 @@ export function useSplitWidth(ref: React.RefObject<HTMLElement>): number {
   return w;
 }
 
+// THE RAIL STANDING PAST THE PANE (favourites on, rail-peek-lib `railInset`):
+// how much of the split's right edge it takes, for the render's clamp — the
+// drag reads it live. Re-read after every render and whenever the rail comes
+// or goes (its `hidden` flips, or it mounts into the split's slot), neither of
+// which resizes the split itself, so the width's ResizeObserver cannot see it.
+function useRailInset(ref: React.RefObject<HTMLElement>, width: number): number {
+  const [inset, setInset] = useState(0);
+  useLayoutEffect(() => {
+    const read = () => {
+      const next = railInset(ref.current);
+      setInset((prev) => (prev === next ? prev : next));
+    };
+    read();
+    const el = ref.current;
+    if (!el || typeof MutationObserver === "undefined") return;
+    // Only a record about a rail costs a measurement: the listing's own rows
+    // mutate the subtree all the time.
+    const isRail = (n: Node) =>
+      n instanceof Element && (n.classList.contains("claude-rail") || n.querySelector(".claude-rail") !== null);
+    const mo = new MutationObserver((records) => {
+      for (const r of records) {
+        if (r.type === "attributes" ? isRail(r.target) : [...r.addedNodes, ...r.removedNodes].some(isRail)) {
+          read();
+          return;
+        }
+      }
+    });
+    mo.observe(el, { subtree: true, childList: true, attributes: true, attributeFilter: ["hidden"] });
+    return () => mo.disconnect();
+  }, [ref, width]);
+  return inset;
+}
+
 // `enabled=false` (an embedded Listing — the preview pane's own `_listing`
 // mode) turns the whole feature off at the source: however wide that embedded
 // listing is, it never grows a pane of its own — no nesting.
@@ -144,11 +178,14 @@ export function usePreviewPane(enabled = true, onDragClose?: () => void) {
   // not reopen: the measurement below decides the pane's SHARE, never its existence.
   const on = enabled;
   const width = useSplitWidth(splitRef);
+  const inset = useRailInset(splitRef, width);
   // The shared pixel width, re-clamped into THIS pane's own floors and turned
   // into a fraction of this container (pane-math's paneFracFromSharedWidth) —
   // never the file sidebar's wider floors, even though the two now share one
   // stored number.
-  const frac = paneFracFromSharedWidth(chosenPx, width);
+  // Less a rail standing past the pane (`inset`, as the drag below measures
+  // it): the list keeps its floor beside the rail, not beside the split's edge.
+  const frac = paneFracFromSharedWidth(chosenPx, width, inset);
 
   // The divider drag: pointer capture keeps the drag alive when the cursor
   // crosses into the pane's iframe (which would otherwise swallow mousemove).
@@ -184,7 +221,12 @@ export function usePreviewPane(enabled = true, onDragClose?: () => void) {
       // The pane is the right side: its width is the distance from the cursor
       // to the container's right edge, run through the shared FS-12 clamps and
       // divided back into a fraction of the container (dragPaneFrac).
-      const rawPx = rect.right - ev.clientX;
+      // Less the rail standing past the pane (favourites on, rail-peek-lib
+      // `railInset`): the pane's edge is the rail's, not the split's, and the
+      // pane and the list share what is left beside the rail (`room`).
+      const inset = railInset(splitRef.current);
+      const room = rect.width - inset;
+      const rawPx = rect.right - inset - ev.clientX;
       // Dragged clean through the resistance band: the gesture means SHUT.
       // Deliberately BEFORE any width is recorded this move, and `resized`
       // untouched by the close: every move before this one stuck the pane at
@@ -192,21 +234,23 @@ export function usePreviewPane(enabled = true, onDragClose?: () => void) {
       // chosen share — shut a wide pane and it would come back a sliver.
       // Closing a pane and narrowing it are different acts; one drag must not
       // do both. (Same rule as platform/lib/panel-drag `committedWidth`.)
-      if (onDragClose && paneDragCloses(rect.width, rawPx)) {
+      if (onDragClose && paneDragCloses(room, rawPx)) {
         closed = true;
         onDragClose();
         return;
       }
-      const next = dragPaneFrac(rect.width, rawPx);
+      const next = dragPaneFrac(room, rawPx);
       if (next === null) return;
       resized = true;
-      draggedFrac = next;
       // The first move is already a choice: from here the pane leaves the
       // shared default and renders what the cursor says. Rendered here as the
       // equivalent PIXEL width for this container: `chosenPx` is what both this
       // pane and the file sidebar now read (D460), so it has to be a number the
       // sidebar's own floors can make sense of too, not this pane's fraction.
-      const nextPx = Math.round(next * rect.width);
+      const nextPx = Math.round(next * room);
+      // Kept as a share of the WHOLE split, which is what renders (the pane's
+      // flex-basis) and what the commit converts back below.
+      draggedFrac = nextPx / rect.width;
       setChosenPx((prev) => (prev === nextPx ? prev : nextPx));
     };
     const onUp = () => {

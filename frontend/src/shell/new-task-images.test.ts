@@ -399,7 +399,9 @@ describe("the chat handoff's attachments", () => {
     // point.
     expect(SCHEDULED).not.toContain("parseAttachmentsParam");
     expect(SCHEDULED).not.toContain('q.get("attachments")');
-    expect(SCHEDULED).toContain("attachments: record.attachments ?? [],");
+    // `chatHopSeed` lives beside the card now (the canvas rail seeds a draft
+    // with it too), and the page imports it from there.
+    expect(MODAL).toContain("attachments: record.attachments ?? [],");
     const BUTTON = readFileSync(
       join(import.meta.dir, "..", "apps", "claude", "ui", "SchedButton.tsx"), "utf8");
     expect(BUTTON).toContain(".then(hand);");

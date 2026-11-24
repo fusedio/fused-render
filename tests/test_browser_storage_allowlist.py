@@ -29,7 +29,11 @@ ALLOWED = {
     # ---- platform ---------------------------------------------------------
     "platform/lib/agent-backends.ts": "signal",
     "platform/lib/bookmarks.ts": "tab",            # armed bookmark (sessionStorage)
+    "platform/lib/bots-available.ts": "cache",     # last "server offers Bots" answer, re-read on boot
+    "platform/lib/botsPulse.ts": "cache",          # pinned bot rows until the next poll lands
     "platform/lib/claude-defaults.ts": "signal",
+    "platform/lib/last-chat.ts": "tab",            # last chat picked, per window (sessionStorage)
+    "platform/lib/peek-session.ts": "tab",         # chats mounted in this window's panes (sessionStorage)
     "platform/lib/pending-claude-ask.ts": "tab",
     "platform/lib/presence.ts": "signal",
     "platform/lib/restart-store.ts": "signal",
@@ -47,6 +51,7 @@ ALLOWED = {
     "shell/TaskWorkspace.tsx": "display",           # group collapse state (per viewer)
     "shell/TerminalDrawer.tsx": "cache",            # pty ids re-checked against GET /api/terminal
     "shell/UpdateCard.tsx": "tab",
+    "shell/claude-rail/rail-extras-flag.ts": "cache",  # flag's last prefs answer, re-read
     "shell/notifications-seen-store.ts": "import",
     "shell/task-peek-store.ts": "display",          # peek width + per-tab autocollapse marker
     "shell/tasks-lib.ts": "display",                # Tasks "Sort by" choice (per viewer)
@@ -61,12 +66,12 @@ ALLOWED = {
     "apps/claude/protocol/run-controller.ts": "tab",
     "apps/claude/ui/TasksPanel.tsx": "display",     # Agents & shells strip open/closed (per viewer)
     "apps/claude/ui/debug-sent.ts": "dev",
+    "apps/claude/ui/outbox.ts": "tab",              # queued lines survive a reload of this tab
     "apps/claude/ui/useRecentTasks.ts": "tab",
     "apps/explorer/lib/fs-clipboard.ts": "tab",
     "apps/marketplace/install-flow.tsx": "import",
     # ---- lan (phone UI; per-device origin by nature, SPEC §52 BS-5) -----------
     "lan/App.tsx": "display",
-    "lan/bots/hooks.ts": "cache",
 }
 
 _CATEGORIES = {"signal", "cache", "tab", "display", "import", "dev"}

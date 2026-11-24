@@ -1,6 +1,6 @@
 """The menu-bar Dock: a click on the status item drops a macOS-Dock-like
-tray (``fused_render/dock.py`` decides the tiles: under Fused Render the
-user's APPS and BOTS, under Fused Bot their BOTS — a Home tile, the pinned
+tray (``fused_render/dock.py`` decides the tiles: the user's APPS and
+BOTS — a Home tile, the pinned
 ones, then up to three recent of each kind), each a tile — an app's own ``icon.svg`` / ``icon.png`` or
 a bot's face — with its name beneath, and a dot when a bot is busy. A click
 opens the app in its own window (or selects the bot in a Bots window);
@@ -663,7 +663,7 @@ class DockController:
         if self.actions.get("copy_url"):
             item("Copy URL", b"copyUrl:")
         if self.actions.get("show_launcher"):
-            item("Search Bots…" if _flavor.is_bot() else "Search Apps…", b"showLauncher:")
+            item("Search Apps…", b"showLauncher:")
         menu.addItem_(NSMenuItem.separatorItem())
         item("Open App Logs", b"openLogs:")
         if self.actions.get("save_diagnostics"):
@@ -808,8 +808,7 @@ class DockController:
         config.setUserContentController_(ucc)
         # Same marker as the app windows: the page skips its dev backdrop and
         # its own glass when it sees "FusedRender/" in the UA ("FusedRenderDock"
-        # says which host it is in). Under BOTH flavors — mac_window keeps one
-        # marker for the same reason.
+        # says which host it is in).
         config.setApplicationNameForUserAgent_(f"{USER_AGENT_MARKER} FusedRenderDock")
         try:
             config.preferences().setValue_forKey_(True, "developerExtrasEnabled")

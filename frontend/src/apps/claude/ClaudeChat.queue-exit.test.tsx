@@ -150,11 +150,10 @@ function byClass(r: Chat, cls: string) {
   );
 }
 
-/** Is the pane showing a conversation, or the Claude home? `← Chats` is drawn
- *  by the chat view and by nothing else (`inChat`). */
+/** Is the pane showing a conversation, or the Claude home? The shared head's
+ *  ← Back to chats is drawn by the chat view and by nothing else (`inChat`). */
 function inChat(r: Chat): boolean {
-  return r.root.findAll((n) => n.type === "button" && String(n.props.children).includes("Chats"))
-    .length > 0;
+  return r.root.findAll((n) => typeof n.type === "string" && n.props["aria-label"] === "Back to chats").length > 0;
 }
 
 async function sendQueued(r: Chat, text: string, entryId = "q1"): Promise<void> {

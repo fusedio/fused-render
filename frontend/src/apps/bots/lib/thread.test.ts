@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import type { Bot, BotEvent } from "./api";
 import {
-  SESSION_GAP_S, chosenOption, firstNewIndex, isNoise, liveCards, optionKey, rowKeys, searchCountText, searchHit, searchQuery, sessionBreak,
+  SESSION_GAP_S, chosenOption, firstNewIndex, isNoise, liveCards, offersPhone, optionKey, rowKeys, searchCountText, searchHit, searchQuery, sessionBreak,
 } from "./thread";
 
 const ev = (seq: number, role: BotEvent["role"] = "thought", text = "t" + seq, ts = seq): BotEvent => ({ seq, ts, role, text });
@@ -90,5 +90,15 @@ describe("rowKeys", () => {
     expect(keys[0]).toBe("b1:1");
     expect(keys[1]).toBe("b1:2");
     expect(new Set(keys).size).toBe(4);
+  });
+});
+
+describe("the phone offer on a greeting", () => {
+  const greeting = { ...ev(1, "done", "Hi"), source: "seed" } as BotEvent;
+  test("only Super Bot's seeded greeting offers the phone", () => {
+    expect(offersPhone(greeting, "super")).toBe(true);
+    expect(offersPhone(greeting, "bot")).toBe(false);
+    expect(offersPhone(greeting, undefined)).toBe(false);
+    expect(offersPhone({ ...greeting, source: undefined } as BotEvent, "super")).toBe(false);
   });
 });

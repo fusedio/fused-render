@@ -54,6 +54,8 @@ import {
 import { goBack, goForward } from "@platform/lib/nav-history";
 import Chevron from "@platform/ui/Chevron";
 import { urlScheme, fileUrlToPath } from "@platform/lib/path-url";
+import { canonicalRemoteUrl, isRemoteLocation } from "@platform/lib/remote";
+import { remoteCrumbs } from "@apps/explorer/listing/remote-crumbs";
 import { notify } from "@platform/lib/notifications";
 import { openTopbarMenu } from "@apps/explorer/topbar-menu";
 import { springDisarms } from "@apps/explorer/listing/drag-drop";
@@ -468,6 +470,19 @@ function TopbarActionsSlot() {
 // carrying the reason — the path bar has already closed by now, so a silent
 // no-op would read as "Enter did nothing".
 function openUrl(url: string, scheme: string): void {
+  // An S3 address — `s3://bucket/key`, or one of the HTTPS spellings of an
+  // object (platform/lib/remote.ts canonicalRemoteUrl) — is an explorer
+  // location in its own right. Accepted whatever the Canvases flag says: the
+  // page it opens explains when the integration is off.
+  const remote = canonicalRemoteUrl(url);
+  if (remote) {
+    navigate(remote);
+    return;
+  }
+  if (scheme === "s3") {
+    notify({ title: "That is not a valid S3 address — use s3://bucket/key", tone: "error" });
+    return;
+  }
   if (scheme === "file") {
     try {
       navigate(fileUrlToPath(url));
@@ -786,7 +801,9 @@ export function Breadcrumb({
     const scheme = urlScheme(path);
     if (scheme) {
       setEditing(false);
-      openUrl(path, scheme);
+      // An s3:// key may end in a space; canonicalRemoteUrl trims only the
+      // leading side, so it gets the untrimmed text.
+      openUrl(scheme === "s3" ? raw : path, scheme);
       return;
     }
     if (home !== undefined) {
@@ -800,7 +817,8 @@ export function Breadcrumb({
     if (path) navigate(path);
   };
   const rootTarget = underHome ? (home as string) : isDrive ? allParts[0] + "/" : "/";
-  const pieces: React.ReactNode[] = [
+  const remote = isRemoteLocation(fsPath) ? remoteCrumbs(fsPath) : null;
+  const pieces: React.ReactNode[] = remote ?? [
     <a
       key="root"
       href="#"
@@ -831,7 +849,7 @@ export function Breadcrumb({
     </a>,
   ];
   let acc = rootTarget === "/" ? "" : rootTarget;
-  parts.forEach((part, i) => {
+  if (!remote) parts.forEach((part, i) => {
     acc = acc + (acc.endsWith("/") ? "" : "/") + part;
     const target = acc;
     const isLast = i === parts.length - 1;

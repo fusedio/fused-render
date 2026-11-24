@@ -1,8 +1,8 @@
 """Menu-bar entry point for the packaged macOS app (SPEC DM-3/DM-5/DM-7).
 
 Wraps the existing `create_app()` server with a `rumps` NSStatusItem whose
-surface is the menu-bar Dock (menubar_dock.py: a tray of the user's apps —
-bots under Fused Bot — in a floating panel). The rumps menu is only a fallback
+surface is the menu-bar Dock (menubar_dock.py: a tray of the user's apps and
+bots in a floating panel). The rumps menu is only a fallback
 if the Dock controller fails (PV-8). The CLI (`cli.py`,
 `fused-render`) is unaffected and remains the dev entry point.
 
@@ -294,6 +294,12 @@ def _start_server_thread(port: int) -> "tuple[uvicorn.Server, threading.Thread]"
         codex_health.warm_in_background()
     if _agent_registry.is_enabled("gemini"):
         gemini_health.warm_in_background()
+    if _agent_registry.is_enabled("opencode"):
+        from fused_render import opencode_health
+        opencode_health.warm_in_background()
+    if _agent_registry.is_enabled("cursor"):
+        from fused_render import cursor_health
+        cursor_health.warm_in_background()
     app = create_app(start_dir=start_dir)
     # Publish the real bound origin so runPython children (e.g. the zarr_aoi
     # tile daemon) read store bytes from THIS port, not the branch default.
@@ -326,10 +332,7 @@ def _start_server_thread(port: int) -> "tuple[uvicorn.Server, threading.Thread]"
     lan.attach(app)
     # A pairing announces itself in the shell's own status bar (Notifications
     # section polls /api/lan/pairings) — not in macOS notification center.
-    # Fused Bot never opens the LAN listener: the routes stay mounted (attach
-    # above), the preference is simply not honoured at boot.
-    if not _flavor.is_bot():
-        lan.start_if_enabled()
+    lan.start_if_enabled()
     return server, thread
 
 
@@ -490,15 +493,22 @@ def _stop_children(budget_s: float = QUIT_CHILDREN_BUDGET_S) -> None:
         from fused_render.bots import browser as bots_browser
         from fused_render.server import engine_host
 
-        from fused_render import canvases, warm_run
+        from fused_render import canvas_mirror, canvases, warm_run
         from fused_render.contrib import ai as contrib_ai
 
         engine_host.refuse_new_children()
         supervisor.refuse_new_workers()
         bots_browser.refuse_launches()
         canvases.refuse_new_managers()
+        canvas_mirror.refuse_new_runs()
         warm_run.refuse_new()
         contrib_ai.refuse_children()
+        from fused_render.udf import runner as udf_runner
+
+        udf_runner.refuse_new()
+        from fused_render.sql import runner as sql_runner
+
+        sql_runner.refuse_new()
 
     def engines():
         from fused_render.server import engine_host
@@ -551,6 +561,18 @@ def _stop_children(budget_s: float = QUIT_CHILDREN_BUDGET_S) -> None:
 
         canvases.shutdown()
 
+    def canvas_mirror():
+        # The `fused canvas mirror` child, if one is running, and everything
+        # it started: it would otherwise download on as an orphan, holding
+        # its root's lock (which then reads "busy" for an hour). A killer of
+        # its own, so a sync manager slow to stop never eats the time this
+        # needs, and bounded by the rung's budget: every child is signalled
+        # before any is waited for, and killed with its lock removed when
+        # the budget runs out.
+        from fused_render import canvas_mirror as _canvas_mirror
+
+        _canvas_mirror.shutdown(budget_s=max(0.5, budget_s - 0.5))
+
     def contrib_claude():
         # The contribution loop's `claude` children (a safety review, a draft,
         # the Merge with Claude resolver): registered at spawn, killed here.
@@ -559,6 +581,20 @@ def _stop_children(budget_s: float = QUIT_CHILDREN_BUDGET_S) -> None:
         from fused_render.contrib import ai as contrib_ai
 
         contrib_ai.stop_children()
+
+    def udf_workers():
+        # The warm per-environment UDF workers (`fused.workbench.udf()`,
+        # udf/runner.py): stdin closed, then killed after a short wait.
+        from fused_render.udf import runner as udf_runner
+
+        udf_runner.shutdown()
+
+    def sql_engine():
+        # The local SQL engine's worker (sql/runner.py): stdin closed, killed
+        # after a short wait, its directory removed.
+        from fused_render.sql import runner as sql_runner
+
+        sql_runner.shutdown()
 
     def discovery():
         from fused_render.server.app import remove_server_json
@@ -573,7 +609,10 @@ def _stop_children(budget_s: float = QUIT_CHILDREN_BUDGET_S) -> None:
     for name, step in (("engines", engines), ("ai", ai_workers),
                        ("terminals", terminals), ("index", index_runs),
                        ("bots", bots), ("canvas-sync", canvas_sync),
+                       ("canvas-mirror", canvas_mirror),
                        ("contrib-claude", contrib_claude),
+                       ("udf-workers", udf_workers),
+                       ("sql-engine", sql_engine),
                        ("discovery", discovery)):
         def _run(step=step, name=name):
             try:
@@ -610,6 +649,7 @@ def _record_clean_exit() -> None:
 def quit_teardown(server, *, server_thread=None, drain_s: "float | None" = None,
                   close_duckdb=None,
                   stop_captures=None, stop_children=None,
+                  apply_update=None,
                   record_exit=None, fast: bool = False) -> list[str]:
     """Run the ordered quit teardown; returns the steps attempted, in order.
 
@@ -629,6 +669,19 @@ def quit_teardown(server, *, server_thread=None, drain_s: "float | None" = None,
       3. "duckdb" — close the reader's cached DuckDB connection while Python is
          healthy and the GIL is held. Anything still alive at
          `NSApplication.terminate:` destructs without the GIL and aborts.
+      3b. "update" — rename a staged in-app update into place
+         (update/mac.py `apply_staged`). HERE and nowhere else: the updater
+         only ever stages beside the bundle, because swapping the bundle
+         under a serving process broke every open window's next lazy chunk
+         load (see update/mac.py's docstring). After the server has drained
+         and the children are gone nothing but this process reads from the
+         bundle, and it is about to `os._exit`. Every quit surface funnels
+         through this ladder — the tray, ⌘Q, logout, and the update dialog's
+         Restart (`begin_relaunch`, which then respawns from the bundle this
+         rung just put in place) — so "quit with an update pending" and
+         "restart for the update" are the same rename. A teardown the
+         watchdog cuts off before this rung leaves the staged copy where it
+         is; the next boot reports it as ready to restart again.
       4. "exit-record" — record a `quit` event and release the crash file
          (`_record_clean_exit`, SPEC §50). Last, so a teardown that wedges on
          an earlier rung and gets cut off by the hard deadline leaves the
@@ -653,6 +706,8 @@ def quit_teardown(server, *, server_thread=None, drain_s: "float | None" = None,
             capture.stop_all()
     if stop_children is None:
         stop_children = _stop_children
+    if apply_update is None:
+        apply_update = _apply_staged_update
     if record_exit is None:
         # Late-bound through the module so tests can patch the one function.
         def record_exit():
@@ -673,7 +728,7 @@ def quit_teardown(server, *, server_thread=None, drain_s: "float | None" = None,
         except Exception:
             logger.warning("stopping the server on quit failed", exc_info=True)
     for name, step in (("children", stop_children), ("capture", stop_captures),
-                       ("duckdb", close_duckdb),
+                       ("duckdb", close_duckdb), ("update", apply_update),
                        ("exit-record", record_exit)):
         steps.append(name)
         try:
@@ -683,6 +738,27 @@ def quit_teardown(server, *, server_thread=None, drain_s: "float | None" = None,
     logger.info("quit teardown finished in %.1fs (steps: %s)",
                 time.monotonic() - started, ", ".join(steps))
     return steps
+
+
+def _apply_staged_update() -> None:
+    """The "update" rung's default: apply whatever update/mac.py staged
+    beside the bundle this process runs from. A no-op unpackaged (no bundle)
+    and when nothing newer is staged. Imported lazily — like every other
+    rung — and safe to: the bundle has not moved under this process, which
+    is the whole point of staging."""
+    bundle = bundle_path()
+    if bundle is None:
+        return
+    from fused_render.update import mac as mac_update
+
+    # A DMG install still under the pre-rename name (`FusedRender.app`)
+    # moves to `Fused Render.app` with this update. Only when the install
+    # method is already known to be "dmg": a Homebrew install keeps the path
+    # its receipt names (the cask's own upgrade moves it), and an unknown
+    # one would mean running brew on the quit path to find out.
+    manager = mac_update.manager()
+    method = manager.known_method() if manager is not None else None
+    mac_update.apply_staged(bundle, rename_legacy=method == "dmg")
 
 
 def start_quit(server, *, terminate, server_thread=None, teardown=None,
@@ -850,7 +926,7 @@ def bundle_path() -> str | None:
     """The .app bundle root when running packaged, None otherwise.
 
     sys.executable is …/<app_name><branch_suffix>.app/Contents/MacOS/python
-    under py2app (FusedRender.app / FusedBot.app)
+    under py2app (Fused Render.app)
     (same anatomy fusedcli.setup_cli_hint and installed.installed_version
     rely on).
     """
@@ -954,7 +1030,7 @@ RELAUNCH_WINDOWS_FILE = os.path.join(APP_SUPPORT_DIR, "relaunch-windows.json")
 # unrelated launch would be a surprise.
 RELAUNCH_SNAPSHOT_MAX_AGE_S = 2 * RELAUNCH_DEADLINE_S
 
-#: Fallback for where the menu-bar icon is seeded the first time a flavor
+#: Fallback for where the menu-bar icon is seeded the first time the app
 #: launches, in points from the right edge of the screen (see the autosave-name
 #: block in main()). Used only when Control Center's own defaults hold no item
 #: positions to derive from; wide enough to clear a stock cluster (Wi-Fi,
@@ -973,8 +1049,7 @@ STATUS_ITEM_LEGACY_SEED_PT = 1.0
 
 
 def bundle_executable(bundle: str) -> str:
-    """The bundle's MAIN binary name — `CFBundleExecutable`, e.g. FusedRender
-    (FusedBot under the bot flavor).
+    """The bundle's MAIN binary name — `CFBundleExecutable`, e.g. FusedRender.
 
     Not "anything under Contents/MacOS": the bundle also ships
     `Contents/MacOS/python` (the packaged interpreter every engine run, index
@@ -1095,6 +1170,10 @@ def spawn_relauncher(bundle: str, pid: int, *, popen=subprocess.Popen,
         f"while /bin/kill -0 {int(pid)} 2>/dev/null; do /bin/sleep {RELAUNCH_POLL_S}; done; "
         f'say "pid {int(pid)} has exited"; '
         f"/bin/sleep {RELAUNCH_SETTLE_S}; "
+        # The quit's "update" rung may have moved the bundle from its
+        # pre-rename name (update/mac.py `_rename_legacy_bundle`): open it
+        # where it is now. Same executable name, new folder.
+        + _relaunch_renamed_fragment(bundle) +
         # `open -a <bundle> <scheme>://launch`, not a plain `open <bundle>`:
         # a plain open is a normal launch, which boots onto a fresh home tab and
         # steals focus from the page that asked for the restart. Delivering the
@@ -1139,6 +1218,27 @@ def spawn_relauncher(bundle: str, pid: int, *, popen=subprocess.Popen,
         stdin=subprocess.DEVNULL,
         stdout=subprocess.DEVNULL,
         stderr=subprocess.DEVNULL,
+    )
+
+
+def _relaunch_renamed_fragment(bundle: str) -> str:
+    """Shell that repoints `bundle`/`exe` at the renamed bundle when the
+    given one is gone and the renamed one exists; "" when `bundle` is not
+    under a legacy name (nothing can move it)."""
+    try:
+        from fused_render.update.mac import renamed_bundle_path
+
+        renamed = renamed_bundle_path(bundle)
+    except Exception:  # noqa: BLE001 - the relaunch must not fail over this
+        logger.debug("could not work out the renamed bundle path", exc_info=True)
+        renamed = None
+    if renamed is None:
+        return ""
+    exe = posixpath.join(renamed, "Contents", "MacOS", bundle_executable(bundle))
+    return (
+        f'if [ ! -d "$bundle" ] && [ -d {shlex.quote(renamed)} ]; then '
+        f"bundle={shlex.quote(renamed)}; exe={shlex.quote(exe)}; "
+        'say "bundle moved to $bundle"; fi; '
     )
 
 
@@ -1190,7 +1290,9 @@ def begin_relaunch(*, quit_action, bundle=None, spawn=None,
     staleness check for a different "am I the one who needs replacing" test:
     a Full Disk Access grant applies to the next process, so respawning the
     very same version is the whole point — but ONLY while THIS process still
-    lacks the grant. The same fresh-instance hazard applies here: the OS may
+    lacks the grant. (If an update happens to be staged, the quit's "update"
+    rung applies it on the way out like any other quit, and the successor is
+    the newer version; the grant reaches it all the same.) The same fresh-instance hazard applies here: the OS may
     launch a new instance just to deliver the link (a second click after the
     old pid died, or a cold start), and that instance already has the grant
     and reads fine — quitting it would re-run the pidfile race the version
@@ -1816,8 +1918,8 @@ def main() -> None:
 
     import rumps  # macOS-only; see module docstring
 
-    # Per flavor (`_flavor.menubar_icon()`): both are black+alpha template
-    # glyphs, so `template=True` below recolors either for the menu bar.
+    # `_flavor.menubar_icon()`: a black+alpha template glyph, so
+    # `template=True` below recolors it for the menu bar.
     icon_path = os.path.join(os.path.dirname(__file__), "assets", _flavor.menubar_icon())
 
     # Startup ordering matters (learned the hard way): the AppKit run loop
@@ -1862,13 +1964,13 @@ def main() -> None:
             logger.info("queuing file view until server is ready: %s", target)
             state["pending"].append(target)
 
-    # ---- Finder "Open with FusedRender" -------------------------------------
+    # ---- Finder "Open with Fused Render" -------------------------------------
     # AppKit delivers double-clicked documents to the app delegate's
     # application:openFiles:. rumps's delegate (rumps.rumps.NSApp, a pyobjc
     # NSObject subclass) doesn't implement it — adding the method to the class
     # is all that's needed; pyobjc registers the selector automatically.
     def application_openFiles_(self, _app, filenames):
-        # This is the "Right-Click open" path: Finder "Open with FusedRender".
+        # This is the "Right-Click open" path: Finder "Open with Fused Render".
         # Log the raw filenames the OS handed us — if a view later 500s, the
         # log ties the failing URL back to the file the user actually clicked.
         names = [str(n) for n in filenames]
@@ -1880,8 +1982,8 @@ def main() -> None:
     rumps.rumps.NSApp.application_openFiles_ = application_openFiles_
 
     # ---- <scheme>:// deep links (SPEC §26, D110) -----------------------------
-    # The scheme is the flavor's (`_flavor.scheme()`: fused-render:// or
-    # fused-bot://); deeplink.py builds the accepted forms from it.
+    # The scheme is `_flavor.scheme()` (fused-render://); deeplink.py builds
+    # the accepted forms from it.
     # AppKit delivers URL-scheme opens (CFBundleURLTypes in the py2app plist)
     # to application:openURLs:. Same delegate-patch mechanism as openFiles
     # above; GET /clone does all parsing and every open link ends on an
@@ -2066,7 +2168,7 @@ def main() -> None:
     # fires after the first run-loop pass.
     from Foundation import NSUserDefaults
 
-    status_item_name = _flavor.app_name()  # FusedRender / FusedBot
+    status_item_name = _flavor.app_name()  # FusedRender
     position_key = f"NSStatusItem Preferred Position {status_item_name}"
     defaults = NSUserDefaults.standardUserDefaults()
     stored = defaults.objectForKey_(position_key)
@@ -2408,7 +2510,7 @@ def main() -> None:
 
         def _open_page_native(path: str) -> None:
             """A shell PAGE picked in the launcher (the Bots page row, a
-            canvas row's project page): a window already on it comes
+            canvas row's editor): a window already on it comes
             forward, else one opens (`WindowManager.show_page`); a browser
             tab with the windows off. Main thread."""
             manager = state["windows"]
@@ -2437,11 +2539,8 @@ def main() -> None:
                 _open_page_native(path)
 
         # The launcher (launcher_panel.py): a Spotlight-like panel on a
-        # global shortcut that opens any known app (Fused Render, ⌥Space by
-        # default) or any bot (Fused Bot, ⌥⇧Space by default: the two apps
-        # run side by side and share prefs.json, so each flavor stores its
-        # own shortcut under its own key and defaults to a combination the
-        # other does not register — `launcher.hotkey_key`). NOT behind the
+        # global shortcut (⌥Space by default) that opens any known app or,
+        # by typing, any bot. NOT behind the
         # windows preference: with native windows on its pick
         # focuses-or-opens a window, off it opens a browser tab at the same
         # address. A row opens through `open_row(kind, key)`: a bot to
@@ -2465,6 +2564,13 @@ def main() -> None:
                     _open_bots_native()
                 elif kind == "canvas":
                     _open_canvas_native(key)
+                elif kind == "s3":
+                    # A fused-asset bucket row: the explorer on its `s3://`
+                    # address. Never `_open_app_native`, which reads its key
+                    # as a local path.
+                    page = launcher_mod.remote_page_for(key)
+                    if page is not None:
+                        _open_page_native(page)
                 else:
                     _open_app_native(key)
 
@@ -2492,12 +2598,36 @@ def main() -> None:
             def _suspend(on: bool) -> None:
                 AppHelper.callAfter(launcher_ctl.suspend_shortcuts, on)
 
+            def _is_shown() -> bool:
+                # NSPanel.isVisible() is AppKit: read it on the main
+                # thread and wait (bounded) for the answer.
+                import threading
+
+                done = threading.Event()
+                out = [False]
+
+                def _read() -> None:
+                    try:
+                        out[0] = bool(launcher_ctl.is_shown())
+                    finally:
+                        done.set()
+
+                AppHelper.callAfter(_read)
+                done.wait(0.5)
+                return out[0]
+
             launcher_mod.native_hooks.update({
                 "rebind": _rebind,
                 "suspend": _suspend,
+                # POST /api/launcher/show (the Claude rail's Search door):
+                # main thread, like the Dock's "Search Apps…" key.
+                "show": lambda anchor=None: AppHelper.callAfter(launcher_ctl.show, anchor),
                 "hotkey_bound": launcher_ctl.hotkey_bound,
                 "pinned_bound": launcher_ctl.pinned_bound,
                 "open_keys": _open_keys,
+                # GET /api/launcher/shown: the rail's Search door wears its
+                # open state while the panel stands (read on the main thread).
+                "is_shown": _is_shown,
             })
             if os.environ.get("FUSED_RENDER_LAUNCHER_SHOW"):
                 # Dev only: SIGUSR2 toggles the launcher, so a script can
@@ -2554,7 +2684,7 @@ def main() -> None:
             "quit": _do_quit,
             "open_window": _open_window,
             # Present only when the launcher was built: both surfaces show
-            # "Search Apps…" ("Search Bots…" under Fused Bot) off this key.
+            # "Search Apps…" off this key.
             **({"show_launcher": _show_launcher} if state["launcher"] is not None else {}),
         }
 

@@ -95,7 +95,7 @@ class Session:
 
     def __init__(self, agent, tmp_path, resume=False, fake_args=(), env=None,
                  transcript_seed=None, cli_mode=None, messages=(),
-                 seed_bucket=None):
+                 seed_bucket=None, canvas_clone=False):
         import agent_roots  # importable once agent.py seeded the shared dir
         self.agent = agent
         # A resume names its session; a fresh one learns it off the init row,
@@ -141,7 +141,8 @@ class Session:
                "cwd": self.cwd, "pane": False, "cli_mode": cli_mode,
                "session_id": self._sid, "model": "gpt-5.4",
                "effort": "medium", "extra_read_dirs": [],
-               "new_session_id": "", "argv": argv, "backend": "copilot"}
+               "new_session_id": "", "argv": argv, "backend": "copilot",
+               "canvas_clone": canvas_clone}
         host_env = dict(os.environ)
         host_env.pop("FUSED_RENDER_ORIGIN", None)
         # A token preset, so `_spawn_env` never shells out to `gh auth token`.
@@ -172,9 +173,17 @@ class Session:
         return os.path.join(self.bucket, self.sid + ".jsonl") if self.sid else ""
 
     def minted(self):
-        """The id the fake's `session/new` reply named."""
-        return next(e["sent"]["result"]["sessionId"] for e in self.fake()
-                    if "sessionId" in ((e.get("sent") or {}).get("result") or {}))
+        """The id the fake's `session/new` reply named (waited for: the fake
+        logs a reply only AFTER writing it to the host, so the init row it
+        produced can land before the log line — a bare `next` raised
+        StopIteration on a loaded runner)."""
+        def logged():
+            return next((e["sent"]["result"]["sessionId"] for e in self.fake()
+                         if "sessionId" in ((e.get("sent") or {}).get("result") or {})),
+                        None)
+        assert _wait_for(lambda: logged() is not None), \
+            "the fake never logged its session/new reply"
+        return logged()
 
     def out(self):
         return _rows(os.path.join(self.run_dir, "out.jsonl"))
@@ -535,10 +544,10 @@ def test_tool_mapping_table(host_mod, tmp_path):
                   [{"type": "diff", "path": "brand_new.txt", "oldText": None,
                     "newText": "hello\n"}])
     assert (name, inp["file_path"], inp["content"]) == ("Write", "brand_new.txt", "hello\n")
-    name, inp = m("other", "fused_approvals-app_state", {"reason": "look"}, [], "")
-    assert name == "mcp__fused_approvals__app_state" and inp["reason"] == "look"
+    name, inp = m("other", "fused_render-app_state", {"reason": "look"}, [], "")
+    assert name == "mcp__fused_render__app_state" and inp["reason"] == "look"
     # An unmapped kind keeps Copilot's own input under `_acp.raw`.
-    assert inp["_acp"] == {"kind": "other", "title": "fused_approvals-app_state",
+    assert inp["_acp"] == {"kind": "other", "title": "fused_render-app_state",
                            "raw": {"reason": "look"}}
     assert m("other", "github-list_issues", {}, [], "")[0] == "github-list_issues"
     assert m("", "", None, None, "")[0] == "tool"
@@ -1544,3 +1553,61 @@ def test_the_echo_carries_the_inbox_rows_uuid(start, agent):
     assert [r.get("uuid") for r in echo] == stamped
     s.wait_results(1)
     assert agent._inbox_waiting(s.run_dir) == []
+
+
+# ------------------------------------------- canvas sync hooks (no CLI hooks)
+
+def _hook_server():
+    import http.server
+    import threading
+    seen = []
+
+    class Handler(http.server.BaseHTTPRequestHandler):
+        def do_POST(self):
+            body = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
+            seen.append((self.path, body))
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.end_headers()
+            self.wfile.write(b"{}")
+
+        def log_message(self, *a):
+            pass
+
+    server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    return server, seen
+
+
+def test_a_session_in_a_canvas_clone_tells_the_sync_about_its_turn(start, agent):
+    """Copilot has no per-run CLI hooks: the host posts the turn's start,
+    each finished tool call and the turn's end to the canvas hook route, in
+    that order."""
+    server, seen = _hook_server()
+    try:
+        origin = "http://127.0.0.1:%d" % server.server_address[1]
+        s = start(fake_args=["--tool"], canvas_clone=True,
+                  env={"FUSED_RENDER_ORIGIN": origin})
+        assert _wait_for(lambda: len(s.out()) >= 1)
+        s.say("list")
+        s.wait_results(1)
+        hooks = lambda: [b for p, b in seen if p == "/api/canvases/agent/hook"]  # noqa: E731
+        assert _wait_for(lambda: len(hooks()) >= 3), seen
+        assert [b["event"] for b in hooks()] == ["start", "post", "stop"]
+        assert all(b["cwd"] == s.cwd and b["session_id"] == s.sid for b in hooks())
+    finally:
+        server.shutdown()
+
+
+def test_a_session_outside_a_canvas_clone_posts_no_canvas_hook(start, agent):
+    server, seen = _hook_server()
+    try:
+        origin = "http://127.0.0.1:%d" % server.server_address[1]
+        s = start(fake_args=["--tool"], env={"FUSED_RENDER_ORIGIN": origin})
+        assert _wait_for(lambda: len(s.out()) >= 1)
+        s.say("list")
+        s.wait_results(1)
+        time.sleep(0.5)
+        assert not [p for p, _ in seen if p == "/api/canvases/agent/hook"]
+    finally:
+        server.shutdown()

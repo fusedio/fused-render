@@ -2,7 +2,7 @@ import os
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Request
 
-from fused_render import __version__, _flavor, _platform, pty_session
+from fused_render import __version__, _flavor, _platform, launcher, pty_session
 from fused_render import calls as shell_calls
 from fused_render.installed import installed_version
 from fused_render.server import dirpicker
@@ -89,8 +89,16 @@ def api_config(
         "native_dir_picker": dirpicker.available(),
         # Whether the Bots feature exists here. The server never runs bots on
         # Windows (server/app.py: no election, `/api/bots/*` answers 503), so the
-        # shell hides the sidebar entry, the page and the pulse poll off this.
+        # shell drops the pulse poll off this, and the sidebar entry and the page
+        # too unless Experts are on: those are task sessions, not bots
+        # (docs/experts.md), and the page then lists them alone.
         "bots_available": not _platform.IS_WINDOWS,
+        # Whether THIS process has the launcher panel (the ⌥Space search over
+        # the apps; fused_render/launcher_panel.py) to show on request: the
+        # packaged macOS app installs the hook, a `fused-render serve` has no
+        # panel. The Claude rail's Search door stands off this
+        # (POST /api/launcher/show). Read per request, like `engine`.
+        "launcher_available": "show" in launcher.native_hooks,
         # Whether the status-bar terminal can start here: always off Windows,
         # and on Windows only with pywinpty (the `[cli]` extra) installed. The
         # shell hides the terminal button and `fused.terminal` refuses off this.
@@ -113,12 +121,16 @@ def api_config(
     from fused_render.shell import onboarding as shell_onboarding
 
     config["onboarding"] = shell_onboarding.snapshot()
-    # Which app this is (fused_render/_flavor.py): "render" or "bot", with the
-    # deep-link scheme and the name the shell shows for it. Under the bot
-    # flavor `/` lands on /bots instead of /home (shell/App.tsx).
-    config["flavor"] = _flavor.flavor()
+    # The app's deep-link scheme and the name the shell shows for it
+    # (fused_render/_flavor.py).
     config["scheme"] = _flavor.scheme()
     config["display_name"] = _flavor.display_name()
+    # The .app folder's name as Finder and System Settings list it: the one
+    # this process runs from when packaged (an install from before the
+    # rename may still be "FusedRender"), else `_flavor.bundle_name()`.
+    from fused_render import installed
+
+    config["bundle_name"] = installed.running_bundle_name() or _flavor.bundle_name()
     if instance := desktop_instance():
         config["desktop_instance"] = {"id": instance[0]}
         if token == instance[1]:

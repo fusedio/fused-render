@@ -122,6 +122,53 @@ def test_an_agent_task_tracks_usage_and_status(agent, run_dir):
     assert rec["ended_at"] is not None
 
 
+def test_a_foreground_agent_sent_to_the_background(agent, run_dir):
+    """The row sequence CLI 2.1.304 writes when a `background_tasks` request
+    backgrounds a foreground Agent call: the patch flips `backgrounded`, the
+    Agent call's async-launch result closes the tool (the working line moves
+    off it), and the subagent's `task_notification` ends the record."""
+    _append(run_dir, [{"type": "stream_event", "session_id": "s", "event": {
+                          "type": "content_block_start", "index": 1, "content_block": {
+                              "type": "tool_use", "id": "toolu_a", "name": "Agent", "input": {}}}},
+                      _tool("toolu_a", "Agent", {"description": "Sleep", "subagent_type": "general-purpose",
+                                                 "run_in_background": False}),
+                      _sys("task_started", task_id="a1", tool_use_id="toolu_a",
+                           description="Sleep", subagent_type="general-purpose",
+                           is_backgrounded=False, task_type="local_agent")])
+    data = agent._poll("run")
+    rec = _rec(data, "a1")
+    assert rec["kind"] == "agent" and rec["backgrounded"] is False
+    assert rec["status"] == "running" and rec["tool_use_id"] == "toolu_a"
+    assert data["activity"]["tool"]["id"] == "toolu_a"
+
+    _append(run_dir, [
+        _sys("background_tasks_changed", tasks=[{"task_id": "a1", "task_type": "local_agent",
+                                                 "subagent_type": "general-purpose",
+                                                 "description": "Sleep"}]),
+        _sys("task_updated", task_id="a1", patch={"is_backgrounded": True}),
+        {"type": "user", "message": {"role": "user", "content": [
+            {"type": "tool_result", "tool_use_id": "toolu_a", "content": [
+                {"type": "text", "text": "Async agent launched successfully.\nagentId: a1"}]}]}}])
+    data = agent._poll("run")
+    rec = _rec(data, "a1")
+    assert rec["backgrounded"] is True and rec["status"] == "running"
+    assert rec["ended_at"] is None
+    assert data["activity"]["tool"] is None
+    assert data["activity"]["tasks"] == [{"id": "a1", "description": "Sleep"}]
+
+    _append(run_dir, [_sys("task_updated", task_id="a1", patch={"status": "completed"}),
+                      _sys("task_notification", task_id="a1", tool_use_id="toolu_a",
+                           status="completed", summary="done"),
+                      _sys("background_tasks_changed", tasks=[])])
+    data = agent._poll("run")
+    rec = _rec(data, "a1")
+    assert rec["status"] == "completed" and rec["ended_at"] is not None
+    assert rec["summary"] == "done" and rec["backgrounded"] is True
+    assert data["activity"]["tasks"] == []
+    seg = data["segments"][0]
+    assert seg["name"] == "Agent" and seg["task_id"] == "a1"
+
+
 def test_a_subagent_type_alone_makes_an_agent(agent, run_dir):
     _append(run_dir, [_sys("task_started", task_id="x", description="d",
                            subagent_type="Plan")])
@@ -586,6 +633,129 @@ def test_task_output_passes_the_clis_refusal_through(agent, run_dir, monkeypatch
     assert agent._task_output("run", "b9") == {"error": "No task found with ID: b9"}
 
 
+# ----------------------------------------------------------- context_usage
+
+#: A trimmed real `get_context_usage` answer (CLI 2.1.319, detail "summary").
+_CTX = {
+    "categories": [
+        {"id": "system_prompt", "name": "System prompt", "tokens": 2484,
+         "color": "promptBorder", "kind": "used"},
+        {"id": "system_tools_deferred", "name": "System tools (deferred)",
+         "tokens": 35890, "color": "inactive", "isDeferred": True, "kind": "deferred"},
+        {"id": "mcp_tools", "name": "MCP tools", "tokens": 900,
+         "color": "cyan_FOR_SUBAGENTS_ONLY"},             # no `kind`: read as used
+        {"id": "messages", "name": "Messages", "tokens": 428,
+         "color": "purple_FOR_SUBAGENTS_ONLY", "kind": "used"},
+        {"id": "compact_buffer", "name": "Compact buffer", "tokens": 3000,
+         "color": "inactive", "kind": "buffer"},
+        {"id": "free_space", "name": "Free space", "tokens": 955794,
+         "color": "promptBorder", "kind": "mystery"},     # unknown kind: as absent
+        "junk",
+    ],
+    "totalTokens": 41206, "maxTokens": 1000000, "rawMaxTokens": 1000000,
+    "model": "claude-opus-5", "gridRows": [[{"x": 1}]],
+    "memoryFiles": [{"path": "/u/.claude/CLAUDE.md", "type": "User", "tokens": 1332}],
+    "mcpTools": [
+        {"name": "a", "serverName": "github", "tokens": 500, "isLoaded": True},
+        {"name": "b", "serverName": "github", "tokens": 400, "isLoaded": True},
+        {"name": "c", "serverName": "linear", "tokens": 70, "isLoaded": False},
+    ],
+    "agents": [{"agentType": "reviewer", "source": "userSettings", "tokens": 3750}],
+    "skills": {"totalSkills": 10, "includedSkills": 10, "tokens": 9949,
+               "skillFrontmatter": [{"name": f"s{i}", "source": "user", "tokens": 100 + i}
+                                    for i in range(10)]},
+}
+
+
+def test_context_usage_rejects_bad_ids_and_a_dead_host(agent, run_dir, monkeypatch):
+    monkeypatch.setattr(agent, "_ctx_probe", lambda _d: None)
+    assert agent._context_breakdown("run") == {"error": "no live session"}
+    assert "error" in agent._context_breakdown("../x")
+    assert "error" in agent._context_breakdown("nope")
+
+
+def test_context_usage_asks_for_a_summary_and_trims_the_answer(agent, run_dir, monkeypatch):
+    seen = _fake_host(agent, monkeypatch, run_dir, _CTX)
+    res = agent.main("context_usage", run_id="run")
+    assert seen == {"subtype": "get_context_usage", "detail": "summary", "timeout": 10.0}
+    assert [(c["id"], c["kind"]) for c in res["categories"]] == [
+        ("system_prompt", "used"), ("system_tools_deferred", "deferred"),
+        ("mcp_tools", "used"), ("messages", "used"), ("compact_buffer", "buffer"),
+        ("free_space", "free")]
+    assert res["categories"][0] == {"id": "system_prompt", "name": "System prompt",
+                                    "tokens": 2484, "color": "promptBorder", "kind": "used"}
+    assert (res["total_tokens"], res["max_tokens"], res["model"]) == (41206, 1000000,
+                                                                      "claude-opus-5")
+    assert "gridRows" not in res
+    d = res["details"]
+    assert d["mcp_tools"] == {"items": [{"name": "github", "tokens": 900, "count": 2}],
+                              "more": 0, "more_tokens": 0}
+    assert d["mcp_tools_deferred"]["items"] == [{"name": "linear", "tokens": 70, "count": 1}]
+    assert d["memory_files"]["items"] == [{"name": "/u/.claude/CLAUDE.md", "tokens": 1332}]
+    assert d["custom_agents"]["items"] == [{"name": "reviewer", "tokens": 3750}]
+    # Top eight by tokens, the rest tallied.
+    assert [i["name"] for i in d["skills"]["items"]] == [f"s{i}" for i in range(9, 1, -1)]
+    assert (d["skills"]["more"], d["skills"]["more_tokens"]) == (2, 100 + 101)
+    assert "mcp_instructions" not in d
+
+
+def test_context_usage_errors_on_no_answer_or_no_categories(agent, run_dir, monkeypatch):
+    _fake_host(agent, monkeypatch, run_dir, RuntimeError("Unknown subtype"))
+    assert agent._context_breakdown("run") == {"error": "Unknown subtype"}
+    _fake_host(agent, monkeypatch, run_dir, None)
+    assert "error" in agent._context_breakdown("run")
+    _fake_host(agent, monkeypatch, run_dir, {"categories": "nope"})
+    assert "error" in agent._context_breakdown("run")
+
+
+def test_context_usage_serves_the_last_answer_once_the_host_is_gone(agent, run_dir,
+                                                                    monkeypatch):
+    _fake_host(agent, monkeypatch, run_dir, _CTX)
+    live = agent._context_breakdown("run")
+    assert "stale" not in live
+    monkeypatch.setattr(agent, "_host_alive", lambda _d: False)
+    assert agent._context_breakdown("run") == {**live, "stale": True}
+
+
+def test_context_usage_asks_a_fork_when_the_host_is_gone_and_nothing_is_saved(
+        agent, run_dir, monkeypatch):
+    monkeypatch.setattr(agent, "_host_alive", lambda _d: False)
+    monkeypatch.setattr(agent, "_ctx_probe", lambda _d: _CTX)
+    res = agent._context_breakdown("run")
+    assert res["categories"][0]["id"] == "system_prompt" and "stale" not in res
+    # ...and saved, so the next open needs no fork.
+    monkeypatch.setattr(agent, "_ctx_probe", lambda _d: pytest.fail("forked twice"))
+    assert agent._context_breakdown("run")["stale"] is True
+
+
+def test_context_probe_is_none_for_a_run_it_cannot_fork(agent, run_dir):
+    assert agent._ctx_probe(run_dir) is None     # no launch.json
+
+
+def test_context_usage_by_session_forks_in_the_transcripts_cwd(agent, run_dir, monkeypatch,
+                                                               tmp_path):
+    seen = {}
+
+    def probe(d):
+        with open(os.path.join(d, "launch.json"), encoding="utf-8") as fh:
+            seen.update(json.load(fh))
+        return _CTX
+    monkeypatch.setattr(agent, "_ctx_probe", probe)
+    monkeypatch.setattr(agent, "_ctx_session_cwd",
+                        lambda sid: str(tmp_path) if sid == "s-1" else "")
+    res = agent.main("context_usage", session_id="s-1", model="sonnet")
+    assert res["categories"][0]["id"] == "system_prompt"
+    assert (seen["cwd"], seen["session_id"], seen["model"]) == (str(tmp_path), "s-1", "sonnet")
+    assert agent.main("context_usage", session_id="nope") == {"error": "unknown session"}
+
+
+def test_context_usage_rides_the_task_output_lane():
+    import importlib
+    pool = importlib.import_module("fused_render.claude_agent.pool")
+    assert pool.pool_for("context_usage") is pool.TASK_OUTPUT_POOL
+    assert pool.budget("context_usage") == 15.0
+
+
 # --------------------------------------------------------------- task_stop
 
 def test_task_stop_rejects_bad_ids_and_a_dead_host(agent, run_dir):
@@ -629,6 +799,16 @@ def test_task_background_writes_a_background_tasks_request(agent, run_dir, monke
     assert res == {"ok": True, "backgrounded": True}
     assert seen == {"subtype": "background_tasks", "tool_use_id": "toolu_1",
                     "timeout": 10.0}
+
+
+def test_task_background_sends_an_agent_calls_tool_use_id_the_same_way(agent, run_dir, monkeypatch):
+    """The action is tool-agnostic: a foreground Agent call is backgrounded by
+    its own `tool_use_id`, the id its `task_started` row carries."""
+    seen = _fake_host(agent, monkeypatch, run_dir, {"backgrounded": True})
+    res = agent.main("task_background", run_id="run", tool_use_id="toolu_01CUcGj2w5tDoXcu8N4fYASg")
+    assert res == {"ok": True, "backgrounded": True}
+    assert seen == {"subtype": "background_tasks",
+                    "tool_use_id": "toolu_01CUcGj2w5tDoXcu8N4fYASg", "timeout": 10.0}
 
 
 def test_task_background_passes_the_clis_refusal_through(agent, run_dir, monkeypatch):
@@ -774,3 +954,23 @@ def test_an_agent_rows_model_and_effort_come_from_its_call(agent, run_dir):
                            task_type="local_agent")])
     rec = _rec(agent._poll("run"), "a1")
     assert rec["model"] == "sonnet" and rec["effort"] == "medium"
+
+
+def test_catch_up_takes_a_woken_turns_agent_model_from_its_call(agent, run_dir, monkeypatch):
+    """A job's end wakes the host into a turn that dispatches an Agent while
+    the page, still holding the ended turn's panel, asks `tasks`. The catch-up
+    absorbs that `task_started` first, so it reads the call's input too, or
+    the row reads the parent's model "(inherited)" for good."""
+    _append(run_dir, [_sys("task_started", task_id="b1", description="sleep",
+                           task_type="local_bash"), _result()])
+    agent._poll("run")
+    monkeypatch.setattr(agent, "_host_alive", lambda _d: True)
+    _append(run_dir, [_sys("task_notification", task_id="b1", status="completed"),
+                      _tool("toolu_a", "Agent", {"description": "d", "model": "sonnet",
+                                                 "effort": "medium"}),
+                      _sys("task_started", task_id="a1", tool_use_id="toolu_a",
+                           description="d", subagent_type="general-purpose",
+                           is_backgrounded=True, task_type="local_agent")])
+    rec = _rec(agent._run_tasks("run"), "a1")
+    assert rec["model"] == "sonnet" and rec["effort"] == "medium"
+    assert rec["kind"] == "agent" and rec["subagent_type"] == "general-purpose"

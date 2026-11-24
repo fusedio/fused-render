@@ -15,6 +15,14 @@ import {
   type SideSplitInput,
 } from "@apps/explorer/lib/preview-side";
 import { PANE_SIDE_OFF } from "@apps/explorer/listing/pane-side";
+import {
+  defaultMode,
+  effectiveActive,
+  isModePending,
+  partitionModes,
+  visibleModes,
+  type ConditionVerdicts,
+} from "@platform/lib/mode-visibility";
 
 // `_side` as read at mount, in one call — the composition Preview makes (the
 // request in state, resolved against the split on every render).
@@ -1025,5 +1033,131 @@ describe("Preview records the remembered tab only on an explicit pick", () => {
     // Open With -> Git is an explicit pick too, so it passes the tab.
     expect(pv).toContain("else if (sideOn && isSidebarMode(m)) setSide(m, m);");
     expect(ls).toContain('setSide({ open: true, mode: "git" }, "git")');
+  });
+});
+
+// THE CANVAS NODE VIEW AS A NODE FILE'S DEFAULT CONTENT MODE (SPEC §53.3 NV-3,
+// PT-8's `prefer` exception), through the chain TemplatePreview runs on every
+// render. Preview.tsx has no mount precedent (see Preview.share-row.test.ts),
+// so this drives that chain by hand: visibility, the partition, the split, the
+// column (`resolveSide` + the reconcile's URL write), and the content pane —
+// the mode picked AT MOUNT from `_mode` (`effectiveActive`, held in state
+// while the verdicts land), what renders (`entry`, falling to `defaultMode`),
+// the "checking" placeholder (`isModePending(entry)`), and the switcher's one
+// URL writer (selecting the default deletes `_mode`, PT-9). A "reload" is a
+// fresh mount on the URL left behind.
+describe("a canvas node file in the file view (TemplatePreview's chain)", () => {
+  const code: TemplateEntry = t("code");
+  // A canvas node template as stat ships it: a built-in gated folder,
+  // marked `node`.
+  const node = { ...t("canvas_udf"), conditional: true, node: true } as const;
+  // stat on a node-shaped path with Canvases on: gated, preferred.
+  const NODE = [code, { ...node, prefer: true }, gatedClaude];
+  // stat on any other `.py`, or with Canvases off: gated, not preferred.
+  const PLAIN = [code, node, gatedClaude];
+  const YES = { canvas_udf: true, claude: true };
+
+  function paint(templatesIn: TemplateEntry[], search: string, mountMode: string, conditions: ConditionVerdicts) {
+    const templates = visibleModes(templatesIn, conditions);
+    const parts = partitionModes(templates);
+    const split = sideSplit({
+      splitCapable: true,
+      content: parts.content,
+      own: parts.sidebar,
+      borrowed: [GIT],
+      borrowedPending: [],
+      conditionsPending: conditions === null,
+    });
+    const contentModes = split.offered ? parts.content : templates;
+    const defaultEntry = defaultMode(contentModes)!;
+    const entry = contentModes.find((e) => e.mode === mountMode) ?? defaultEntry;
+    const sideReq = parseSide(search);
+    const activeSide = resolveSide(sideReq, split, null);
+    const fixed = reconcileSideSearch(search, {
+      splitCapable: true,
+      offered: split.offered,
+      open: sideReq.open,
+      activeSide,
+      defaultSide: split.defaultSide,
+      fromMemory: sideFromMemory(sideReq, activeSide, null),
+    });
+    return {
+      shown: entry.mode,
+      checking: isModePending(entry, conditions),
+      menu: contentModes.map((e) => e.mode),
+      defaultMode: defaultEntry.mode,
+      activeSide,
+      sideMenu: split.menu.map((e) => e.mode),
+      url: fixed === null ? search.replace(/^\?/, "") : fixed,
+    };
+  }
+  // Mount on `search`, then every verdict state in order: the mode is picked
+  // once, at mount, as Preview's `useState(() => activeTemplate(...))` does.
+  function open(templates: TemplateEntry[], search: string, settled: ConditionVerdicts) {
+    const pending = visibleModes(templates, null);
+    const parts = partitionModes(pending);
+    const mountMode = effectiveActive(parts.content, new URLSearchParams(search).get("_mode"))!.mode;
+    return { first: paint(templates, search, mountMode, null), settled: paint(templates, search, mountMode, settled) };
+  }
+  // The switcher's writer (Preview `doSetMode`): the default deletes `_mode`.
+  const pick = (url: string, mode: string, dflt: string) =>
+    writeQueryParam(url, "_mode", mode === dflt ? null : mode);
+
+  it("opens on the node template, with no code editor painted first, and a silent URL", () => {
+    const { first, settled } = open(NODE, "", YES);
+    // First paint: the node template itself — the path check is enough, no
+    // "checking" placeholder waits for the gate.
+    expect(first.shown).toBe("canvas_udf");
+    expect(first.checking).toBe(false);
+    // The verdict lands: the node template, in the content pane.
+    expect(settled.shown).toBe("canvas_udf");
+    expect(settled.checking).toBe(false);
+    expect(settled.menu).toEqual(["code", "canvas_udf"]);
+    expect(settled.url).toBe("");
+  });
+
+  it("the side column is the chat and Git, never the node template", () => {
+    const { first, settled } = open(NODE, "", YES);
+    expect(settled.activeSide).toBe("claude");
+    expect(settled.sideMenu).toEqual(["claude", "git"]);
+    expect(first.sideMenu).not.toContain("canvas_udf");
+    // Even when asked for by name: an unknown companion falls to the default.
+    expect(open(NODE, "?_side=canvas_udf", YES).settled.activeSide).toBe("claude");
+  });
+
+  it("Code is written as `_mode=code`, survives a reload, and Node again clears it", () => {
+    const { settled } = open(NODE, "", YES);
+    const url = pick(settled.url, "code", settled.defaultMode);
+    expect(url).toBe("_mode=code");
+    const reload = open(NODE, "?" + url, YES);
+    // Code paints at once: it is not gated, so nothing waits on the verdict.
+    expect(reload.first.shown).toBe("code");
+    expect(reload.first.checking).toBe(false);
+    expect(reload.settled.shown).toBe("code");
+    expect(pick(url, "canvas_udf", reload.settled.defaultMode)).toBe("");
+  });
+
+  it("a no, or a failed conditions call ({}), changes nothing: the path check decided", () => {
+    for (const settledV of [{ canvas_udf: false, claude: true }, {}] as ConditionVerdicts[]) {
+      const { first, settled } = open(NODE, "", settledV);
+      expect(first.checking).toBe(false);
+      expect(settled.shown).toBe("canvas_udf");
+      expect(settled.checking).toBe(false);
+      expect(settled.menu).toContain("canvas_udf");
+      expect(settled.sideMenu).not.toContain("canvas_udf");
+      expect(settled.url).toBe("");
+    }
+  });
+
+  it("a plain .py, or Canvases off (no `prefer`): Code at once, as before", () => {
+    for (const settledV of [{ canvas_udf: false, claude: true }, {}] as ConditionVerdicts[]) {
+      const { first, settled } = open(PLAIN, "", settledV);
+      expect(first.shown).toBe("code");
+      expect(first.checking).toBe(false);
+      expect(first.menu).toEqual(["code"]);
+      expect(settled.shown).toBe("code");
+      expect(settled.menu).toEqual(["code"]);
+      expect(settled.activeSide).toBe("claude");
+    }
   });
 });

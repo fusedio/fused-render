@@ -43,9 +43,9 @@ export const AWAY_MS = 60_000;
  *  turn"). */
 export const MAX_FAILURES = 2;
 
-/** With the Tasks recap titles on the server only reads what the Tasks worker
- *  stored, and says `pending: true` while it has nothing yet. The chat asks
- *  again this often (a dict lookup on the server), for at most this long. */
+/** Should a server answer `pending: true` (it has nothing yet; the current
+ *  server produces the recap on demand and never does), the chat asks again
+ *  this often, for at most this long. */
 export const POLL_MS = 15_000;
 // Longer than the worker's 10 min failed-recap retry (tasks.py `_RECAP_RETRY_S`),
 // or a first haiku failure would land after the client gave up.
@@ -134,11 +134,10 @@ export interface AwayRecapOptions extends AwayRecapEnv {
    *  the reader opened, not the landing or an embed. */
   enabled: boolean;
   /**
-   * ALSO RECAP ON OPEN (prefs `task_recap.enabled`, the Tasks recap titles).
-   * With it on, a chat that is not mid-turn asks once per position as soon as
-   * it has one, instead of waiting for an absence. Off (the default) is the
-   * away-only behaviour above, untouched. The server call is cheap when the
-   * Tasks listing already stored the recap (`_recap` reads the store first).
+   * ALSO RECAP ON OPEN (prefs `chat_recap.enabled`, default on). With it on,
+   * a chat that is not mid-turn asks once per position as soon as it has one,
+   * instead of waiting for an absence. The server produces the recap on
+   * demand (one Haiku call, cached per position in memory).
    */
   eager?: boolean;
   /** Overrides for `POLL_MS` (tests). */
@@ -191,6 +190,8 @@ export function useAwayRecap(opts: AwayRecapOptions): AwayRecapResult {
    *  there was nothing to show. One set for all three, because the question
    *  "should I ask about this position" has one answer. */
   const spent = useRef(new Set<string>());
+  /** Positions the eager ask has already tried (see the eager effect). */
+  const eagerAsked = useRef(new Set<string>());
   const failures = useRef(0);
   /** When the reader went away, or `null` while they are here. */
   const awayAt = useRef<number | null>(null);
@@ -226,11 +227,18 @@ export function useAwayRecap(opts: AwayRecapOptions): AwayRecapResult {
    *  when the server says `pending` — asked about again in `POLL_MS` until the
    *  cap, the same gates as the first ask. */
   const take = (asked: string, answer: RecapResponse | undefined, startedAt: number) => {
+    // The server's switch is off (prefs not settled yet, or really off): that
+    // is not a verdict on this position, so nothing is spent and a later
+    // enable asks again.
+    if (answer?.disabled === true) {
+      eagerAsked.current.delete(asked);
+      return;
+    }
     spent.current.add(asked);
     const text = (answer && answer.text ? answer.text : "").trim();
     const fresh = latest.current;
     if (text) {
-      if (fresh.forUuid !== asked || fresh.running) return;
+      if (fresh.forUuid !== asked || fresh.running || !fresh.enabled) return;
       setRecap({ text, forUuid: asked });
       return;
     }
@@ -317,7 +325,7 @@ export function useAwayRecap(opts: AwayRecapOptions): AwayRecapResult {
           // message sent, a turn started; `take` re-asks that, and the render
           // gate below re-asks once more. A draft typed meanwhile also drops it.
           if (latest.current.hasDraft() && answer?.pending !== true) {
-            spent.current.add(asked);
+            if (answer?.disabled !== true) spent.current.add(asked);
             return;
           }
           take(asked, answer, now());
@@ -354,7 +362,6 @@ export function useAwayRecap(opts: AwayRecapOptions): AwayRecapResult {
   // so a failed or empty answer is not re-bought on every render; `spent` (a
   // dismissed or already-shown fold) still wins. Not mid-turn, and not in a
   // chat nobody can see — the one page-wide gate it keeps.
-  const eagerAsked = useRef(new Set<string>());
   const { eager, enabled, file, sessionId, running } = opts;
   // A re-check trigger: a skip for a draft, a hidden page or a read still in
   // flight is not a verdict, so the things that clear those bump this and the
@@ -396,7 +403,8 @@ export function useAwayRecap(opts: AwayRecapOptions): AwayRecapResult {
         // behind `inflight`, so look again now.
         if (fresh.forUuid !== asked) setKick((n) => n + 1);
         if (fresh.hasDraft() && answer?.pending !== true) {
-          spent.current.add(asked);
+          if (answer?.disabled === true) eagerAsked.current.delete(asked);
+          else spent.current.add(asked);
           return;
         }
         take(asked, answer, now());
@@ -410,7 +418,7 @@ export function useAwayRecap(opts: AwayRecapOptions): AwayRecapResult {
 
   // THE AUTO-DISMISS, and the late-answer drop, in one expression: the fold is
   // only ever drawn against the position it was written about.
-  const showing = recap && recap.forUuid === forUuid && !opts.running ? recap : null;
+  const showing = recap && recap.forUuid === forUuid && !opts.running && opts.enabled ? recap : null;
   return { recap: showing, dismiss };
 }
 

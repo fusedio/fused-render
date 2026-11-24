@@ -26,9 +26,11 @@
 // the commit is called as that key would call it). Everything between is real.
 import { installDomShim } from "@platform/lib/testDomShim";
 installDomShim();
-import { afterEach, beforeEach, expect, test } from "bun:test";
-import { act, create } from "react-test-renderer";
+import { afterEach, beforeEach, expect, spyOn, test } from "bun:test";
+import { act, create, type ReactTestInstance, type ReactTestRenderer } from "react-test-renderer";
 import { dropSharedPrefsRead } from "@platform/lib/api";
+import { sharedHistoryCache } from "./protocol/history";
+import * as runControllerModule from "./protocol/run-controller";
 
 const { ClaudeChat, annotationsForTests } = await import("./ClaudeChat");
 const { NAV_LOCKED_REASON } = await import("./ann");
@@ -60,6 +62,9 @@ let audioSource: Record<string, unknown> = { audio: { available: true, reason: n
 let holdStart: Promise<void> | null = null;
 let holdSend: Promise<void> | null = null;
 let pollLive = false;
+/** The poll names every `send` the chat has made in `inbox_taken` — the CLI's
+ *  `command_lifecycle started` / `isReplay` echo for the page's own uuid. */
+let pollTaken = false;
 /** A `cancel` was posted: a `pollLive` run answers its next poll `done` —
  *  unless `stickyLive`, a stop that takes a while to land. */
 let cancelled = false;
@@ -69,6 +74,24 @@ let failSend = false;
 /** Hold only the Nth `send` (1-based); null holds every send while `holdSend` is set. */
 let holdSendNth: number | null = null;
 let sendCount = 0;
+/** What `cancel` reports in `still_queued` (wire texts the CLI never read). */
+let cancelStill: string[] = [];
+/** Holds the `cancel` answer until released: the run can go idle first. */
+let holdCancel: Promise<void> | null = null;
+/** The live run's turn ends (polls answer done) until the next message arrives. */
+let turnDone = false;
+/** `live_host` / `live_run` answer only once this resolves: a live-run adoption that is slow to land. */
+let holdLiveHost: Promise<void> | null = null;
+/** What `/api/claude-sessions/history` answers (a reload's restore). */
+let historyBody: Record<string, unknown> = { turns: [], live_run: "" };
+/**
+ * This suite's own sessionStorage, fresh for every test. Sent lines are
+ * journalled per session id and every chat here runs as `s1`, so a store shared
+ * across tests (or left on `globalThis` by another file in the same `bun test`
+ * process) would bring one test's lines back as another's re-sends.
+ */
+const storeCells = new Map<string, string>();
+let realSession: { had: boolean; was: unknown } = { had: false, was: undefined };
 
 /** `/api/prefs` — the project queue's switch lives there (`queue.enabled`). */
 let prefsBody: Record<string, unknown> = {};
@@ -119,6 +142,7 @@ function stubFetch(): void {
         jobId: "job1",
       });
     }
+    if (url.startsWith("/api/claude-sessions/history")) return jsonRes(historyBody);
     if (url.startsWith("/api/tasks/changes")) return new Promise<Response>(() => {});
     if (url === "/api/claude/agent" || url === "/api/claude/app-entry") {
       const body = JSON.parse(String(init?.body ?? "{}")) as Record<string, string>;
@@ -130,6 +154,7 @@ function stubFetch(): void {
       }
       const action = String(body.action ?? "");
       runs.push({ action, params: body });
+      if (action === "start" || action === "send") turnDone = false;
       if (action === "start") {
         // HOLDABLE, so a test can act inside the window between "the controller
         // took the message" and "the run is live" — where `status` is still
@@ -141,12 +166,27 @@ function stubFetch(): void {
         // `pollLive` keeps the run OPEN (a long reply streaming), so a line can
         // drain into it as a follow-up and a stop can land before the host
         // confirms it.
-        if (pollLive && (!cancelled || stickyLive)) {
-          return jsonRes({ done: false, session_id: "s1", text: "" });
+        if (pollLive && (!cancelled || stickyLive) && !turnDone) {
+          return jsonRes({
+            done: false,
+            session_id: "s1",
+            text: "",
+            ...(pollTaken
+              ? {
+                  inbox_taken: runs
+                    .filter((c) => c.action === "send")
+                    .map((c) => c.params.client_uuid)
+                    .filter(Boolean),
+                }
+              : {}),
+          });
         }
         return jsonRes({ done: true, session_id: "s1", text: "ok" });
       }
-      if (pollLive && action === "live_host") return jsonRes({ run_id: "r1" });
+      if (pollLive && (action === "live_host" || (action === "live_run" && holdLiveHost))) {
+        if (holdLiveHost) return holdLiveHost.then(() => jsonRes({ run_id: "r1" }));
+        return jsonRes({ run_id: "r1" });
+      }
       if (pollLive && action === "send") {
         if (failSend) return jsonRes({});
         // HOLDABLE like `start`: the window between the inbox taking the bytes
@@ -158,7 +198,9 @@ function stubFetch(): void {
       }
       if (action === "cancel") {
         cancelled = true;
-        return jsonRes({ cancelled: "r1", still_queued: [] });
+        const answer = { cancelled: "r1", still_queued: cancelStill };
+        if (holdCancel) return holdCancel.then(() => jsonRes(answer));
+        return jsonRes(answer);
       }
       return jsonRes({});
     }
@@ -243,9 +285,20 @@ function pressDoneChord(over: Record<string, unknown> = {}): {
 }
 
 beforeEach(() => {
+  storeCells.clear();
+  historyBody = { turns: [], live_run: "" };
+  const g = globalThis as { sessionStorage?: unknown };
+  realSession = { had: Object.prototype.hasOwnProperty.call(g, "sessionStorage"), was: g.sessionStorage };
+  g.sessionStorage = {
+    getItem: (k: string) => storeCells.get(k) ?? null,
+    setItem: (k: string, v: string) => void storeCells.set(k, String(v)),
+    removeItem: (k: string) => void storeCells.delete(k),
+  };
   // A shared prefs GET pinned by an earlier file's never-settling fetch stub
   // would starve the flag read this chat's send waits on.
   dropSharedPrefsRead();
+  // The page-wide history cache would replay one case's `inbox_taken` into the next.
+  sharedHistoryCache.clear();
   runs.length = 0;
   startError = "";
   appEntry = "/w/p/index.html";
@@ -256,9 +309,14 @@ beforeEach(() => {
   holdStart = null;
   holdSend = null;
   pollLive = false;
+  pollTaken = false;
   failSend = false;
   holdSendNth = null;
   sendCount = 0;
+  cancelStill = [];
+  holdCancel = null;
+  turnDone = false;
+  holdLiveHost = null;
   cancelled = false;
   stickyLive = false;
   prefsBody = {};
@@ -467,6 +525,9 @@ afterEach(() => {
   if (realCreate === undefined) delete doc.createElement;
   else doc.createElement = realCreate;
   restoreApi();
+  const g = globalThis as { sessionStorage?: unknown };
+  if (realSession.had) g.sessionStorage = realSession.was;
+  else delete g.sessionStorage;
   expect(Object.keys(API).sort()).toEqual(Object.keys(asFound).sort());
   for (const k of Object.keys(asFound)) expect(API[k]).toBe(asFound[k]);
 });
@@ -644,33 +705,42 @@ test("the locked ← Chats SAYS WHY, in the title and in its accessible name", a
   // answer for a control the keyboard can no longer land on, and a dead way out
   // that will not say why is the worst of the refusal faces.
   //
-  // Back is only in the strip once there is a chat to leave, so this sends
-  // first (the landing has no way back).
+  // Back is only in the head once there is a chat to leave, so this sends
+  // first (the landing has no way back). The shared head's lead (TaskHead)
+  // says the sentence in its hint.
   const { r } = await mountChat();
   await typeInBox(r, "hello");
   await pressEnterInBox(r);
   await settle();
 
-  const back = () => byClass(r, "c-back")[0]!;
-  expect(back().props.disabled).toBe(false);
-  expect(back().props.title).toBeUndefined();
+  const back = () => backButton(r);
+  expect(back().props.disabled).toBeFalsy();
   expect(back().props["aria-label"]).toBe("Back to chats");
 
   await act(async () => commentSeat(r).props.onClick());
   await settle();
 
   expect(back().props.disabled).toBe(true);
-  expect(back().props.title).toBe(NAV_LOCKED_REASON);
+  expect(back().props["data-hint"]).toBe(NAV_LOCKED_REASON);
   expect(String(back().props["aria-label"])).toContain(NAV_LOCKED_REASON);
   expect(String(back().props["aria-label"])).toContain("Back to chats");
 
   // …and it is given back, sentence and all, when the mode goes.
   await act(async () => commentSeat(r).props.onClick());
   await settle();
-  expect(back().props.disabled).toBe(false);
-  expect(back().props.title).toBeUndefined();
+  expect(back().props.disabled).toBeFalsy();
   expect(back().props["aria-label"]).toBe("Back to chats");
 });
+
+/** The shared head's ← Back to chats (TaskHead's lead). */
+function backButton(r: ReactTestRenderer): ReactTestInstance {
+  return r.root.find(
+    (n) =>
+      typeof n.type === "string" &&
+      String(n.props.className ?? "").includes("task-head-lead") &&
+      String(n.props["aria-label"] ?? "").startsWith("Back to chats"),
+  );
+}
 
 // ---- a note becomes a chip in the tray's own row --------------------------
 
@@ -1397,11 +1467,9 @@ test("a line typed while the run is only STARTING is parked as a queued bubble, 
   // refuse.
   expect(boxValue(r)).toBe("");
   expect(started()).toHaveLength(1);
-  expect(byClass(r, "bubble").map((n) => String(n.props.children))).toEqual([
-    "first message",
-    "second message",
-  ]);
-  expect(byClass(r, "turn-pending").map((n) => String(n.props.children))).toEqual(["queued"]);
+  expect(byClass(r, "bubble").map((n) => String(n.props.children))).toEqual(["first message"]);
+  expect(byClass(r, "c-queue-text").map((n) => String(n.props.children))).toEqual(["second message"]);
+  expect(byClass(r, "c-queue-row")).toHaveLength(1);
   expect(JSON.stringify(r.toJSON())).toContain("1 message waiting to send");
 
   await act(async () => open());
@@ -1424,6 +1492,60 @@ test("a line typed while the run is only STARTING is parked as a queued bubble, 
   expect(boxValue(r)).toBe("");
 });
 
+test("a parked line drained while status is idle but the controller gate is still shut is retried, never not-sent", async () => {
+  // `status` reads idle a beat before the controller's own send gate opens. A
+  // line drained in that beat used to be refused and come back "not sent" with
+  // nothing to retry it. The drain looks again shortly instead.
+  const realCreate = runControllerModule.createChatController;
+  let gateShut = false;
+  const spy = spyOn(runControllerModule, "createChatController").mockImplementation(((...a: Parameters<typeof realCreate>) => {
+    const c = realCreate(...a);
+    const real = c.isBusy.bind(c);
+    // The beat in question, as the drain reads it: status already idle, the
+    // controller's own gate not open yet.
+    const realState = c.getState.bind(c);
+    // One derived object per real state, so a subscriber sees a stable snapshot.
+    const idleOf = new WeakMap<object, ReturnType<typeof realState>>();
+    c.getState = () => {
+      const st = realState();
+      if (!gateShut || st.status === "idle") return st;
+      let v = idleOf.get(st);
+      if (!v) idleOf.set(st, (v = { ...st, status: "idle" as const }));
+      return v;
+    };
+    c.isBusy = () => gateShut || real();
+    return c;
+  }) as typeof realCreate);
+  try {
+    const open = heldStart();
+    const { r } = await mountChat();
+    await typeInBox(r, "first message");
+    await act(async () => {
+      r.root.findByType("form").props.onSubmit({ preventDefault: () => {} });
+    });
+    await settle();
+    await typeInBox(r, "second message");
+    await pressEnterInBox(r);
+    await settle();
+    expect(started()).toHaveLength(1);
+    gateShut = true;
+    await act(async () => open());
+    // Longer than the follow-up road's own 3 s wait, so a line that WAS drained
+    // would have reached `start` by now.
+    await settle(3800);
+    // Held, not sent and not refused: no second start yet, no not-sent row.
+    expect(started()).toHaveLength(1);
+    expect(JSON.stringify(r.toJSON())).not.toContain("not sent");
+    gateShut = false;
+    await settle(3400);
+    expect(started()).toHaveLength(2);
+    expect(started()[1]!.params.message).toContain("second message");
+    expect(JSON.stringify(r.toJSON())).not.toContain("not sent");
+  } finally {
+    spy.mockRestore();
+  }
+}, 20000);
+
 test("a parked line stopped before the inbox confirmed it comes back as ONE not-sent bubble", async () => {
   // Bugbot round 2 (PR #1323): a stop hands an unconfirmed follow-up back twice
   // in one tick — `returnSend` for its pictures, `onStranded` for its words —
@@ -1444,7 +1566,7 @@ test("a parked line stopped before the inbox confirmed it comes back as ONE not-
   await typeInBox(r, "second message");
   await pressEnterInBox(r);
   await settle();
-  expect(byClass(r, "turn-pending").map((n) => String(n.props.children))).toEqual(["queued"]);
+  expect(byClass(r, "c-queue-row")).toHaveLength(1);
   // …the run goes live and stays live (`pollLive`), so the drain sends it as a
   // follow-up whose `send` is now HELD: taken by the host, not yet confirmed.
   await act(async () => open());
@@ -1535,6 +1657,7 @@ test("a stop hands lines back in the order they were typed, whichever road each 
   expect(rows.map((n) => String(n.findAllByProps({ className: "bubble" })[0]!.props.children)))
     .toEqual(["A", "B", "C"]);
   expect(byClass(r, "turn-pending")).toHaveLength(3);
+  expect(byClass(r, "c-queue-row")).toHaveLength(0);
   // ↑ pulls the newest — C — first.
   await act(async () => {
     r.root
@@ -1564,10 +1687,7 @@ test("two identical parked lines, one out and one waiting, each keep their own r
   await typeInBox(r, "again");
   await pressEnterInBox(r);
   await settle();
-  expect(byClass(r, "turn-pending").map((n) => String(n.props.children))).toEqual([
-    "queued",
-    "queued",
-  ]);
+  expect(byClass(r, "c-queue-row")).toHaveLength(2);
   // The run goes live: BOTH "again"s drain into it — a follow-up opens the
   // latch as soon as it is handed to the controller, so the second follows the
   // first out — and both `send`s are held: two sends out, two ids, neither
@@ -1602,11 +1722,11 @@ test("Back with a line still PARKED empties the outbox: no bubble, no hint carri
   await typeInBox(r, "parked");
   await pressEnterInBox(r);
   await settle();
-  expect(byClass(r, "turn-pending")).toHaveLength(1);
-  await act(async () => byClass(r, "c-back")[0]!.props.onClick({ preventDefault() {} }));
+  expect(byClass(r, "c-queue-row")).toHaveLength(1);
+  await act(async () => backButton(r).props.onClick({ preventDefault() {} }));
   await settle(60);
   expect(byClass(r, "bubble")).toHaveLength(0);
-  expect(byClass(r, "turn-pending")).toHaveLength(0);
+  expect(byClass(r, "c-queue-row")).toHaveLength(0);
   expect(JSON.stringify(r.toJSON())).not.toContain("waiting to send");
   await act(async () => open());
   await settle(60);
@@ -1614,13 +1734,16 @@ test("Back with a line still PARKED empties the outbox: no bubble, no hint carri
   expect(runs.filter((c) => c.action === "send")).toHaveLength(0);
 });
 
-/** The messages that went out, in order, whichever road each took. */
-function sentOut(): string[] {
-  return runs
-    .filter((c) => c.action === "start" || c.action === "send")
-    .map((c) => String(c.params.message ?? ""));
+/** Ctrl+X with words in the box: send now. */
+function pressCtrlXInBox(r: Chat): Promise<void> {
+  return act(async () => {
+    r.root
+      .findByType("textarea")
+      .props.onKeyDown({ key: "x", ctrlKey: true, shiftKey: false, preventDefault() {} });
+  });
 }
 
+/** Ctrl+Enter with words in the box: hold until the session is done. */
 function pressCtrlEnterInBox(r: Chat): Promise<void> {
   return act(async () => {
     r.root
@@ -1628,41 +1751,6 @@ function pressCtrlEnterInBox(r: Chat): Promise<void> {
       .props.onKeyDown({ key: "Enter", ctrlKey: true, shiftKey: false, preventDefault() {} });
   });
 }
-
-test("Stop during a send-now's wait wins: the line stays not-sent and nothing is sent", async () => {
-  // Bugbot 4122407431: the Ctrl+Enter line sits in the outbox so a Stop can
-  // retag it, but `onSendNow` used to lift it out and dispatch it once the run
-  // settled anyway — a "not sent" bubble that sent. Now a stop wins.
-  pollLive = true;
-  stickyLive = true;
-  const { r } = await mountChat();
-  await typeInBox(r, "first message");
-  await act(async () => {
-    r.root.findByType("form").props.onSubmit({ preventDefault: () => {} });
-  });
-  await settle(60);
-  await typeInBox(r, "Z");
-  await pressCtrlEnterInBox(r);
-  await settle(150);
-  // The chord's interrupt went out; the run is slow to settle.
-  expect(runs.filter((c) => c.action === "cancel")).toHaveLength(1);
-  expect(byClass(r, "turn-pending").map((n) => String(n.props.children))).toEqual(["queued"]);
-  // Stop while the chord waits.
-  await act(async () => {
-    r.root.findByType("form").props.onSubmit({ preventDefault: () => {} });
-  });
-  await settle(60);
-  expect(byClass(r, "turn-pending").map((n) => String(n.props.children))).toEqual([
-    "not sent · click to edit",
-  ]);
-  // Now the run settles: the chord finds its line retagged and steps back.
-  stickyLive = false;
-  await settle(1200);
-  expect(byClass(r, "turn-pending").map((n) => String(n.props.children))).toEqual([
-    "not sent · click to edit",
-  ]);
-  expect(sentOut()).toEqual(["first message"]);
-});
 
 test("the run going live opens the door without waiting for the turn to end", async () => {
   // The latch cannot simply be held for the whole turn: a follow-up has to be
@@ -1895,4 +1983,558 @@ test("a REFUSED admission leaves the round exactly where the reader left it", as
   expect(annChips(r)).toHaveLength(1);
   expect(annotationsForTests()!.annotations[0]!.sent).toBeFalsy();
   expect(revoked).toHaveLength(1);
+});
+
+
+// ---- CLI PARITY: a mid-turn line goes to the live run, flag on OR off -------
+//
+// The one-task-per-folder flag decides folder exclusivity between DIFFERENT
+// runs. It never changes how a line typed into this chat's own live run is
+// delivered, nor whether the line survives a reload — so every case below runs
+// under both settings and expects the same outcome.
+
+const PENDING_KEY = "claude.outbox:s1";
+
+test("flag OFF: a mid-turn line carries the Ctrl+X hint on its bubble, no composer line, until the CLI has taken it", async () => {
+  pollLive = true;
+  prefsBody = {};
+  const rig = await mountChat();
+  await act(async () => publishProjectQueueEnabled(false));
+  await typeInBox(rig.r, "first message");
+  await act(async () => {
+    rig.r.root.findByType("form").props.onSubmit({ preventDefault: () => {} });
+  });
+  await settle(60);
+  await typeInBox(rig.r, "since worktree is not in main");
+  await pressEnterInBox(rig.r);
+  await settle(40);
+  const queuedHint = () =>
+    byClass(rig.r, "c-queue-act").filter((n) => JSON.stringify(n.children).includes("Ctrl+X to send now"));
+  expect(queuedHint()).toHaveLength(1);
+  expect(JSON.stringify(rig.r.toJSON())).not.toContain("queued for this turn");
+  expect(byClass(rig.r, "c-queue-row")).toHaveLength(1);
+  // The CLI's receipt for the page's uuid arrives with the next poll.
+  pollTaken = true;
+  await settle(1500);
+  expect(queuedHint()).toHaveLength(0);
+});
+
+for (const flagOn of [false, true]) {
+  const tag = flagOn ? "flag ON" : "flag OFF";
+
+  /** The chat with a LIVE run of its own (`pollLive`), the flag set. */
+  async function liveChat() {
+    pollLive = true;
+    prefsBody = flagOn ? { queue: { enabled: true } } : {};
+    const rig = await mountChat();
+    await act(async () => publishProjectQueueEnabled(flagOn));
+    await typeInBox(rig.r, "first message");
+    await act(async () => {
+      rig.r.root.findByType("form").props.onSubmit({ preventDefault: () => {} });
+    });
+    await settle(60);
+    return rig;
+  }
+  const sends = () => runs.filter((c) => c.action === "send");
+
+  test(`${tag}: Enter mid-turn writes to the live run at once, not a new start`, async () => {
+    const { r } = await liveChat();
+    const openings = admits.length;
+    expect(started()).toHaveLength(1);
+    await typeInBox(r, "keep going");
+    await pressEnterInBox(r);
+    await settle(60);
+    expect(sends()).toHaveLength(1);
+    expect(sends()[0]!.params.message).toContain("keep going");
+    expect(sends()[0]!.params.client_uuid).toBeTruthy();
+    expect(started()).toHaveLength(1);
+    // Never through admission: this is the chat's own run.
+    expect(admits).toHaveLength(openings);
+    // The server acknowledged it, so nothing is left to re-send after a reload.
+    expect(storeCells.get(PENDING_KEY)).toBeUndefined();
+  });
+
+  const ctrlX = (r: Chat) =>
+    act(async () => {
+      r.root.findByType("textarea").props.onKeyDown({
+        key: "x",
+        ctrlKey: true,
+        shiftKey: false,
+        preventDefault() {},
+      });
+    });
+  const hints = (r: Chat) =>
+    [...byClass(r, "c-queue-act"), ...byClass(r, "c-queue-note"), ...byClass(r, "turn-pending")]
+      .map((n) => String(n.props.children).replace(/,/g, ""))
+      .filter((t) => t !== "edit");
+
+  const sendNows = () => runs.filter((c) => c.action === "send_now");
+  const clickHint = (r: Chat) =>
+    act(async () => {
+      byClass(r, "c-queue-act")[0]!.props.onClick();
+    });
+
+  test(`${tag}: a live follow-up carries the hint; empty-box Ctrl+X names it in a send_now interrupt, never a stop or a re-send`, async () => {
+    const { r } = await liveChat();
+    await typeInBox(r, "keep going");
+    await pressEnterInBox(r);
+    await settle(60);
+    expect(sends()).toHaveLength(1);
+    // The follow-up is a strip row above the composer, not a transcript bubble;
+    // it wears the hint, no "queued" word and no composer line.
+    expect(hints(r)).toEqual(["(Ctrl+X to send now)"]);
+    expect(byClass(r, "c-queue-row")).toHaveLength(1);
+    expect(byClass(r, "bubble").map((n) => String(n.props.children))).not.toContain("keep going");
+    expect(JSON.stringify(r.toJSON())).not.toContain("queued for this turn");
+    await ctrlX(r);
+    await settle(100);
+    expect(sendNows().map((c) => c.params.client_uuid)).toEqual([sends()[0]!.params.client_uuid]);
+    expect(runs.filter((c) => c.action === "cancel")).toHaveLength(0);
+    expect(sends()).toHaveLength(1);
+    expect(started()).toHaveLength(1);
+    expect(JSON.stringify(r.toJSON())).not.toContain("not sent");
+  });
+
+  test(`${tag}: clicking the queued bubble sends the same send_now interrupt, never a stop`, async () => {
+    const { r } = await liveChat();
+    await typeInBox(r, "keep going");
+    await pressEnterInBox(r);
+    await settle(60);
+    await clickHint(r);
+    await settle(100);
+    expect(sendNows().map((c) => c.params.client_uuid)).toEqual([sends()[0]!.params.client_uuid]);
+    expect(runs.filter((c) => c.action === "cancel")).toHaveLength(0);
+  });
+
+  test(`${tag}: Ctrl+X mid-turn sends the line as an ordinary follow-up, then ONE send_now interrupt naming it, never a stop, journalled until acked`, async () => {
+    const { r } = await liveChat();
+    let releaseHeld!: () => void;
+    holdSend = new Promise<void>((resolve) => {
+      releaseHeld = resolve;
+    });
+    await typeInBox(r, "Z");
+    await pressCtrlXInBox(r);
+    await settle(60);
+    // On the wire but not acknowledged yet: a reload would re-send it, and the
+    // interrupt waits for the inbox to hold the line.
+    const stored = JSON.parse(storeCells.get(PENDING_KEY) ?? "[]") as Array<{ id: string; text: string }>;
+    expect(stored.map((l) => l.text)).toEqual(["Z"]);
+    expect(sendNows()).toHaveLength(0);
+    releaseHeld();
+    await settle(100);
+    const out = sends().filter((c) => String(c.params.message).includes("Z"));
+    expect(out).toHaveLength(1);
+    expect(out[0]!.params.send_now).toBeUndefined();
+    expect(out[0]!.params.client_uuid).toBe(stored[0]!.id);
+    expect(sendNows().map((c) => c.params.client_uuid)).toEqual([stored[0]!.id]);
+    expect(runs.filter((c) => c.action === "cancel")).toHaveLength(0);
+    expect(started()).toHaveLength(1);
+    expect(storeCells.get(PENDING_KEY)).toBeUndefined();
+  });
+
+  test(`${tag}: Ctrl+X with two queued lines and typed words sends all three in order and ONE interrupt, never a stop`, async () => {
+    const { r } = await liveChat();
+    await typeInBox(r, "one");
+    await pressEnterInBox(r);
+    await typeInBox(r, "two");
+    await pressEnterInBox(r);
+    await settle(60);
+    expect(sends()).toHaveLength(2);
+    await typeInBox(r, "three");
+    await pressCtrlXInBox(r);
+    await settle(100);
+    expect(sends().map((c) => c.params.message)).toEqual([
+      expect.stringContaining("one"),
+      expect.stringContaining("two"),
+      expect.stringContaining("three"),
+    ]);
+    expect(sends().some((c) => c.params.send_now !== undefined)).toBe(false);
+    expect(sendNows().map((c) => c.params.client_uuid)).toEqual([sends()[0]!.params.client_uuid]);
+    expect(runs.filter((c) => c.action === "cancel")).toHaveLength(0);
+    expect(started()).toHaveLength(1);
+  });
+
+  test(`${tag}: Ctrl+X while a send is busy parks the line and the interrupt still goes out once it has drained`, async () => {
+    const { r } = await liveChat();
+    // A line whose pane capture is still open holds the door shut.
+    await act(async () => commentSeat(r).props.onClick());
+    await settle();
+    await act(async () => makeNote("this button is too small"));
+    await settle();
+    const open = heldShutter();
+    await typeInBox(r, "first");
+    await pressEnterInBox(r);
+    await typeInBox(r, "second");
+    await pressCtrlXInBox(r);
+    await settle(30);
+    expect(sends()).toHaveLength(0);
+    expect(sendNows()).toHaveLength(0);
+    await act(async () => open());
+    await settle(150);
+    expect(sends().map((c) => c.params.message)).toEqual([
+      expect.stringContaining("first"),
+      expect.stringContaining("second"),
+    ]);
+    expect(sendNows().map((c) => c.params.client_uuid)).toEqual([sends()[0]!.params.client_uuid]);
+    expect(runs.filter((c) => c.action === "cancel")).toHaveLength(0);
+  });
+
+  test(`${tag}: Enter while the run is stopping waits for the stop to settle and is sent once after it, never into the dying run`, async () => {
+    const { r } = await liveChat();
+    stickyLive = true;
+    await act(async () => {
+      r.root.findByType("form").props.onSubmit({ preventDefault: () => {} });
+    });
+    await settle(150);
+    expect(runs.filter((c) => c.action === "cancel")).toHaveLength(1);
+    await typeInBox(r, "after");
+    await pressEnterInBox(r);
+    await settle(150);
+    expect(sends()).toHaveLength(0);
+    expect(byClass(r, "c-queue-row")).toHaveLength(1);
+    stickyLive = false;
+    await settle(1500);
+    const out = [...sends(), ...started()].filter((c) => String(c.params.message).includes("after"));
+    expect(out).toHaveLength(1);
+  });
+
+  test(`${tag}: once the CLI has taken a live follow-up its hint is gone`, async () => {
+    const { r } = await liveChat();
+    await typeInBox(r, "keep going");
+    await pressEnterInBox(r);
+    await settle(60);
+    expect(hints(r)).toEqual(["(Ctrl+X to send now)"]);
+    pollTaken = true;
+    await settle(1500);
+    expect(hints(r)).toEqual([]);
+    // Echoed: the strip row is gone and the line is a transcript bubble.
+    expect(byClass(r, "c-queue-row")).toHaveLength(0);
+    expect(byClass(r, "bubble").map((n) => String(n.props.children))).toContain("keep going");
+  });
+
+  test(`${tag}: a plain Stop with a live follow-up still yields "not sent"`, async () => {
+    const { r } = await liveChat();
+    await typeInBox(r, "keep going");
+    await pressEnterInBox(r);
+    await settle(60);
+    cancelStill = [String(sends()[0]!.params.message)];
+    await act(async () => {
+      r.root.findByType("form").props.onSubmit({ preventDefault: () => {} });
+    });
+    await settle(300);
+    expect(hints(r)).toContain("not sent · click to edit");
+  });
+
+  test(`${tag}: two mid-turn lines arrive in the order typed`, async () => {
+    const { r } = await liveChat();
+    await typeInBox(r, "one");
+    await pressEnterInBox(r);
+    await typeInBox(r, "two");
+    await pressEnterInBox(r);
+    await settle(80);
+    expect(sends().map((c) => c.params.message)).toEqual([
+      expect.stringContaining("one"),
+      expect.stringContaining("two"),
+    ]);
+    expect(started()).toHaveLength(1);
+  });
+
+  test(`${tag}: a line typed while the run is STARTING is delivered into this chat's run`, async () => {
+    pollLive = true;
+    prefsBody = flagOn ? { queue: { enabled: true } } : {};
+    const open = heldStart();
+    const { r } = await mountChat();
+    await act(async () => publishProjectQueueEnabled(flagOn));
+    await typeInBox(r, "first message");
+    await act(async () => {
+      r.root.findByType("form").props.onSubmit({ preventDefault: () => {} });
+    });
+    await settle(30);
+    const openings = admits.length;
+    // The session id is not known yet: only `start` is out.
+    await typeInBox(r, "typed while starting");
+    await pressEnterInBox(r);
+    await settle(30);
+    // Journalled while it waits: a reload now must not lose it.
+    expect(sends()).toHaveLength(0);
+    await act(async () => open());
+    await settle(200);
+    expect(sends()).toHaveLength(1);
+    expect(sends()[0]!.params.message).toContain("typed while starting");
+    // Not a second turn, and not queued behind itself.
+    expect(started()).toHaveLength(1);
+    expect(admits).toHaveLength(openings);
+    expect(byClass(r, "c-queue-act").filter((n) => n.props.children === "edit")).toHaveLength(0);
+  });
+
+  test(`${tag}: a line with no acknowledgement yet is journalled, and dropped once the server has it`, async () => {
+    let release!: () => void;
+    holdSend = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const { r } = await liveChat();
+    await typeInBox(r, "in flight");
+    await pressEnterInBox(r);
+    await settle(30);
+    const stored = JSON.parse(storeCells.get(PENDING_KEY) ?? "[]") as Array<{ id: string; text: string }>;
+    expect(stored.map((l) => l.text)).toEqual(["in flight"]);
+    expect(stored[0]!.id).toBe(sends()[0]!.params.client_uuid!);
+    release();
+    await settle(60);
+    expect(storeCells.get(PENDING_KEY)).toBeUndefined();
+  });
+
+  const heldTag = "(queued until this turn is done)";
+  const endTurn = async () => {
+    turnDone = true;
+    await settle(1200);
+  };
+
+  test(`${tag}: Ctrl+Enter mid-turn holds the line out of the run, tagged, and sends it as a new message once the turn ends`, async () => {
+    const { r } = await liveChat();
+    await typeInBox(r, "later please");
+    await pressCtrlEnterInBox(r);
+    await settle(300);
+    expect(sends()).toHaveLength(0);
+    expect(runs.filter((c) => c.action === "cancel")).toHaveLength(0);
+    expect(hints(r)).toEqual([heldTag]);
+    const stored = JSON.parse(storeCells.get(PENDING_KEY) ?? "[]") as Array<{ id: string; text: string; hold?: boolean }>;
+    expect(stored.map((l) => [l.text, l.hold])).toEqual([["later please", true]]);
+    await endTurn();
+    const out = [...sends(), ...started()].filter((c) => String(c.params.message).includes("later please"));
+    expect(out).toHaveLength(1);
+    expect(out[0]!.params.client_uuid).toBe(stored[0]!.id);
+    expect(hints(r)).toEqual([]);
+  });
+
+  test(`${tag}: two held lines go one per turn, in typed order`, async () => {
+    const { r } = await liveChat();
+    await typeInBox(r, "held one");
+    await pressCtrlEnterInBox(r);
+    await typeInBox(r, "held two");
+    await pressCtrlEnterInBox(r);
+    await settle(200);
+    expect(sends()).toHaveLength(0);
+    await endTurn();
+    const sentHeld = () =>
+      [...sends(), ...started()].filter((c) => String(c.params.message).includes("held ")).map((c) => String(c.params.message));
+    expect(sentHeld()).toEqual([expect.stringContaining("held one")]);
+    expect(hints(r)).toEqual([heldTag]);
+    await endTurn();
+    expect(sentHeld()).toEqual([expect.stringContaining("held one"), expect.stringContaining("held two")]);
+    expect(hints(r)).toEqual([]);
+  });
+
+  test(`${tag}: an ordinary follow-up goes ahead of a held line; the held one waits for that turn too`, async () => {
+    const { r } = await liveChat();
+    await typeInBox(r, "held one");
+    await pressCtrlEnterInBox(r);
+    await typeInBox(r, "plain");
+    await pressEnterInBox(r);
+    await settle(200);
+    expect(sends().map((c) => String(c.params.message))).toEqual([expect.stringContaining("plain")]);
+    expect([...sends(), ...started()].some((c) => String(c.params.message).includes("held one"))).toBe(false);
+    await endTurn();
+    expect([...sends(), ...started()].filter((c) => String(c.params.message).includes("held one"))).toHaveLength(1);
+  });
+
+  test(`${tag}: Ctrl+Enter while idle is the plain send`, async () => {
+    const { r } = await mountChat();
+    await typeInBox(r, "now please");
+    await pressCtrlEnterInBox(r);
+    await settle(200);
+    expect(started().filter((c) => String(c.params.message).includes("now please"))).toHaveLength(1);
+    expect(hints(r)).not.toContain(heldTag);
+  });
+
+  test(`${tag}: a plain Stop turns a held line into "not sent", and it never sends`, async () => {
+    const { r } = await liveChat();
+    await typeInBox(r, "held one");
+    await pressCtrlEnterInBox(r);
+    await settle(100);
+    await act(async () => {
+      r.root.findByType("form").props.onSubmit({ preventDefault: () => {} });
+    });
+    await settle(1500);
+    expect(hints(r)).toEqual(["not sent · click to edit"]);
+    expect([...sends(), ...started()].some((c) => String(c.params.message).includes("held one"))).toBe(false);
+    expect(storeCells.get(PENDING_KEY)).toBeUndefined();
+  });
+
+  test(`${tag}: a reload keeps a held line held while the run is live, and sends it after the turn`, async () => {
+    storeCells.set(PENDING_KEY, JSON.stringify([{ id: "0f8c1c52-aaaa-4bbb-8ccc-123456789abc", text: "held across", hold: true }]));
+    historyBody = { turns: [{ role: "user", text: "earlier", uuid: "u0" }], live_run: "r1", inbox: [] };
+    pollLive = true;
+    prefsBody = flagOn ? { queue: { enabled: true } } : {};
+    const { r } = await mountChat({ session_id: "s1" });
+    await act(async () => publishProjectQueueEnabled(flagOn));
+    await settle(400);
+    expect([...sends(), ...started()].some((c) => String(c.params.message).includes("held across"))).toBe(false);
+    expect(hints(r)).toEqual([heldTag]);
+    turnDone = true;
+    await settle(3500);
+    const into = [...sends(), ...started()].filter((c) => String(c.params.message).includes("held across"));
+    expect(into).toHaveLength(1);
+    expect(into[0]!.params.client_uuid).toBe("0f8c1c52-aaaa-4bbb-8ccc-123456789abc");
+  });
+
+  test(`${tag}: a slow live-run adoption keeps a reloaded held line held until the adopted run finishes`, async () => {
+    const id = "0f8c1c52-aaaa-4bbb-8ccc-123456789abc";
+    storeCells.set(PENDING_KEY, JSON.stringify([{ id, text: "held slow", hold: true }]));
+    historyBody = { turns: [{ role: "user", text: "earlier", uuid: "u0" }], live_run: "r1", inbox: [] };
+    pollLive = true;
+    let release!: () => void;
+    holdLiveHost = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    prefsBody = flagOn ? { queue: { enabled: true } } : {};
+    await mountChat({ session_id: "s1" });
+    await act(async () => publishProjectQueueEnabled(flagOn));
+    await settle(3200);
+    const out = () => [...sends(), ...started()].filter((c) => String(c.params.message).includes("held slow"));
+    expect(out()).toHaveLength(0);
+    release();
+    await settle(400);
+    expect(out()).toHaveLength(0);
+    turnDone = true;
+    await settle(3500);
+    expect(out()).toHaveLength(1);
+    expect(out()[0]!.params.client_uuid).toBe(id);
+  }, 15000);
+
+  test(`${tag}: a held line goes when the live run's queue empties while the run is already idle`, async () => {
+    const { r } = await liveChat();
+    await typeInBox(r, "queued one");
+    await pressEnterInBox(r);
+    await settle(60);
+    await typeInBox(r, "held two");
+    await pressCtrlEnterInBox(r);
+    await settle(60);
+    expect(sends().map((c) => String(c.params.message))).toEqual([expect.stringContaining("queued one")]);
+    await endTurn();
+    const out = [...sends(), ...started()].filter((c) => String(c.params.message).includes("held two"));
+    expect(out).toHaveLength(1);
+  });
+
+  test(`${tag}: a reload re-sends a line the server never had, exactly once`, async () => {
+    storeCells.set(PENDING_KEY, JSON.stringify([{ id: "0f8c1c52-aaaa-4bbb-8ccc-123456789abc", text: "lost line" }]));
+    prefsBody = flagOn ? { queue: { enabled: true } } : {};
+    await mountChat({ session_id: "s1" });
+    await act(async () => publishProjectQueueEnabled(flagOn));
+    await settle(200);
+    const opening = started().filter((c) => String(c.params.message).includes("lost line"));
+    expect(opening).toHaveLength(1);
+    expect(opening[0]!.params.client_uuid).toBe("0f8c1c52-aaaa-4bbb-8ccc-123456789abc");
+    await settle(200);
+    expect(started().filter((c) => String(c.params.message).includes("lost line"))).toHaveLength(1);
+    // Acknowledged now, so a SECOND reload has nothing to send.
+    expect(storeCells.get(PENDING_KEY)).toBeUndefined();
+  });
+
+  test(`${tag}: a reload whose history already holds that entry id does not re-send it`, async () => {
+    const id = "0f8c1c52-aaaa-4bbb-8ccc-123456789abc";
+    storeCells.set(PENDING_KEY, JSON.stringify([{ id, text: "already there" }]));
+    historyBody = {
+      turns: [{ role: "user", text: "earlier", uuid: "u0" }],
+      live_run: "r1",
+      inbox: [{ id: "i1", text: "already there", uuid: id }],
+    };
+    pollLive = true;
+    prefsBody = flagOn ? { queue: { enabled: true } } : {};
+    await mountChat({ session_id: "s1" });
+    await act(async () => publishProjectQueueEnabled(flagOn));
+    await settle(300);
+    expect(started()).toHaveLength(0);
+    expect(sends()).toHaveLength(0);
+    expect(storeCells.get(PENDING_KEY)).toBeUndefined();
+  });
+
+  test(`${tag}: after a reload the strip comes from the server inbox, one row per line, never in the transcript`, async () => {
+    historyBody = {
+      turns: [{ role: "user", text: "earlier", uuid: "u0" }],
+      live_run: "r1",
+      inbox: [
+        { id: "i1", text: "again", uuid: "0f8c1c52-aaaa-4bbb-8ccc-000000000001" },
+        { id: "i2", text: "again", uuid: "0f8c1c52-aaaa-4bbb-8ccc-000000000002" },
+      ],
+    };
+    pollLive = true;
+    prefsBody = flagOn ? { queue: { enabled: true } } : {};
+    const { r } = await mountChat({ session_id: "s1" });
+    await act(async () => publishProjectQueueEnabled(flagOn));
+    await settle(300);
+    expect(byClass(r, "c-queue-text").map((n) => String(n.props.children))).toEqual(["again", "again"]);
+    expect(byClass(r, "bubble").map((n) => String(n.props.children))).toEqual(["earlier"]);
+  });
+
+  test(`${tag}: a reload into a live run re-sends the lost line as a follow-up`, async () => {
+    storeCells.set(PENDING_KEY, JSON.stringify([{ id: "0f8c1c52-aaaa-4bbb-8ccc-123456789abc", text: "lost mid-turn" }]));
+    historyBody = { turns: [{ role: "user", text: "earlier", uuid: "u0" }], live_run: "r1", inbox: [] };
+    pollLive = true;
+    prefsBody = flagOn ? { queue: { enabled: true } } : {};
+    await mountChat({ session_id: "s1" });
+    await act(async () => publishProjectQueueEnabled(flagOn));
+    await settle(400);
+    const into = [...sends(), ...started()].filter((c) => String(c.params.message).includes("lost mid-turn"));
+    expect(into).toHaveLength(1);
+    expect(into[0]!.params.client_uuid).toBe("0f8c1c52-aaaa-4bbb-8ccc-123456789abc");
+  });
+
+  test(`${tag}: a reload before a new chat's session id arrives still re-sends the line, exactly once`, async () => {
+    // A line sent while the chat had a run but no session id was kept under the
+    // run (`claude.outbox:run:<id>`); the reload boots from `run` alone.
+    const id = "0f8c1c52-aaaa-4bbb-8ccc-123456789abc";
+    storeCells.set("claude.outbox:run:r1", JSON.stringify([{ id, text: "sent before the session" }]));
+    historyBody = { turns: [{ role: "user", text: "earlier", uuid: "u0" }], live_run: "r1", inbox: [] };
+    pollLive = true;
+    prefsBody = flagOn ? { queue: { enabled: true } } : {};
+    await mountChat({ run: "r1" });
+    await act(async () => publishProjectQueueEnabled(flagOn));
+    // The follow-up road waits up to 3 s for the run to be live.
+    await settle(3600);
+    const into = [...sends(), ...started()].filter((c) => String(c.params.message).includes("sent before the session"));
+    expect(into).toHaveLength(1);
+    expect(into[0]!.params.client_uuid).toBe(id);
+    await settle(400);
+    expect([...sends(), ...started()].filter((c) => String(c.params.message).includes("sent before the session"))).toHaveLength(1);
+    // The run's copy is gone; the line is now owned by the session's journal / server.
+    expect(storeCells.get("claude.outbox:run:r1")).toBeUndefined();
+  });
+
+  test(`${tag}: a reload does not re-send a line the CLI took, seen only as a receipt`, async () => {
+    const id = "0f8c1c52-aaaa-4bbb-8ccc-123456789abc";
+    storeCells.set(PENDING_KEY, JSON.stringify([{ id, text: "taken line" }]));
+    // The turn rows carry other uuids and the inbox no longer lists it: the
+    // only trace is the CLI's receipt.
+    historyBody = {
+      turns: [{ role: "user", text: "earlier", uuid: "u0" }],
+      live_run: "r1",
+      inbox: [],
+      inbox_taken: [id],
+    };
+    pollLive = true;
+    prefsBody = flagOn ? { queue: { enabled: true } } : {};
+    await mountChat({ session_id: "s1" });
+    await act(async () => publishProjectQueueEnabled(flagOn));
+    await settle(300);
+    expect(started()).toHaveLength(0);
+    expect(sends()).toHaveLength(0);
+    expect(storeCells.get(PENDING_KEY)).toBeUndefined();
+  });
+}
+
+test("flag ON: a line typed while ANOTHER chat holds the folder is admitted, never sent into the wrong run", async () => {
+  // The flag's one job. No live run of this chat's own, so the line is a new
+  // turn and goes through admission; the answer says the folder is busy and the
+  // line is queued — nothing is `send`-t into anybody's run.
+  prefsBody = { queue: { enabled: true } };
+  admitAnswer = { run: false, entry: { id: "q1" }, key: "pending:q1", position: 2, ahead: "TASK-041", ahead_title: "other" };
+  const { r } = await mountChat();
+  await act(async () => publishProjectQueueEnabled(true));
+  await typeInBox(r, "wait your turn");
+  await pressEnterInBox(r);
+  await settle(60);
+  expect(admits).toHaveLength(1);
+  expect(started()).toHaveLength(0);
+  expect(runs.filter((c) => c.action === "send")).toHaveLength(0);
 });

@@ -8,6 +8,7 @@ lives under `meta["forked_from"]`.
 """
 import importlib.util
 import json
+import shlex
 import os
 import re
 
@@ -49,20 +50,46 @@ ROWS = [
 ]
 
 
+ROWS_COMPACTED = ROWS + [
+    {"type": "user", "uuid": "c1", "parentUuid": "a2", "isCompactSummary": True,
+     "message": {"role": "user", "content": "summary"}},
+    {"type": "attachment", "uuid": "t3", "parentUuid": "c1", "attachment": {}},
+    {"type": "user", "uuid": "u3", "parentUuid": "t3",
+     "message": {"role": "user", "content": "third"}},
+    {"type": "assistant", "uuid": "a3", "parentUuid": "u3",
+     "message": {"role": "assistant", "content": []}},
+]
+
+
 def test_fork_point_returns_parent(agent, tmp_path):
-    assert agent._fork_point(_transcript(tmp_path, ROWS), "u2") == "t2"
+    assert agent._fork_point(_transcript(tmp_path, ROWS), "u2") == ("t2", False)
 
 
 def test_fork_point_null_parent_is_empty(agent, tmp_path):
-    assert agent._fork_point(_transcript(tmp_path, ROWS), "u1") == ""
+    assert agent._fork_point(_transcript(tmp_path, ROWS), "u1") == ("", False)
+
+
+def test_fork_point_before_compaction_clamps_to_the_summary_row(agent, tmp_path):
+    path = _transcript(tmp_path, ROWS_COMPACTED)
+    assert agent._fork_point(path, "u2") == ("c1", True)
+
+
+def test_fork_point_at_the_summary_row_resumes_at_itself(agent, tmp_path):
+    path = _transcript(tmp_path, ROWS_COMPACTED)
+    assert agent._fork_point(path, "c1") == ("c1", True)
+
+
+def test_fork_point_after_compaction_keeps_its_parent(agent, tmp_path):
+    path = _transcript(tmp_path, ROWS_COMPACTED)
+    assert agent._fork_point(path, "u3") == ("t3", False)
 
 
 def test_fork_point_not_found(agent, tmp_path):
     path = _transcript(tmp_path, ROWS)
-    assert agent._fork_point(path, "nope") is None
+    assert agent._fork_point(path, "nope") == (None, False)
     # only a USER record counts
-    assert agent._fork_point(path, "a1") is None
-    assert agent._fork_point(str(tmp_path / "missing.jsonl"), "u2") is None
+    assert agent._fork_point(path, "a1") == (None, False)
+    assert agent._fork_point(str(tmp_path / "missing.jsonl"), "u2") == (None, False)
 
 
 def _argv(agent, tmp_path, **kw):
@@ -121,17 +148,20 @@ def start(agent, tmp_path, monkeypatch):
                         lambda cmd, **kw: _HostProc(seen))
     monkeypatch.setattr(agent, "_backend_for_session",
                         lambda sid, wd, hint="": "claude")
+    monkeypatch.setattr(agent, "_breakout_pref", lambda: True)
+    monkeypatch.setattr(agent, "_breakout_recorded", lambda sid: sid == "BRK")
     holder = {"rows": ROWS}
     monkeypatch.setattr(agent, "_session_transcript_path",
                         lambda wd, sid: _transcript(tmp_path, holder["rows"]))
 
-    def go(fork_at, session_id="OLD", backend="claude"):
+    def go(fork_at, session_id="OLD", backend="claude", **kw):
         out = agent._start(str(project), "new prompt", session_id, "", "",
-                           backend=backend, fork_at=fork_at)
+                           backend=backend, fork_at=fork_at, **kw)
         run_dir = os.path.join(agent.RUNS, out["run_id"]) \
             if "run_id" in out else ""
         return out, seen.get("req"), run_dir
 
+    go.holder = holder
     return go
 
 
@@ -151,6 +181,26 @@ def test_start_fork_resumes_at_parent(agent, start):
     assert meta["forked_from"] == "OLD" and meta["fork_at"] == "u2"
     assert meta["session_id"] == new
     assert meta["resumed_from"] == ""
+
+
+def test_start_fork_before_compaction_resumes_at_the_summary_row(agent, start):
+    start.holder["rows"] = ROWS_COMPACTED
+    out, req, run_dir = start("u2")
+    assert "error" not in out, out
+    assert req["resume_at"] == "c1"
+    assert out["fork_clamped"] is True
+    meta = _meta(run_dir)
+    assert meta["fork_clamped"] is True
+    assert meta["fork_at"] == "u2"
+
+
+def test_start_fork_after_compaction_is_not_clamped(agent, start):
+    start.holder["rows"] = ROWS_COMPACTED
+    out, req, run_dir = start("u3")
+    assert "error" not in out, out
+    assert req["resume_at"] == "t3"
+    assert "fork_clamped" not in out
+    assert "fork_clamped" not in _meta(run_dir)
 
 
 def test_start_fork_null_parent_is_fresh_chat(agent, start):
@@ -178,3 +228,192 @@ def test_start_fork_copilot_refused(agent, start, monkeypatch):
     assert out["reason"] == "unsupported"
     assert "Claude" in out["error"]
     assert not os.path.isdir(agent.RUNS) or not os.listdir(agent.RUNS)
+
+
+# ----------------------------------------------------------------- breakout
+#
+# A breakout is a fresh session that is read-only by policy and ephemeral: it
+# runs in `default` permission mode whatever the page asked for, loses the
+# `fused` CLI pre-allowance, and tells the permission bridge where its one
+# writable directory is.
+
+
+def test_argv_breakout_forces_default_mode_and_drops_fused_cli(
+        agent, tmp_path, monkeypatch):
+    monkeypatch.setattr(agent, "_fused_cli_dir", lambda: "/x/bin")
+    plain = _argv(agent, tmp_path, cli_mode="acceptEdits")
+    assert plain[plain.index("--permission-mode") + 1] == "acceptEdits"
+    assert "Bash(fused:*)" in plain[plain.index("--allowed-tools") + 1]
+    argv = _argv(agent, tmp_path, cli_mode="acceptEdits", breakout=True)
+    assert argv[argv.index("--permission-mode") + 1] == "default"
+    assert "Bash(fused:*)" not in argv[argv.index("--allowed-tools") + 1]
+    # No mode at all still pins default for a breakout.
+    argv = _argv(agent, tmp_path, cli_mode=None, breakout=True)
+    assert argv[argv.index("--permission-mode") + 1] == "default"
+
+
+def test_argv_breakout_hard_denies_shell_and_edit_tools(agent, tmp_path):
+    argv = _argv(agent, tmp_path, breakout=True)
+    assert argv.count("--settings") == 1
+    deny = json.loads(argv[argv.index("--settings") + 1])["permissions"]["deny"]
+    assert sorted(deny) == sorted([
+        "Bash", "Edit", "MultiEdit", "NotebookEdit", "Agent", "Task",
+        "TodoWrite", "ExitPlanMode", "EnterPlanMode", "Workflow", "Skill"])
+    assert "Write" not in deny
+
+
+def test_argv_breakout_guards_write_with_a_pretooluse_hook(agent, tmp_path):
+    argv = _argv(agent, tmp_path, breakout=True, session_id="chat1")
+    settings = json.loads(argv[argv.index("--settings") + 1])
+    entry, allow_once = settings["hooks"]["PreToolUse"]
+    assert "--allow-once-hook=" in allow_once["hooks"][0]["command"]
+    assert entry["matcher"] == "Write|Edit|MultiEdit|NotebookEdit|mcp__.*"
+    (hook,) = entry["hooks"]
+    assert hook["type"] == "command" and "onFailure" not in hook
+    assert hook["timeout"] == 10
+    assert "permission_server-" in hook["command"] and ".py" in hook["command"]
+    # Any non-zero exit of the guard blocks: the CLI blocks only on exit 2.
+    if os.name == "nt":
+        assert hook["command"].endswith(" || exit 2")
+    else:
+        sh = shlex.split(hook["command"])
+        assert sh[:2] == ["sh", "-c"] and sh[2].endswith(" || exit 2")
+    handoff = os.path.join(agent._workdir("/tmp/f"), ".claude", "handoffs")
+    assert "--breakout-hook=" + handoff in hook["command"]
+    plain = _argv(agent, tmp_path / "p")
+    assert "permissions" not in json.loads(plain[plain.index("--settings") + 1])
+
+
+def test_argv_plain_run_has_no_deny_settings(agent, tmp_path):
+    argv = _argv(agent, tmp_path)
+    assert argv.count("--settings") == 1
+    settings = json.loads(argv[argv.index("--settings") + 1])
+    assert "permissions" not in settings
+
+
+def test_argv_breakout_hands_the_bridge_the_handoff_dir(agent, tmp_path):
+    argv = _argv(agent, tmp_path, session_id="OLD", new_session_id="NEW",
+                 breakout=True)
+    with open(argv[argv.index("--mcp-config") + 1]) as fh:
+        env = json.load(fh)["mcpServers"][agent.PERMISSION_SERVER]["env"]
+    assert env["FUSED_BREAKOUT_HANDOFF_DIR"] == os.path.join(
+        agent._workdir("/tmp/f"), ".claude", "handoffs")
+    plain = _argv(agent, tmp_path / "other")
+    with open(plain[plain.index("--mcp-config") + 1]) as fh:
+        env = json.load(fh)["mcpServers"][agent.PERMISSION_SERVER]["env"]
+    assert "FUSED_BREAKOUT_HANDOFF_DIR" not in env
+
+
+def test_breakout_prompt_names_the_handoff_dir(agent):
+    plain = agent._appended_prompt("/tmp/f", False)
+    assert "breakout" not in plain.lower()
+    text = agent._appended_prompt("/tmp/f", False, breakout=True)
+    assert "breakout" in text.lower()
+    assert os.path.join(agent._workdir("/tmp/f"), ".claude", "handoffs") in text
+    assert "do not plan" in text.lower() and "send back" in text.lower()
+    assert "forked" not in text
+
+
+def test_argv_breakout_is_a_fresh_session(agent, tmp_path):
+    argv = _argv(agent, tmp_path, session_id="", new_session_id="NEW",
+                 breakout=True)
+    assert "--resume" not in argv and "--fork-session" not in argv
+    assert argv[argv.index("--session-id") + 1] == "NEW"
+
+
+def test_start_breakout_is_a_fresh_session(agent, start):
+    out, req, run_dir = start("", session_id="", breakout=True)
+    assert "error" not in out, out
+    new = out["session_id"]
+    assert _UUID4.match(new)
+    assert req["session_id"] == "" and "resume_at" not in req
+    assert req["new_session_id"] == new and req["breakout"] is True
+    meta = _meta(run_dir)
+    assert meta["breakout"] is True and "forked_from" not in meta
+    assert meta["session_id"] == new and meta["resumed_from"] == ""
+
+
+def test_start_breakout_refused_when_pref_off(agent, start, monkeypatch):
+    monkeypatch.setattr(agent, "_breakout_pref", lambda: False)
+    for kw in ({}, {"breakout_resume": True}):
+        out, req, run_dir = start("", breakout=True, **kw)
+        assert out["reason"] == "breakout_disabled" and "run_id" not in out
+        assert req is None and run_dir == ""
+
+
+def test_start_without_breakout_leaves_no_flag(agent, start):
+    out, req, run_dir = start("u2")
+    assert "breakout" not in _meta(run_dir) and "breakout" not in req
+
+
+def test_start_breakout_refuses_a_session_or_fork_at(agent, start):
+    for kw in ({"session_id": "OLD"}, {"session_id": "../x"}):
+        out, _, _ = start("", breakout=True, **kw)
+        assert out["reason"] == "breakout_fresh_only"
+        assert "fresh session" in out["error"]
+    out, _, _ = start("u2", session_id="", breakout=True)
+    assert out["reason"] == "breakout_fresh_only"
+    assert not os.path.isdir(agent.RUNS) or not os.listdir(agent.RUNS)
+
+
+def test_start_breakout_copilot_refused(agent, start, monkeypatch):
+    monkeypatch.setattr(agent, "_backend_for_session",
+                        lambda sid, wd, hint="": "copilot")
+    monkeypatch.setattr(agent, "_backend_enabled", lambda b: True)
+    out, _, _ = start("", breakout=True)
+    assert out["reason"] == "unsupported"
+    assert "Claude" in out["error"]
+    assert not os.path.isdir(agent.RUNS) or not os.listdir(agent.RUNS)
+
+
+def test_main_forwards_breakout(agent, monkeypatch):
+    seen = {}
+    monkeypatch.setattr(agent, "_start", lambda *a, **kw: seen.update(kw) or {})
+    agent.main(action="start", file="/tmp/f", message="m", session_id="S",
+               breakout="1")
+    assert seen["breakout"] is True
+    seen.clear()
+    agent.main(action="start", file="/tmp/f", message="m", session_id="S")
+    assert seen["breakout"] is False
+
+
+def test_start_breakout_resume_continues_without_forking(agent, start):
+    out, req, run_dir = start("", session_id="BRK", breakout=True,
+                              breakout_resume=True)
+    assert "error" not in out, out
+    assert req["session_id"] == "BRK" and req["new_session_id"] == ""
+    assert "resume_at" not in req and req["breakout"] is True
+    meta = _meta(run_dir)
+    assert meta["breakout"] is True and "forked_from" not in meta
+    assert meta["resumed_from"] == "BRK"
+
+
+def test_start_breakout_resume_refuses_fork_at(agent, start):
+    out, req, run_dir = start("U1", session_id="BRK", breakout=True,
+                              breakout_resume=True)
+    assert out.get("reason") == "breakout_fork_unsupported", out
+
+
+def test_start_breakout_resume_of_an_unrecorded_session_is_refused(agent, start):
+    out, req, run_dir = start("", session_id="ORDINARY", breakout=True,
+                              breakout_resume=True)
+    assert out["reason"] == "breakout_missing"
+    assert req is None and run_dir == ""
+
+
+def test_breakout_recorded_reads_the_global_store(agent, tmp_path, monkeypatch):
+    monkeypatch.setenv("FUSED_RENDER_HOME", str(tmp_path))
+    assert agent._breakout_recorded("S1") is False
+    d = tmp_path / "claude-sessions"
+    d.mkdir()
+    (d / "breakouts.json").write_text(json.dumps({"S1": {"at": 1}}))
+    assert agent._breakout_recorded("S1") is True
+    assert agent._breakout_recorded("S2") is False
+
+
+def test_main_breakout_resume_param(agent, monkeypatch):
+    seen = {}
+    monkeypatch.setattr(agent, "_start", lambda *a, **kw: seen.update(kw) or {})
+    agent.main(action="start", file="/tmp/f", message="m", session_id="S",
+               breakout="resume")
+    assert seen["breakout"] is True and seen["breakout_resume"] is True

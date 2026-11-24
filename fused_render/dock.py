@@ -2,17 +2,12 @@
 `/dock`; server/routers/dock.py is the HTTP face). Pure Python, no AppKit —
 the same module answers `fused-render serve` and the tests.
 
-What the tray shows depends on the FLAVOR (`_flavor.is_bot()`), not on a
-preference:
+The tiles are APPS AND BOTS — every app this machine can open (the
+launcher's registry: workspace, linked folders, exported `.fused` files),
+then the bots page's list (bot.json rows); owner's call 2026-10-15, bots are
+a first-class thing to reach from the menu bar too.
 
-    Fused Render    tiles are APPS AND BOTS — every app this machine can
-                    open (the launcher's registry: workspace, linked folders,
-                    exported `.fused` files), then the bots page's list
-                    (bot.json rows); owner's call 2026-10-15, bots are a
-                    first-class thing to reach from the menu bar too
-    Fused Bot       tiles are BOTS only
-
-Either way the tray is laid out like the Dock: a Home tile, then the PINNED
+The tray is laid out like the Dock: a Home tile, then the PINNED
 zone, a separator, then the RECENT rows that are not pinned — up to
 `RECENT_CAP` PER KIND, apps before bots in both zones (so the draggable app
 pins stay one contiguous run; bots have no order route).
@@ -22,8 +17,7 @@ Pins:
 * Apps pin into ``<home>/dock.json`` (`{"pinned": [<abs path>], "tilesize":
   <px>}`): the pinned app paths in tray order (left to right), each a folder
   with a declared entry page or a `.fused` file. `shell.storage.home_dir()`,
-  so a branch build keeps its own pins and both flavors (one tree, owner's
-  call) read the same file. A pinned path that is gone is skipped, never
+  so a branch build keeps its own pins. A pinned path that is gone is skipped, never
   pruned — the row is the user's to remove. Paths are stored in the
   LISTING'S SPELLING (`canonical_fs_path` of the folder, as `app_dir_for`
   hands it back), not the real path: a window is keyed on the path the shell
@@ -62,7 +56,6 @@ import logging
 import os
 import subprocess
 
-from fused_render import _flavor
 
 logger = logging.getLogger(__name__)
 
@@ -76,11 +69,6 @@ TILESIZE_MAX = 128
 #: a process that died). A bot this process never loaded is shown that way too —
 #: unless another live app owns the bots, whose bot.json is then current.
 _STALE_STATUSES = ("running", "waiting", "paused")
-
-
-def kind() -> str:
-    """``"bots"`` under the bot flavor, else ``"apps"`` — what the tiles are."""
-    return "bots" if _flavor.is_bot() else "apps"
 
 
 # ------------------------------------------------------------------ store ---
@@ -307,9 +295,8 @@ def _bot_rows() -> list[dict]:
         if bid:
             live[bid] = b
     # A status on disk is reset to idle only when it is a leftover: nobody
-    # owns the bots now. When ANOTHER live app owns them (Fused Bot beside
-    # Fused Render, the common case since the render tray lists bots too)
-    # that owner keeps bot.json current, so its "running" is true and the
+    # owns the bots now. When ANOTHER live app owns them (a second instance,
+    # e.g. a branch build on the same home) that owner keeps bot.json current, so its "running" is true and the
     # busy dot must show. One flock probe + one small read per poll.
     other_owner = False
     if not registry.owns():
@@ -404,24 +391,20 @@ def _app_entries() -> dict:
 # ---------------------------------------------------------------- entries ---
 
 def entries() -> dict:
-    """``{"kind": "apps"|"bots", "pinned": [...], "recent": [...]}`` — under
-    Fused Render the apps' rows then the bots', each zone capped per kind
-    (see the module docstring for the row shapes)."""
-    if _flavor.is_bot():
-        out = _bot_entries()
-    else:
-        out = _app_entries()
-        # A bots-side failure (a torn bot.json, a registry that cannot be
-        # imported) must never blank the apps tray: this runs on every 1.5 s
-        # poll of every Fused Render user, bots or none.
-        try:
-            bots = _bot_entries()
-        except Exception:  # noqa: BLE001
-            logger.debug("bot rows failed", exc_info=True)
-            bots = {"pinned": [], "recent": []}
-        out["pinned"] += bots["pinned"]
-        out["recent"] += bots["recent"]
-    out["kind"] = kind()
+    """``{"pinned": [...], "recent": [...]}`` — the apps' rows then the
+    bots', each zone capped per kind (see the module docstring for the row
+    shapes)."""
+    out = _app_entries()
+    # A bots-side failure (a torn bot.json, a registry that cannot be
+    # imported) must never blank the apps tray: this runs on every 1.5 s
+    # poll of every user, bots or none.
+    try:
+        bots = _bot_entries()
+    except Exception:  # noqa: BLE001
+        logger.debug("bot rows failed", exc_info=True)
+        bots = {"pinned": [], "recent": []}
+    out["pinned"] += bots["pinned"]
+    out["recent"] += bots["recent"]
     return out
 
 

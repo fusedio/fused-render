@@ -381,7 +381,9 @@
         const tmp = res.path;
         const st = await fused.stat(tmp);
         if (selected !== entry) return;
-        const t = st.templates && st.templates[0];
+        // A member of a bucket download (res.remote) is untrusted: never frame it
+        // as a page — take the first non-_render view, or the "No preview" state.
+        const t = (st.templates || []).find((v) => !(res.remote && v.mode === "_render"));
         let src;
         if (!t) {
           bodyEl.innerHTML = `<div class="status-message">No preview available for this file type — ` +

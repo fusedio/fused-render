@@ -55,12 +55,112 @@ export interface CanvasesStatus {
       canvases_dir: string;
       cloned_count: number;
       available: boolean;
+      /** The reference canvases (canvas_mirror.py): the folder they are
+       *  kept under, the runner's compact status (null when the server could
+       *  not read it), and the clones the move to `user/` left behind.
+       *  Optional: a server from before the runner sends none of the three. */
+      mirror_root?: string;
+      mirror?: MirrorSummary | null;
+      layout?: LayoutPending;
     }
   >;
   /** The custom environment's settings file (`~/.fused/settings.toml`,
    *  expanded) — what the settings editor edits. */
   settings_path: string;
 }
+
+/** canvas_mirror.STATES. `unsupported`: the installed Fused predates the
+ *  mirror command. `busy`: another process's run holds the lock. */
+export type MirrorState =
+  | "idle"
+  | "running"
+  | "ok"
+  | "partial"
+  | "failed"
+  | "unsupported"
+  | "auth"
+  | "no_cli"
+  | "busy";
+
+/** Why no scheduled run would start for an environment (canvas_mirror.eligible). */
+export type MirrorSkipReason =
+  | "no_cli"
+  | "unsupported"
+  | "unknown_env"
+  | "env_locked"
+  | "not_configured"
+  | "signed_out"
+  | "not_in_use";
+
+/** canvas_mirror.summary: what /api/canvases/status carries per environment.
+ *  While `state` is "running", `done`/`total` are live and every other field
+ *  describes the last FINISHED run (whose state is `last_state`). */
+export interface MirrorSummary {
+  state: MirrorState;
+  last_state: MirrorState;
+  done: number;
+  total: number;
+  /** Epoch seconds the last run finished, or null before the first. */
+  finished_at: number | null;
+  /** Reference copies on disk after the last finished run. */
+  mirrored: number;
+  error: string | null;
+  /** Whether a scheduled run would start, and why not. */
+  eligible: boolean;
+  skip_reason: MirrorSkipReason | null;
+}
+
+/** canvas_layout.pending: clones the move to `<env>/user/<name>` could not
+ *  make. `conflicts` (name -> why) wait on the user; `deferred` (a canvas
+ *  whose chat is still open) move by themselves; `blocked` / `error` say why
+ *  the whole pass could not run ("" when it could). */
+export interface LayoutPending {
+  deferred: Record<string, string>;
+  conflicts: Record<string, string>;
+  blocked: string;
+  error: string;
+}
+
+/** canvas_mirror.status: GET /api/canvases/mirror/status?env=. */
+export interface MirrorStatus extends MirrorSummary {
+  env: string;
+  /** What started the run: startup | login | timer | manual | hold. */
+  trigger: string | null;
+  started_at: number | null;
+  last_line: string | null;
+  /** The last finished run's counts, per action (canvas_mirror.COUNT_KEYS). */
+  counts: Record<string, number>;
+  /** The last finished run's listings, per scope (user / team / public). */
+  scopes: Record<
+    string,
+    { ok: boolean; unavailable: boolean; listed: number; error: string | null }
+  >;
+  live_orphans: string[];
+  root: string;
+  held: boolean;
+  layout: LayoutPending;
+}
+
+/** Why POST /api/canvases/mirror/run started nothing (canvas_mirror.kick with
+ *  `force`). `running` and `held` are not failures: a run is in flight, or
+ *  one starts by itself once the clone / rename / delete holding it ends. */
+export type MirrorRunReason =
+  | "running"
+  | "held"
+  | "shutting_down"
+  | "error"
+  | Exclude<MirrorSkipReason, "not_in_use">;
+
+export const getMirrorStatus = (env: WorkbenchEnv) =>
+  getJson<MirrorStatus>(`/api/canvases/mirror/status?env=${env}`);
+
+/** Refresh `env`'s reference canvases now, whatever their age. Answers at
+ *  once; the run is followed through the status. */
+export const runMirror = (env: WorkbenchEnv) =>
+  postJson<{ started: boolean; reason: MirrorRunReason | null; status: MirrorStatus }>(
+    "/api/canvases/mirror/run",
+    { env },
+  );
 
 /** The settings editor's read. Creates the file EMPTY when there is none,
  *  so the reader edits a real path from the start; an empty file configures
@@ -104,11 +204,12 @@ export const isWorkbenchEnv = (s: unknown): s is WorkbenchEnv =>
   typeof s === "string" && (WORKBENCH_ENVS as readonly string[]).includes(s);
 
 /** `label` names the env in full (pickers, headers, tooltips); `tag` is the
- *  short form for tight spots (a sidebar row's chip). */
-export const ENV_NAMES: Record<WorkbenchEnv, { label: string; tag: string }> = {
-  unstable: { label: "Unstable", tag: "Unstable" },
-  prod: { label: "Production", tag: "Production" },
-  custom: { label: "Custom ~/.fused/settings.toml", tag: "Custom" },
+ *  short form for tight spots (a sidebar row's chip); `initial` is the
+ *  tightest, the chip in a narrow sidebar (canvases.css container query). */
+export const ENV_NAMES: Record<WorkbenchEnv, { label: string; tag: string; initial: string }> = {
+  unstable: { label: "Unstable", tag: "Unstable", initial: "U" },
+  prod: { label: "Production", tag: "Production", initial: "P" },
+  custom: { label: "Custom ~/.fused/settings.toml", tag: "Custom", initial: "C" },
 };
 
 /** A canvas workspace route: the env is a path segment because it is one on
@@ -134,31 +235,6 @@ export function canvasNameFromPath(
  *  environment the canvas came from. */
 export const catalogPath = (env: WorkbenchEnv) => `/canvases?env=${env}`;
 
-/** The canvas PROJECT page's tabs (`/canvases-project/<env>/<name>`), strip
- *  order; the first is the default. THE list: the type is derived from it and
- *  CanvasPage.tsx's `TAB_DEFS` is a Record over that type, so a tab added
- *  here and forgotten there is a type error (the app page's APP_PAGE_TABS
- *  pattern, current-apps-lib.ts). Overview is the workbench framed read-only,
- *  Tasks the Tasks page scoped to the clone, Files the clone's files in their
- *  templates, Sync the clone's sync panel (the strip, the log, Pull / Hard
- *  pull, a failed push's detail) — the Overview shows the canvas and nothing
- *  else (owner, 2026-10-20). No API or Doctor tab: a canvas is not an app
- *  folder with endpoints to call or a share-readiness to check. */
-export const CANVAS_PAGE_TABS = ["overview", "tasks", "files", "sync"] as const;
-export type CanvasPageTab = (typeof CANVAS_PAGE_TABS)[number];
-export const DEFAULT_CANVAS_PAGE_TAB: CanvasPageTab = CANVAS_PAGE_TABS[0];
-/** The query param naming the tab; absent = the default (the app page's `_tab`). */
-export const CANVAS_PAGE_TAB_PARAM = "_tab";
-
-/** The tab a query names. Missing or unknown falls back to the default
- *  silently: a stale link opens the page, not an error. */
-export function canvasPageTabFromSearch(search: string): CanvasPageTab {
-  const tab = new URLSearchParams(search).get(CANVAS_PAGE_TAB_PARAM);
-  return tab !== null && (CANVAS_PAGE_TABS as readonly string[]).includes(tab)
-    ? (tab as CanvasPageTab)
-    : DEFAULT_CANVAS_PAGE_TAB;
-}
-
 /** The canvas EDITOR page (`/canvases/<env>/<name>`: the workbench beside
  *  the Claude chat, sync, the edit workflow), optionally on one NODE with
  *  one CHAT open: `?node=` + `node_file=` select the node (what
@@ -168,10 +244,22 @@ export function canvasPageTabFromSearch(search: string): CanvasPageTab {
  *  canvas chat otherwise (both read it off this page's URL). The Tasks
  *  page's door on a canvas task is built here (tasks-lib `taskHref`), so the
  *  page's own query grammar has one author. */
+/** THE VIEW ASK ON THE CANVAS PAGE'S URL (`focus=`; the place tags,
+ *  shell/claude-rail `placeTags`, 2026-11-06): what the page does to the
+ *  workbench on arrival, once — `node` selects the URL's node (the
+ *  workbench zooms to it), `canvas` deselects everything and fits the whole
+ *  canvas in view, `view` nothing at all (the place's own tag: a view move
+ *  that never opens a shut pane). Spent and dropped off the URL by CanvasWorkspace. Without
+ *  it a URL naming a node only shows that node's CHAT in the pane: opening
+ *  a task no longer selects or zooms (owner, 2026-11-06: "decouple the node
+ *  selection and zoom-in from task opening"). */
+export type CanvasFocus = "node" | "canvas" | "view";
+export const CANVAS_FOCUS_PARAM = "focus";
+
 export function canvasPagePath(
   env: WorkbenchEnv,
   name: string,
-  opts?: { file?: string; sessionId?: string },
+  opts?: { file?: string; sessionId?: string; focus?: CanvasFocus },
 ): string {
   const q = new URLSearchParams();
   const file = opts?.file || "";
@@ -181,45 +269,28 @@ export function canvasPagePath(
     q.set("node_file", file);
   }
   if (opts?.sessionId) q.set("session_id", opts.sessionId);
+  if (opts?.focus) q.set(CANVAS_FOCUS_PARAM, opts.focus);
   const search = q.toString();
   return `/canvases/${env}/${name}` + (search ? "?" + search : "");
 }
 
-/** The canvas PROJECT page (`/canvases-project/<env>/<name>?_tab=`, owner
- *  2026-10-20): the tabbed, read-only view of one canvas — for visibility,
- *  not editing. A SEPARATE route from the editor above on purpose: the
- *  editor's two-pane shape, its sync strip and its edit workflow are the
- *  owner's and must not be folded into tabs (the first cut did exactly that
- *  and was reversed). `search`: the current query to carry across a TAB hop
- *  (a tab's own params — `?view=` on Tasks, `?file=` on Files — ride along
- *  untouched, the app page's rule); only `_tab` is rewritten, and dropped
- *  for the default so the default tab has one address. */
-export function canvasProjectPath(
-  env: WorkbenchEnv,
-  name: string,
-  opts?: { tab?: CanvasPageTab; search?: string },
-): string {
-  const q = new URLSearchParams(opts?.search ?? "");
-  if (opts?.tab !== undefined) {
-    if (opts.tab === DEFAULT_CANVAS_PAGE_TAB) q.delete(CANVAS_PAGE_TAB_PARAM);
-    else q.set(CANVAS_PAGE_TAB_PARAM, opts.tab);
-  }
-  const search = q.toString();
-  return `/canvases-project/${env}/${name}` + (search ? "?" + search : "");
-}
-
-/** `/canvases-project/<env>/<name>` → the canvas, or null (same alphabet as
- *  `canvasNameFromPath`). */
-export function canvasProjectFromPath(
-  pathname: string,
-): { env: WorkbenchEnv; name: string } | null {
-  const match = /^\/canvases-project\/([a-z]+)\/([A-Za-z0-9_]+)$/.exec(pathname);
-  if (!match || !isWorkbenchEnv(match[1])) return null;
-  return { env: match[1], name: match[2] };
-}
-
 const q = (env: WorkbenchEnv, name: string) =>
   `name=${encodeURIComponent(name)}&env=${env}`;
+
+/** An id for one workbench frame this page hosts (SPEC 53.1 FP-1): minted
+ *  once per mount and named on every embed call, so the server keeps a
+ *  picture of THIS frame, apart from any other frame on the same canvas. */
+export const newFrameId = (): string => {
+  const c = globalThis.crypto;
+  if (c && typeof c.randomUUID === "function") return c.randomUUID();
+  const bytes = new Uint8Array(16);
+  if (c && typeof c.getRandomValues === "function") c.getRandomValues(bytes);
+  else for (let i = 0; i < bytes.length; i += 1) bytes[i] = Math.floor(Math.random() * 256);
+  return Array.from(bytes, (b) => b.toString(16).padStart(2, "0")).join("");
+};
+
+const fq = (frame?: string) => (frame ? `&frame=${encodeURIComponent(frame)}` : "");
+const fb = (frame?: string) => (frame ? { frame } : {});
 
 export interface CanvasEntry {
   name: string;
@@ -245,6 +316,10 @@ export interface CanvasEntry {
   preview_pending?: boolean;
   /** Control-plane last_updated (epoch seconds); null on the external-CLI fallback. */
   updated_at: number | null;
+  /** The canvas's public share token, when it has one — the card's share-link
+   *  button opens `<workbench origin>/canvas/<token>`. Optional: a disk
+   *  baseline written before the field existed lacks it. */
+  share_token?: string | null;
 }
 
 /** The watcher's status as sync/start and sync/pull answer it, cut to what
@@ -255,6 +330,9 @@ export interface SyncStatus {
   dir: string;
   /** Set on a pull answer that failed (`ok: false`). */
   pull_error?: string | null;
+  /** The trash folder the pull copied the clone into before writing (a
+   *  hard pull always has one); null when nothing was snapshotted. */
+  trash?: string | null;
   /** The last push's error, if any. */
   error: string | null;
 }
@@ -297,8 +375,15 @@ export function loginOutcome(startedAt: number | null, now = Date.now()): string
   return "Sign-in was not completed — try again.";
 }
 
-export const listCanvases = (env: WorkbenchEnv) =>
-  getJson<{ canvases: CanvasEntry[] }>(`/api/canvases/list?env=${env}`, GUARD);
+/** The account's canvases. Without `fresh`, the server answers from the
+ *  on-disk baseline of the last listing (when there is one) in milliseconds, flagged
+ *  `stale: true` — the caller then asks again with `fresh` for the real one
+ *  (a ~3s control-plane round trip on a large account). */
+export const listCanvases = (env: WorkbenchEnv, fresh = false) =>
+  getJson<{ canvases: CanvasEntry[]; stale: boolean }>(
+    `/api/canvases/list?env=${env}${fresh ? "&fresh=1" : ""}`,
+    GUARD,
+  );
 
 /** Presigned preview URLs for the given collection ids, signed in parallel
  *  server-side. A missing or null entry just means "no preview" — the card
@@ -307,6 +392,19 @@ export const getCanvasPreviews = (env: WorkbenchEnv, ids: string[]) =>
   postJson<{ previews: Record<string, string | null> }>("/api/canvases/previews", {
     ids,
     env,
+  });
+
+/** The account's favourite canvas ids — the hosted workbench home's star,
+ *  same control-plane list, so a canvas starred on either side is starred on
+ *  both. */
+export const getCanvasFavourites = (env: WorkbenchEnv) =>
+  getJson<{ collection_ids: string[] }>(`/api/canvases/favourites?env=${env}`, GUARD);
+
+export const setCanvasFavourite = (env: WorkbenchEnv, id: string, on: boolean) =>
+  postJson<{ ok: boolean; id: string; on: boolean }>("/api/canvases/favourite", {
+    env,
+    id,
+    on,
   });
 
 export const createCanvas = (env: WorkbenchEnv, name: string) =>
@@ -321,6 +419,18 @@ export const deleteCanvas = (env: WorkbenchEnv, name: string) =>
   postJson<{ ok: boolean; name: string; env: WorkbenchEnv; removed_local: boolean }>(
     "/api/canvases/delete",
     { name, env },
+  );
+
+/** Rename the canvas on the server AND this machine (POST
+ *  /api/canvases/rename): sync stopped, CLI rename, clone folder + `.sync`
+ *  leftovers moved, desk row and Claude sessions carried along. 409 `owned`
+ *  while another fused-render syncs the clone, `exists` when the new
+ *  folder is taken, `sessions_live` while Claude is running in the clone.
+ *  The caller moves to the new route; its sync/start re-arms the watcher. */
+export const renameCanvas = (env: WorkbenchEnv, name: string, newName: string) =>
+  postJson<{ ok: boolean; env: WorkbenchEnv; name: string; old_name: string }>(
+    "/api/canvases/rename",
+    { env, name, new_name: newName },
   );
 
 export const logout = (env?: WorkbenchEnv | null) =>
@@ -338,6 +448,7 @@ export const applySnapshot = (
   gen: number,
   seq: number,
   body: Record<string, unknown>,
+  frame?: string,
 ) =>
   postJson<{
     ok: boolean;
@@ -347,7 +458,7 @@ export const applySnapshot = (
     push_seq: number;
     /** Source files this snapshot removed from the clone (a node deleted in the canvas). */
     deleted_files?: string[];
-  }>("/api/canvases/snapshot", { name, env, gen, seq, body });
+  }>("/api/canvases/snapshot", { name, env, gen, seq, body, ...fb(frame) });
 
 /** Embed v3: the workbench's rename hint, same endpoint, same ack shape. */
 export const applyRename = (
@@ -356,10 +467,11 @@ export const applyRename = (
   gen: number,
   seq: number,
   rename: { from: string; to: string; file_from?: string | null; file_to?: string | null },
+  frame?: string,
 ) =>
   postJson<{ ok: boolean; gen: number; seq: number; changed: boolean; push_seq: number }>(
     "/api/canvases/snapshot",
-    { name, env, gen, seq, rename },
+    { name, env, gen, seq, rename, ...fb(frame) },
   );
 
 /** The body channel's answer (SyncManager.apply_body): written, already on
@@ -368,7 +480,12 @@ export type BodyAck =
   | { ok: true; node: string; file: string; hash: string; changed: boolean; created: boolean }
   | { ok: false; code: "stale"; node: string; file: string; disk_text: string; disk_hash: string }
   /** A hard pull just replaced the clone; the frame holds its text and retries later. */
-  | { ok: false; code: "fenced"; node: string; file: string };
+  | { ok: false; code: "fenced"; node: string; file: string }
+  /** The node's file is gone from disk (deleted or renamed there): never
+   *  recreated from the frame's text; the delta that drops or renames the
+   *  node settles it. `kept`: where the posted text was saved in the
+   *  canvas's trash (absent when it could not be written). */
+  | { ok: false; code: "gone"; node: string; file: string; kept?: string };
 
 /** Embed v3 body channel: one source text → the clone, compare-and-swap on
  *  the hash of what disk holds (`base_hash`). Throws with `.status` 409
@@ -377,7 +494,8 @@ export const applyBody = (
   env: WorkbenchEnv,
   name: string,
   body: { node: string; file: string; base_hash: string; text: string },
-) => postJson<BodyAck>("/api/canvases/body", { name, env, ...body });
+  frame?: string,
+) => postJson<BodyAck>("/api/canvases/body", { name, env, ...body, ...fb(frame) });
 
 /** One op of a canvas delta (canvas_snapshot.diff_views): the frame applies
  *  them in order. Opaque to this page beyond `op`. */
@@ -395,13 +513,18 @@ export interface CanvasDelta {
   full?: boolean;
   /** Set (instead of ops) while the clone is mid-write; ask again shortly. */
   held?: string;
+  /** The embed generation and the highest snapshot seq the host had applied
+   *  in it when it cut this delta (null when none). The frame skips ops on
+   *  nodes its own later, unacked snapshots touched: the user's change wins. */
+  gen?: number | null;
+  seq?: number | null;
 }
 
 /** Embed v3: diff(disk, what the frame holds), for `fused-embed-delta`.
  *  `full` asks for the whole state (the frame just hydrated). Throws with
  *  `.status` 409 while a sync leg holds the clone. */
-export const getDelta = (env: WorkbenchEnv, name: string, full: boolean) =>
-  getJson<CanvasDelta>(`/api/canvases/delta?${q(env, name)}&full=${full ? 1 : 0}`);
+export const getDelta = (env: WorkbenchEnv, name: string, full: boolean, frame?: string) =>
+  getJson<CanvasDelta>(`/api/canvases/delta?${q(env, name)}&full=${full ? 1 : 0}${fq(frame)}`);
 
 /** The frame applied (`ok`) or refused a delta: the host's picture of the
  *  frame moves to that revision, or is dropped so the next delta is full. */
@@ -411,15 +534,22 @@ export const ackDelta = (
   rev: number,
   ok: boolean,
   reason?: string,
+  skipped?: string[],
+  frame?: string,
 ) =>
   postJson<{ ok: boolean; rev: number }>("/api/canvases/delta/ack", {
     name,
     env,
+    ...fb(frame),
     rev,
     ok,
     // The frame's own words for a refusal ("not hydrated yet" during boot),
     // so the server can tell a frame still booting from a real refusal.
     ...(reason !== undefined ? { reason } : {}),
+    // Nodes the frame kept its own newer change for (it did not take this
+    // delta's version of them): the server re-sends them once it has the
+    // frame's snapshot.
+    ...(skipped && skipped.length ? { skipped } : {}),
   });
 
 /** Pull the server's canvas into the clone now (the "Server changes · Pull"
@@ -433,6 +563,12 @@ export const pullCanvas = (env: WorkbenchEnv, name: string, hard = false) =>
     "/api/canvases/sync/pull",
     hard ? { name, env, hard: true } : { name, env },
   );
+
+/** Publish the clone NOW, through the watcher's own push (sync/push): the
+ *  sync strip's "Publish now" while the publish waits on a Claude session's
+ *  turn. Answers the status with `ok` (the push landed). */
+export const publishCanvas = (env: WorkbenchEnv, name: string) =>
+  postJson<SyncStatus & { ok: boolean; error?: string | null }>("/api/canvases/sync/push", { name, env });
 
 /** Ask the watcher to probe the server for changes now (the window or tab
  *  just came into focus) instead of on its next timed poll. Detect-only;
@@ -515,8 +651,8 @@ export const forceQuitOwner = (env: WorkbenchEnv, name: string) =>
 
 /** The four sync legs (embed_to_disk is the page's own: it fills that leg
  *  from its relay queue), disk_rev / watcher_epoch, and the lock owner. */
-export const getSyncState = (env: WorkbenchEnv, name: string) =>
-  getJson<SyncState>(`/api/canvases/sync/state?${q(env, name)}`);
+export const getSyncState = (env: WorkbenchEnv, name: string, frame?: string) =>
+  getJson<SyncState>(`/api/canvases/sync/state?${q(env, name)}${fq(frame)}`);
 
 /** The sync log ring (200 per canvas) after `after` (a seq; 0 = all held).
  *  `next` is the seq to pass on the following call. */
@@ -526,10 +662,10 @@ export const getSyncLog = (env: WorkbenchEnv, name: string, after: number) =>
   );
 
 /** Same-origin URL of WS /api/canvases/sync/events (state / log / ping). */
-export const syncEventsUrl = (env: WorkbenchEnv, name: string) =>
+export const syncEventsUrl = (env: WorkbenchEnv, name: string, frame?: string) =>
   (location.protocol === "https:" ? "wss://" : "ws://") +
   location.host +
-  `/api/canvases/sync/events?${q(env, name)}`;
+  `/api/canvases/sync/events?${q(env, name)}${fq(frame)}`;
 
 /** Spawn a Claude session on the canvas clone primed with the failing
  *  push's errors; attach the chat iframe with the returned run_id. */
@@ -572,10 +708,33 @@ function aiStreamError(status: number | undefined, error: unknown, fallback: str
  *  carrying the result frame — same reader as the AI Models playground's
  *  (apps/ai_models/playground/client.ts). `signal` aborting mid-stream
  *  closes the response, which cancels the turn on the server. */
+/** A tool the model may call natively (D1460): the AI SDK's definition
+ *  shape, as the embedded workbench's hooks hold it. */
+export interface AiToolDefinition {
+  name: string;
+  description?: string;
+  parameters?: Record<string, unknown>;
+}
+
+/** A frame of the stream that is not text: `turn` (the id tool results are
+ *  posted under, first frame of a tools run) or `tool_call` (one call the
+ *  model made; the caller answers it with `postAiToolResult`). */
+export type AiStreamFrame =
+  | { type: "turn"; id: string }
+  | { type: "tool_call"; id: string; name: string; input: Record<string, unknown> };
+
 export async function streamAiText(
-  body: { provider: string; model: string; systemPrompt: string; prompt: string; effort?: string },
+  body: {
+    provider: string;
+    model: string;
+    systemPrompt: string;
+    prompt: string;
+    effort?: string;
+    tools?: AiToolDefinition[];
+  },
   signal: AbortSignal,
   onChunk: (text: string) => void,
+  onFrame?: (frame: AiStreamFrame) => void,
 ): Promise<AiTextResult> {
   const res = await fetch("/api/ai", {
     method: "POST",
@@ -616,6 +775,7 @@ export async function streamAiText(
         error?: unknown;
       };
       if (frame.type === "chunk") onChunk(frame.text || "");
+      else if (frame.type === "turn" || frame.type === "tool_call") onFrame?.(frame as unknown as AiStreamFrame);
       else if (frame.type === "done") {
         // Errors after the first byte are demoted to an ok:false done frame
         // on a 200 (AI-1b) — this is the one place they surface.
@@ -626,4 +786,21 @@ export async function streamAiText(
   }
   if (!result) throw aiStreamError(undefined, null, "the stream ended without a result frame");
   return result;
+}
+
+/** Answer one `tool_call` frame of a tools run: the caller ran the tool,
+ *  this unblocks the bridge the CLI is waiting on. 404 once the turn ended. */
+export async function postAiToolResult(
+  turnId: string,
+  result: { id: string; content: string; isError?: boolean },
+): Promise<void> {
+  const res = await fetch(`/api/ai/turns/${encodeURIComponent(turnId)}/results`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json", "X-Fused": "1" },
+    body: JSON.stringify(result),
+  });
+  if (!res.ok) {
+    const data = (await res.json().catch(() => null)) as { error?: unknown } | null;
+    throw aiStreamError(res.status, data?.error, `tool result refused (HTTP ${res.status})`);
+  }
 }

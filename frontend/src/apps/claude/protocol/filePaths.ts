@@ -1,7 +1,7 @@
 // Pure helpers behind the in-chat file preview overlay: which files this
 // session wrote, whether a piece of inline code looks like a path, and how a
 // relative path resolves against the chat's working folder.
-import { isDriveAbs } from "@platform/lib/path-url";
+import { canonFsPath, isDriveAbs } from "@platform/lib/path-url";
 import type { Segment } from "./types";
 
 const EDIT_TOOLS = new Set(["Write", "Edit", "MultiEdit", "NotebookEdit"]);
@@ -38,9 +38,17 @@ export function isAbsolutePath(path: string): boolean {
   return path.startsWith("/") || isDriveAbs(path) || path.startsWith("\\\\");
 }
 
-/** Absolute paths pass through; a relative one joins `cwd`, with `.`/`..`
- *  folded. No cwd leaves a relative path as it is. */
-export function resolveAgainst(path: string, cwd: string | null | undefined): string {
+/** Absolute paths pass through; `~/x` expands against `home` (left as it is
+ *  when home is unknown); a relative one joins `cwd`, with `.`/`..` folded. No
+ *  cwd leaves a relative path as it is. */
+export function resolveAgainst(
+  path: string,
+  cwd: string | null | undefined,
+  home?: string | null,
+): string {
+  if (path.startsWith("~/")) {
+    return home ? canonFsPath(home).replace(/\/+$/, "") + path.slice(1) : path;
+  }
   if (isAbsolutePath(path) || !cwd) return path;
   const parts: string[] = [];
   for (const seg of (cwd.replace(/\/+$/, "") + "/" + path).split("/")) {
@@ -57,15 +65,72 @@ export interface PathCandidate {
 }
 
 /** Does inline code look like a file path? A trailing `:line[:col]` is peeled
- *  off. Only a guess: the caller stats it before marking anything. */
+ *  off; a leading `~/` is allowed, any other `~` is not. Only a guess: the caller stats it before marking anything. */
 export function pathCandidate(text: string): PathCandidate | null {
   const t = text.trim();
   if (!t || t.length > 300 || /\s/.test(t)) return null;
   if (/^[a-z][a-z0-9+.-]*:\/\//i.test(t)) return null;
-  if (/[<>{}()*?|"'`$\\~]/.test(t)) return null;
+  if (/[<>{}()*?|"'`$\\~]/.test(t.startsWith("~/") ? t.slice(2) : t)) return null;
   const m = /^(.*?)(?::(\d+)(?::\d+)?)?$/.exec(t);
   const path = m?.[1] ?? "";
   if (!path || path.endsWith("/")) return null;
   if (!path.includes("/") && !/\.[A-Za-z0-9]{1,8}$/.test(path)) return null;
   return m?.[2] ? { path, line: Number(m[2]) } : { path };
 }
+
+export interface ProsePathMatch {
+  start: number;
+  end: number;
+  path: string;
+  line?: number;
+}
+
+/** Bare ABSOLUTE paths (`/x/y.md`, `~/x/y.md`) in a prose string, for the
+ *  linkifier's text pass. A match starts at the string start or after
+ *  whitespace or an opening bracket/quote, so a `/` inside a URL or a relative
+ *  path never starts one; trailing sentence punctuation is not part of it; and
+ *  it needs two segments, so `/clear` or a lone `/tmp` is never even statted.
+ *  `start`/`end` cover the trimmed text, `:line` suffix included. */
+export function prosePathMatches(text: string): ProsePathMatch[] {
+  const out: ProsePathMatch[] = [];
+  const re = /(?:^|[\s(["'\u201c\u2018])(~\/|\/)([^\s<>"'`()[\]{}]*)/g;
+  for (let m = re.exec(text); m; m = re.exec(text)) {
+    const start = m.index + m[0].length - m[1]!.length - m[2]!.length;
+    const trimmed = (m[1]! + m[2]!).replace(/[.,;:!?\u201d\u2019]+$/, "");
+    const cand = pathCandidate(trimmed);
+    if (!cand) continue;
+    const body = cand.path.startsWith("~/") ? cand.path.slice(2) : cand.path.slice(1);
+    if (!body.includes("/")) continue;
+    out.push({ start, end: start + trimmed.length, path: cand.path, ...(cand.line ? { line: cand.line } : {}) });
+  }
+  return out;
+}
+
+/** A markdown link whose href names a LOCAL file rather than a web address:
+ *  `file:///x` (and `file://localhost/x`), an absolute POSIX or drive path, or
+ *  `~/x`. Returns the filesystem path, percent-decoded (marked encodes the
+ *  href it hands the renderer: a space is `%20` by then), or `null` for a web
+ *  URL, a relative link, a fragment and the one site route a reply may name
+ *  on purpose (`/render?path=…`). The caller still resolves `~`. */
+export function localPathFromHref(href: string): string | null {
+  const h = (href || "").trim();
+  if (!h) return null;
+  let raw: string;
+  const file = /^file:\/\/(?:localhost)?(\/.*)$/i.exec(h);
+  if (file) {
+    raw = file[1]!;
+    // `file:///C:/x` is the drive path `C:/x`.
+    if (/^\/[A-Za-z]:[\\/]/.test(raw)) raw = raw.slice(1);
+  } else if (h.startsWith("~/") || isAbsolutePath(h)) {
+    if (/^\/(?:render|api)(?:[/?#]|$)/.test(h)) return null;
+    raw = h;
+  } else {
+    return null;
+  }
+  try {
+    return decodeURIComponent(raw);
+  } catch {
+    return raw;
+  }
+}
+

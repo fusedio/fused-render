@@ -90,3 +90,20 @@ def test_macosx_app_marker_wins_over_the_host_platform(monkeypatch, tmp_path):
     monkeypatch.setattr(sys, "frozen", "macosx_app", raising=False)
     monkeypatch.setattr(sys, "executable", str(executable))
     assert installed.installed_version() == "9.9.9"
+
+
+def test_running_bundle_name_is_the_app_folder(monkeypatch, tmp_path):
+    """The .app folder this process runs from, as Finder and System Settings
+    list it — the new name, or the pre-rename one an install still has."""
+    for folder in ("Fused Render.app", "FusedRender.app"):
+        executable = tmp_path / folder / "Contents" / "MacOS" / "python"
+        executable.parent.mkdir(parents=True)
+        executable.touch()
+        monkeypatch.setattr(sys, "frozen", "macosx_app", raising=False)
+        monkeypatch.setattr(sys, "executable", str(executable))
+        assert installed.running_bundle_name() == folder[:-4]
+
+
+def test_running_bundle_name_is_none_unpackaged(monkeypatch):
+    monkeypatch.delattr(sys, "frozen", raising=False)
+    assert installed.running_bundle_name() is None

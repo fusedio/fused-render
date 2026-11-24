@@ -38,6 +38,8 @@ export interface Config {
   // Windows, where the bot process manager is POSIX-only and every /api/bots
   // call answers 503. Absent from an older server: treated as available.
   bots_available?: boolean;
+  // Whether this process can show the launcher panel (POST /api/launcher/show).
+  launcher_available?: boolean;
   // Whether the status-bar terminal can start here (server/routers/config.py):
   // always true off Windows, and on Windows only with pywinpty installed (the
   // `[cli]` extra). Absent from an older server: treated as available.
@@ -60,15 +62,16 @@ export interface Config {
   // `dismiss` are distinct writes (reached the end vs "skip for now").
   // Server-side, not localStorage: a port drift is a new origin.
   onboarding?: OnboardingState;
-  /** Which app this build is wearing (fused_render/flavor.py): "render" is
-   *  Fused Render, "bot" is Fused Bot, built from the same repo. Read through
-   *  platform/lib/flavor.ts, seeded before the first render. Absent on an
-   *  older server = render. */
-  flavor?: "render" | "bot";
-  /** The deep-link scheme the running app answers: `fused-render` / `fused-bot`. */
+  /** The deep-link scheme the running app answers: `fused-render`
+   *  (fused_render/_flavor.py). Read through platform/lib/flavor.ts, seeded
+   *  before the first render. */
   scheme?: string;
-  /** "Fused Render" / "Fused Bot" — the brand as copy shows it. */
+  /** "Fused Render" — the brand as copy shows it. */
   display_name?: string;
+  /** The .app folder's name as Finder and System Settings list it: "Fused
+   *  Render", or "FusedRender" for an install from before the rename that no
+   *  update has moved yet. */
+  bundle_name?: string;
   // No claude_config gate here any more: the Claude Config app stopped being a
   // mounted html+py app and became native React over its own server bridge
   // (the Claude Code group of Preferences), so its availability is
@@ -141,6 +144,17 @@ export interface TemplateEntry {
   path: string | null;
   icon: string | null;
   conditional?: boolean;
+  /** A native template (PT-6 amendment): the shell draws it, there is no
+   *  page to frame. Set by the server on the stat entry. */
+  native?: boolean;
+  /** A canvas node template's entry (SPEC §53.2): offered only on its gate's
+   *  explicit yes, and never under a git snapshot (lib/mode-visibility). */
+  node?: boolean;
+  /** The file's DEFAULT CANDIDATE although it is conditional (SPEC PT-8's one
+   *  exception): set by the server on a `node` entry of a path shaped like a
+   *  canvas node file, with Canvases on. The default only on the gate's
+   *  explicit yes (lib/mode-visibility `defaultMode`). */
+  prefer?: boolean;
 }
 
 export interface StatResult {
@@ -287,8 +301,13 @@ export async function mutateJson<T>(
 
 const putJson = <T>(url: string, body: unknown) => {
   // See getPrefsShared: a write orphans the shared pre-write read.
-  if (url === "/api/prefs") prefsInFlight = null;
-  return mutateJson<T>("PUT", url, body);
+  if (url !== "/api/prefs") return mutateJson<T>("PUT", url, body);
+  prefsInFlight = null;
+  // …and the answer is told to every OTHER tab and window (announcePrefs).
+  return mutateJson<T>("PUT", url, body).then((next) => {
+    announcePrefs(next as unknown as Prefs);
+    return next;
+  });
 };
 export const postJson = <T>(
   url: string,
@@ -328,6 +347,21 @@ export interface DiagnosticsResult {
 export function fetchDiagnosticsPlan(sinceS?: number): Promise<DiagnosticsPlan> {
   const q = sinceS ? `?since_s=${encodeURIComponent(sinceS)}` : "";
   return getJson<DiagnosticsPlan>(`/api/diagnostics/plan${q}`);
+}
+
+/** fused-render's saved UDF results on disk (SPEC §54.3). */
+export interface UdfSavedStats {
+  entries: number;
+  bytes: number;
+}
+
+export function fetchUdfSavedStats(): Promise<UdfSavedStats> {
+  return getJson<UdfSavedStats>("/api/udf/saved");
+}
+
+/** Deletes every saved UDF result; the next open of each UDF runs it fresh. */
+export function clearUdfSaved(): Promise<{ cleared: UdfSavedStats }> {
+  return mutateJson<{ cleared: UdfSavedStats }>("DELETE", "/api/udf/saved");
 }
 
 export interface DiagnosticsOptions {
@@ -504,7 +538,13 @@ export interface ClaudeHealth {
       key, from a server that passes it through). The GEMINI snapshot
       (`/api/gemini/health`, docs/GEMINI_BACKEND.md D10) says "google",
       "api_key", "vertex" or "gateway", with the Google account's email when
-      the CLI cached one. */
+      the CLI cached one. The OPENCODE snapshot (`/api/opencode/health`,
+      docs/OPENCODE_BACKEND.md D10) says "local" (the default model is a
+      `fused/…` local row — no account at all) or "providers" (at least one
+      provider OpenCode reports as connected). The CURSOR snapshot
+      (`/api/cursor/health`, docs/CURSOR_BACKEND.md D10) says "cursor" (a
+      stored `cursor-agent login`, with its email and team as `org`) or
+      "api_key" (`CURSOR_API_KEY`). */
   account: {
     method: string | null;
     email: string | null;
@@ -653,8 +693,10 @@ export function cancelClaudeLogin(): Promise<ClaudeLoginStatus & { canceled: boo
 
 // -- The same doors, PER AGENT (docs/COPILOT_BACKEND.md D10) ----------------
 //
-// `/api/copilot/*`, `/api/codex/*` (docs/CODEX_BACKEND.md D10) and
-// `/api/gemini/*` (docs/GEMINI_BACKEND.md D10) — `health,
+// `/api/copilot/*`, `/api/codex/*` (docs/CODEX_BACKEND.md D10),
+// `/api/gemini/*` (docs/GEMINI_BACKEND.md D10), `/api/opencode/*`
+// (docs/OPENCODE_BACKEND.md D10) and `/api/cursor/*` (docs/CURSOR_BACKEND.md
+// D10) — `health,
 // health/refresh, install, login, login/cancel, link-path` — answer the same
 // bodies as the Claude ones above, so one set of functions keyed on the
 // backend id serves every agent — `useAgentSetup(backend)` in claude-setup.ts
@@ -663,7 +705,7 @@ export function cancelClaudeLogin(): Promise<ClaudeLoginStatus & { canceled: boo
 // contract) and is not generalised.
 
 /** Each agent's route segment; an id not here (or none) is Claude's. */
-const AGENT_ROUTES: Record<string, string> = { claude: "claude", copilot: "copilot", codex: "codex", gemini: "gemini" };
+const AGENT_ROUTES: Record<string, string> = { claude: "claude", copilot: "copilot", codex: "codex", gemini: "gemini", opencode: "opencode", cursor: "cursor" };
 
 function agentRoute(backend: string, tail: string): string {
   return `/api/${AGENT_ROUTES[backend] ?? "claude"}/${tail}`;
@@ -735,7 +777,7 @@ export interface AgentCaps {
 
 export interface AgentBackendRow {
   id: string;
-  /** "Claude" / "Copilot" / "Codex" / "Gemini" — the word every surface names the agent by. */
+  /** "Claude" / "Copilot" / "Codex" / "Gemini" / "OpenCode" / "Cursor" — the word every surface names the agent by. */
   label: string;
   enabled: boolean;
   /** `reasoning: false` marks a model its CLI takes no effort for (the spawn
@@ -1508,6 +1550,9 @@ export interface ContribPrefs {
 }
 
 export interface Prefs {
+  /** Grows with every prefs write (server `_REVISION`): of two PUT answers
+   *  heard out of order on the prefs channel, the larger one wins. */
+  revision?: number;
   engine: EnginePrefs;
   // Whether the Reader (listen-to-files) accessibility mode is offered (opt-in,
   // default off).
@@ -1557,19 +1602,24 @@ export interface Prefs {
   // both the pref's own default and what every server did before this existed,
   // so "not sent" and "off" are honestly the same answer here.
   queue?: { enabled: boolean };
-  // Haiku recaps of every finished turn, titling the Tasks rows
-  // (`task_recap_titles_enabled`, shell/prefs.py; opt-in, off by default).
-  // Optional like `queue`: absent reads as off.
-  task_recap?: { enabled: boolean };
+  // The in-chat recap fold (`chat_recap_enabled`, shell/prefs.py; DEFAULT ON).
+  // Optional: absent (an older server) reads as on, like the server's default.
+  chat_recap?: { enabled: boolean };
+  // Breakout side chats (`breakout_enabled`, shell/prefs.py; opt-in, off by
+  // default). Optional like `queue`: absent reads as off.
+  breakout?: { enabled: boolean };
+  // Experts (`experts_enabled`, shell/prefs.py; docs/experts.md).
+  // Experimental, off by default. Optional like `breakout`: absent reads as off.
+  experts?: { enabled: boolean };
   // The slow in-canvas screenshot fallback on a Mac
   // (`canvas_shot_slow_fallback_enabled`, shell/prefs.py; off by default).
   // Optional: absent (older server) reads as off.
   canvas_shot?: { slow_fallback: boolean };
-  // The canvas page's collapsed Claude rail shows the hovered chat as a live
-  // floating card (`canvas_rail_peek_enabled`, shell/prefs.py; off by
-  // default). Optional: absent (older server) reads as off. A hover previews
-  // and a click pins — there is no trigger choice any more.
-  canvas_rail_peek?: { enabled: boolean };
+  // Rail extras (`rail_extras_enabled`, shell/prefs.py; off by default): a
+  // file's other views as doors above Git, the expandable rail, and free
+  // pinned rail windows (exact place and size, a second window for the rest).
+  // Optional: absent (older server) reads as off.
+  rail_extras?: { enabled: boolean };
   // Stable AI titles: Tasks rows titled only by the stable `title` (`task_summary_titles_enabled`,
   // shell/prefs.py; off by default). Optional: absent reads as off.
   task_summary_titles?: { enabled: boolean };
@@ -1617,26 +1667,26 @@ export interface Prefs {
    *  choosing. See `Task.entrypoint`'s own doc comment for why this can only
    *  ever be a best-effort filter, never an exact one. */
   task_notify?: { terminal_sessions: boolean };
-  // Local-network sharing of ~/Fused/local (lan.py, opt-in, default off):
-  // the stored switch plus the live listener — `url` once it is serving
-  // (http://render.fused.local/), `error` when the bind or mDNS failed.
+  // Local-network sharing (lan.py, opt-in, default off): the stored switch
+  // plus the live https listener — `url` once it is serving
+  // (https://<hostname>.local:1889/), `error` when the bind or the
+  // certificate failed. `hostname` is the OS-advertised local name the code
+  // carries (null when the OS has none; the address stands in), `fingerprint`
+  // the SHA-256 the app pins. `warnings` is what the computer itself can see
+  // that would keep a phone from reaching it (lan_doctor.py).
   lan: {
     enabled: boolean;
     running: boolean;
     url: string | null;
-    host: string;
-    alias: string;
+    hostname: string | null;
     ip: string | null;
     port: number | null;
     error: string | null;
-    // The https listener beside the http one (for the native app); its
-    // failure leaves browsers working and is reported separately.
-    https_url: string | null;
-    https_port: number | null;
-    tls_error: string | null;
+    fingerprint: string | null;
     // Devices paired by scanning the QR code (lan.py): what the Preferences
     // list shows and can revoke.
     devices: LanDevice[];
+    warnings: LanWarning[];
   };
   // The app call log (fused_render/calls.py): capture state, how much of a
   // run's params is kept, retention window, and where the store lives.
@@ -1697,12 +1747,13 @@ export interface Prefs {
   workbench?: { env: string; locked: boolean; choices: string[] };
   // WHICH AGENTS MAY RUN CHATS AND TASKS (docs/COPILOT_BACKEND.md D17):
   // `claude_enabled` (default on) / `copilot_enabled` / `codex_enabled` /
-  // `gemini_enabled` (default off, docs/CODEX_BACKEND.md D17,
-  // docs/GEMINI_BACKEND.md D17), and the one new chats and tasks
-  // open on. The server refuses a PUT that would turn the last one off (400
-  // "turn on another agent first"). OPTIONAL: an older server answers without
-  // it, and the reader treats absence as Claude only.
-  agents?: { claude: boolean; copilot: boolean; codex: boolean; gemini?: boolean; default: string };
+  // `gemini_enabled` / `opencode_enabled` / `cursor_enabled` (default off,
+  // docs/CODEX_BACKEND.md D17, docs/GEMINI_BACKEND.md D17,
+  // docs/OPENCODE_BACKEND.md D17, docs/CURSOR_BACKEND.md D17), and the one
+  // new chats and tasks open on. The server refuses a PUT that would turn
+  // the last one off (400 "turn on another agent first"). OPTIONAL: an older
+  // server answers without it, and the reader treats absence as Claude only.
+  agents?: { claude: boolean; copilot: boolean; codex: boolean; gemini?: boolean; opencode?: boolean; cursor?: boolean; default: string };
 }
 
 export type ChromiumEngineState = "unsupported" | "missing" | "ready";
@@ -1726,9 +1777,6 @@ export interface ChromiumWindowsState {
 
 export interface LauncherPrefs {
   available: boolean;
-  // What the panel's rows are, by flavor: "apps" under Fused Render, "bots"
-  // under Fused Bot (whose hotkey/modifier are the separate bot_launcher_* prefs).
-  kind?: "apps" | "bots";
   hotkey: string;
   display: string;
   row_modifier: string;
@@ -1753,6 +1801,10 @@ export interface EnginesPrefs {
   // One row per capability the registry knows, servable here or not — a
   // preference the user cannot see is one they cannot fix.
   capabilities: CapabilityEngine[];
+  // One row per DOWNLOADED model with a known capability (D1456): its own pin
+  // and what actually serves it. Optional so an older server's payload, which
+  // has no such block, still reads as "no model rows".
+  models?: ModelEngine[];
   // The literal the server means by "let the registry decide". Shipped with
   // the value rather than hardcoded here, for the same reason `model.choices`
   // is: the page must not be able to send a value a PUT would reject.
@@ -1801,6 +1853,12 @@ export interface CapabilityEngine {
   choices: EngineChoice[];
 }
 
+// A capability row keyed by repo id — `selected` is the model's own pin
+// (`auto` when none), so the capability row's helpers read it unchanged.
+export interface ModelEngine extends CapabilityEngine {
+  id: string;
+}
+
 export interface EngineChoice {
   code: string;
   label: string;
@@ -1816,7 +1874,7 @@ export interface EngineChoice {
 
 // Short model names, matching shell/prefs.py's VALID_DEFAULT_MODELS. "" is the
 // unset member, not an absence — it is what the "Automatic" option writes.
-export type DefaultModel = "" | "fable" | "opus" | "sonnet" | "haiku";
+export type DefaultModel = "" | "haiku" | "sonnet" | "opus" | "fable";
 
 export type CallsParamsMode = "full" | "keys" | "off";
 
@@ -1928,6 +1986,90 @@ export function getPrefsShared(): Promise<Prefs> {
   return p;
 }
 
+// PREFS WRITTEN IN ANOTHER TAB OR WINDOW. A flag module caches its one read and
+// moves only on this page's own publish (or a re-read on focus, prefs-reread),
+// so a switch flipped in a second tab left the first one's star, section and
+// card up until a reload. Every successful prefs PUT posts the payload the
+// server answered with on one BroadcastChannel; a module that wants it applies
+// it as its own publish. The writing page hears its own post too (a fresh
+// channel per post) — the same value its Settings row already published, so a
+// no-op. No BroadcastChannel (an old WebView) and the focus re-read is all
+// there is.
+const PREFS_CHANNEL = "fused-render:prefs";
+let prefsListen: BroadcastChannel | null = null;
+const prefsElsewhere = new Set<(p: Prefs) => void>();
+// The newest `revision` this page has seen — its own PUT answers and the
+// channel's. A slow PUT answered BEFORE a later one but heard after it would
+// otherwise put the older switch back here (CodeRabbit, PR #2100).
+let prefsRevision = -Infinity;
+
+/** Note `p`'s revision; false = it is older than one already seen, so not
+ *  an answer any more. A payload without one (an old server) always lands. */
+function prefsFresh(p: Prefs): boolean {
+  const rev = p.revision;
+  if (typeof rev !== "number") return true;
+  if (rev < prefsRevision) return false;
+  prefsRevision = rev;
+  return true;
+}
+
+function announcePrefs(next: Prefs) {
+  if (typeof BroadcastChannel !== "function" || !next || typeof next !== "object") return;
+  // Already superseded here: every other page has heard the newer one too.
+  if (!prefsFresh(next)) return;
+  try {
+    // Posted on a throwaway channel: a post is queued for every other channel
+    // at once, so closing straight after loses nothing — and nothing here is
+    // left open to hold a test process alive.
+    const ch = new BroadcastChannel(PREFS_CHANNEL);
+    ch.postMessage({ prefs: next });
+    ch.close();
+  } catch {
+    // Unclonable or refused: the focus re-read still catches the other tab up.
+  }
+}
+
+/** Follow prefs PUTs made by OTHER tabs and windows: `handler` gets the full
+ *  payload the server answered that PUT with. Returns the unsubscribe. */
+export function onPrefsWrittenElsewhere(handler: (p: Prefs) => void): () => void {
+  prefsElsewhere.add(handler);
+  if (!prefsListen && typeof BroadcastChannel === "function") {
+    let ch: BroadcastChannel;
+    try {
+      ch = new BroadcastChannel(PREFS_CHANNEL);
+    } catch {
+      // Refused (a sandboxed frame, a locked-down WebView): nothing is armed
+      // and the focus re-read is all there is, as with no channel at all. A
+      // later subscriber tries again.
+      return () => {
+        prefsElsewhere.delete(handler);
+      };
+    }
+    prefsListen = ch;
+    // Never the thing that keeps a (bun) process alive.
+    (ch as unknown as { unref?: () => void }).unref?.();
+    ch.onmessage = (ev: MessageEvent) => {
+      const p = (ev.data as { prefs?: Prefs } | null)?.prefs;
+      if (!p || typeof p !== "object" || !prefsFresh(p)) return;
+      for (const h of prefsElsewhere) h(p);
+    };
+  }
+  return () => {
+    prefsElsewhere.delete(handler);
+  };
+}
+
+/** Tests only: drop every prefs-channel handler and close the listening
+ *  channel, so one suite's posts never land in another's module state (a
+ *  flag module's import-time handler). A module that follows the channel
+ *  again subscribes again. */
+export function resetPrefsChannelForTests(): void {
+  prefsElsewhere.clear();
+  prefsListen?.close();
+  prefsListen = null;
+  prefsRevision = -Infinity;
+}
+
 export function putReaderEnabled(enabled: boolean): Promise<Prefs> {
   return putJson<Prefs>("/api/prefs", { reader_enabled: enabled });
 }
@@ -1959,6 +2101,21 @@ export function putLauncherHotkey(spec: string): Promise<Prefs> {
  *  opening the panel; `off` binds them back. A no-op where no panel exists. */
 export function postLauncherSuspend(on: boolean): Promise<{ ok: boolean }> {
   return postJson<{ ok: boolean }>("/api/launcher/suspend", { on });
+}
+
+/** Show the launcher panel — the Claude rail's Search door, the ⌥Space
+ *  shortcut's twin. With `anchor` (CSS px in this window: the rail's left
+ *  edge and the door's top) the panel stands beside the rail like a window A
+ *  card instead of mid-screen. 404 where this process has no panel
+ *  (`launcherAvailable`). */
+export function showLauncher(anchor?: { left: number; top: number }): Promise<{ ok: boolean }> {
+  return postJson<{ ok: boolean }>("/api/launcher/show", anchor ? { anchor } : {});
+}
+
+/** Whether the launcher panel stands now (the rail's Search door's open
+ *  state). */
+export function getLauncherShown(): Promise<{ shown: boolean }> {
+  return getJson<{ shown: boolean }>("/api/launcher/shown");
 }
 
 /** The row-shortcut modifier(s), `+`-joined (`"alt"`, `"alt+cmd"`). */
@@ -2023,16 +2180,24 @@ export function putClaudeMaxConcurrentSessions(max: number): Promise<Prefs> {
   return putJson<Prefs>("/api/prefs", { claude_max_concurrent_sessions: max });
 }
 
-export function putTaskRecapTitlesEnabled(enabled: boolean): Promise<Prefs> {
-  return putJson<Prefs>("/api/prefs", { task_recap_titles_enabled: enabled });
+export function putChatRecapEnabled(enabled: boolean): Promise<Prefs> {
+  return putJson<Prefs>("/api/prefs", { chat_recap_enabled: enabled });
+}
+
+export function putBreakoutEnabled(enabled: boolean): Promise<Prefs> {
+  return putJson<Prefs>("/api/prefs", { breakout_enabled: enabled });
+}
+
+export function putExpertsEnabled(enabled: boolean): Promise<Prefs> {
+  return putJson<Prefs>("/api/prefs", { experts_enabled: enabled });
 }
 
 export function putCanvasShotSlowFallbackEnabled(enabled: boolean): Promise<Prefs> {
   return putJson<Prefs>("/api/prefs", { canvas_shot_slow_fallback_enabled: enabled });
 }
 
-export function putCanvasRailPeekEnabled(enabled: boolean): Promise<Prefs> {
-  return putJson<Prefs>("/api/prefs", { canvas_rail_peek_enabled: enabled });
+export function putRailExtrasEnabled(enabled: boolean): Promise<Prefs> {
+  return putJson<Prefs>("/api/prefs", { rail_extras_enabled: enabled });
 }
 
 /** One PUT per Bots page-wide switch (`Prefs.bots`). */
@@ -2064,6 +2229,8 @@ export function putPinnedTasks(keys: string[]): Promise<Prefs> {
 export interface UiLayoutDoc {
   v: 1;
   sidebar?: { width: number; collapsed: boolean };
+  /** The right rail's width and expanded flag (platform/lib/railstate.ts). */
+  rail?: { width: number; expanded: boolean };
   bookmarksCollapsed?: boolean;
   currentAppsCollapsed?: boolean;
   /** The sidebar's Canvases section fold (the desk's canvas half). */
@@ -2081,6 +2248,16 @@ export interface UiLayoutDoc {
   /** The size the reader dragged the canvas rail's PINNED preview card to
    *  (RailPeek's corner grips); a hover card ignores it. */
   canvasRailPeek?: { width: number; height: number };
+  /** …and the favourite's card (FavouritePeek), dragged from its top and
+   *  left edges; unset = its default 380×520. */
+  canvasRailFav?: { width: number; height: number };
+  /** The chat text zoom, 1 = 100 % (platform/lib/chat-zoom.ts): one factor for
+   *  every chat, always one of `CHAT_TEXT_SCALES` (ui-layout.ts). */
+  chatTextScale?: number;
+  /** The task chat's "seen" mark (apps/claude/ui/chatSeen.ts): session id →
+   *  where the reader last sat at the end of it (`k:d:r`, a log position). Oldest
+   *  first; capped at `CHAT_SEEN_MAX` (ui-layout.ts). */
+  chatSeen?: Record<string, string>;
 }
 
 export function getUiLayout(): Promise<{ exists: boolean; layout: UiLayoutDoc | null }> {
@@ -2127,32 +2304,34 @@ export function ackMarketplacePython(slug: string): Promise<{ ok: boolean; slugs
 
 export interface LanDevice {
   id: string;
-  name: string; // "iPhone · Safari", derived from the user agent at pairing
+  name: string; // the name the app declared at pairing ("Vas iPhone"), else a plain kind
   paired_at: number; // epoch seconds
   last_seen: number;
 }
 
-// A one-time pairing URL for the QR code (five minutes, single use). `ip_url`
-// carries the same token behind the raw LAN address, for a phone whose
-// resolver does not do multi-label .local names.
-export function getLanPairToken(): Promise<{ url: string; ip_url: string | null; ttl_s: number }> {
+// One thing the computer can see that would keep a phone from reaching it
+// (lan_doctor.py): `code` is stable (no_lan, vpn, firewall, hostname,
+// listener, renamed), `message` is what Preferences shows.
+export interface LanWarning {
+  code: string;
+  message: string;
+}
+
+// A one-time pairing URL for the QR code (five minutes, single use), naming
+// the computer's local name (or its address), the certificate fingerprint
+// the app pins and the address it falls back to.
+export function getLanPairToken(): Promise<{
+  url: string;
+  ttl_s: number;
+  fingerprint: string;
+  hostname: string | null;
+  ip: string | null;
+}> {
   return getJson("/api/lan/pair-token");
 }
 
 export function getLanDevices(): Promise<{ devices: LanDevice[] }> {
   return getJson("/api/lan/devices");
-}
-
-// A device that paired since the shell last dismissed the news — one row in
-// the status bar's Notifications section (RepoUpdatesDock).
-export type LanPairingEvent = { id: string; name: string; at: number };
-
-export function getLanPairings(): Promise<{ pairings: LanPairingEvent[] }> {
-  return getJson("/api/lan/pairings");
-}
-
-export function dismissLanPairing(id: string): Promise<{ pairings: LanPairingEvent[] }> {
-  return postJson("/api/lan/pairings/dismiss", { id });
 }
 
 async function lanDelete(path: string): Promise<{ devices: LanDevice[] }> {
@@ -2209,6 +2388,11 @@ export function putDefaultBackend(backend: string): Promise<Prefs> {
 // other's choice.
 export function putEngineForCapability(capability: string, code: string): Promise<Prefs> {
   return putJson<Prefs>("/api/prefs", { engines: { [capability]: code } });
+}
+
+// One model's pin; `auto` removes it. Same key-by-key server rule as above.
+export function putEngineForModel(modelId: string, code: string): Promise<Prefs> {
+  return putJson<Prefs>("/api/prefs", { model_engines: { [modelId]: code } });
 }
 
 export function putCallsEnabled(enabled: boolean): Promise<Prefs> {
@@ -3420,7 +3604,7 @@ export interface CurrentAppEntry {
   unread?: boolean;
   /** This row is a canvas CLONE (`~/Fused/canvas/<env>/<name>`): the sidebar
    *  lists it in its Canvases section, not Projects, and the row opens the
-   *  canvas's project page. Null / absent for an app folder. */
+   *  canvas's editor. Null / absent for an app folder. */
   canvas?: { env: string; name: string } | null;
 }
 
@@ -3605,7 +3789,7 @@ export function createApp(
   effort: SessionEffort = "",
   // Paths from uploadTaskShot — the composer's pasted/dropped attachments.
   images: string[] = [],
-  // Which agent runs the scaffolding task: "claude" | "copilot" | "codex" | "gemini" | "" for the
+  // Which agent runs the scaffolding task: "claude" | "copilot" | "codex" | "gemini" | "opencode" | "cursor" | "" for the
   // catalog's default (docs/COPILOT_BACKEND.md D17).
   backend: string = "",
 ): Promise<NewAppResult> {
@@ -3770,16 +3954,42 @@ export interface TaskMessage {
 
 /** `Task.background_jobs` — the jobs a live session host is still holding
  *  for a chat whose reply is over. `title` is the CLI's own description ("" when
- *  it sent none). */
+ *  it sent none). `agent` is true for a background subagent, false for a Bash,
+ *  a Monitor or any other job (absent from an older server: not a subagent). */
 export interface TaskBackgroundJobs {
   count: number;
   run_id: string;
-  jobs: Array<{ id: string; title: string }>;
+  jobs: Array<{ id: string; title: string; agent?: boolean }>;
 }
 
 export interface Task {
   key: string;
   task_id: string; // TASK-003 — numbered per project, allocated once, never reused
+  // THE TASK'S FACE (task icons, 2026-11-10): which of the 299
+  // glyphs in shell/task-icons.ts this task wears — arithmetic on its number
+  // server-side (tasks_store.icon_slot); a pick (`setTaskIcon`) stamps
+  // another. THE ICON IS NOT THE STAR'S (2026-11-16): a row carries one when
+  // it was picked by hand, or while starred unless it was removed
+  // (tasks_store.worn_icons); null draws the ring. Absent from an older
+  // server.
+  icon_slot?: number | null;
+  // …and whether the user gave it that face BY HAND (`icon: "on"` on its
+  // number record): a picked face shows with the favourites switch off and
+  // stays on an unstarred task; one that came with the star does neither.
+  icon_picked?: boolean;
+  // FAVOURITE (owner, 2026-11-03): the star on the rail card. Server-side,
+  // global (`tasks_store.FAVOURITES_FILE`), so every rail and every pane on
+  // every page lists the same starred tasks. `starred_open` is the server's
+  // record of an open card (at most one) — kept for older clients; since
+  // 2026-11-04 the open favourite is PER WINDOW (platform/lib/last-chat
+  // `useFavOpen`) and no card follows this field. Both absent on an older
+  // server.
+  starred?: boolean;
+  starred_open?: boolean;
+  /** When it was starred (epoch seconds; `tasks_store.favourite_at`): the
+   *  rail's favourites stand newest star first (2026-11-05). Null / absent
+   *  unstarred, or from a server that predates it. */
+  starred_at?: number | null;
   project: string; // the FOLDER: a task on ~/x/foo.py belongs to project ~/x
   target: string; // what the task actually points at (may be that file)
   // The app page a FOLDER target opens as, "" when the folder is not an app:
@@ -3858,7 +4068,7 @@ export interface Task {
    */
   model: string;
   effort: string;
-  /** WHICH AGENT RUNS THIS TASK — "claude" | "copilot" | "codex" | "gemini"
+  /** WHICH AGENT RUNS THIS TASK — "claude" | "copilot" | "codex" | "gemini" | "opencode" | "cursor"
    *  (docs/COPILOT_BACKEND.md D2), chosen at the first turn and immutable. Optional: an older server
    *  sends nothing, and nothing reads as Claude everywhere a mark is drawn. */
   backend?: string;
@@ -3975,17 +4185,11 @@ export interface Task {
    */
   last_message?: { role: "user" | "assistant"; text: string; at: number } | null;
   /** First line of Claude's newest reply in this conversation, "" when none.
-   *  The List row prints it after the title; with `recap` present it also
-   *  titles a finished turn until the recap lands (tasks-lib `cardTitleLine`). */
+   *  The List row prints it after the title. */
   last_reply?: string;
   /** Every GitHub PR this session touched, oldest first (the server collects
    *  them from the transcript). `prRefsOf` merges it with what the words name. */
   prs?: { repo: string; number: number; url: string }[];
-  /** The haiku recap of this row's last finished turn (`for_uuid` names the
-   *  turn), or null while it has none. ABSENT unless prefs
-   *  `task_recap.enabled` is on — the client reads the key's presence as
-   *  the flag, so flag-off rows title exactly as before. */
-  recap?: { text: string; for_uuid: string } | null;
   /** "summary" when prefs `task_summary_titles.enabled` is on: the row is
    *  titled by `title` alone. ABSENT otherwise. */
   title_mode?: "summary";
@@ -4180,6 +4384,8 @@ export type TaskPulseTask = Pick<
   | "happened_at"
   | "project"
   | "task_id"
+  | "icon_slot"
+  | "icon_picked"
   | "title"
   | "target"
   | "session_id"
@@ -4190,12 +4396,13 @@ export type TaskPulseTask = Pick<
   | "backend"
   | "canvas"
   | "background_jobs"
-  // What the notice titles a task by (tasks-lib `taskNoticeTitle`: the newest
-  // user message, unless renamed / stable AI titles) — optional, each absent with
-  // its flag off or on an older server. Recap titles are deliberately NOT
-  // here: the notice ignores them, the Tasks cards do not.
-  | "title_mode"
+  // What the notice titles a task by (tasks-lib `taskNoticeTitle`: the server
+  // `title`, the newest message only when it is empty) — optional, absent on an
+  // older server.
   | "last_message"
+  | "starred"
+  | "starred_open"
+  | "starred_at"
 > &
   // Optional: a pulse row from a server that predates it carries none.
   Partial<Pick<Task, "title_source">>;
@@ -4456,6 +4663,31 @@ export function forceStart(
   what: { entry_id?: string; key?: string },
 ): Promise<ForceResult> {
   return postJson<ForceResult>("/api/tasks/queue/force", what);
+}
+
+/** What `POST /api/tasks/limit/retry` answers. `note` is the scheduler's
+ *  sentence when the continue could not go this second (a turn still closing,
+ *  the folder held — `queued`), "" when it went. */
+export interface LimitRetryResult {
+  ok: boolean;
+  entry: ScheduledMessage | null;
+  note: string;
+  queued: boolean;
+  /** The booked comeback this retry ran ahead of, "" when none was booked. */
+  comeback: string;
+}
+
+/**
+ * RETRY NOW on a conversation the plan's usage limit paused — the reader
+ * switched accounts, or the window lifted early, and does not want to wait
+ * for the booked comeback. Sends the continue prompt now into the same
+ * session; the comeback stays booked until a reply retires it (server-side),
+ * so a retry that is still limited leaves exactly one comeback behind.
+ * `key` is the task key, which for a conversation is its session id.
+ * Refusals THROW (404 no such task, 409 not paused on the limit).
+ */
+export function retryAfterLimit(key: string): Promise<LimitRetryResult> {
+  return postJson<LimitRetryResult>("/api/tasks/limit/retry", { key });
 }
 
 /** A card decision routed through the queue: the same body the agent's own
@@ -4794,6 +5026,37 @@ export function removeTaskWorktrees(
  *  trimmed, capped). */
 export function renameTask(key: string, title: string): Promise<{ ok: boolean; title: string }> {
   return postJson<{ ok: boolean; title: string }>("/api/tasks/rename", { key, title });
+}
+
+/** THE FACE THE USER PICKED for one task: `slot`
+ *  indexes shell/task-icons.ts and is kept server-side, worn starred or not;
+ *  null is the picker's Remove — the ring again, starred or not, until a
+ *  star gives the icon back (2026-11-16). Answers what the task wears now
+ *  (`icon_slot` null after a Remove). A task with no number yet is a 409. */
+export function setTaskIcon(
+  key: string,
+  slot: number | null,
+): Promise<{ ok: boolean; icon_slot: number | null; icon_picked: boolean }> {
+  return postJson<{ ok: boolean; icon_slot: number | null; icon_picked: boolean }>("/api/tasks/icon", { key, slot });
+}
+
+/** THE STAR (owner, 2026-11-03): make a task a favourite, or take it back.
+ *  `on` is the star. `open` moves the server's `starred_open` record (one
+ *  open at a time; a star with `open` omitted records it open) — kept for
+ *  compatibility, but the client no longer sends it: since 2026-11-04 which
+ *  favourite's card is open is per window (platform/lib/last-chat
+ *  `useFavOpen`), and the rail and its cards call this with the star alone.
+ *  `on: null` leaves the star alone and moves only `open`. The answer is the
+ *  stored state. */
+export function setTaskFavourite(
+  key: string,
+  on: boolean | null,
+  open?: boolean,
+): Promise<{ ok: boolean; key: string; starred: boolean; open: boolean }> {
+  return postJson<{ ok: boolean; key: string; starred: boolean; open: boolean }>(
+    "/api/tasks/favourite",
+    { key, ...(on === null ? {} : { on }), ...(open === undefined ? {} : { open }) },
+  );
 }
 
 // Taking the filing back — the drag out of the Archive lane, and the exact
@@ -6523,6 +6786,73 @@ export interface GitCommits {
   total: number;
 }
 
+/** The Claude rail's Git section (routers/git_rail.py): the branch and the
+ *  last three commits for a page's folder or file, and how far HEAD stands
+ *  from the remote's default branch as last fetched. */
+export interface RailGitRepo {
+  root: string;
+  branch: string | null;
+  /** An `origin` remote is configured. */
+  has_remote: boolean;
+  /** Null until known: no remote, or a clone with no recorded symref (the
+   *  Check resolves it). */
+  default_branch: string | null;
+  ahead: number | null;
+  behind: number | null;
+  /** Against the branch's own upstream (`@{u}`): what a push / pull would
+   *  move (the rail Git door's dots). Null with no upstream or a detached
+   *  HEAD; absent from an older server. */
+  upstream?: { ahead: number; behind: number } | null;
+  /** A copy of someone else's app (contrib §17.8): the Git pane routes its
+   *  push / pull, so the rail card offers neither. Absent from an older server. */
+  guarded?: boolean;
+  commits: GitCommit[];
+}
+
+export interface RailGit {
+  ok: boolean;
+  /** Null: the path is in no repository. */
+  repo: RailGitRepo | null;
+}
+
+/** `limit`: how many commits (server default 3, capped at 100). */
+export function getRailGit(path: string, limit?: number): Promise<RailGit> {
+  const n = limit === undefined ? "" : `&limit=${limit}`;
+  return getJson<RailGit>(`/api/git/rail?path=${encodeURIComponent(path)}${n}`);
+}
+
+/** The rail's "Check for updates": git_upstream's own bounded check, then the
+ *  fresh counts. `checked` is false when no fetch landed inside its wait
+ *  (no remote, unreachable, another check holding the slot, still running). */
+export function postRailGitCheck(path: string, limit?: number): Promise<RailGit & { checked: boolean }> {
+  return mutateJson<RailGit & { checked: boolean }>("POST", "/api/git/rail/check", limit === undefined ? { path } : { path, limit });
+}
+
+export type RailGitSyncOp = "push" | "pull";
+
+/** The Git view's own push / pull (templates/git/ops.py), as its answer. */
+export interface RailGitSyncResult {
+  ok: boolean;
+  op?: RailGitSyncOp;
+  detail?: string;
+  reason?: string;
+  message?: string;
+}
+
+/** The rail Git card's Send / Get latest: the pane's op, then the fresh counts.
+ *  A refusal is `result.ok === false` with its sentence, not a thrown error. */
+export function postRailGitSync(
+  path: string,
+  op: RailGitSyncOp,
+  limit?: number,
+): Promise<RailGit & { result: RailGitSyncResult }> {
+  return mutateJson<RailGit & { result: RailGitSyncResult }>(
+    "POST",
+    "/api/git/rail/sync",
+    limit === undefined ? { path, op } : { path, op, limit },
+  );
+}
+
 export function getGitCommits(path: string, limit = 30): Promise<GitCommits> {
   return getJson<GitCommits>(
     `/api/git/commits?path=${encodeURIComponent(path)}&limit=${limit}`,
@@ -6538,16 +6868,23 @@ export function getGitCommits(path: string, limit = 30): Promise<GitCommits> {
 // `model` is a full id or a short alias ("haiku"); omitted, the relay uses its
 // own default, haiku — the right size for these utility calls. It never follows
 // the user's chat model.
+//
+// `opts.signal` lets a caller with a deadline stop waiting for the answer.
 export function aiComplete(
   prompt: string,
   systemPrompt?: string,
   model?: string,
+  opts?: { signal?: AbortSignal },
 ): Promise<string> {
-  return postJson<{ ok: boolean; result: { text: string } }>("/api/ai", {
-    prompt,
-    ...(systemPrompt ? { systemPrompt } : {}),
-    ...(model ? { model } : {}),
-  }).then((r) => r.result.text);
+  return postJson<{ ok: boolean; result: { text: string } }>(
+    "/api/ai",
+    {
+      prompt,
+      ...(systemPrompt ? { systemPrompt } : {}),
+      ...(model ? { model } : {}),
+    },
+    opts?.signal ? { signal: opts.signal } : undefined,
+  ).then((r) => r.result.text);
 }
 
 // -- Scheduled Claude messages (/api/schedule) --------------------------------
@@ -6943,6 +7280,12 @@ export function ackScheduleEvents(id: number): Promise<{ delivered: number }> {
  *  that predates the flag keeps its Bots page. */
 export function botsAvailable(config: Pick<Config, "bots_available"> | null | undefined): boolean {
   return config?.bots_available !== false;
+}
+
+/** Can this process show the launcher panel (the ⌥Space search over the
+ *  apps)? Only an explicit `true`: a plain server has no panel. */
+export function launcherAvailable(config: Pick<Config, "launcher_available"> | null | undefined): boolean {
+  return config?.launcher_available === true;
 }
 
 /** Can this machine run the status-bar terminal? Only an explicit `false`

@@ -34,5 +34,6 @@ export const ORIGIN_BY_ROUTE: Readonly<Record<string, string>> = {
   "/preferences": "Preferences",
   "/skills": "Skills",
   "/preferences?tab=indexing": "Explorer",
+  "/preferences?s=diagnostics": "Diagnostics",
   "/tasks": "Scheduler",
 };

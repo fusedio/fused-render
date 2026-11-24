@@ -77,6 +77,9 @@ export interface ChatUsage {
  *  local tier's wall-clock lands under `providerMetadata.local.seconds`. */
 export interface ChatResult {
   text: string;
+  /** A reasoning model's deliberation, split by the worker (the local tier
+   *  only; null when the model did not think). Never part of `text`. */
+  thinking?: string | null;
   provider: "local" | "claude";
   finishReason: "stop" | "length" | "cancelled";
   warnings: { type: string; setting?: string; message: string }[];
@@ -173,7 +176,9 @@ export async function streamChat(opts: {
   history: ChatTurn[];
   settings: ChatSettings;
   signal: AbortSignal;
-  onChunk: (text: string) => void;
+  /** `channel` is "reasoning" for a thinking model's deliberation, which
+   *  the worker splits from the answer (never a tag to parse here). */
+  onChunk: (text: string, channel?: "reasoning" | "content") => void;
   /** Absolute paths to base images for a vision-language model, on THIS turn
    *  only (AI-11j) — optional, so a caller that never attaches anything (the
    *  ordinary case) changes nothing about its own request. Omitted from the
@@ -222,11 +227,14 @@ export async function streamChat(opts: {
       const frame = JSON.parse(line) as {
         type: string;
         text?: string;
+        channel?: string;
         ok?: boolean;
         result?: ChatResult;
         error?: unknown;
       };
-      if (frame.type === "chunk") opts.onChunk(frame.text || "");
+      if (frame.type === "chunk") {
+        opts.onChunk(frame.text || "", frame.channel === "reasoning" ? "reasoning" : "content");
+      }
       else if (frame.type === "done") {
         // Errors after the first byte are demoted to an ok:false done frame on
         // a 200 (AI-1b) — this is the one place they surface.

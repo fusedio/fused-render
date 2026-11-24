@@ -8,7 +8,7 @@ import { act, create, type ReactTestInstance, type ReactTestRenderer } from "rea
 import type { Task } from "@platform/lib/api";
 import type { WorktreeHint } from "../protocol/types";
 
-const { WorktreeHintChip, visibleWorktreeHint, isSameFolder } = await import("./WorktreeHintChip");
+const { WorktreeHintChip, visibleWorktreeHint, shownWorktreeHint, isSameFolder, breakoutCwdFor } = await import("./WorktreeHintChip");
 const { Topbar } = await import("./Topbar");
 
 const mounted: ReactTestRenderer[] = [];
@@ -83,9 +83,32 @@ describe("visibleWorktreeHint", () => {
     expect(visibleWorktreeHint(agent, [t("running", "")])).toBe(null);
     expect(visibleWorktreeHint(agent, undefined)).toBe(null);
   });
+  test("a finished agent hint falls back to the main agent's worktree (prev)", () => {
+    const prev: WorktreeHint = { path: "/r/.claude/worktrees/main-wt", branch: "", via: "enter" };
+    const withPrev: WorktreeHint = { ...agent, prev };
+    expect(visibleWorktreeHint(withPrev, [t("running", "worktree")])).toBe(withPrev);
+    expect(visibleWorktreeHint(withPrev, [t("completed", "worktree")])).toBe(prev);
+    expect(breakoutCwdFor(shownWorktreeHint(withPrev, [], "/r"))).toBe("/r/.claude/worktrees/main-wt");
+  });
   test("other hints do not depend on tasks", () => {
     expect(visibleWorktreeHint(bash, [])).toBe(bash);
     expect(visibleWorktreeHint(null, [])).toBe(null);
+  });
+});
+
+describe("shownWorktreeHint", () => {
+  const abs: WorktreeHint = { path: "/x/wt", branch: "feat/wt", via: "enter" };
+  const agent: WorktreeHint = { path: "/x/wt", branch: "", via: "agent", label: "x" };
+  const t = (status: string, isolation: string) => ({ id: "a", status, isolation }) as never;
+  test("a hint for another folder is shown", () => {
+    expect(shownWorktreeHint(abs, [], "/x/main")).toBe(abs);
+    expect(shownWorktreeHint(agent, [t("running", "worktree")], "/x/main")).toBe(agent);
+  });
+  test("null for the chat's own folder, a left worktree, or a dead agent", () => {
+    expect(shownWorktreeHint(abs, [], "/x/wt")).toBe(null);
+    expect(shownWorktreeHint({ ...abs, via: "exit" }, [], "/x/main")).toBe(null);
+    expect(shownWorktreeHint(agent, [t("completed", "worktree")], "/x/main")).toBe(null);
+    expect(shownWorktreeHint(null, [], "/x/main")).toBe(null);
   });
 });
 
@@ -99,5 +122,28 @@ describe("Topbar worktreeHint seat", () => {
     expect(seen({ task })).toBe(1);
     expect(seen({ pending: true })).toBe(1);
     expect(seen({})).toBe(1);
+  });
+});
+
+describe("narrow side-pane bar hooks", () => {
+  // The container queries themselves (chat.css, `@container chat-side-bar`)
+  // cannot be asserted in happy-dom, which does no layout or container-query
+  // evaluation. This pins the markup they hide: the classed spans, and the
+  // `c-topbar-side` class that carries `container-type`.
+  test("the pill wraps 'worktree · ' in .c-wt-word and keeps the branch name", () => {
+    const c = chip(mount(<WorktreeHintChip hint={bash} currentPath="/r" />))[0]!;
+    const word = c.findAll((n) => n.props.className === "c-wt-word");
+    expect(word.length).toBe(1);
+    expect(text(word[0]!)).toBe("worktree · ");
+    expect(text(c)).toBe("worktree · feat/foo");
+  });
+  test("a bare Topbar wears c-topbar-side; a full-page one does not", () => {
+    const props = { sessionId: "s1", running: false } as const;
+    const bare = mount(<Topbar {...props} bare />);
+    const full = mount(<Topbar {...props} />);
+    const has = (r: ReactTestRenderer) =>
+      r.root.findAll((n) => typeof n.type === "string" && String(n.props.className ?? "").includes("c-topbar-side")).length;
+    expect(has(bare)).toBe(1);
+    expect(has(full)).toBe(0);
   });
 });

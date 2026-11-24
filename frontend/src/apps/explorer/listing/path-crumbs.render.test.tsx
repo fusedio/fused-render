@@ -26,7 +26,13 @@ import { act, create, type ReactTestRenderer } from "react-test-renderer";
 import { createElement } from "react";
 
 const navCalls: { path: string; opts: Record<string, unknown> | undefined }[] = [];
+// The REST of the router stays real: path-crumbs reaches `NAV_EVENT` through
+// lib/hooks, and a mock with `navigate` alone only linked because an earlier
+// file in the shared bun process had already loaded the real module. Run on its
+// own (or isolated) it failed to import at all.
+const realRouter = await import("@platform/lib/router");
 mock.module("@platform/lib/router", () => ({
+  ...realRouter,
   navigate: (p: string, opts?: Record<string, unknown>) => {
     navCalls.push({ path: p, opts });
   },

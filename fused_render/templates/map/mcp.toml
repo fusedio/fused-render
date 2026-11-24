@@ -17,7 +17,7 @@ signature = "describe_map(map_path: str)"
 
 [[tool]]
 name = "map_add_layer"
-description = "Add a data layer on top of the map. source is a local path or URL: GeoTIFF/COG, GeoJSON, GeoParquet, Shapefile, GeoPackage, FlatGeobuf, CSV, KML, NetCDF, HDF5, Zarr, PMTiles, LAS/LAZ/COPC point clouds (or an EPT ept.json), or a .py script returning geodata. kind is auto|raster|vector|zarr|pmtiles|pointcloud. See map_style_reference for style and options keys. Creates the map file if it does not exist. Returns the new layer's id, which the other layer tools take."
+description = "Add a data layer on top of the map. source is a local path or URL: GeoTIFF/COG, GeoJSON, GeoParquet, Shapefile, GeoPackage, FlatGeobuf, CSV, KML, NetCDF, HDF5, Zarr, PMTiles, LAS/LAZ/COPC point clouds (or an EPT ept.json), or a .py script returning geodata. kind is auto|raster|vector|zarr|pmtiles|pointcloud. See map_style_reference for style and options keys. Creates the map file if it does not exist. Returns the new layer's id, which the other layer tools take. A file holding several vector layers (a GeoPackage with several tables, a zip of shapefiles, a KML with folders) becomes one map layer per source layer when the map opens, each with options.source_layer; set options.source_layer to add only that one."
 file = "map_tools.py"
 entrypoint = "add_layer"
 signature = "add_layer(map_path: str, source: str, name: str='', kind: str='auto', style: dict | None=None, options: dict | None=None, visible: bool=True, opacity: float=1.0)"
@@ -59,17 +59,17 @@ signature = "set_basemap(map_path: str, basemap: str)"
 
 [[tool]]
 name = "map_apply_commands"
-description = "Apply several map commands at once, all or nothing. Each is an object with \"op\" (add_layer, remove_layer, update_layer, move_layer, set_view, set_basemap, set_title, clear_layers) and that op's fields, e.g. {\"op\": \"update_layer\", \"id\": \"roads\", \"style\": {\"line_color\": \"#ff0000\"}}."
+description = "Apply several map commands at once, all or nothing. Each is an object with \"op\" (add_layer, remove_layer, update_layer, move_layer, split_layer, set_view, set_basemap, set_title, clear_layers) and that op's fields, e.g. {\"op\": \"update_layer\", \"id\": \"roads\", \"style\": {\"line_color\": \"#ff0000\"}} or {\"op\": \"split_layer\", \"id\": \"parcels\", \"source_layers\": [\"lots\", \"roads\"]}, which replaces a layer with one layer per named source layer of its file."
 file = "map_tools.py"
 entrypoint = "apply_commands"
 signature = "apply_commands(map_path: str, commands: list[dict])"
 
 [[tool]]
 name = "map_describe_source"
-description = "What a data file holds before mapping it: raster bands/dtype/CRS/bounds, vector feature count/fields/geometry type, or a NetCDF/Zarr's gridded variables and dimensions. Use it to choose styles (bands, color_by)."
+description = "What a data file holds before mapping it: raster bands/dtype/CRS/bounds, vector feature count/fields/geometry type, or a NetCDF/Zarr's gridded variables and dimensions. Use it to choose styles (bands, color_by). A file holding several vector layers also lists them under layers; pass layer to describe one of them (the first is described otherwise)."
 file = "map_tools.py"
 entrypoint = "describe_source"
-signature = "describe_source(source: str)"
+signature = "describe_source(source: str, layer: str='')"
 
 [[tool]]
 name = "map_download_source"

@@ -2222,7 +2222,12 @@ def test_the_id_is_quoted_into_the_path_not_concatenated(client, monkeypatch):
     fake = _detail({})
     monkeypatch.setattr(httpx, "get", fake)
     _size(client, {"id": "org/a b?expand[]=evil"})
-    url = fake.calls[0][0]
+    # `httpx.get` is patched process-wide: a background fetch elsewhere in the
+    # server (the Community blocklist landed first once on CI) can be in
+    # `calls` too, so read the HUB's call, not simply the first one.
+    hub_calls = [c[0] for c in fake.calls if "/api/models/" in c[0]]
+    assert hub_calls, fake.calls
+    url = hub_calls[0]
     assert "/api/models/org/a%20b%3Fexpand%5B%5D%3Devil?" in url
 
 

@@ -160,6 +160,9 @@ test("claudeTreeState: running, waiting, done/idle-but-alive in amber, helper; N
     text: "Done – still alive",
     tone: "stale",
   });
+  expect(
+    claudeTreeState(tree({ state: "background", bg_jobs: [{ id: "b", description: "poll" }] })),
+  ).toEqual({ text: "Background", tone: "running" });
   expect(claudeTreeState(tree({ helper: true, state: "" })).text).toBe("App helper");
   expect(claudeTreeState(tree({ state: "", task_id: "" }))).toEqual({ text: "No task", tone: "idle" });
   expect(claudeTreeState(tree({ state: "idle", status: "upcoming", done_alive: true }))).toEqual({
@@ -199,6 +202,16 @@ test("claudeTrees sorts largest first; the heading counts tasks, not the helper"
   });
   expect(trees.map((t) => t.root_pid)).toEqual([2, 1, 3]);
   expect(claudeTreesHeading(trees)).toBe("2 Claude tasks · 0 KB · 1 not working – still alive");
+  const bg = claudeTrees({
+    total: 1,
+    fused: 1,
+    other: 0,
+    mem_bytes: 0,
+    cpu_pct: 0,
+    top: [],
+    tasks: [tree({ state: "background", bg_jobs: [{ id: "b", description: "poll" }] })],
+  });
+  expect(claudeTreesHeading(bg)).toBe("1 Claude task · 0 KB");
   expect(claudeTrees(null)).toEqual([]);
   expect(claudeTrees({ total: 0, fused: 0, other: 0, mem_bytes: 0, cpu_pct: 0, top: [] })).toEqual([]);
 });

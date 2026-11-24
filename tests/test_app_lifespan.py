@@ -127,6 +127,12 @@ EXPECTED_STARTUP = [
     # `~/Fused/canvas`, if it already exists, so a task created there right
     # after a restart usually finds the clone already on disk.
     "_startup_kick_fused_web_workbench_skills",
+    # Added 2026-11-13 (D1476): moves canvas clones from before the scoped
+    # layout into `<env>/user/`, on a daemon thread.
+    "_startup_canvas_layout",
+    # Added 2026-11-13 (D1477): arms the reference canvases' timer
+    # (canvas_mirror.start); nothing spawns before its first tick.
+    "_startup_canvas_mirror",
     # Added 2026-09-17 (PR 2): the project queue's factory is registered here
     # explicitly. Also claims the machine-duties lease (B2) and, only for the
     # process that wins it, starts the scheduler and reconciles once so a
@@ -136,6 +142,9 @@ EXPECTED_STARTUP = [
     "_startup_queue_manager",
     "_startup_tasks_watch",
     "_startup_tasks_warm",
+    # The local SQL engine's directories left by dead servers (sql/runner.py
+    # `sweep`, SPEC §55), removed on a daemon thread; lean too.
+    "_startup_sweep_sql_engine_dirs",
     # Event-loop lag gauge + pool/lane snapshots for the Monitor dashboard.
     "_startup_loop_lag",
     "_startup_resource_trail",
@@ -149,9 +158,15 @@ EXPECTED_STARTUP = [
     # Added 2026-10-26: the Marketplace block list fetched + enforced at
     # launch (docs/CONTRIB_LOOP.md §18.4 B4), a daemon thread.
     "_startup_marketplace_blocks",
+    # Added 2026-11-15: the public `fused-asset` bucket index (remote_index.py)
+    # fetched on a daemon thread when the canvases flag is on at boot,
+    # registered beside the remote routers' include.
+    "_startup_remote_index",
     # Added 2026-10-06: the Bots sub-app's scheduler + iMessage bridge
     # (fused_render/bots/registry.py), registered beside its router include.
     "_startup_bots",
+    # Added 2026-11-18: experts (docs/experts.md): seed + update timer, only with the flag on.
+    "_startup_experts",
     # Added: code review finding 1 — nothing else ever called the shim's
     # `rules` action, so share_file's catalog cache was never built and
     # every extension but the built-in `.fused` refused to share.
@@ -169,6 +184,10 @@ EXPECTED_STARTUP = [
 EXPECTED_SHUTDOWN = [
     "_shutdown_background_apps_resurrection",
     "_startup_shutdown_ai",
+    # The warm UDF workers (`fused.workbench.udf()`, udf/runner.py, SPEC §54).
+    "_shutdown_udf_workers",
+    # The local SQL engine's worker (sql/runner.py, SPEC §55).
+    "_shutdown_sql_engine",
     "_shutdown_server_json",
     "_shutdown_loop_lag",
     "_shutdown_resource_trail",
@@ -178,6 +197,9 @@ EXPECTED_SHUTDOWN = [
     # the rung the Mac quit runs itself (app.py `_stop_children`) and every
     # lifespan exit (Linux supervisor child, pip on Windows) had none of.
     "_shutdown_canvas_sync",
+    # Added 2026-11-13 (D1477): the reference canvases' timer and any
+    # `fused canvas mirror` child in flight.
+    "_shutdown_canvas_mirror",
     "_shutdown_engines",
     # Status-bar terminal (PLAN-status-bar-terminal.md): registered where
     # `terminal_router` is included in `create_app`, well after the handlers
@@ -187,6 +209,8 @@ EXPECTED_SHUTDOWN = [
     "_shutdown_terminal_sessions",
     # Added 2026-10-06: every loaded bot's task and Chrome (bots/registry.py).
     "_shutdown_bots",
+    # Added 2026-11-18: the experts' update timer, a no-op unless it was started.
+    "_shutdown_experts",
     "_shutdown_index_watch",
 ]
 
@@ -220,6 +244,8 @@ EXPECTED_STARTUP_LEAN = [
     # hands over promptly if every live process is parked on it from startup.
     "_startup_queue_manager",
     "_startup_tasks_watch",
+    # Removing a dead server's SQL engine directory is not a warm-up.
+    "_startup_sweep_sql_engine_dirs",
 ]
 
 #: The shutdown handlers registered even in `lean` — anything that can start
@@ -232,16 +258,23 @@ EXPECTED_STARTUP_LEAN = [
 #: `@on_startup` PREWARM is lean-skipped, not the session object itself.
 EXPECTED_SHUTDOWN_LEAN = [
     "_startup_shutdown_ai",
+    "_shutdown_udf_workers",
+    "_shutdown_sql_engine",
     "_shutdown_captures",
     "_shutdown_ai_workers",
     # Every canvas sync manager stopped and its clone's writer lock released —
     # the rung the Mac quit runs itself (app.py `_stop_children`) and every
     # lifespan exit (Linux supervisor child, pip on Windows) had none of.
     "_shutdown_canvas_sync",
+    # Added 2026-11-13 (D1477): the reference canvases' timer and any
+    # `fused canvas mirror` child in flight.
+    "_shutdown_canvas_mirror",
     "_shutdown_engines",
     "_shutdown_terminal_sessions",
     # A request can start a bot's Chrome in a lean app too.
     "_shutdown_bots",
+    # The prefs switch can start the experts' update timer in a lean app too.
+    "_shutdown_experts",
 ]
 
 
@@ -831,8 +864,14 @@ def test_no_hub_refresh_hooks_at_boot_and_catalog_read_starts_them(tmp_path, mon
 
 def _bots_home_fixture(tmp_path, monkeypatch):
     from fused_render.bots import paths as bpaths
+    from fused_render.bots import registry as bots_registry
 
     monkeypatch.setenv("FUSED_RENDER_HOME", str(tmp_path / "home"))
+    # bots v3: a bot's folder lives under <workspace>/bots/, so the workspace is per test too, and the id ->
+    # folder map (cached per process) and the registry's Bot cache must forget the previous test's
+    monkeypatch.setenv("FUSED_RENDER_DIR", str(tmp_path / "ws"))
+    bpaths._reset_folders()
+    bots_registry.reset_for_tests()
     return bpaths
 
 
@@ -883,7 +922,7 @@ def test_bots_has_been_used_counts_a_bot_and_a_pending_fusedbot_tree(tmp_path, m
     assert bots_registry.has_been_used() is True  # legacy import pending
     import shutil
     shutil.rmtree(legacy)
-    bot_dir = os.path.join(bpaths.data_dir(), "b1")
-    os.makedirs(bot_dir)
-    open(os.path.join(bot_dir, "bot.json"), "w").write("{}")
+    folder = bpaths.place("b1b1b1b1", "One")  # <ws>/bots/one/: a bot once its bot.json is written
+    assert bots_registry.has_been_used() is False
+    open(os.path.join(folder, "bot.json"), "w").write('{"id": "b1b1b1b1"}')
     assert bots_registry.has_been_used() is True

@@ -36,21 +36,22 @@
 div.bots-page { flex: 1 1 auto; min-width: 0; min-height: 0; position: relative; }
 div.bots-page { margin: 0; display: flex; flex-direction: column; font-family: "Inter", -apple-system, BlinkMacSystemFont, "SF Pro Text", "Segoe UI", system-ui, sans-serif;
   font-size: 13px; line-height: 1.45; color: var(--text); background: var(--bg); -webkit-font-smoothing: antialiased; }
-.bots-page button { background: var(--raised); color: var(--text); border: none; border-radius: 999px; padding: 6px 12px; cursor: pointer; font: inherit; font-size: 12px; font-weight: 300; }
-.bots-page button:hover { background: var(--hover); }
-.bots-page button:disabled { opacity: .4; cursor: default; }
+/* The page's element defaults stop at an expert's task chat (.chat-root, components/ExpertChat.tsx), which styles its own. */
+.bots-page button:where(:not(.chat-root *)) { background: var(--raised); color: var(--text); border: none; border-radius: 999px; padding: 6px 12px; cursor: pointer; font: inherit; font-size: 12px; font-weight: 300; }
+.bots-page button:where(:not(.chat-root *)):hover { background: var(--hover); }
+.bots-page button:where(:not(.chat-root *)):disabled { opacity: .4; cursor: default; }
 .bots-page button.primary { background: var(--accent); color: var(--accent-ink); font-weight: 400; }
 .bots-page button.primary:hover { filter: brightness(1.06); }
 .bots-page button.primary:disabled { background: var(--raised); color: var(--muted); opacity: 1; }
 .bots-page button.primary:disabled:hover { filter: none; }
 .bots-page button.danger:hover { background: var(--err); color: #fff; }
-.bots-page input, .bots-page textarea { font: inherit; color: var(--text); background: var(--inset); border: 1px solid transparent; border-radius: 10px; padding: 8px 12px; }
+.bots-page input:where(:not(.chat-root *)), .bots-page textarea:where(:not(.chat-root *)) { font: inherit; color: var(--text); background: var(--inset); border: 1px solid transparent; border-radius: 10px; padding: 8px 12px; }
 /* Strokes, rings and highlighted text take --accent-text (olive in light, lime in dark; Akshil 2026-10-08): the
    lime --accent is a FILL colour and reads as nothing against white. */
-.bots-page input:focus, .bots-page textarea:focus { outline: none; border-color: var(--accent-text); }
-.bots-page :focus-visible { outline: 2px solid var(--accent-text); outline-offset: 2px; }
-.bots-page input:focus-visible, .bots-page textarea:focus-visible { outline: none; }
-.bots-page b, .bots-page strong, .bots-page h1, .bots-page h2, .bots-page h3, .bots-page h4, .bots-page h5, .bots-page h6 { font-weight: 400; }  /* nothing on the page goes heavier than 500; browser-default bold reads too heavy */
+.bots-page input:where(:not(.chat-root *)):focus, .bots-page textarea:where(:not(.chat-root *)):focus { outline: none; border-color: var(--accent-text); }
+.bots-page :where(:not(.chat-root *)):focus-visible { outline: 2px solid var(--accent-text); outline-offset: 2px; }
+.bots-page input:where(:not(.chat-root *)):focus-visible, .bots-page textarea:where(:not(.chat-root *)):focus-visible { outline: none; }
+.bots-page :is(b, strong, h1, h2, h3, h4, h5, h6):where(:not(.chat-root *)) { font-weight: 400; }  /* nothing on the page goes heavier than 500; browser-default bold reads too heavy */
 .bots-page ::-webkit-scrollbar { width: 8px; height: 8px; } .bots-page ::-webkit-scrollbar-thumb { background: var(--raised); border-radius: 8px; } .bots-page ::-webkit-scrollbar-track { background: transparent; }
 .bots-page .muted { color: var(--muted); }
 .bots-page .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--muted); flex: none; }
@@ -71,13 +72,23 @@ div.bots-page { margin: 0; display: flex; flex-direction: column; font-family: "
 .bots-page button.busy::before { content: ""; width: 12px; height: 12px; flex: none; border-radius: 50%; border: 2px solid currentColor; border-right-color: transparent; animation: bots-spin .7s linear infinite; }
 @media (prefers-reduced-motion: reduce) { .bots-page, .bots-page * { animation: none !important; transition: none !important; } }
 
-/* Columns: --lw/--rw are panel widths (set by the resize handles), --mid the thread's floor, --rmin the preview's; the middle is minmax(0,1fr) so content never pushes the preview off-screen.
+/* Columns: --bots-lw/--bots-rw are panel widths (set by the resize handles), --mid the thread's floor, --rmin the preview's; the middle is minmax(0,1fr) so content never pushes the preview off-screen.
    The preview's only ceiling is the room the thread floor leaves (lib/layout.ts roomFor; LIM.r has no max): OpenBot's 50vw cap here pinned it at half the window
    while the drag went on collapsing the sidebar for room the track then never took. */
-div.bots-page { --lw: 280px; --rw: 400px; --mid: 450px; --rmin: 280px; --lweff: min(var(--lw), 40%); }
+/* THE LAYOUT VARIABLES DO NOT INHERIT, and live on the one box that reads them: <main> (lib/layout.ts writeLayout), and --bots-rwlock on
+   .preview (lockPreview). They used to sit on the page root, where every element inherits a custom property: a toggle restyled all
+   ~2,600 elements of a full page, twice (6–12 ms each in a Chromium trace), before the slide could start. Registered non-inheriting,
+   a change restyles <main> and nothing under it. --mid / --rmin never change at runtime and stay plain (lan.css overrides --mid). */
+@property --bots-lw { syntax: "*"; inherits: false; }
+@property --bots-rw { syntax: "*"; inherits: false; }
+@property --bots-chatw { syntax: "*"; inherits: false; }
+@property --bots-lweff { syntax: "*"; inherits: false; }
+@property --bots-rwlock { syntax: "*"; inherits: false; }
+div.bots-page { --mid: 450px; --rmin: 280px; }
+div.bots-page > main { --bots-lw: 280px; --bots-rw: 400px; --bots-chatw: 340px; --bots-lweff: min(var(--bots-lw), 40%); }
 /* .lcol = user collapsed the sidebar; .lfit = the window is too narrow for it, so it collapses itself (before the preview hides). */
-div.bots-page:is(.lcol, .lfit, .stage) { --lweff: 72px; }
-.bots-page main { flex: 1; display: grid; grid-template-columns: var(--lweff) 6px minmax(0, 1fr) 6px min(var(--rw), max(var(--rmin), calc(100% - var(--lweff) - 12px - var(--mid)))); min-height: 0; }
+div.bots-page:is(.lcol, .lfit, .stage) > main { --bots-lweff: 72px; }
+.bots-page main { flex: 1; display: grid; grid-template-columns: var(--bots-lweff) 6px minmax(0, 1fr) 6px min(var(--bots-rw), max(var(--rmin), calc(100% - var(--bots-lweff) - 12px - var(--mid)))); min-height: 0; }
 /* Panels slide open/shut: the tracks animate, so both states keep five of them (the hidden preview is a 0px track, clipped, not display:none). */
 .bots-page main { transition: grid-template-columns .3s cubic-bezier(.22,1,.36,1); }
 div.bots-page.dragging main { transition: none; }  /* a drag must track the pointer exactly... */
@@ -85,21 +96,20 @@ div.bots-page.dragging.lanim main { transition: grid-template-columns .3s cubic-
 div.bots-page.lfast main, div.bots-page.dragging.lfast main, div.bots-page.lfast.lanim .bot { transition-duration: .1s; }  /* closing the sidebar: quick slide, then the slow icon adjustment */
 div.bots-page.stage.lfast main, div.bots-page.stage.lfast.lanim .bot { transition-duration: .3s; }  /* entering Stage folds the sidebar too, but the column swap keeps the full slide */
 /* .rcol = user hid the preview; .rfit = the window is too narrow for sidebar + thread floor + preview floor, so it hides itself. */
-div.bots-page:is(.rcol, .rfit) main { grid-template-columns: var(--lweff) 6px minmax(0, 1fr) 6px 0px; }
-/* The preview slides, it does not reflow: while it opens or closes, --rwlock (set by lockPreview) pins the section to its open width, so it
+div.bots-page:is(.rcol, .rfit) main { grid-template-columns: var(--bots-lweff) 6px minmax(0, 1fr) 6px 0px; }
+/* The preview slides, it does not reflow: while it opens or closes, --bots-rwlock (set on it by lockPreview) pins the section to its open width, so it
    overflows its shrinking grid track and rides off past the window's right edge as one piece. main clips that overflow. */
 .bots-page main { overflow: hidden; }
-.bots-page .preview { min-width: var(--rwlock, 0px); }
+.bots-page .preview { min-width: var(--bots-rwlock, 0px); }
 div.bots-page:is(.rcol, .rfit) .preview { visibility: hidden; transition: visibility 0s .3s; }  /* untabbable once shut; the delay keeps it visible while it slides away */
 div.bots-page:is(.rcol, .rfit) .gutter.r { background: var(--panel); pointer-events: none; }
 div.bots-page.rcol .gutter.r { pointer-events: auto; }
 /* .stage = the live view is open in the preview column (lib/layout.ts setStage, from the store's `fast`): the sidebar folds to icons (the
-   :is(.lcol, .lfit, .stage) rules), chat becomes a --chatw rail and the preview column, now the live page, takes the rest. Wins over
+   :is(.lcol, .lfit, .stage) rules), chat becomes a --bots-chatw rail and the preview column, now the live page, takes the rest. Wins over
    .rcol / .rfit (the preview IS the stage), so these come after them. Same track types as the default grid (length · fr · length) so the
-   columns interpolate: chat's 1fr resolves to exactly --chatw once the last track takes everything else. The live page keeps at least
+   columns interpolate: chat's 1fr resolves to exactly --bots-chatw once the last track takes everything else. The live page keeps at least
    half of main (lib/layout.ts stageRoom: the rail drag stops there, a stretch further closes Stage), so a rail saved on a wider window cannot squeeze it. */
-div.bots-page { --chatw: 340px; }
-div.bots-page.stage main, div.bots-page.stage:is(.rcol, .rfit) main { grid-template-columns: var(--lweff) 6px minmax(0, 1fr) 6px max(50%, calc(100% - var(--lweff) - 12px - var(--chatw))); }
+div.bots-page.stage main, div.bots-page.stage:is(.rcol, .rfit) main { grid-template-columns: var(--bots-lweff) 6px minmax(0, 1fr) 6px max(50%, calc(100% - var(--bots-lweff) - 12px - var(--bots-chatw))); }
 div.bots-page.stage .preview { visibility: visible; transition: none; }
 div.bots-page.stage .gutter.r { background: none; pointer-events: auto; }
 div.bots-page.stage .gutter.l { pointer-events: none; }  /* the sidebar is a forced icon rail here: a drag would only save a width the track never shows (or snap it collapsed) */
@@ -110,8 +120,28 @@ div.bots-page.stage .preview > :is(header, .shotwrap, .toast, .cap, .info, .saba
 .bots-page .gutter:hover::after, .bots-page .gutter.drag::after { background: var(--accent); }
 div.bots-page.dragging { cursor: col-resize; user-select: none; }
 div.bots-page.dragging img { pointer-events: none; }
+/* THE BUTTONS' SLIDE AS A VIEW TRANSITION (lib/layout.ts slideAsViewTransition): collapse/expand, show/hide the preview, the gutters'
+   double-click reset. The page lays out its end state ONCE and the browser morphs snapshots of the named parts on the compositor, so a
+   120 Hz frame costs ~1 ms of main thread instead of 4–8 ms of re-wrapping text (the grid transition above stays for drags, Stage, narrow
+   windows, and engines without the API). The names are set inline for the transition's length only: .bots / .chat / .preview, both
+   gutters (class bots-slide), and each bot row in view (class bots-slide bots-row), so a row morphs into its circle. Same clock as the
+   grid transition. Every group clips its own snapshots, and every snapshot is drawn at its natural size from the group's top-left
+   corner, never stretched: a column's content rides its moving edge, the way the preview's --bots-rwlock slide did. One selector per
+   rule: an engine that cannot parse one drops only that rule. */
+::view-transition-group(*.bots-slide) { animation-duration: .3s; animation-timing-function: cubic-bezier(.22,1,.36,1); overflow: clip; }
+::view-transition-old(*.bots-slide) { inline-size: auto; block-size: auto; animation-duration: .3s; animation-timing-function: cubic-bezier(.22,1,.36,1); }
+::view-transition-new(*.bots-slide) { inline-size: auto; block-size: auto; animation-duration: .3s; animation-timing-function: cubic-bezier(.22,1,.36,1); }
+/* The chat shows its END state from the first frame, at its final wrap, and its edge glides over it: two wraps of the same messages
+   cross-fading read as a smear. The group's own fill covers whatever the snapshot does not reach yet. When only its left edge moves
+   (the sidebar), the snapshot hangs from the right edge, which stays put, so the messages sit exactly where they will end. */
+::view-transition-group(bots-chat) { background: var(--bots-shell-bg); }
+::view-transition-old(bots-chat) { animation: none; opacity: 0; }
+::view-transition-new(bots-chat) { animation: none; }
+html:active-view-transition-type(bots-chat-right)::view-transition-new(bots-chat) { inset-inline-start: auto; inset-inline-end: 0; }
 /* Icons-only sidebar (collapsed, or forced on very narrow windows). */
-div.bots-page:is(.lcol, .lfit, .stage) .bots header h1, div.bots-page:is(.lcol, .lfit, .stage) .bot > div, div.bots-page:is(.lcol, .lfit, .stage) .bot .meta .time { display: none; }
+/* `.bot > :is(.name, .sub)`, never `.bot > div`: a rule whose subject is a bare tag makes Chromium restyle every <div> on the page when the
+   root's class flips. (.meta, the row's third div, gets display: contents just below.) */
+div.bots-page:is(.lcol, .lfit, .stage) .bots header h1, div.bots-page:is(.lcol, .lfit, .stage) .bot > :is(.name, .sub), div.bots-page:is(.lcol, .lfit, .stage) .bot .meta .time { display: none; }
 /* .meta stays in the grid (zero-size) so the unread badge can still sit on the circle's top-right corner. */
 div.bots-page:is(.lcol, .lfit, .stage) .bot .meta { display: contents; }
 div.bots-page:is(.lcol, .lfit, .stage) .bots header { flex-direction: column; gap: 6px; padding: 10px 0 4px; }
@@ -156,8 +186,8 @@ div.bots-page:not(.rcol) #rcol { display: none; }
 
 /* ---- left: bot list ---- */
 .bots-page .bots { background: var(--panel); display: flex; flex-direction: column; min-height: 0; container-type: inline-size; }
-.bots-page .bots header, .bots-page .chat header, .bots-page .preview > header { display: flex; gap: 8px; align-items: center; padding: 10px 14px; min-height: 56px; }
-.bots-page .chat header, .bots-page .preview > header { border-bottom: 1px solid var(--line); }
+.bots-page .bots header, .bots-page .chat > header, .bots-page .preview > header { display: flex; gap: 8px; align-items: center; padding: 10px 14px; min-height: 56px; }
+.bots-page .chat > header, .bots-page .preview > header { border-bottom: 1px solid var(--line); }
 .bots-page .bots header h1 { font-size: 0; margin: 0; flex: 1; }  /* label kept for a11y; the panel reads as a list, not a titled pane */
 .bots-page .bots header button { width: 32px; height: 32px; padding: 0; flex: none; }
 /* The header must never overflow the sidebar (it can be dragged to 180px): the usage pill gives way first, then hides. */
@@ -198,7 +228,8 @@ div.bots-page.lanim .bot { transition: padding .3s, border-radius .3s, transform
 /* Both directions keep the expanded row layout for the whole slide and let the shrinking/growing width clip the text, so closing mirrors opening
    instead of dropping the text on the first frame. The collapsed rules take over only once body.lanim is lifted, when the row is already a circle. */
 div.bots-page.lanim .bot { grid-template-columns: 44px minmax(0, 1fr) auto; justify-content: start; height: auto; overflow: hidden; }
-div.bots-page.lanim .bot > div, div.bots-page.lanim .bot .meta .time { display: block; }
+div.bots-page.lanim .bot > .sub, div.bots-page.lanim .bot .meta .time { display: block; }
+div.bots-page.lanim .bot > .name { display: flex; }
 div.bots-page.lanim .bot .meta { display: flex; }
 div.bots-page.lanim .bot .badge { position: static; width: 9px; height: 9px; margin-right: 3px; box-shadow: none; }
 /* The header and search stay in their expanded form too, clipped by the narrowing panel; the icon rail (stacked +, hidden search) appears only when the slide has finished. */
@@ -212,7 +243,11 @@ div.bots-page.lanim .bots header #add svg { width: 20px; height: 20px; }
 .bots-page .bot.sel { background: var(--bots-shell-selected); }
 .bots-page .bot .av { grid-row: 1 / 3; }
 .bots-page .bot .av.settings { cursor: pointer; }  /* the selected row's avatar opens Settings, like the header avatar */
-.bots-page .bot .name { grid-column: 2; grid-row: 1; min-width: 0; font-weight: 400; font-size: 13px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* A flex line: the name (.nm) is the one item that shrinks and ellipsizes; the pin, SUPER and the routines
+   clock keep their width, so a long name never clips a badge. */
+.bots-page .bot .name { grid-column: 2; grid-row: 1; min-width: 0; font-weight: 400; font-size: 13px; overflow: hidden; white-space: nowrap; display: flex; align-items: center; }
+.bots-page .bot .name .nm { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+.bots-page .bot .name > :is(.pin, .super, .rt) { flex: none; }
 .bots-page .bot .sub { grid-column: 2 / -1; grid-row: 2; min-width: 0; color: var(--muted); font-size: 11.5px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .bots-page .bot .meta { grid-column: 3; grid-row: 1; display: flex; align-items: center; gap: 6px; }
 .bots-page .bot .time { font-size: 10px; color: var(--muted); font-variant-numeric: tabular-nums; white-space: nowrap; }
@@ -224,6 +259,9 @@ div.bots-page.lanim .bots header #add svg { width: 20px; height: 20px; }
 .bots-page .bot .name .rt { display: inline-block; vertical-align: -2px; margin-left: 5px; color: var(--muted); }
 .bots-page .bot .name .rt svg { width: 12px; height: 12px; display: block; }
 .bots-page .bot .name .super { font-size: 9px; font-weight: 600; margin-left: 5px; padding: 1px 5px; border-radius: 6px; background: #d97757; color: #fff; vertical-align: 1px; letter-spacing: .04em; }
+/* An expert (docs/experts.md): SUPER's badge on a neutral fill; on the selected row, whose own fill that is, the hover fill. */
+.bots-page .bot .name .expert { font-size: 9px; font-weight: 600; margin-left: 5px; padding: 1px 5px; border-radius: 6px; background: var(--bots-shell-selected); color: var(--text); vertical-align: 1px; letter-spacing: .04em; }
+.bots-page .bot.sel .name .expert { background: var(--raised); }
 /* "nopick", not "fixed": Tailwind's .fixed utility is in this bundle and would float the avatar over the Name field. */
 .bots-page .bot .name .rt.warn, .bots-page .bot .sub .warn, .bots-page .r .s .warn { color: var(--err); }
 .bots-page .r .s .msg { display: block; color: var(--text); opacity: .85; white-space: pre-wrap; margin-top: 2px; }
@@ -248,16 +286,25 @@ div.bots-page.lanim .bots header #add svg { width: 20px; height: 20px; }
 /* The empty hero's link back into the setup wizard (components/Thread.tsx, apps/bots/onboarding). */
 .bots-page .empty.hero .setuplink { display: block; margin-top: 14px; font-size: 12px; color: var(--muted); text-decoration: underline; }
 .bots-page .empty.hero button { margin-top: 8px; padding: 8px 18px; }
+/* "Install Chrome in WSL" (components/ChromeInstall): under the hero's setup lines and under a "no browser" error. */
+.bots-page .chromeinstall { display: flex; flex-direction: column; align-items: flex-start; gap: 6px; margin: 8px 0; font-size: 12px; max-width: 560px; }
+.bots-page .empty.hero .chromeinstall { align-items: center; text-align: center; }
+.bots-page .chromeinstall button { padding: 6px 14px; }
+.bots-page .chromeinstall .muted { color: var(--muted); }
+.bots-page .chromeinstall .warn { color: var(--warn); }
+.bots-page .chromeinstall .ok { color: var(--text); }
+.bots-page .chromeinstall code { user-select: all; overflow-wrap: anywhere; }
+.bots-page .chromeinstall .out { margin: 0; padding: 6px 8px; max-width: 100%; max-height: 140px; overflow: auto; text-align: left; white-space: pre-wrap; overflow-wrap: anywhere; font-size: 11px; color: var(--muted); background: var(--raised); border-radius: 6px; }
 
 /* ---- middle: chat. Bot bubbles hang left (capped by .msg max-width); the composer and your bubbles run full width. ---- */
 .bots-page .chat { display: flex; flex-direction: column; min-height: 0; background: var(--bg); --chatgut: 24px; }
-.bots-page .chat header { padding: 10px 20px; gap: 4px; }
+.bots-page .chat > header { padding: 10px 20px; gap: 4px; }
 .bots-page .chat header .av { margin-right: 6px; }
 .bots-page .chat header .title { flex: 1; min-width: 0; }
 .bots-page .chat header .title b { display: block; font-size: 14px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .bots-page .chat header .title small { color: var(--muted); font-size: 11px; display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .bots-page .chat header .title small:empty { display: none; }
-/* Stage (root .stage) only narrows the chat column to --chatw (the grid rule above); the chat's own styling never changes with the mode. */
+/* Stage (root .stage) only narrows the chat column to --bots-chatw (the grid rule above); the chat's own styling never changes with the mode. */
 /* The chat's toast slot (#ctoast) only while the preview, which carries #toast, is hidden and Stage is off (#ftoast covers Stage). */
 .bots-page .chat > #ctoast { display: none; }
 div.bots-page:is(.rcol, .rfit):not(.stage) .chat > #ctoast { display: flex; }
@@ -305,8 +352,12 @@ div.bots-page.stage .chat header #rcol { display: none; }  /* same: the preview 
 /* GFM table: full width of the bubble, hairline rows, cells wrap (a comparison table's cells are sentences). The
    md() renderer wraps it in .tablewrap, which scrolls sideways when min-content beats the bubble (Bugbot, #1556). */
 .bots-page .msg.md .tablewrap { overflow-x: auto; max-width: 100%; }
-.bots-page .msg.md table { width: 100%; border-collapse: collapse; font-size: .95em; }
-.bots-page .msg.md th, .bots-page .msg.md td { padding: .3em .6em; border-bottom: 1px solid var(--line); vertical-align: top; text-align: left; }
+/* `min-width`, not `width`: the table fills the bubble when it can and grows past it when its content needs to; the
+   wrapper scrolls the rest. Cells break at words, never inside one: the bubble's `word-break: break-word` would be
+   inherited, and under auto table layout that makes every cell's min-content ONE CHARACTER, so an over-constrained row
+   pays for a long column by shredding another into "8 / 4 / 8 / 4" (same collapse transcript.css fixed, 2026-10-18). */
+.bots-page .msg.md table { min-width: 100%; border-collapse: collapse; font-size: .95em; }
+.bots-page .msg.md th, .bots-page .msg.md td { padding: .3em .6em; border-bottom: 1px solid var(--line); vertical-align: top; text-align: left; word-break: normal; overflow-wrap: normal; }
 .bots-page .msg.md th { font-weight: 500; color: var(--muted); }
 .bots-page .msg.md tr:last-child td { border-bottom: 0; }
 /* A bubble holding a wide block (md.ts .wide: a 4+ column table or a long-lined code fence) takes the whole thread
@@ -412,6 +463,8 @@ div.bots-page.stage .chat header #rcol { display: none; }  /* same: the preview 
 .bots-page .thread .cleared .lbl::before, .bots-page .thread .cleared .lbl::after { content: ""; flex: 1; height: 1px; background: var(--raised); }
 .bots-page .thread .cleared button { padding: 2px 10px; font-size: 11px; border-radius: 999px; background: var(--inset); color: var(--text); }
 .bots-page .thread .cleared button:hover { background: var(--hover); }
+/* An expert's earlier chats (ExpertChat.tsx): above its task chat, which takes the rest of the column. */
+.bots-page .thread.earlier { flex: none; max-height: 45%; padding-bottom: 0; }
 .bots-page .ptog:disabled { opacity: .45; cursor: default; background: var(--bg); }
 /* Hover actions beside a message: reply (quotes it above the composer) and react (emoji picker). */
 .bots-page .msg.user, .bots-page .msg.thought, .bots-page .msg.done { position: relative; }
@@ -498,7 +551,7 @@ div.bots-page:not(.sideapp) #satabb, div.bots-page.sideapp #sataba { background:
 .bots-page .sabar .winacts .btnlink:hover { color: inherit; text-decoration: underline; }
 .bots-page #saframe { display: none; flex: 1; min-height: 0; width: 100%; border: 0; background: var(--bg); }
 div.bots-page.sideapp #saframe { display: block; }
-div.bots-page.sideapp .preview > :is(.shotwrap, .viewsw, .termwrap, .toast, .cap, .info) { display: none; }
+div.bots-page.sideapp .preview > :is(.shotwrap, .viewsw, .termwrap, .toast, .cap, .info, .xpane) { display: none; }
 .bots-page .msg.approval { align-self: flex-start; background: var(--card); max-width: min(48rem, 90%); }
 /* The approval card is the shared GateCard (platform/ui/gate-card.css); this maps its --gate-* palette onto the page's own. */
 .bots-page .gate-card { --gate-accent: var(--accent); --gate-accent-text: var(--accent-text); --gate-ok: var(--ok); --gate-warn: var(--warn); --gate-err: var(--err); --gate-muted: var(--muted); --gate-line: var(--line); --gate-ground: var(--card); --gate-hover: var(--hover); --gate-pre-bg: var(--inset); --gate-on-accent: var(--accent-ink); }
@@ -575,6 +628,72 @@ div.bots-page.sideapp .preview > :is(.shotwrap, .viewsw, .termwrap, .toast, .cap
 .bots-page .termwrap { position: relative; margin: 0 14px; height: 320px; border-radius: 14px; background: #000; overflow: hidden; box-shadow: 0 1px 0 var(--line); }
 .bots-page:not(.stage) .shotwrap.termup { display: none; }
 div.bots-page.stage .preview > :is(.viewsw, .termwrap) { display: none; }
+/* An expert's preview column (components/ExpertPane.tsx): no browser; its tabs on the Browser | Terminal
+   strip (.viewsw .satab). */
+.bots-page .xpane { flex: 1; min-height: 0; display: flex; flex-direction: column; overflow: hidden auto; padding-bottom: 14px; }
+.bots-page .xp-panel { margin: 0 14px; color: var(--muted); font-size: 12px; line-height: 1.5; min-width: 0; }
+.bots-page .xp-panel p { margin: 0 0 6px; }
+.bots-page .xp-path { font: 11px/1.5 ui-monospace, SFMono-Regular, Menlo, monospace; color: var(--text); overflow-wrap: anywhere; }
+.bots-page .xp-err { color: var(--err); }
+.bots-page .xp-edit { margin-left: 6px; padding: 0 6px; border: 1px solid var(--border); border-radius: 4px; font: 11px/1.5 system-ui, sans-serif; color: var(--muted); text-decoration: none; white-space: nowrap; }
+.bots-page .xp-edit:hover { color: var(--text); }
+.bots-page .xp-empty { padding: 16px 4px; text-align: center; }
+.bots-page .xp-none { margin: 0; }
+.bots-page .xp-lbl { margin: 0 0 4px; font-size: 10px; letter-spacing: .06em; text-transform: uppercase; color: var(--muted); }
+.bots-page .xp-chbox { margin-top: 14px; }
+/* memory.md and the diffs, rendered markdown (components/MdDoc.tsx) in the panel's sans face. */
+.bots-page .xp-mem { margin: 0 0 8px; padding: 8px 12px; border-radius: 8px; background: var(--inset); border: 1px solid var(--line); max-height: 50vh; overflow: auto; }
+.bots-page .xp-md { color: var(--text); font-size: 12px; line-height: 1.5; overflow-wrap: anywhere; white-space: normal; }
+.bots-page .xp-md :is(h1, h2, h3, h4, h5, h6) { margin: .7em 0 .25em; font-size: 12.5px; font-weight: 600; line-height: 1.4; color: var(--text); }
+.bots-page .xp-md h1 { font-size: 13.5px; } .bots-page .xp-md h2 { font-size: 13px; }
+.bots-page .xp-md > :first-child, .bots-page .xp-md > :first-child > :first-child { margin-top: 0; }
+.bots-page .xp-md p { margin: 0 0 .4em; }
+.bots-page .xp-md :is(ul, ol) { margin: 0 0 .4em; padding-left: 1.3em; }
+.bots-page .xp-md ul { list-style: disc; } .bots-page .xp-md ol { list-style: decimal; }  /* the diff sits inside a row's <li> */
+.bots-page .xp-md li { margin: .1em 0; }
+.bots-page .xp-md li::marker { color: var(--muted); }
+.bots-page .xp-md code { font: 10.5px/1.4 ui-monospace, SFMono-Regular, Menlo, monospace; background: color-mix(in srgb, var(--text) 9%, transparent); border-radius: 4px; padding: .05em .3em; }
+.bots-page .xp-md pre { margin: 0 0 .4em; padding: 6px 8px; border-radius: 6px; background: color-mix(in srgb, var(--text) 6%, transparent); overflow-x: auto; }
+.bots-page .xp-md pre code { background: none; padding: 0; white-space: pre; }
+.bots-page .xp-md blockquote { margin: 0 0 .4em; padding-left: 8px; border-left: 2px solid var(--line); color: var(--muted); }
+.bots-page .xp-md hr { border: 0; border-top: 1px solid var(--line); margin: .5em 0; }
+.bots-page .xp-md .md-link { text-decoration: underline; text-decoration-color: var(--line); text-underline-offset: 2px; }
+/* Tables as in a chat bubble (.msg.md): cells do not inherit .xp-md's `overflow-wrap: anywhere`, which under auto
+   table layout makes every cell's min-content one character, so a wide column shreds the short ones; a table
+   wider than the pane scrolls sideways in .tablewrap instead. */
+.bots-page .xp-md .tablewrap { overflow-x: auto; max-width: 100%; } .bots-page .xp-md table { min-width: 100%; border-collapse: collapse; }
+.bots-page .xp-md :is(th, td) { padding: .2em .5em; border-bottom: 1px solid var(--line); vertical-align: top; text-align: left; word-break: normal; overflow-wrap: normal; }
+/* A diff as a document (DiffView): one row per line, a +/− gutter, added on green, removed on red and struck,
+   context muted; a count bump (removed then added) grouped as a pair. */
+.bots-page .xp-diff { display: flex; flex-direction: column; gap: 2px; margin: 0 0 8px; padding: 6px; border-radius: 8px; background: var(--inset); border: 1px solid var(--line); max-height: 50vh; overflow: auto; }
+.bots-page .xp-dr { display: flex; gap: 6px; min-width: 0; padding: 2px 8px 2px 4px; border-radius: 5px; }
+.bots-page .xp-g { flex: none; width: 10px; text-align: center; font: 600 11px/18px ui-monospace, SFMono-Regular, Menlo, monospace; user-select: none; }
+.bots-page .xp-dc { flex: 1; min-width: 0; }
+.bots-page .xp-dc > :last-child, .bots-page .xp-dc li:last-child, .bots-page .xp-dc :is(h1, h2, h3, h4, h5, h6) { margin-bottom: 0; }
+.bots-page .xp-dc :is(h1, h2, h3, h4, h5, h6) { margin-top: 0; }
+.bots-page .xp-dc li { margin: 0; }
+.bots-page .xp-dr.add { background: color-mix(in srgb, var(--ok) 14%, transparent); }
+.bots-page .xp-dr.add .xp-g { color: var(--ok); }
+.bots-page .xp-dr.del { background: color-mix(in srgb, var(--err) 12%, transparent); }
+.bots-page .xp-dr.del .xp-g { color: var(--err); }
+.bots-page .xp-dr.del .xp-dc { color: color-mix(in srgb, var(--text) 75%, transparent); text-decoration: line-through; text-decoration-color: color-mix(in srgb, var(--err) 60%, transparent); }
+.bots-page .xp-dr.del .xp-dc * { color: inherit; }
+.bots-page .xp-dr.ctx .xp-dc, .bots-page .xp-dr.ctx .xp-dc * { color: var(--muted); }
+.bots-page .xp-dpair { display: flex; flex-direction: column; gap: 1px; margin: 2px 0; padding: 2px; border-radius: 7px; border: 1px solid var(--line); }
+.bots-page .xp-dr.blank { padding-top: 0; padding-bottom: 0; height: 6px; overflow: hidden; }
+.bots-page .xp-dgap { padding: 0 8px; color: var(--muted); font-size: 11px; line-height: 1.2; }
+.bots-page .xp-sr { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0, 0, 0, 0); white-space: nowrap; border: 0; }
+/* A row's head: one line, the origin under it. */
+.bots-page .xp-line { display: flex; align-items: center; gap: 8px; min-width: 0; font-size: 11px; white-space: nowrap; overflow: hidden; }
+.bots-page .xp-when { flex: none; margin-left: auto; font-variant-numeric: tabular-nums; }
+.bots-page .xp-origin { display: block; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text); }
+.bots-page .xp-rows { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 6px; }
+.bots-page .xp-row { min-width: 0; border: 1px solid var(--line); border-radius: 8px; container-type: inline-size; }
+.bots-page .xp-row.open { margin-bottom: 4px; }
+.bots-page :is(button.xp-head, .xp-head.static) { display: flex; flex-direction: column; gap: 3px; width: 100%; min-width: 0; padding: 7px 10px;
+  border-radius: 7px; background: transparent; color: var(--muted); text-align: left; font-size: 12px; font-weight: inherit; line-height: 1.45; }
+.bots-page button.xp-head:hover { background: var(--hover); }
+.bots-page .xp-detail { display: flex; flex-direction: column; gap: 10px; padding: 4px 10px 10px; min-width: 0; }
 .bots-page .shotwrap img { display: block; width: 100%; height: 100%; object-fit: cover; object-position: top; }
 .bots-page .shotwrap .ph { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; color: var(--muted); background: var(--card); text-align: center; padding: 20px; font-size: 12px; }
 /* Asleep: Chrome was closed after sitting idle. The last frame stays, dimmed, with a moon; clicking wakes it (take-over relaunches). */
@@ -739,29 +858,20 @@ div.bots-page:is(.lcol, .lfit, .stage) .bots .botfoot { justify-content: center;
 .bots-page :is(#bpanel, #apanel, #vpanel) .topbar button { display: inline-flex; align-items: center; gap: 5px; }
 .bots-page :is(#bpanel, #apanel, #vpanel) .topbar button svg { width: 13px; height: 13px; flex: none; }
 /* Every panel's Back arrow wears the icon-button skin (page colour + ring, hover fills) like the rest of the page. */
-.bots-page :is(#bpanel, #apanel, #vpanel, #ppanel) .topbar .backtxt { width: 32px; height: 32px; padding: 0; display: inline-flex; align-items: center; justify-content: center; }
-.bots-page :is(#bpanel, #apanel, #vpanel, #ppanel) .topbar .backtxt svg { width: 16px; height: 16px; }
+.bots-page :is(#bpanel, #apanel, #vpanel) .topbar .backtxt { width: 32px; height: 32px; padding: 0; display: inline-flex; align-items: center; justify-content: center; }
+.bots-page :is(#bpanel, #apanel, #vpanel) .topbar .backtxt svg { width: 16px; height: 16px; }
 /* Every top-bar control — the panels' and the live view's Back, Real window, Take over, shrink, the preview pane's
    window actions — is the same secondary skin: page colour + ring, hover fills. */
-.bots-page :is(#bpanel, #apanel, #vpanel, #ppanel, #full) .topbar .backtxt, .bots-page .winacts button, .bots-page .winacts .btnlink { background: var(--bg); color: var(--text); box-shadow: 0 0 0 1px var(--raised); }
-.bots-page :is(#bpanel, #apanel, #vpanel, #ppanel, #full) .topbar .backtxt:hover, .bots-page .winacts button:hover, .bots-page .winacts .btnlink:hover { background: var(--raised); }
+.bots-page :is(#bpanel, #apanel, #vpanel, #full) .topbar .backtxt, .bots-page .winacts button, .bots-page .winacts .btnlink { background: var(--bg); color: var(--text); box-shadow: 0 0 0 1px var(--raised); }
+.bots-page :is(#bpanel, #apanel, #vpanel, #full) .topbar .backtxt:hover, .bots-page .winacts button:hover, .bots-page .winacts .btnlink:hover { background: var(--raised); }
 .bots-page .winacts .btnlink { border-radius: 999px; padding: 4px 8px; }
 .bots-page .winacts .btnlink:hover { color: var(--text); text-decoration: none; }
 .bots-page #bpanel iframe { flex: 1; width: 100%; border: 0; background: var(--bg); }
 .bots-page .bots .botfoot { gap: 4px; }
-/* The Preferences gear (bot flavor only) hugs the footer's right edge; in the collapsed rail the three icons wrap. */
-.bots-page .bots .botfoot #prefs { margin-left: auto; }
+.bots-page .bots .botfoot .botsoff { margin: 0; color: var(--muted); font-size: 12px; line-height: 1.4; }
+div.bots-page:is(.lcol, .lfit, .stage) .bots .botfoot .botsoff { display: none; }  /* cannot fit the 72px rail */
 /* The rail stacks the footer in one column (Akshil, 2026-10-08): three icons across 72px wrapped into two-plus-one. */
 div.bots-page:is(.lcol, .lfit, .stage) .bots .botfoot { flex-direction: column; gap: 6px; }
-div.bots-page:is(.lcol, .lfit, .stage) .bots .botfoot #prefs { margin-left: 0; }
-/* #ppanel: Preferences in an iframe, the Builds panel's own chrome (components/PrefsPanel.tsx). */
-.bots-page #ppanel { position: absolute; inset: 0; background: var(--bg); display: none; flex-direction: column; z-index: 20; }
-.bots-page #ppanel.show { display: flex; }
-.bots-page #ppanel .topbar { display: flex; align-items: center; gap: 10px; padding: 8px 12px; background: var(--panel); border-bottom: 1px solid var(--line); }
-.bots-page #ppanel .topbar .ttl { font-size: 13px; font-weight: 400; }
-.bots-page #ppanel .topbar button { display: inline-flex; align-items: center; gap: 5px; }
-.bots-page #ppanel .topbar button svg { width: 13px; height: 13px; flex: none; }
-.bots-page #ppanel iframe { flex: 1; width: 100%; border: 0; background: var(--bg); }
 .bots-page #apanel { position: absolute; inset: 0; background: var(--bg); display: none; flex-direction: column; z-index: 20; }
 .bots-page #apanel.show { display: flex; }
 .bots-page #apanel .topbar { display: flex; align-items: center; gap: 10px; padding: 8px 12px; background: var(--panel); border-bottom: 1px solid var(--line); }
@@ -869,9 +979,9 @@ div.bots-page:is(.lcol, .lfit, .stage) .bots .botfoot #prefs { margin-left: 0; }
 [data-theme="light"] .bots-dialog { background: #ffffff; color: #1b1d21; }
 
 /* shadcn roots in OpenBot's look: pill buttons (12px / 300), 10px fields, 20px dialog cards, the frosted menu. */
-.bots-page button[data-slot] { border-radius: 999px; font-size: 12px; font-weight: 300; }
-.bots-page input[data-slot], .bots-page textarea[data-slot] { font: inherit; color: var(--text); background: var(--inset); border: 1px solid transparent; border-radius: 10px; box-shadow: none; }
-.bots-page input[data-slot]:focus, .bots-page textarea[data-slot]:focus { outline: none; border-color: var(--accent-text); box-shadow: none; }
+.bots-page button[data-slot]:where(:not(.chat-root *)) { border-radius: 999px; font-size: 12px; font-weight: 300; }
+.bots-page input[data-slot]:where(:not(.chat-root *)), .bots-page textarea[data-slot]:where(:not(.chat-root *)) { font: inherit; color: var(--text); background: var(--inset); border: 1px solid transparent; border-radius: 10px; box-shadow: none; }
+.bots-page input[data-slot]:where(:not(.chat-root *)):focus, .bots-page textarea[data-slot]:where(:not(.chat-root *)):focus { outline: none; border-color: var(--accent-text); box-shadow: none; }
 .bots-page [data-slot="select-trigger"] { background: var(--inset); color: var(--text); border: 1px solid transparent; border-radius: 10px; padding: 8px 10px; font-size: 12px; font-weight: 300; box-shadow: none; }
 .bots-page [data-slot="select-trigger"]:hover { background: var(--inset); }
 .bots-page [data-slot="checkbox"] { accent-color: var(--accent-text); border-color: var(--muted); }
@@ -906,3 +1016,14 @@ div.bots-page.bots-portal-host { position: fixed; top: 0; left: 0; width: 0; hei
 .bots-page ::-webkit-scrollbar-thumb { border: 0; background-clip: border-box; }
 .bots-page #full .tabstrip .tab { max-width: none; border: 0; font-family: inherit; }
 .bots-page #full .tabstrip .tab:hover { color: var(--muted); }
+
+/* ---- THE RAIL'S BOT CARD (shell/claude-rail BotPeek; components/BotChat, 2026-11-05) ----
+   The chat column alone — thread and composer — in the Claude rail's card off any page. Scoped like the page
+   (`.bots-page`), so every message, card and composer rule above applies as on the page; only the frame differs:
+   the root fills the card's body (its parent is the card's absolute, flex-column chat box) and the gutters are the
+   narrow ones a 420px card can afford. The page's own header is not drawn: the card's head is the bot's name. */
+.bots-page.bots-peek { flex: 1 1 auto; min-height: 0; }
+.bots-page.bots-peek .chat { flex: 1 1 auto; min-height: 0; --chatgut: 12px; }
+.bots-page.bots-peek > .empty { flex: 1 1 auto; display: flex; align-items: center; justify-content: center; padding: 16px; color: var(--muted); text-align: center; }
+/* An expert's task chat (ExpertChat.tsx) sits on the thread's ground, not the task chat's lighter panel. */
+.bots-page .chat-root :is(.c-chat, .c-anntools) { background: var(--bg); }

@@ -45,6 +45,7 @@ import ast
 import builtins
 import importlib.util
 import inspect
+import io
 import json
 import os
 import subprocess
@@ -2043,7 +2044,8 @@ def test_start_asks_the_cli_to_route_permissions_here(agent, tmp_path, monkeypat
 
     config = json.loads(open(cmd[cmd.index("--mcp-config") + 1]).read())
     entry = config["mcpServers"][agent.PERMISSION_SERVER]
-    assert os.path.basename(entry["args"][0]) == "permission_server.py"
+    assert entry["args"][0] == agent._permission_server_path()
+    assert os.path.basename(entry["args"][0]).startswith("permission_server-")
     assert os.path.isfile(entry["args"][0])
     assert entry["args"][1] == agent._perm_dir(os.path.join(agent.RUNS, run_id))
     # The per-call ceiling has to clear the server's own wait, or the CLI cuts
@@ -2545,6 +2547,25 @@ def test_strict_mcp_flag_follows_the_mcp_config_pair(agent, tmp_path, monkeypatc
     assert "--strict-mcp-config" not in _argv_for(agent, tmp_path)
 
 
+def test_claude_run_marks_our_server_always_load(agent, tmp_path, monkeypatch):
+    """The Claude CLI gets our server with `alwaysLoad: true`, so its tools
+    sit in the model's list from turn one rather than behind ToolSearch.
+    Plugin servers copied in for a lean run are left as the CLI would load
+    them, and no other harness's key rides along."""
+    monkeypatch.setattr(agent, "_claude_bin", lambda: "/bin/claude")
+    monkeypatch.setattr(agent, "_plugin_mcp_servers",
+                        lambda h: {"plugin_srv": {"command": "x"}})
+    argv = _argv_for(agent, tmp_path, strict_mcp=True)
+    with open(argv[argv.index("--mcp-config") + 1]) as fh:
+        servers = json.load(fh)["mcpServers"]
+    assert servers[agent.PERMISSION_SERVER]["alwaysLoad"] is True
+    assert "deferTools" not in servers[agent.PERMISSION_SERVER]
+    assert "alwaysLoad" not in servers["plugin_srv"]
+    with open(agent._write_mcp_config(str(tmp_path / "run"), False, approve=False)) as fh:
+        bare = json.load(fh)["mcpServers"][agent.PERMISSION_SERVER]
+    assert "alwaysLoad" not in bare and "deferTools" not in bare
+
+
 def _start_req(agent, tmp_path, monkeypatch, *, pref, isolate):
     target = tmp_path / "sample.html"
     target.write_text("<html></html>")
@@ -2918,3 +2939,226 @@ def test_legacy_bare_number_wait_is_skipped(agent, tmp_path, monkeypatch):
     with open(path, "w") as fh:
         json.dump({"old": 12.5, "ok": [10.0, 20.0], "bad": [5, 1], "short": [1]}, fh)
     assert _waits(agent) == {"ok": (10.0, 20.0)}
+
+
+# ------------------------------------------------------------------ breakout
+# A breakout chat (agent._start(breakout=...)) is research-only. The policy
+# lives HERE, in the approve tool, because `--disallowed-tools` cannot say
+# "markdown under one directory": edits and shell are refused outright with no
+# card, except `.md` files under FUSED_BREAKOUT_HANDOFF_DIR.
+
+
+@pytest.fixture
+def breakout(tmp_path):
+    handoff = tmp_path / "chat" / ".claude" / "handoffs"
+    perm_dir = tmp_path / "perm"
+    s = _Server(perm_dir, env={"FUSED_BREAKOUT_HANDOFF_DIR": str(handoff)})
+    s.call("initialize", {"protocolVersion": "2025-06-18",
+                          "capabilities": {}, "clientInfo": {"name": "test"}})
+    yield s, perm_dir, handoff
+    s.close()
+
+
+def _approve(s, tool, tool_input):
+    return s.send_async("tools/call", {
+        "name": "approve",
+        "arguments": {"tool_name": tool, "input": tool_input,
+                      "tool_use_id": "toolu_b"}})
+
+
+def _no_card(perm_dir):
+    return not os.path.isdir(perm_dir) or not [
+        n for n in os.listdir(perm_dir) if n.endswith(".req.json")]
+
+
+def test_breakout_refuses_bash_without_a_card(breakout):
+    s, perm_dir, _ = breakout
+    payload = _result_payload(_approve(s, "Bash", {"command": "ls"}).result(10))
+    assert payload["behavior"] == "deny"
+    assert "research-only" in payload["message"]
+    assert _no_card(perm_dir)
+
+
+@pytest.mark.parametrize("tool,key", [
+    ("Write", "file_path"), ("Edit", "file_path"),
+    ("MultiEdit", "file_path"), ("NotebookEdit", "notebook_path")])
+def test_breakout_refuses_edits_anywhere_else(breakout, tmp_path, tool, key):
+    s, perm_dir, handoff = breakout
+    for target in (tmp_path / "chat" / "app.py", handoff / "x.txt",
+                   handoff / ".." / "other.md", handoff.parent / "x.md"):
+        payload = _result_payload(
+            _approve(s, tool, {key: str(target)}).result(10))
+        assert payload["behavior"] == "deny", target
+        assert str(handoff) in payload["message"]
+    assert _no_card(perm_dir)
+
+
+def test_breakout_refuses_a_symlink_out_of_the_handoff_dir(breakout, tmp_path):
+    s, perm_dir, handoff = breakout
+    handoff.mkdir(parents=True)
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (handoff / "link").symlink_to(outside)
+    payload = _result_payload(_approve(
+        s, "Write", {"file_path": str(handoff / "link" / "x.md")}).result(10))
+    assert payload["behavior"] == "deny"
+
+
+def test_breakout_allows_markdown_under_the_handoff_dir_without_a_card(
+        breakout):
+    s, perm_dir, handoff = breakout
+    tool_input = {"file_path": str(handoff / "notes.md"), "content": "# hi"}
+    payload = _result_payload(_approve(s, "Write", tool_input).result(10))
+    assert payload["behavior"] == "allow"
+    assert payload["updatedInput"] == tool_input
+    assert _no_card(perm_dir)
+
+
+@pytest.mark.parametrize("tool,key", [
+    ("Edit", "file_path"), ("MultiEdit", "file_path"),
+    ("NotebookEdit", "notebook_path")])
+def test_breakout_denies_non_write_edits_even_on_a_handoff_md(
+        breakout, tool, key):
+    s, perm_dir, handoff = breakout
+    payload = _result_payload(_approve(
+        s, tool, {key: str(handoff / "notes.md")}).result(10))
+    assert payload["behavior"] == "deny"
+    assert _no_card(perm_dir)
+
+
+@pytest.mark.parametrize("tool", [
+    "Agent", "Task", "TodoWrite", "Skill", "ExitPlanMode", "EnterPlanMode",
+    "Workflow", "mcp__fused_render__terminal_send",
+    "mcp__other__get_thing"])
+def test_breakout_refuses_build_tools_and_unlisted_mcp_without_a_card(
+        breakout, tool):
+    s, perm_dir, _ = breakout
+    payload = _result_payload(_approve(s, tool, {}).result(10))
+    assert payload["behavior"] == "deny"
+    assert "research-only" in payload["message"]
+    assert _no_card(perm_dir)
+
+
+def test_breakout_allows_a_read_only_mcp_tool_through_the_normal_flow(
+        breakout, agent):
+    s, perm_dir, _ = breakout
+    pending = _approve(s, "mcp__fused_render__terminal_read", {})
+    req = _wait_for_request(perm_dir)
+    assert req["tool"] == "mcp__fused_render__terminal_read"
+    assert agent._write_decision(str(perm_dir), req["id"],
+                                 {"decision": "allow", "scope": "once"})
+    assert _result_payload(pending.result(10))["behavior"] == "allow"
+
+
+def _run_hook(handoff, stdin):
+    return subprocess.run(
+        [sys.executable, "-I", SERVER, "--breakout-hook=" + str(handoff)],
+        input=stdin, capture_output=True, text=True, timeout=30)
+
+
+def test_breakout_hook_blocks_a_write_outside_the_handoff_dir(tmp_path):
+    handoff = tmp_path / "h"
+    handoff.mkdir()
+    r = _run_hook(handoff, json.dumps({
+        "tool_name": "Write", "tool_input": {"file_path": str(tmp_path / "other.py")}}))
+    assert r.returncode == 2
+    assert "research-only" in r.stderr and str(handoff) in r.stderr
+    assert r.stdout == ""
+
+
+def test_breakout_hook_lets_a_handoff_note_through(tmp_path):
+    handoff = tmp_path / "h"
+    handoff.mkdir()
+    r = _run_hook(handoff, json.dumps({
+        "tool_name": "Write", "tool_input": {"file_path": str(handoff / "note.md")}}))
+    assert r.returncode == 0 and r.stdout == ""
+
+
+def test_breakout_hook_fails_closed_on_empty_stdin(tmp_path):
+    assert _run_hook(tmp_path, "").returncode == 2
+
+
+@pytest.mark.parametrize("tool", ["mcp__fused_render__terminal_send",
+                                  "mcp__other__x", "Skill"])
+def test_breakout_hook_blocks_write_mcp_calls(tmp_path, tool):
+    assert _run_hook(tmp_path, json.dumps(
+        {"tool_name": tool, "tool_input": {}})).returncode == 2
+
+
+def test_breakout_hook_lets_a_read_only_mcp_tool_through(tmp_path):
+    r = _run_hook(tmp_path, json.dumps({
+        "tool_name": "mcp__fused_render__terminal_list", "tool_input": {}}))
+    assert r.returncode == 0 and r.stdout == ""
+
+
+def test_breakout_hook_fails_closed_when_the_policy_raises(
+        tmp_path, monkeypatch):
+    ps = _load("permission_server")
+    monkeypatch.setattr(ps, "BREAKOUT_HOOK_DIR", str(tmp_path))
+
+    def boom(*a, **kw):
+        raise RuntimeError("helper import failed")
+
+    monkeypatch.setattr(ps, "_breakout_policy", boom)
+    monkeypatch.setattr(sys, "stdin", io.StringIO(json.dumps(
+        {"tool_name": "Write", "tool_input": {"file_path": "/x"}})))
+    assert ps.main() == 2
+
+
+def test_breakout_leaves_reads_and_web_to_the_normal_flow(
+        breakout, agent):
+    s, perm_dir, _ = breakout
+    for tool, tool_input in (("Read", {"file_path": "/x/y"}),
+                             ("WebFetch", {"url": "https://example.com"}),
+                             ("Grep", {"pattern": "a"})):
+        pending = _approve(s, tool, tool_input)
+        req = _wait_for_request(perm_dir)
+        assert req["tool"] == tool
+        assert agent._write_decision(str(perm_dir), req["id"],
+                                     {"decision": "allow", "scope": "once"})
+        assert _result_payload(pending.result(10))["behavior"] == "allow"
+        os.remove(os.path.join(perm_dir, req["id"] + ".req.json"))
+
+
+def test_without_the_env_var_nothing_changes(tmp_path, agent, server):
+    perm_dir = tmp_path / "perm"
+    pending = _approve(server, "Bash", {"command": "ls"})
+    req = _wait_for_request(perm_dir)
+    assert req["tool"] == "Bash"
+    assert agent._write_decision(str(perm_dir), req["id"],
+                                 {"decision": "allow", "scope": "once"})
+    assert _result_payload(pending.result(10))["behavior"] == "allow"
+
+
+@pytest.mark.parametrize("decision,reason", [
+    ({"decision": "deny", "reason": "timeout"}, "timeout"),
+    ({"decision": "expired"}, "expired"),
+    ({"decision": "deny", "reason": "abandoned"}, "abandoned"),
+])
+def test_no_human_denials_carry_a_machine_readable_marker(decision, reason):
+    """The chat finds an unanswered question/approval in the transcript by this
+    marker, not by matching the human sentence; the sentence stays for the model."""
+    srv = _load("permission_server")
+    out = srv._permission_result("AskUserQuestion", {}, decision)
+    assert out["behavior"] == "deny"
+    marker = "[fused:unanswered reason=%s" % reason
+    assert marker in out["message"]
+    assert out["message"].index(marker) > 0, "the human sentence leads"
+
+
+@pytest.mark.parametrize("decision", [
+    {"decision": "deny", "reason": "cancelled"},
+    {"decision": "deny", "message": "no thanks"},
+    {"decision": "deny"},
+])
+def test_human_denials_carry_no_unanswered_marker(decision):
+    srv = _load("permission_server")
+    out = srv._permission_result("Bash", {}, decision)
+    assert "[fused:unanswered" not in out["message"]
+
+
+def test_timeout_marker_names_the_minutes(monkeypatch):
+    srv = _load("permission_server")
+    monkeypatch.setattr(srv, "WAIT_TIMEOUT", 3600)
+    out = srv._permission_result("Bash", {}, {"decision": "deny", "reason": "timeout"})
+    assert out["message"].endswith("[fused:unanswered reason=timeout minutes=60]")

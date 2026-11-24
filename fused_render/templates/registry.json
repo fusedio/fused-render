@@ -2,6 +2,7 @@
   ".parquet": [
     "duckdb",
     "structure",
+    "vector",
     "h3",
     "claude",
     "geometry_editor"
@@ -42,6 +43,7 @@
   ],
   ".json": [
     "tree",
+    "canvas_widget",
     "code",
     "duckdb",
     "claude",
@@ -138,6 +140,7 @@
   ],
   ".md": [
     "markdown",
+    "canvas_note",
     "code",
     "claude",
     "reader"
@@ -264,6 +267,7 @@
   ],
   ".py": [
     "code",
+    "canvas_udf",
     "api",
     "claude",
     "reader"
@@ -402,6 +406,7 @@
   ],
   ".html": [
     "_render",
+    "canvas_widget",
     "code",
     "claude",
     "reader"
@@ -684,6 +689,10 @@
   ],
   ".fused": [
     "fusedapp",
+    "claude"
+  ],
+  ".fusedbot": [
+    "fusedbot",
     "claude"
   ]
 }

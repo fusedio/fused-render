@@ -20,17 +20,19 @@
 set -euo pipefail
 
 HERE="$(cd "$(dirname "$0")" && pwd)"
-# APP_NAME, DISPLAY_NAME, VERSION, ARCH, DMG_URL, DMG_SHA256 — written by
-# build_pkg.sh for this one release.
+# APP_NAME, BUNDLE_NAME, LEGACY_BUNDLE_NAMES, DISPLAY_NAME, VERSION, ARCH,
+# DMG_URL, DMG_SHA256 — written by build_pkg.sh for this one release.
+# APP_NAME is the file-name token ("FusedRender"); BUNDLE_NAME is the .app
+# folder ("Fused Render"), which holds a space, so every path stays quoted.
 # shellcheck source=/dev/null
 source "$HERE/release.env"
 
 TARGET_VOLUME="${3:-/}"
 APPS_DIR="${TARGET_VOLUME%/}/Applications"
-DEST="$APPS_DIR/$APP_NAME.app"
+DEST="$APPS_DIR/$BUNDLE_NAME.app"
 
-log() { echo "$APP_NAME installer: $*"; }
-fail() { echo "$APP_NAME installer: ERROR: $*" >&2; exit 1; }
+log() { echo "$DISPLAY_NAME installer: $*"; }
+fail() { echo "$DISPLAY_NAME installer: ERROR: $*" >&2; exit 1; }
 
 # ---------------------------------------------------------------------------
 # Preconditions
@@ -90,7 +92,7 @@ trap cleanup EXIT
 # ---------------------------------------------------------------------------
 # Download + verify
 # ---------------------------------------------------------------------------
-log "downloading $APP_NAME $VERSION ($ARCH) from $DMG_URL"
+log "downloading $DISPLAY_NAME $VERSION ($ARCH) from $DMG_URL"
 DMG="$WORK/$APP_NAME.dmg"
 if ! /usr/bin/curl --fail --location --silent --show-error \
     --retry 3 --retry-delay 2 --connect-timeout 20 \
@@ -115,8 +117,8 @@ if ! /usr/bin/hdiutil attach "$DMG" -nobrowse -readonly -noautoopen -noverify \
   fail "could not mount the downloaded image"
 fi
 MOUNTED=1
-SRC="$MOUNT/$APP_NAME.app"
-[[ -d "$SRC" ]] || fail "$APP_NAME.app not found in the downloaded image"
+SRC="$MOUNT/$BUNDLE_NAME.app"
+[[ -d "$SRC" ]] || fail "$BUNDLE_NAME.app not found in the downloaded image"
 
 mkdir -p "$APPS_DIR"
 STAGE="$APPS_DIR/.$APP_NAME-installing-$$.app"
@@ -135,23 +137,38 @@ fi
 # during the install the leftover is cleaned up on its next launch (the
 # running copy keeps executing from the renamed inode until then). When no
 # copy is running it is removed here.
+#
+# A copy under an earlier bundle name (FusedRender.app, from before the app
+# was renamed "Fused Render.app") is retired the same way: left in place it
+# would be a second app with the same bundle id beside the new one.
 WAS_RUNNING=""
-if /usr/bin/pgrep -f "$DEST/Contents/MacOS/" >/dev/null 2>&1; then
-  WAS_RUNNING=1
-fi
-OLD="$APPS_DIR/.$APP_NAME-old-$$.app"
-if [[ -e "$DEST" || -L "$DEST" ]]; then
-  mv "$DEST" "$OLD"
-fi
-mv "$STAGE" "$DEST"
-if [[ -e "$OLD" ]]; then
-  if [[ -n "$WAS_RUNNING" ]]; then
-    log "$APP_NAME was running during the install; quit and reopen it to finish (the old copy is removed on the next launch)"
-  else
-    rm -rf "$OLD"
+# retire <bundle name>: rename that copy aside, if there is one, and remove
+# it unless it is running. No arrays: macOS's bash 3.2 trips `set -u` on an
+# empty one.
+retire() {
+  local name="$1" path="$APPS_DIR/$1.app" old running=""
+  if [[ ! -e "$path" && ! -L "$path" ]]; then
+    return 0
   fi
+  if /usr/bin/pgrep -f "$path/Contents/MacOS/" >/dev/null 2>&1; then
+    running=1
+    WAS_RUNNING=1
+  fi
+  old="$APPS_DIR/.$name-old-$$.app"
+  mv "$path" "$old"
+  if [[ -z "$running" ]]; then
+    rm -rf "$old"
+  fi
+}
+retire "$BUNDLE_NAME"
+mv "$STAGE" "$DEST"
+for legacy in $LEGACY_BUNDLE_NAMES; do
+  retire "$legacy"
+done
+if [[ -n "$WAS_RUNNING" ]]; then
+  log "$DISPLAY_NAME was running during the install; quit and reopen it to finish (the old copy is removed on the next launch)"
 fi
-log "installed $APP_NAME $VERSION to $DEST"
+log "installed $DISPLAY_NAME $VERSION to $DEST"
 
 # ---------------------------------------------------------------------------
 # Register + open
@@ -170,7 +187,7 @@ fi
 if [[ -n "$OWNER" && -z "$WAS_RUNNING" && -z "${COMMAND_LINE_INSTALL:-}" ]]; then
   OWNER_UID="$(/usr/bin/id -u "$OWNER")"
   if ! /bin/launchctl asuser "$OWNER_UID" /usr/bin/sudo -u "$OWNER" /usr/bin/open "$DEST" >/dev/null 2>&1; then
-    log "could not open $APP_NAME automatically; open it from the Applications folder"
+    log "could not open $DISPLAY_NAME automatically; open it from the Applications folder"
   fi
 fi
 FINISHED=1

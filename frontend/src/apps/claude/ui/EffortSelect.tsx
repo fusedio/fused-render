@@ -1,5 +1,6 @@
-// The effort pill. Raw values, no label map — "medium" is already the word
-// (T:11835, 03 §F).
+// The effort pill. Said the New task card's way — "Medium", "Xhigh" — first
+// letter capitalised (Akshil, 2026-11-07); the raw value is still what goes on
+// the wire.
 //
 // PER MODEL: the list is what the chosen model takes (`effortsForModel`),
 // which the catalog knows per model for Copilot — its `auto` and Claude ids
@@ -9,6 +10,7 @@
 // alone for the same reason.
 import { useMemo } from "react";
 import { effortsForModel, useAgentBackends } from "@platform/lib/agent-backends";
+import { effortLabel } from "@platform/lib/model-vocab";
 import { GROUP_LABELS, PILL_ARIA } from "./composer-defaults";
 import { PillSelect } from "./PillSelect";
 
@@ -27,7 +29,7 @@ export interface EffortSelectProps {
 export function EffortSelect({ backend, model, value, onChange, disabled, loading }: EffortSelectProps) {
   useAgentBackends();
   const list = effortsForModel(backend, model);
-  const options = useMemo(() => list.map((value) => ({ value, label: value })), [list]);
+  const options = useMemo(() => list.map((value) => ({ value, label: effortLabel(value) })), [list]);
   if (!options.length) return null;
   return (
     <PillSelect

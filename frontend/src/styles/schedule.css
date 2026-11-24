@@ -1850,6 +1850,13 @@ input.schedule-when-field {
   text-overflow: ellipsis;
 }
 
+/* A word or two beside an option's label (a model's "Fast"), quieter. */
+.schedule-menu-desc {
+  margin-left: 8px;
+  font-size: 11.5px;
+  color: var(--fg-faint);
+}
+
 /* The menus mirror the TIME LIST exactly (Akshil, 2026-08-16): hover wash
    follows the pointer; the selection is lit when nothing is hovered and
    yields while something is. The keyboard cursor resets on mouse-leave in
@@ -2080,8 +2087,13 @@ input.schedule-when-field {
 .schedule-recur {
   position: fixed;
   top: 10vh;
-  left: calc(50% + 4px);
-  width: min(380px, 38vw);
+  /* 10px right of the card wherever the card ended up (see the shift above:
+     `22px + card width` once the shift is capped) — and never past the
+     window's right edge less 8px. The panel gives up width first (down to
+     240px) so card and panel both fit on a window of ~850px; narrower than
+     that it sits over the card's edge rather than off-screen. */
+  left: max(8px, min(max(calc(50% + 65px), calc(22px + min(580px, 100vw - 32px))), calc(100vw - clamp(240px, 100vw - min(580px, 100vw - 32px) - 30px, 380px) - 8px)));
+  width: clamp(min(240px, 100vw - 16px), calc(100vw - min(580px, 100vw - 32px) - 30px), 380px);
   z-index: 50;
   display: flex;
   flex-direction: column;
@@ -2251,10 +2263,37 @@ input.schedule-when-field {
   transition: left 0.18s ease-out;
 }
 
+/* THE PAIR IS CENTRED AS ONE: the card is 580px (NewJobModal `width={580}`)
+   and the Browse panel 460px with 10px between them, 1050px in all, so the
+   card moves half of (1050 − 580) = 235px left and the panel starts 65px right
+   of centre. The old −240px / +4px pair was sized for a 460px card and put the
+   panel 46px over the card's right edge — right where the Folder and When
+   pills now sit (Akshil, 2026-11-02, "this seems broken"). */
 .modal-dialog:has(.schedule-explorer:not(.is-closing)),
 .modal-dialog:has(.schedule-recur:not(.is-closing)) {
   position: relative;
-  left: -240px;
+  /* …but never past the window's left edge: the card is the thing being
+     edited, so on a narrow window it keeps 12px of margin and the panel is
+     the one that gives way. Half the card is `min(290px, 50vw - 16px)` — the
+     card is 580px until the window is narrower than that plus the overlay's
+     margins — so the shift that leaves 12px is `12px - 50vw + half`. */
+  left: max(-235px, calc(12px - 50vw + min(290px, 50vw - 16px)));
+}
+
+/* THE CARD AS A POPOVER BESIDE THE RAIL (Modal `popover`, 2026-11-07): it
+   hugs the window's right edge, so the side panel stands on its LEFT — 10px
+   off the card's left edge (`--modal-pop-left`, set by the chassis), giving
+   up width before it would run off the window. The card itself never moves
+   for it (its position is inline). */
+.modal-popover .schedule-explorer,
+.modal-popover .schedule-recur {
+  --pop-panel-w: min(460px, max(240px, var(--modal-pop-left, 480px) - 18px));
+  left: max(8px, calc(var(--modal-pop-left, 480px) - 10px - var(--pop-panel-w)));
+  width: var(--pop-panel-w);
+}
+
+.modal-popover .schedule-recur {
+  --pop-panel-w: min(380px, max(240px, var(--modal-pop-left, 400px) - 18px));
 }
 
 /* `top` and `height` are set INLINE by NewJobModal, measured off the dialog's
@@ -2265,8 +2304,11 @@ input.schedule-when-field {
 .schedule-explorer {
   position: fixed;
   top: 10vh;
-  left: calc(50% + 4px);
-  width: min(460px, 44vw);
+  /* Same geometry as .schedule-recur above, with this panel's own width. */
+  /* …and never left of the window's own margin either (a window narrower
+     than the panel). */
+  left: max(8px, min(max(calc(50% + 65px), calc(22px + min(580px, 100vw - 32px))), calc(100vw - clamp(240px, 100vw - min(580px, 100vw - 32px) - 30px, 460px) - 8px)));
+  width: clamp(min(240px, 100vw - 16px), calc(100vw - min(580px, 100vw - 32px) - 30px), 460px);
   height: min(600px, 82vh);
   z-index: 50;
   display: flex;
@@ -2863,6 +2905,93 @@ input.schedule-when-field {
   height: 8px;
   border-radius: 999px;
   background: var(--status-failed);
+}
+
+/* -- Task icons (2026-11-10; always on since 2026-11-23) ------------------------
+   A task's ring can become a GLYPH: one of 299 line drawings
+   (frontend/public/task-icons.svg, slot order in shell/task-icons.ts) chosen
+   once per task by the server (`icon_slot`, sent while starred or once picked
+   by hand — 2026-11-16) so every task in a project has a different face. It is still `.schedule-ring` — same 16px box, same lane hue
+   via `currentColor`, same class vocabulary — so every caller and every rule
+   above keeps working; only the marks move off the centre, because the centre
+   is now the drawing. ONE CORNER, TOP-RIGHT, ONE MARK (owner, 2026-11-10:
+   "decide one place, top right, put dot ! everything there only"):
+     needs "!"   → 8px red badge on a knocked-out disc; outranks both dots
+     draft held  → 6px red dot (outranks unread's dot — same `::after`, the
+                   unsent wins, as on the plain ring)
+     unread      → 6px dot in the lane hue
+   Containers (lane headers, queue chip, calendar day) never get a slot and keep
+   the plain ring. `--ring-knock` is the surface the mark sits on; a host whose
+   surface is not `--bg` sets it. */
+.schedule-ring.schedule-ring--glyph {
+  --ring-knock: var(--bg);
+  border: 0;
+  display: inline-grid;
+  place-items: center;
+}
+.schedule-ring--glyph > svg {
+  display: block;
+  width: 16px;
+  height: 16px;
+  fill: currentColor;
+  color: inherit;
+}
+/* `:is()` on purpose: `--glyph` is a SHAPE, not a lane, and the lane guard
+   (tasks-lib.test "gates that centre on UNREAD ALONE") reads every
+   `--x.--unread::after` pair as a lane gating the fill. */
+.schedule-ring--glyph:is(.schedule-ring--unread, .schedule-ring--draft-held)::after {
+  inset: auto;
+  margin: 0;
+  top: -3px;
+  right: -3px;
+  width: 6px;
+  height: 6px;
+  box-shadow: 0 0 0 2px var(--ring-knock);
+}
+/* The "!" takes the corner alone: the unread dot is already off on a waiting
+   ring (above), and the draft dot never meets it (draft-held is written on
+   settled lanes only). */
+.schedule-ring--glyph > .schedule-ring-bang {
+  inset: auto;
+  top: -4px;
+  right: -4px;
+  width: 10px;
+  height: 10px;
+  border-radius: 999px;
+  background: var(--ring-knock);
+  font-size: 8px;
+}
+
+/* The ring or icon as a button (shell/TaskIconPick — it opens the icon
+   picker; legacy heads only while a title is being edited): the ring's own
+   box and a wash on hover. The ring itself does not grow under the pointer
+   (Akshil, 2026-11-16: "don't increase scale when hover for task ring, that
+   looks bad") — the wash alone says it can be pressed. Nothing else in the
+   head moves. */
+.task-icon-pick {
+  display: inline-grid;
+  place-items: center;
+  margin: -4px;
+  padding: 4px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  cursor: pointer;
+}
+.task-icon-pick:hover,
+.task-icon-pick[aria-expanded="true"] {
+  background: var(--row-hover, var(--bg-alt));
+}
+/* The ring's wrapper, there only to be the button's description
+   (TaskIconPick `aria-describedby`): no box of its own. */
+.task-icon-pick-face {
+  display: contents;
+}
+.task-icon-pick:focus-visible {
+  outline: 2px solid var(--accent, currentColor);
+  outline-offset: 1px;
 }
 
 /* -- The count on hover, without the browser's two-second wait -----------------

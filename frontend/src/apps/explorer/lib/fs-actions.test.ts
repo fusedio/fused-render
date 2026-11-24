@@ -18,8 +18,14 @@ const realLocation = (globalThis as { location?: unknown }).location;
 afterAll(() => {
   (globalThis as { location?: unknown }).location = realLocation;
 });
-const { archiveName, buildCompressItems, claudeTerminalCommand, copyToClipboard, freeArchivePath } =
-  await import("@apps/explorer/lib/fs-actions");
+const {
+  archiveName,
+  buildCompressItems,
+  buildOpenWithItems,
+  claudeTerminalCommand,
+  copyToClipboard,
+  freeArchivePath,
+} = await import("@apps/explorer/lib/fs-actions");
 const { getClipboard, setClipboard } = await import("@apps/explorer/lib/fs-clipboard");
 
 const realFetch = globalThis.fetch;
@@ -210,4 +216,31 @@ test("a slow write does not clobber a newer copy the user made while it was in f
   const ok = await pending;
   expect(ok).toBe(true);
   expect(getClipboard()).toEqual({ paths: ["/c/d.csv"], op: "copy" });
+});
+
+// Open With marks the row that IS the default, so picking it clears `_mode`
+// and any other row writes one. The default is the shared `defaultMode`: on a
+// canvas node file that is the preferred node template (PT-8), never Code —
+// Code must write `_mode=code`, or the click lands back on the node's page.
+test("Open With: on a node file the node template is the default and Code writes _mode", () => {
+  const picked: Array<[string, boolean]> = [];
+  const modes = [
+    { mode: "code", path: "/t/code/template.html", icon: null },
+    { mode: "canvas_udf", path: "/t/canvas_udf/template.html", icon: null, conditional: true, node: true, prefer: true },
+    { mode: "api", path: "/t/api/template.html", icon: null },
+  ];
+  const rows = buildOpenWithItems(modes as never, (m, isDefault) => picked.push([m, isDefault]));
+  for (const row of rows as MenuItem[]) row.onClick?.();
+  expect(picked).toEqual([["code", false], ["canvas_udf", true], ["api", false]]);
+});
+
+test("Open With: without a preferred entry the first unconditional mode is the default", () => {
+  const picked: Array<[string, boolean]> = [];
+  const modes = [
+    { mode: "reader", path: "/t/reader/template.html", icon: null, conditional: true },
+    { mode: "code", path: "/t/code/template.html", icon: null },
+  ];
+  const rows = buildOpenWithItems(modes as never, (m, isDefault) => picked.push([m, isDefault]));
+  for (const row of rows as MenuItem[]) row.onClick?.();
+  expect(picked).toEqual([["reader", false], ["code", true]]);
 });

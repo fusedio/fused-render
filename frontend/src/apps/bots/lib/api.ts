@@ -2,6 +2,7 @@
 // Every call goes through request(): one place counts calls in flight, reports a call still pending after STALL_MS
 // (the store shows it in the banner) and logs anything slower than SLOW_MS. The store installs those hooks
 // (apiHooks) at load, so this module imports nothing from it.
+import type { Expert } from "@platform/lib/experts";
 
 // ------------------------------------------------------------------ wire types (§2) ----
 /** `note`: a muted harness line in the thread ("Already ran …", "Still waiting for Approve / Deny on …"); not a bubble, not reactable. */
@@ -15,7 +16,7 @@ export interface AppRef { name: string; dir: string; params?: Record<string, str
 export interface ReplyRef { seq: number; role: Role; text: string }
 /** One "Approve forever" rule (bot.json `allow_rules`): what kind of call, its coarse key, and the sentence shown for it.
  *  `source` is set when a preset pre-approved it rather than a card. */
-export interface AllowRule { kind: "browser" | "builtin" | "text" | "upload" | "build" | "terminal" | "trusted" | (string & {}); key: string; label: string; source?: string }
+export interface AllowRule { kind: "browser" | "builtin" | "text" | "upload" | "build" | "terminal" | "trusted" | "connect" | (string & {}); key: string; label: string; source?: string }
 
 /** A channel address (docs §10): "imessage" + the sender's handle, "routine", "botsend", "handoff" + the Super Bot's id
  *  (a task Super Bot delegated, docs §11); the web is never stamped. */
@@ -188,13 +189,20 @@ export interface Bot {
   /** App folders (normalised) whose tools and scripts never raise an approval card for this bot. The one app-level
    *  permission: a build this bot finished and an "Always approve" on a tool/script card both tick it. */
   trusted_apps?: string[];
+  /** Connected services (provider keys: notion, github, slack…) this bot may use (Settings › Connections). Sign-in
+   *  is global (Preferences › Connections); access is per bot and off by default: a call into a service not listed
+   *  raises a card every time, even under "Never ask", and "Always approve" on it ticks the service here. */
+  connections?: string[];
   /** Calls the user approved forever from a card; revoked under Settings › Permissions. */
   allow_rules?: AllowRule[];
   /** Folders on this Mac the bot may READ (`ls` / `find` / `readfile`; Settings › Permissions › Folders it may read).
    *  Plain absolute paths, the user's own: the bot never writes there and only the dialog edits the list. */
   folders?: string[];
-  /** "super": the one bot per Mac with Claude Code's own tools (docs §5 "Super Bot"); absent for an ordinary bot. */
-  kind?: "bot" | "super";
+  /** "super": the one bot per Mac with Claude Code's own tools (docs §5 "Super Bot"); "expert": a row the page
+   *  makes from /api/experts (docs/experts.md), not a bot the bots backend knows; absent for an ordinary bot. */
+  kind?: "bot" | "super" | "expert";
+  /** Expert only: its row (state/store.ts expertBots). */
+  expert?: Expert;
   /** Super Bot's permission posture: ask before writes / edits / shell, or unattended (Claude's own judgement). */
   super_access?: "ask" | "full";
   face?: Face | null;
@@ -315,15 +323,62 @@ export interface Starter {
 export interface StarterInstallReply { ok: true; key: string; dir: string; installed: boolean; existed: boolean; name: string }
 
 export interface Ok { ok: true }
+
+/** GET /api/bots/<id>/package (bots/package.py plan()): what an "Export bot…" would put in the `.fusedbot`. `public` is
+ *  bot.json as on disk; an app row's `problem` says why it cannot travel (folder gone, not a fused app, over the caps). */
+export type PackageSourceKind = "bundled" | "marketplace" | "starter" | "github";
+export interface PackageAppRow {
+  folder: string; name: string; app_id: string | null;
+  /** github: `url` is the repo's https://github.com/<owner>/<name> link, `repo` its owner/name, `commit` the exporter's HEAD (display only). */
+  source: { kind: PackageSourceKind; slug?: string; key?: string; url?: string; repo?: string; commit?: string; [k: string]: unknown };
+  /** Bundled rows: the size of what ships; 0 for references (starter / marketplace / github). */
+  bytes: number;
+  problem?: string;
+  /** A bundled row whose reference (GitHub / Marketplace / starter) would not carry it: `kind` is the reference it
+   *  would have been, `code` why (dirty = local changes; github also unpushed / no_default, share_app.github_link_state);
+   *  `repo` (github), `slug` (marketplace) or `key` (starter) names it. */
+  fallback?: { kind: PackageSourceKind; code: string; repo?: string | null; slug?: string | null; key?: string | null };
+  /** Bundled app with no id yet and no git remote: exporting stamps an app id into its entry page (as sharing the app does). */
+  mints_app_id?: boolean;
+}
+export interface PackagePlan {
+  ok: true; name: string; file_name: string; public: Record<string, unknown>;
+  skills: { name: string; title: string; trigger: string }[];
+  memory_bytes: number;
+  /** UTF-8 bytes of every skill file (absent from an older backend: count 0). */
+  skills_bytes?: number;
+  apps: PackageAppRow[];
+  /** Skill files that cannot travel (a refused name, a symlink): listed so they do not vanish silently. */
+  skills_skipped?: { name: string; problem: string }[];
+  /** Secret-looking strings found in the text that travels: a caution, never a block. */
+  secrets: { where: string; snippet: string }[];
+  /** What the secret scan covered (bundled app sources are not scanned here). */
+  secrets_scope?: string[];
+  /** Skills over the text cap: the export would be refused, so Export is disabled with this sentence. */
+  text_problem?: string | null;
+  /** Skills + memory over the text cap: blocks Export only while memory is ticked (absent from an older backend: null). */
+  memory_text_problem?: string | null;
+  super: boolean;
+}
+/** POST /api/bots/<id>/package: `apps` = the folders to ship (bundled) or reference; `file_name` absent = plan's default. */
+export interface PackageWriteBody { memory: boolean; apps: string[]; file_name?: string }
 /** GET /api/bots/setup. `chrome.found` null = could not tell; `claude` is fused-render's cached Claude Code health
  *  snapshot (never a spawn), read loosely: only `found` and `signed_in` are looked at. */
 export interface SetupReply {
-  chrome: { found: boolean | null; path: string | null };
+  /** `install` (only when not found): whether the Install button can work here, see ChromeInstallPlan. */
+  chrome: { found: boolean | null; path: string | null; wsl?: boolean; install?: ChromeInstallPlan };
   claude: { found?: boolean | null; signed_in?: boolean | null; version?: string | null; [k: string]: unknown };
   /** Who runs the bots on this machine (one owner process, bots/registry.py): `this` = the server this page
    *  talks to; else that app forwards here from the named one. `known` false = an older app holds the lock
    *  and wrote no record. null = no process runs them. Absent from an older server. */
   owner?: BotsOwner | null;
+}
+/** bots/chrome_install.plan(): `available` only inside WSL with apt on x86-64; else `reason` says why not.
+ *  `command` is the line to paste into a WSL terminal instead. */
+export interface ChromeInstallPlan { available: boolean; reason: string; command: string }
+/** GET/POST /api/bots/setup/chrome: the one install's record. `output` is apt's own last lines. */
+export interface ChromeInstallStatus {
+  state: "idle" | "running" | "done" | "error"; detail: string; output: string; error: string | null;
 }
 export interface BotsOwner {
   this: boolean; known: boolean; stalled: boolean;
@@ -339,13 +394,18 @@ export const apiHooks: { onStall: (msg: string) => void; onSettle: () => void; o
 };
 let inflight = 0, stallTimer: ReturnType<typeof setInterval> | null = null, stallShown = false;
 
-/** Thrown for a non-2xx reply; `message` is the server's `{error}` sentence when it sent one. */
+/** Thrown for a non-2xx reply; `message` is the server's `{error}` sentence when it sent one, `body` its whole
+ *  JSON object when it sent one (a 409 carries `reason`, e.g. "workspace_busy" with a `holder`). */
 export class ApiError extends Error {
   status: number;
-  constructor(message: string, status: number) { super(message); this.status = status; }
+  body: Record<string, unknown> | null;
+  constructor(message: string, status: number, body: Record<string, unknown> | null = null) { super(message); this.status = status; this.body = body; }
 }
+/** A 409 from a door the workspace gate refused (bots/registry.py WorkspaceBusy): another fused-render server
+ *  holds the workspace claim. The page offers to take it over (POST /api/bots/workspace/take). */
+export function isWorkspaceBusy(e: unknown): e is ApiError { return e instanceof ApiError && e.status === 409 && e.body?.reason === "workspace_busy"; }
 
-type Method = "GET" | "POST" | "DELETE";
+type Method = "GET" | "POST" | "PATCH" | "DELETE";
 export async function request<T>(method: Method, url: string, body?: unknown, label?: string): Promise<T> {
   const t0 = performance.now(), name = label || url.replace(/^\/api\/(bots\/)?/, "").split("?")[0] || "status";
   inflight++;
@@ -364,7 +424,7 @@ export async function request<T>(method: Method, url: string, body?: unknown, la
     if (!r.ok) {
       const err = data && typeof data === "object" ? (data as { error?: unknown }).error : undefined;
       const msg = (err ? String(err) : "") || text.trim() || `${r.status} ${r.statusText}`;
-      throw new ApiError(msg, r.status);
+      throw new ApiError(msg, r.status, data && typeof data === "object" ? (data as Record<string, unknown>) : null);
     }
     return data as T;
   } finally {
@@ -397,6 +457,9 @@ export interface SettingsBody {
   super_access?: string; trusted_apps?: string[];
   /** Ticks added / removed since the dialog opened; applied to the live list, since builds and cards also write it. */
   trusted_apps_add?: string[]; trusted_apps_remove?: string[];
+  /** Services ticked / unticked since the dialog opened (Settings › Connections); applied to the live list, since a
+   *  card answered "Always approve" also writes it. */
+  connections_add?: string[]; connections_remove?: string[];
   /** Forever rules to drop (kind + key); applied to the live list, since the task thread also writes it. */
   allow_rules_remove?: AllowRule[];
   /** The whole list of folders the bot may read (the dialog is its only writer). */
@@ -471,6 +534,8 @@ export const api = {
   routines: (id: string, body: RoutineBody) => post<{ ok: true; routine?: Routine }>(`${bid(id)}/routines`, body, "routine"),
   skills: (id: string, body: SkillBody) => post<{ ok: true; skills: Skill[] }>(`${bid(id)}/skills`, body, "skill"),
   exportTranscript: (id: string) => get<{ ok: true; name: string; text: string }>(`${bid(id)}/export`, "export"),
+  packagePlan: (id: string) => get<PackagePlan>(`${bid(id)}/package`, "package plan"),
+  packageWrite: (id: string, body: PackageWriteBody) => post<{ ok: true; path: string }>(`${bid(id)}/package`, body, "export bot"),
   reveal: (id: string, path?: string) => post<{ ok: true; path: string }>(`${bid(id)}/reveal`, path ? { path } : {}, "reveal"),
   builds: () => get<{ builds: BuildRow[] }>(`${B}/builds`, "builds"),
   saveBuilds: (builds: BuildRow[]) => post<Ok>(`${B}/builds`, { builds }, "builds"),
@@ -483,8 +548,44 @@ export const api = {
   starterUpdate: (key: string) => post<StarterInstallReply>(`/api/bot-apps/starters/${encodeURIComponent(key)}/update`, {}, "starter_update"),
   /** GET /api/bots/setup: is there a Chrome to drive and a Claude Code to think with (the empty hero's setup lines). */
   setup: () => get<SetupReply>(`${B}/setup`, "setup"),
+  /** POST /api/bots/setup/chrome: install Google Chrome inside WSL (apt, as root through wsl.exe). 409 with the
+   *  reason when it cannot run here or one is already running. Poll chromeInstallStatus for its progress. */
+  chromeInstall: () => post<ChromeInstallStatus>(`${B}/setup/chrome`, {}, "setup/chrome"),
+  chromeInstallStatus: () => get<ChromeInstallStatus>(`${B}/setup/chrome`, "setup/chrome"),
+  /** POST /api/bots/workspace/take: ask the server holding the workspace claim to yield and claim it here (the
+   *  banner's Override after a "workspace_busy" 409). 409 again, with the reason, when it could not. */
+  workspaceTake: () => post<{ taken: boolean; error: string }>(`${B}/workspace/take`, {}, "workspace/take"),
   /** Slow (runs each installed starter's setup tool): call after the strip is drawn. null = could not tell. */
   starterStatus: () => get<{ ok: true; ready: Record<string, boolean | null>; why: Record<string, string> }>("/api/bot-apps/starters/status", "starter_status"),
+};
+
+const sid = (id: string) => `/api/experts/${encodeURIComponent(id)}`;
+export interface ExpertBody { name: string; about: string; folder: string; face: Face | null }
+/** An inbox file: a note's text, or a conversation's pointer; `kind` and `title` from its first line. */
+export interface ExpertEntry { name: string; text: string; at: number; kind: "note" | "task" | "breakout" | "chat"; title: string }
+/** A commit of its history: a learning run ("Update"; `read` entries) or a change to memory or skills. */
+export interface ExpertChange { sha: string; at: number; label: string; read: number; changed: boolean }
+export interface ExpertChat { session_id: string | null; folded: { session_id: string; at: number }[] }
+/** /api/experts/<id>/… (fused_render/experts/routes.py). */
+export const expertApi = {
+  create: (body: ExpertBody) => post<Expert>("/api/experts", body, "new expert"),
+  patch: (id: string, body: ExpertBody) => request<Expert>("PATCH", sid(id), body, "expert settings"),
+  remove: (id: string) => request<Ok>("DELETE", sid(id), undefined, "delete expert"),
+  chat: (id: string) => get<ExpertChat>(`${sid(id)}/chat`, "expert chat"),
+  clear: (id: string) => post<ExpertChat>(`${sid(id)}/chat/clear`, {}, "expert clear"),
+  /** Its main chat as Markdown (the task chat's export). */
+  exportChat: (id: string) => get<{ name: string; text: string }>(`${sid(id)}/chat/export`, "export"),
+  seen: (id: string) => post<Ok>(`${sid(id)}/seen`, {}, "expert seen"),
+  memory: (id: string) => get<{ text: string }>(`${sid(id)}/memory`, "expert memory"),
+  skills: (id: string) => get<{ skills: { name: string; description: string; text: string }[] }>(`${sid(id)}/skills`, "expert skills"),
+  notes: (id: string) => get<{ notes: ExpertEntry[] }>(`${sid(id)}/notes`, "expert notes"),
+  deleteNote: (id: string, name: string) => request<Ok>("DELETE", `${sid(id)}/notes/${encodeURIComponent(name)}`, undefined, "delete note"),
+  changes: (id: string) => get<{ changes: ExpertChange[] }>(`${sid(id)}/changes`, "expert changes"),
+  /** `reply` and `read` for a learning run only. */
+  diff: (id: string, sha: string) => get<{ diff: string; reply?: string; read?: { kind: string; title: string }[] }>(
+    `${sid(id)}/changes/${encodeURIComponent(sha)}`, "expert diff"),
+  /** Learn now. `started` false: nothing was waiting. */
+  update: (id: string) => post<{ started: boolean }>(`${sid(id)}/update`, {}, "learn now"),
 };
 
 /** POST /api/bots/<id>/seen {seq}: the unread mark (Bot.seen_seq). Silent: no banner, no poll after it (store.ts

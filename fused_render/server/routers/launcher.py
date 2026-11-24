@@ -3,20 +3,21 @@
 
 The panel's page (`/launcher`, a Vite page: frontend/launcher.html →
 shell-dist/launcher.html, hosted by launcher_panel.py) asks the search per
-keystroke. ``running`` comes from the window manager through
+keystroke (apps, files from the local index, and objects from the
+`fused-asset` bucket's index). ``running`` comes from the window manager through
 `launcher.native_hooks["open_keys"]` — a plain attribute read, safe from
-this thread — and is empty wherever there are no windows. Under Fused Bot
-the rows are bots and there are no file rows at all (the index is not
-asked). The settings are part of `/api/prefs` (shell/prefs.py: wire names
-`launcher_hotkey`, `launcher_row_modifier`, stored under the flavor's
-keys), not a route of their own.
+this thread — and is empty wherever there are no windows. The settings are
+part of `/api/prefs` (shell/prefs.py: `launcher_hotkey`,
+`launcher_row_modifier`), not a route of their own.
 """
+import math
 import os
+from concurrent.futures import ThreadPoolExecutor
 
 from fastapi import APIRouter, Body, Header, Query
 from fastapi.responses import FileResponse, PlainTextResponse
 
-from fused_render import _flavor, launcher
+from fused_render import launcher
 from fused_render.server.common import STATIC_DIR, _error, _require_fused
 
 router = APIRouter()
@@ -60,16 +61,73 @@ def api_launcher_suspend(body: dict = Body(default={}),
     return {"ok": True, "suspended": on if hook is not None else False}
 
 
+def _anchor(body: dict) -> dict | None:
+    """``{"anchor": {"left", "top"}}`` — CSS px in the asking window's web
+    view: the rail's left edge and the door's top. Anything else is no
+    anchor (the panel takes its usual place)."""
+    a = body.get("anchor")
+    if not isinstance(a, dict):
+        return None
+    # JSON true/false are ints to `float` (CodeRabbit on #2201): not a place.
+    if isinstance(a.get("left"), bool) or isinstance(a.get("top"), bool):
+        return None
+    try:
+        left, top = float(a.get("left")), float(a.get("top"))
+    except (TypeError, ValueError, OverflowError):
+        return None
+    if not (math.isfinite(left) and math.isfinite(top)):
+        return None
+    return {"left": left, "top": top}
+
+
+@router.post("/api/launcher/show")
+def api_launcher_show(body: dict = Body(default={}),
+                      x_fused: str | None = Header(default=None)):
+    """Show the launcher panel — the Claude rail's Search door (ClaudeRail),
+    the same as the ⌥Space shortcut or the Dock's "Search Apps…", except
+    that with an ``anchor`` the panel stands beside the rail like a window A
+    card (launcher.beside_frame) instead of mid-screen. The hook hops to the
+    main thread itself. 404 where this process has no panel (`/api/config`
+    ``launcher_available`` is false there, so no door asks)."""
+    guard = _require_fused(x_fused)
+    if guard is not None:
+        return guard
+    hook = launcher.native_hooks.get("show")
+    if hook is None:
+        return _error("no launcher panel in this process", status=404)
+    hook(_anchor(body))
+    return {"ok": True}
+
+
+@router.get("/api/launcher/shown")
+def api_launcher_shown():
+    """Whether the launcher panel stands right now — the Claude rail's Search
+    door wears its open state while it does (ClaudeRail). ``false`` where
+    this process has no panel."""
+    hook = launcher.native_hooks.get("is_shown")
+    try:
+        return {"shown": bool(hook()) if hook is not None else False}
+    except Exception:  # noqa: BLE001 — a dead panel is a closed one
+        return {"shown": False}
+
+
+#: The bucket search runs beside the app and file searches rather than after
+#: them, so a keystroke pays for the slower of the two, not their sum.
+_remote_pool = ThreadPoolExecutor(max_workers=2, thread_name_prefix="launcher-remote")
+
+
 @router.get("/api/launcher")
 def api_launcher(q: str = Query(default="")):
     """``apps`` as before; ``files`` (and the index's coverage ``reason``
-    when it had none to give) for a non-empty query. Sync on purpose: the
-    index query blocks, and FastAPI runs a plain ``def`` in its threadpool.
-    Under Fused Bot ``apps`` holds bot rows and ``files`` is always empty:
-    the Bot app has no explorer to open a file in."""
+    when it had none to give) and ``remote`` (`fused-asset` bucket rows,
+    `launcher.remote_results`) for a non-empty query. Sync on purpose: the
+    index queries block, and FastAPI runs a plain ``def`` in its threadpool."""
+    remote = _remote_pool.submit(launcher.remote_results, q) if q.strip() else None
     apps = launcher.results(q, _running())
-    if _flavor.is_bot():
-        return {"query": q, "apps": apps, "files": [], "files_reason": ""}
     files = launcher.file_results(q, exclude=[a["path"] for a in apps if a.get("path")])
+    try:
+        remote_rows = remote.result() if remote is not None else []
+    except Exception:  # noqa: BLE001 — remote_results never raises; belt and braces
+        remote_rows = []
     return {"query": q, "apps": apps, "files": files["files"],
-            "files_reason": files["reason"]}
+            "files_reason": files["reason"], "remote": remote_rows}

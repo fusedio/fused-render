@@ -23,6 +23,7 @@ def ws(tmp_path, monkeypatch):
     """A tmp fused workspace (apps root = <ws>/app), no greeting model call."""
     w = tmp_path / "ws"
     monkeypatch.setenv("FUSED_RENDER_DIR", str(w))
+    reset_bots_caches()  # a Bot / folder cached by id under the previous test's workspace must not answer here
     os.makedirs(bpaths.apps_root())
     monkeypatch.setattr(apptools, "ROOTS", [bpaths.apps_root()])
     monkeypatch.setattr(apptools, "REGISTRY_FILES", [])
@@ -35,8 +36,8 @@ def ws(tmp_path, monkeypatch):
 @pytest.fixture
 def bot(ws):
     registry.reset_for_tests()
-    bid = "s1"
-    os.makedirs(bpaths.bot_dir(bid))
+    bid = "5e5e5e5e"
+    bpaths.place(bid, "Tester")  # the folder (<ws>/bots/tester/) must exist before the meta is written
     store.write_meta(bid, {"id": bid, "name": "Tester", "model": "sonnet", "effort": "low", "status": "idle",
                            "instructions": "", "created": time.time(), "task": "", "step": 0, "url": None, "title": None})
     b = registry.get(bid)

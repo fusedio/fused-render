@@ -18,26 +18,29 @@ const {
 } = await import("./composer-defaults");
 
 test("the lists and labels are the CLI's vocabulary, verbatim (T:11823-11876)", () => {
-  expect(MODELS).toEqual(["fable", "opus", "sonnet", "haiku"]);
+  // Lightest to heaviest, the way the effort list reads (Akshil, 2026-11-07).
+  expect(MODELS).toEqual(["haiku", "sonnet", "opus", "fable"]);
   expect(MODELS.map((m) => MODEL_LABELS[m])).toEqual([
-    "Fable",
-    "Opus",
-    "Sonnet",
     "Haiku",
+    "Sonnet",
+    "Opus",
+    "Fable",
   ]);
   expect(EFFORTS).toEqual(["low", "medium", "high", "xhigh", "max"]);
   expect(PERMISSION_MODES).toEqual(["plan", "prompt", "acceptEdits", "auto"]);
+  // The New task card's words, shared through platform/lib/permission-modes
+  // (Akshil, 2026-11-02: one vocabulary for both pickers).
   expect(PERMISSION_MODES.map((m) => PERMISSION_LABELS[m])).toEqual([
-    "plan first",
-    "ask every time",
-    "auto-accept edits",
-    "Claude decides",
+    "Plan only",
+    "Ask every time",
+    "Accept edits",
+    "Auto",
   ]);
   expect(PERMISSION_MODES.map((m) => PERMISSION_SHORT[m])).toEqual([
-    "plan",
-    "ask",
-    "edits",
-    "decides",
+    "Plan",
+    "Ask",
+    "Edits",
+    "Auto",
   ]);
   expect([DEFAULT_MODEL, DEFAULT_EFFORT, DEFAULT_PERMISSION]).toEqual([
     "sonnet",

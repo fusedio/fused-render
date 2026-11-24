@@ -42,7 +42,7 @@ import { useArchiveConfirm } from "@shell/archive-confirm";
 import { anyModalOpen } from "@platform/ui/modal/esc-stack";
 import ContextMenu, { type MenuEntry } from "@platform/ui/ContextMenu";
 import { SkeletonLines } from "@platform/ui/Skeleton";
-import { ChatMount } from "@apps/claude";
+import { ChatFramePlaceholder, ChatMount } from "@apps/claude";
 import {
   RUN_BLOCKED_HINT,
   TASK_ACTION_LABELS,
@@ -69,12 +69,8 @@ import { folderHref } from "./schedule-lib";
 import { EraseTaskModal } from "./EraseTaskModal";
 import { ICON_OPEN_FOLDER_PATH } from "./ScheduleTaskViews";
 import { useChatTemplates } from "./TaskCards";
-// The header's identity block — status ring, number, title, project — lives in
-// its own module because the native chat's top line draws the SAME block for the
-// task behind the conversation it is showing (see that file's note).
-import { TaskPeekAgent, TaskPeekProject, TaskPeekWho, useTaskHeadline } from "./TaskPeekWho";
+import { useTaskHeadline } from "./TaskPeekWho";
 import { agentLabel, agentNamed, isBackendOff, useAgentBackends } from "@platform/lib/agent-backends";
-import { PEEK_HEAD_DROPS, useStripFit } from "./row-fit";
 import {
   PREVIEW_KEY_STEP,
   PREVIEW_LOAD_TIMEOUT_MS,
@@ -97,8 +93,10 @@ import {
   SHOW_PAGE_DOOR,
   taskHref,
   pageDoorLabel,
+  taskChatTarget,
+  taskColumn,
 } from "./tasks-lib";
-import { useTaskRecapTitlesEnabled } from "@apps/claude/feature-flag";
+import { useChatRecapEnabled } from "@apps/claude/feature-flag";
 import { getSidebarState, subscribeSidebarState } from "@platform/lib/sidebarstate";
 import { MISSING_FOLDER_TOAST, taskFolder } from "./useMissingFolders";
 import { TaskPrChip } from "./TaskPrChip";
@@ -129,6 +127,17 @@ import {
   usePeekAnchor,
   usePeekedKey,
 } from "./task-peek-store";
+import { publishPeekSession } from "@platform/lib/peek-session";
+import type { BreakoutControl } from "@apps/claude/ClaudeChat";
+import { MessagesSquare } from "lucide-react";
+import { breakoutOpener } from "@platform/lib/breakouts";
+// THE SHARED TASK HEAD (design.md, "One task head, everywhere"), behind its
+// flag: with it on, this panel's head is `TaskHead` and its ⋮ is the chat's own
+// `Kebab`; with it off, the head below is the one this panel has always drawn.
+import { TaskHead } from "./TaskHead";
+import { Kebab } from "@apps/claude/ui/Kebab";
+import { AgentProvider } from "@apps/claude/ui/agent-context";
+import { opensInSidePane, requestSideMaximized } from "@platform/lib/side-maximized-store";
 
 /** How long an EMPTY task list is given to turn out to be a list that has not
  *  arrived yet, before a `?peek=` naming nothing is treated as naming nothing
@@ -151,6 +160,9 @@ function sidebarStamp(): number {
 
 /** Re-render on window resize: every make-room rule is about the CURRENT
  *  window, so a peek opened wide has to re-decide when the window narrows.
+ *  The host is watched too, for the right-edge chrome (the fallback rail, a
+ *  favourite's card) coming and going with no resize: the store's viewport
+ *  ends at the host's right edge (task-peek-store `viewportWidth`).
  *
  *  `enabled` is the flag's, and it reaches all the way down to the listener: a
  *  reader who has opted out of the side peek is not paying for a resize handler
@@ -159,10 +171,16 @@ function useViewportWidth(enabled: boolean): number {
   const [w, setW] = useState(() => (typeof window === "undefined" ? 0 : window.innerWidth));
   useEffect(() => {
     if (!enabled) return;
-    const read = () => setW(window.innerWidth);
+    const host = document.querySelector<HTMLElement>(".tasks-peek-host");
+    const read = () => setW(host ? host.getBoundingClientRect().right : window.innerWidth);
     read();
     window.addEventListener("resize", read);
-    return () => window.removeEventListener("resize", read);
+    const ro = host && typeof ResizeObserver !== "undefined" ? new ResizeObserver(read) : null;
+    ro?.observe(host!);
+    return () => {
+      window.removeEventListener("resize", read);
+      ro?.disconnect();
+    };
   }, [enabled]);
   return w;
 }
@@ -354,35 +372,6 @@ const ICON = {
   "aria-hidden": true,
 };
 
-/** CLOSE, and it is the header's FIRST control in every mode (Akshil,
- *  2026-09-14 — design.md, Polish batch 4, item 11). It wore a panel glyph for
- *  a day — "hide the right panel", and in cover "show the list" — which is a
- *  picture of a LAYOUT, and a reader who wants this task off their screen
- *  should not have to work out which layout they are in first. One mark, one
- *  meaning, in the corner every panel in this app puts it. */
-const ICON_CLOSE = (
-  <svg {...ICON}><path d="M6 6l12 12M18 6L6 18" /></svg>
-);
-/** OPEN IN EXPLORER — the PREFIX on a word (Akshil, 2026-09-14 — design.md,
- *  Polish batch 5). An arrow out of a box, pointing to the upper right: the
- *  mark the whole web uses for "this leaves the page you are on", which is
- *  exactly what the press does. It leads the label rather than trailing it, the
- *  way every other icon-and-word control in this app is built; the "→" that
- *  used to follow the word said "forward", which is what a Next control says. */
-const ICON_OPEN_EXTERNAL = (
-  <svg {...ICON} width={13} height={13}>
-    <path d="M7 17 17 7" />
-    <path d="M8 7h9v9" />
-  </svg>
-);
-/** CHEVRONS, not arrows (design.md, Header + list state v2). Prev/next step
- *  through a list that is on screen; an arrow would promise travel. */
-const ICON_UP = (
-  <svg {...ICON}><polyline points="18 15 12 9 6 15" /></svg>
-);
-const ICON_DOWN = (
-  <svg {...ICON}><polyline points="6 9 12 15 18 9" /></svg>
-);
 /** VERTICAL, because it sits at the end of a row rather than in one: the kebab
  *  every list in this app wears (design.md). */
 const ICON_DOTS = (
@@ -404,10 +393,23 @@ const ICON_OPEN_DOOR = (
 
 // ---- the panel ---------------------------------------------------------------
 
+/** The menu's Breakout rows (item + separator), from the chat's own report;
+ *  none while the chat says it is unavailable. */
+export function breakoutMenuEntries(ctl: BreakoutControl | null): MenuEntry[] {
+  if (!ctl?.available) return [];
+  return [
+    {
+      label: ctl.picking ? "Cancel breakout pick" : "Breakout…",
+      icon: <MessagesSquare size={16} aria-hidden="true" />,
+      onClick: () => ctl.toggle(),
+    },
+    "separator",
+  ];
+}
+
 export function TaskPeek({
   tasks,
   loaded = false,
-  home = "",
   missing,
   onReload,
 }: {
@@ -429,9 +431,8 @@ export function TaskPeek({
   const canRun = useCanRunInTerminal();
   // The terminal rows follow the agent's switch (D17); subscribed so a flip repaints.
   useAgentBackends();
-  // The peek's recap fold exists only with the Tasks recap titles on: off, the
-  // peek's chat is exactly what it was before them.
-  const recapOn = useTaskRecapTitlesEnabled();
+  // The peek's recap fold follows the chat recap switch (default on).
+  const recapOn = useChatRecapEnabled();
   // THE URL MEETS THE DATA (task-peek-store.settlePeek): a deep link naming a
   // task that is not here closes the panel and drops the param instead of
   // standing open and empty; one naming a task NUMBER is rewritten to that
@@ -485,6 +486,37 @@ export function TaskPeek({
     const t = setTimeout(() => setParked(true), PEEK_PARK_MS);
     return () => clearTimeout(t);
   }, [layout.open]);
+  // ARRIVED: the panel is open AND its slide-in is over. The chat and the app
+  // preview mount only then (the body below draws their placeholders meanwhile).
+  //
+  // The frame's width glide (task-peek.css `.tasks-frame`) is a main-thread
+  // animation, and a trace of an open showed the main thread busy 170 of the
+  // first 250 ms: the chat's first render, the same-origin preview document
+  // booting, and the restyles of both, in tasks of 14–31 ms. Each one held the
+  // glide still for two to four 120 Hz frames. With nothing mounting, a glide
+  // frame costs about 1 ms.
+  //
+  // Only an open that SLIDES waits: a deep link (`layout.instant`) shows the
+  // panel in place, reduced motion has no slide, and a task swap inside an
+  // open panel never re-slides. Closing keeps what is mounted (a re-open
+  // mid-slide has it all still there); parking is what drops it, so the next
+  // open waits again. A timer, as parking is, for the same reasons.
+  const [arrived, setArrived] = useState(layout.open);
+  useEffect(() => {
+    if (!layout.open || arrived) return;
+    const still =
+      layout.instant ||
+      (typeof matchMedia === "function" && matchMedia("(prefers-reduced-motion: reduce)").matches);
+    if (still) {
+      setArrived(true);
+      return;
+    }
+    const t = setTimeout(() => setArrived(true), PEEK_PARK_MS);
+    return () => clearTimeout(t);
+  }, [layout.open, layout.instant, arrived]);
+  useEffect(() => {
+    if (parked && !layout.open) setArrived(false);
+  }, [parked, layout.open]);
   const [menuAt, setMenuAt] = useState<{ x: number; y: number } | null>(null);
   /**
    * THE TASK THE DELETE WAS ASKED ABOUT — a SNAPSHOT, not `task` (Bugbot,
@@ -522,10 +554,18 @@ export function TaskPeek({
 
   const folder = task ? taskFolder(task) : "";
   const gone = !!task && !!missing?.has(folder);
-  const templates = useChatTemplates(task && !gone ? [task.target || task.project] : []);
-  const template = task ? templates[task.target || task.project] : undefined;
+  const chatFile = task ? taskChatTarget(task) : "";
+  const templates = useChatTemplates(task && !gone ? [chatFile] : []);
+  const template = task ? templates[chatFile] : undefined;
   const chatHere = !!(task && task.session_id && template && !gone);
   const resolving = !chatHere && !gone && !!task?.session_id && template === undefined;
+  // The favourite's card (FavouritePeek) keeps no chat of its own on the
+  // session this panel's chat is on — one draft, one composer.
+  const peekSid = key !== null && chatHere ? (task?.session_id ?? null) : null;
+  useEffect(() => {
+    publishPeekSession(peekSid);
+    return () => publishPeekSession(null);
+  }, [peekSid]);
 
   // ---- the app preview -------------------------------------------------------
   // THE APP THIS TASK IS ABOUT, if its folder is one (shell/peek-preview.ts:
@@ -615,18 +655,28 @@ export function TaskPeek({
   // Whether the arrows have anywhere to go, re-read whenever the open task or
   // the set changes — the walk is the DOM's, so it cannot be memoised on props.
   const [ends, setEnds] = useState<{ prev: boolean; next: boolean }>({ prev: false, next: false });
+  /** THE LAST VISIBLE ORDER THAT STILL HELD THE OPEN TASK — the shared head's
+   *  ⋮ (`Kebab`) reports an archive or a delete only once it has happened, and
+   *  by then the poll may have dropped the row; `nextAfterRemoval` needs an
+   *  order that still names it to find the neighbour (the legacy menu captured
+   *  the order at the press instead). */
+  const lastOrderWithKey = useRef<readonly string[]>([]);
   useEffect(() => {
     if (key === null) return;
     const list = visibleOrder();
+    if (list.includes(key)) lastOrderWithKey.current = list;
     setEnds({
       prev: stepPeekKey(list, key, -1) !== null,
       next: stepPeekKey(list, key, 1) !== null,
     });
   }, [key, tasks]);
 
-  // THE HEADER'S OWN FIT LADDER (shell/row-fit.ts `PEEK_HEAD_DROPS`): measured,
-  // never a breakpoint, and armed only while the panel is actually up.
-  const [headFit, headRef] = useStripFit(PEEK_HEAD_DROPS, key !== null);
+  /** The shared head's chip seat, for the chat's worktree menu to portal into
+   *  (ChatMount `headChipsHost`). State, so the chat re-renders once it lands. */
+  const [chipsHost, setChipsHost] = useState<HTMLElement | null>(null);
+  /** …and its status seat, for the chat's pause word (ChatMount
+   *  `headStatusHost`) — on no rung of the head's ladder. */
+  const [statusHost, setStatusHost] = useState<HTMLElement | null>(null);
 
   // ---- the keyboard ----------------------------------------------------------
   /**
@@ -837,7 +887,7 @@ export function TaskPeek({
       for (const doc of seen) doc.removeEventListener("keydown", onKey);
       seen.clear();
     };
-  }, [key, previewSrc, previewReady, peekKey]);
+  }, [key, previewSrc, previewReady, peekKey, arrived]);
 
   // ---- the preview's seam ----------------------------------------------------
   // The horizontal twin of the panel's own edge: same 12px hit area, same 1px
@@ -994,13 +1044,14 @@ export function TaskPeek({
    * A FOURTH appears only when the header has had to fold its own door away
    * (`headFit`): a hidden control has to be somewhere, and the kebab is where.
    */
+  const [breakoutCtl, setBreakoutCtl] = useState<BreakoutControl | null>(null);
   const menuItems = (): MenuEntry[] => {
     if (!task) return [];
     const items: MenuEntry[] = [];
-    if (SHOW_PAGE_DOOR && page && headFit >= PEEK_HEAD_DROPS.length) {
-      items.push({ label: pageDoorLabel(task), icon: ICON_OPEN_DOOR, onClick: openAsPage });
-      items.push("separator");
-    }
+    // BREAKOUT, from the chat's own report: the peek's head hides the chat's ⋮.
+    items.push(...breakoutMenuEntries(breakoutCtl));
+    // The shared head never folds its ↗ Open, so the door is never in this
+    // menu.
     if (SHOW_PAGE_DOOR && gone) {
       items.push({
         label: pageDoorLabel(task),
@@ -1085,6 +1136,100 @@ export function TaskPeek({
     return items;
   };
 
+  /**
+   * THE SHARED HEAD'S ⋮ — the chat's own `Kebab`, the same props the rail's
+   * Tasks card gives it, so the panel's menu reads exactly as every other task
+   * menu does (design.md: "⋮ is always Kebab"). What is this panel's own rides
+   * in `extraItems`: the folded Open door, and the door greyed with why when
+   * the folder is gone. Full screen is the hop to the page, then the Claude
+   * panel filling the window — new here (Decisions, 4).
+   *
+   * A TASK WITH NO SESSION (a message not sent yet) has no `Kebab` — there is
+   * nothing for it to read — and keeps this panel's own menu, so Delete of a
+   * never-run message is not lost.
+   */
+  const unifiedKebab = (t: Task) => {
+    if (!t.session_id) {
+      return (
+        <button
+          type="button"
+          className="task-head-btn task-side-peek-kebab"
+          // The chat's ⋮'s own words (Kebab), so the trigger reads the same
+          // whichever menu is behind it.
+          aria-label="More options"
+          data-hint="More options"
+          onClick={(e) => {
+            const r = e.currentTarget.getBoundingClientRect();
+            setMenuAt({ x: r.right - 200, y: r.bottom + 4 });
+          }}
+        >
+          {ICON_DOTS}
+        </button>
+      );
+    }
+    const sid = t.session_id;
+    const fsHref = gone ? null : taskHref(t);
+    const column = taskColumn(t);
+    return (
+      <AgentProvider backend={t.backend ?? ""}>
+        <Kebab
+          key={t.key}
+          file={taskChatTarget(t)}
+          sessionId={sid}
+          running={column === "in_progress" || column === "queued"}
+          asking={column === "needs_attention"}
+          queued={column === "queued"}
+          // The TASK KEY this ⋮ was built for, not the callback's session
+          // id: the visible order (`nextAfterRemoval`) is keyed by task key,
+          // and a session id is not one.
+          // …ONLY WHILE THE PANEL STILL SHOWS IT: a filing that answers after
+          // the reader walked on (⌃⇧J/K, ↑↓) re-reads the list and leaves the
+          // task now on screen where it is.
+          onArchived={() => {
+            onReload?.();
+            if (getPeekState().key === t.key) advancePast(t.key, lastOrderWithKey.current);
+          }}
+          onErased={() => {
+            notify({ title: `Deleted ${shortTaskId(t.task_id)}`, tone: "info" });
+            onReload?.();
+            if (getPeekState().key === t.key) advancePast(t.key, lastOrderWithKey.current);
+          }}
+          {...(fsHref && opensInSidePane(fsHref)
+            ? {
+                fullScreen: {
+                  on: false,
+                  onToggle: () => {
+                    // The request is keyed to the page the side-pane chat
+                    // mounts on, so it is made once the hop has landed.
+                    closePeek({ push: false });
+                    void navigateUrl(fsHref).then((went) => {
+                      if (went !== false) requestSideMaximized(sid);
+                    });
+                  },
+                },
+              }
+            : {})}
+          {...(breakoutCtl?.available
+            ? { breakout: { picking: breakoutCtl.picking, onToggle: breakoutCtl.toggle } }
+            : {})}
+          extraItems={[
+            ...(SHOW_PAGE_DOOR && gone
+              ? [
+                  {
+                    label: `${pageDoorLabel(t)} — folder deleted`,
+                    icon: ICON_OPEN_DOOR,
+                    disabled: true,
+                    title: MISSING_FOLDER_TOAST,
+                    onClick: () => notify({ title: MISSING_FOLDER_TOAST, tone: "error" }),
+                  },
+                ]
+              : []),
+          ]}
+        />
+      </AgentProvider>
+    );
+  };
+
   // The same line the row and the chat header print (TaskPeekWho).
   const title = useTaskHeadline(task);
 
@@ -1101,6 +1246,7 @@ export function TaskPeek({
         }
         style={{ width: layout.open ? layout.width : heldWidth.current }}
         aria-hidden={layout.open ? undefined : true}
+        data-task-window=""
         role="complementary"
         aria-label={task ? `${shortTaskId(task.task_id)} ${title}` : "Task"}
       >
@@ -1148,118 +1294,29 @@ export function TaskPeek({
             side is a fixed mark and a mark that ellipsises is a mark that lies.
 
             `data-fit` is measured, never a breakpoint (shell/row-fit.ts): at
-            the narrowest widths the project name goes, then the Open door —
+            the narrowest widths the Open door folds —
             and the door reappears in the ⋮ so the act is never unreachable. */}
-        <header className="task-side-peek-head" ref={headRef} data-fit={headFit}>
-          <div className="task-side-peek-acts">
-            {/* CLOSE, IN EVERY MODE (Akshil, 2026-09-14 — design.md, Polish
-                batch 4, item 11). This was a panel glyph whose meaning changed
-                with the layout — "hide the right panel", and in cover "show the
-                list" — so the one control every reader reaches for first was
-                the one control they had to decode. A × in the panel's leading
-                corner is the same promise every other panel in this app makes,
-                and it no longer has to live in the ⋮ as well. */}
-            <button
-              type="button"
-              className="task-side-peek-btn"
-              aria-label="Close the task panel"
-              data-hint="Close · Esc"
-              onClick={() => closePeek()}
-            >
-              {ICON_CLOSE}
-            </button>
-            {/* NO "RESIZE PANEL" ANY MORE (Akshil, 2026-09-15). The way out of
-                cover is the sidebar: expanding it by hand hands the panel back
-                to its default split (task-peek-store `expandUncovers`), and the
-                × closes. A third control for a state two others already leave
-                was one more thing to read. */}
-            {/* CHEVRONS, not arrows (design.md): prev/next here walk a list the
-                reader can see, one step at a time — the gesture a chevron means
-                everywhere else in this app. A full arrow is for travel. */}
-            <button
-              type="button"
-              className="task-side-peek-btn"
-              aria-label="Previous task"
-              data-hint="Previous task · ↑"
-              disabled={!ends.prev}
-              onClick={() => step(-1)}
-            >
-              {ICON_UP}
-            </button>
-            <button
-              type="button"
-              className="task-side-peek-btn"
-              aria-label="Next task"
-              data-hint="Next task · ↓"
-              disabled={!ends.next}
-              onClick={() => step(1)}
-            >
-              {ICON_DOWN}
-            </button>
-          </div>
-          {task ? (
-            <TaskPeekWho task={task} />
-          ) : (
-            <span className="task-side-peek-idle" aria-hidden />
-          )}
-          {task && (
-            <div className="task-side-peek-marks">
-              {/* THE PROJECT IS A FACT, NOT A DOOR (Akshil, 2026-09-14 —
-                  design.md, Polish batch 4). It was a folder mark and a name
-                  wired to the folder's Explorer page, sitting an inch from a
-                  second door — with a folder glyph on it — that went somewhere
-                  else. Two doors, two folder pictures, one header: the reader
-                  had to learn which folder each one meant. So the name goes
-                  back to being what it is, the label of the project this task
-                  runs in, and the header keeps exactly ONE way out.
-
-                  The whole argument, and the markup, are in `TaskPeekWho.tsx`
-                  now — the chat's header draws this same chip. */}
-              <TaskPeekProject task={task} home={home} />
-              <TaskPeekAgent task={task} />
-              {/* "↗ OPEN" — a WORD behind a MARK (design.md, Polish batches 4
-                  and 5). The folder glyph it replaced was the page's one door
-                  picture, which is a good rule everywhere except beside a
-                  folder NAME, where it read as "open that folder" and did not;
-                  the label says the act, and the external-link arrow in front
-                  of it says the press leaves this page. The icon LEADS, the way
-                  every other icon-and-word control in this app is built, and
-                  the outline around the pair is what makes it read as a button
-                  rather than as more of the header's ink.
-
-                  A real link with a real href, so ⌘-click opens a tab, exactly
-                  like the row's own door. */}
-              {SHOW_PAGE_DOOR && page && (
-                <a
-                  className="task-side-peek-open"
-                  href={page}
-                  aria-label={pageDoorLabel(task)}
-                  data-hint={pageDoorLabel(task)}
-                  onClick={(e) => {
-                    if (e.metaKey || e.ctrlKey || e.shiftKey || e.altKey || e.button !== 0) return;
-                    e.preventDefault();
-                    openAsPage();
-                  }}
-                >
-                  {ICON_OPEN_EXTERNAL}
-                  Open
-                </a>
-              )}
-              <button
-                type="button"
-                className="task-side-peek-btn task-side-peek-kebab"
-                aria-label="More actions"
-                data-hint="More actions"
-                onClick={(e) => {
-                  const r = e.currentTarget.getBoundingClientRect();
-                  setMenuAt({ x: r.right - 200, y: r.bottom + 4 });
-                }}
-              >
-                {ICON_DOTS}
-              </button>
-            </div>
-          )}
-        </header>
+        <TaskHead
+            lead={{ kind: "close", label: "Close the task panel", hint: "Close · Esc", onPress: () => closePeek() }}
+            nav={{ prev: ends.prev, next: ends.next, step: (d) => void step(d), keyHints: true }}
+            task={task}
+            // Two lines, the rail window's layout (Akshil, 2026-11-17).
+            twoLine
+            star
+            fitEnabled={key !== null}
+            chipsRef={setChipsHost}
+            statusRef={setStatusHost}
+            chips={task ? <TaskPrChip task={task} /> : null}
+            open={SHOW_PAGE_DOOR && page && task ? { href: page, label: pageDoorLabel(task), onOpen: () => openAsPage() } : null}
+            kebab={task ? unifiedKebab(task) : null}
+            // THE RING FILES IT (TaskFileSeat): an Archive advances along the
+            // order that still held the task, as the ⋮'s does; an Unarchive
+            // stays put.
+            onFiled={(kind) => {
+              onReload?.();
+              if (kind === "archive" && task) advancePast(task.key, lastOrderWithKey.current);
+            }}
+          />
 
         <div className="task-side-peek-body" ref={bodyRef}>
           {showPreview && previewSrc && (
@@ -1305,19 +1362,27 @@ export function TaskPeek({
                         height: box.frameHeight * box.scale,
                       }}
                     >
-                      <iframe
-                        ref={previewRef}
-                        className="task-side-peek-preview-frame"
-                        src={previewSrc}
-                        title={app ? `${app.name} preview` : "App preview"}
-                        style={{
-                          width: PREVIEW_VW,
-                          height: box.frameHeight,
-                          transform: `scale(${box.scale})`,
-                        }}
-                        onLoad={() => stepLoad("load")}
-                        onError={() => stepLoad("error")}
-                      />
+                      {/* Not until the slide is over (`arrived`): the app is
+                          same-origin, so its document boots on this page's
+                          main thread, and the frame's width glide stalls for
+                          as long as it does. The card keeps its size meanwhile
+                          (with its skeleton until the app's first load), so
+                          nothing moves when the frame lands. */}
+                      {arrived ? (
+                        <iframe
+                          ref={previewRef}
+                          className="task-side-peek-preview-frame"
+                          src={previewSrc}
+                          title={app ? `${app.name} preview` : "App preview"}
+                          style={{
+                            width: PREVIEW_VW,
+                            height: box.frameHeight,
+                            transform: `scale(${box.scale})`,
+                          }}
+                          onLoad={() => stepLoad("load")}
+                          onError={() => stepLoad("error")}
+                        />
+                      ) : null}
                     </div>
                     {!previewReady && (
                       <div className="task-side-peek-preview-wait" aria-hidden>
@@ -1353,15 +1418,24 @@ export function TaskPeek({
             </>
           )}
           <div className="task-side-peek-chat">
-            {chatHere && task && mounted ? (
+            {chatHere && task && mounted && !arrived ? (
+              // THE CHAT WAITS FOR THE SLIDE (`arrived`), behind the very
+              // placeholder ChatMount shows while its chunk loads, so the
+              // hand-over is invisible. Mounting it inside the 200 ms glide
+              // put 14–31 ms tasks on the main thread the frame's width
+              // transition runs on, and the glide stuttered.
+              <ChatFramePlaceholder />
+            ) : chatHere && task && mounted ? (
               // KEYED ON THE TASK, which is what makes a SWAP a swap: the panel
               // itself never re-slides (design.md, Peek body), and the new
               // conversation arrives behind the chat's own skeleton — the same
               // cover the Cards wall and the explorer sidebar use — because a
               // remount restarts its wait.
               <ChatMount
+                onBreakout={breakoutOpener()}
+                onBreakoutControl={setBreakoutCtl}
                 key={task.key}
-                file={task.target || task.project}
+                file={chatFile}
                 sessionId={task.session_id}
                 // WHAT THIS TASK IS SET TO (Akshil, 2026-09-18: "I saw the
                 // sidebar peek — the values there were different", then "what I
@@ -1390,8 +1464,10 @@ export function TaskPeek({
                 {...(anchor ? { msgAnchor: anchor } : {})}
                 chatOnly
                 peek
-                headerInPeek
-                headerExtra={<TaskPrChip task={task} />}
+                // The shared head seats the chat's worktree pieces itself
+                // (`headChipsHost`).
+                headChipsHost={chipsHost}
+                headStatusHost={statusHost}
                 paramsSource="memory"
                 // THE RECAP OPT-IN (ChatMount `recap`): the peek is the one chat
                 // the reader opened on this page, so it gets the "While you were

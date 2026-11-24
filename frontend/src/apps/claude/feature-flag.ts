@@ -18,6 +18,13 @@ import type { PermissionMode } from "./protocol/types";
 
 let reading: Promise<void> | null = null;
 let generation = 0;
+// Bumped by every known-fresh Breakout answer (`publishBreakoutEnabled`). A prefs
+// read that departed before the bump may land after it with an older value; it
+// must not overwrite the fresher one. Breakout-only: the shared `generation`
+// would also discard the queue / recap answers the same read carries.
+let breakoutPublishedAt = 0;
+// The same guard for the chat-recap switch.
+let recapPublishedAt = 0;
 
 /**
  * NOT a tri-state. It gates ONE extra call in front of a send, it DEFAULTS
@@ -34,12 +41,17 @@ const queueListeners = new Set<(v: boolean) => void>();
  *  send and decide waited up to 8 s until one succeeded). */
 let settledOnce = false;
 
-/** The Tasks recap titles switch (`prefs.task_recap.enabled`): with it on an
- *  open chat shows its recap fold on open, not only after an absence. Same
- *  shape as `queue` — opt-in, so "not asked yet" and "off" are one answer —
- *  and read by the same single prefs GET. */
-let recapTitles = false;
+/** The chat recap switch (`prefs.chat_recap.enabled`): with it on an open
+ *  chat shows its recap fold on open, not only after an absence. DEFAULT ON
+ *  (unlike `queue`), so "not asked yet" and "on" are one answer; read by the
+ *  same single prefs GET. */
+let recapTitles = true;
 const recapListeners = new Set<(v: boolean) => void>();
+
+/** The Breakout switch (`prefs.breakout.enabled`): opt-in beta, off until the
+ *  prefs read says otherwise. Same shape as `recapTitles`. */
+let breakout = false;
+const breakoutListeners = new Set<(v: boolean) => void>();
 
 /** The four Approvals modes, for narrowing a value off the wire or a URL. */
 const PERMISSION_VALUES: readonly PermissionMode[] = ["plan", "prompt", "acceptEdits", "auto"];
@@ -85,6 +97,12 @@ export function useDefaultPermission(): PermissionMode {
     };
   }, []);
   return current;
+}
+
+function setBreakout(next: boolean) {
+  if (breakout === next) return;
+  breakout = next;
+  for (const listener of breakoutListeners) listener(next);
 }
 
 function setRecapTitles(next: boolean) {
@@ -154,6 +172,8 @@ function withDeadline<T>(work: Promise<T>, ms: number): Promise<T> {
 function read(): Promise<void> {
   if (reading) return reading;
   const departed = generation;
+  const breakoutStamp = breakoutPublishedAt;
+  const recapStamp = recapPublishedAt;
   // ONE BUDGET FOR THE WHOLE READ, retry included (bugbot, 2026-09-15).
   //
   // The deadline used to wrap each ATTEMPT, so a wedged server spent 8 s, was
@@ -177,7 +197,8 @@ function read(): Promise<void> {
       // `=== true`: the queue is OPT-IN, so a server with no such field is a
       // server whose sends are not admitted through anything.
       setQueue(p.queue?.enabled === true);
-      setRecapTitles(p.task_recap?.enabled === true);
+      if (recapPublishedAt === recapStamp) setRecapTitles(p.chat_recap?.enabled !== false);
+      if (breakoutPublishedAt === breakoutStamp) setBreakout(p.breakout?.enabled === true);
       // A server that predates the field keeps "auto", the server's default.
       setDefaultPermission(narrowPermission(p.claude_default_permission) || "auto");
     })
@@ -234,11 +255,26 @@ export function rereadFlags(): Promise<void> {
  *  keeping the answer it read at load. */
 export const QUEUE_FLAG_BROADCAST_KEY = "fused-render:project-queue";
 
-/** The same announcement for the recap titles switch. */
-export const RECAP_FLAG_BROADCAST_KEY = "fused-render:task-recap-titles";
+/** The same announcement for the chat recap switch. */
+export const RECAP_FLAG_BROADCAST_KEY = "fused-render:chat-recap";
 
-/** Hand over a known-fresh recap-titles answer (a PUT's prefs payload). */
-export function publishTaskRecapTitlesEnabled(next: boolean) {
+/** The same announcement for the Breakout switch. */
+export const BREAKOUT_FLAG_BROADCAST_KEY = "fused-render:breakout";
+
+/** Hand over a known-fresh Breakout answer (a PUT's prefs payload). */
+export function publishBreakoutEnabled(next: boolean) {
+  breakoutPublishedAt += 1;
+  setBreakout(next);
+  try {
+    localStorage.setItem(BREAKOUT_FLAG_BROADCAST_KEY, JSON.stringify({ on: next, at: Date.now() }));
+  } catch {
+    // Storage may be unavailable; the other tabs still re-read on focus.
+  }
+}
+
+/** Hand over a known-fresh chat-recap answer (a PUT's prefs payload). */
+export function publishChatRecapEnabled(next: boolean) {
+  recapPublishedAt += 1;
   setRecapTitles(next);
   try {
     localStorage.setItem(RECAP_FLAG_BROADCAST_KEY, JSON.stringify({ on: next, at: Date.now() }));
@@ -268,16 +304,28 @@ export function applyQueueFlagBroadcast(key: string | null, newValue: string | n
   }
 }
 
+/** One Breakout `storage` event, as the listener below sees it. Breakout is
+ *  opt-in, so only an explicit `on: true` turns it on. Exported for tests. */
+export function applyBreakoutFlagBroadcast(key: string | null, newValue: string | null): void {
+  if (key !== BREAKOUT_FLAG_BROADCAST_KEY || !newValue) return;
+  try {
+    setBreakout((JSON.parse(newValue) as { on?: unknown }).on === true);
+  } catch {
+    // Malformed: the next focus re-reads.
+  }
+}
+
 if (typeof window !== "undefined") {
   window.addEventListener("storage", (ev) => applyQueueFlagBroadcast(ev.key, ev.newValue));
   window.addEventListener("storage", (ev) => {
     if (ev.key !== RECAP_FLAG_BROADCAST_KEY || !ev.newValue) return;
     try {
-      setRecapTitles((JSON.parse(ev.newValue) as { on?: unknown }).on === true);
+      setRecapTitles((JSON.parse(ev.newValue) as { on?: unknown }).on !== false);
     } catch {
       // Malformed: the next focus re-reads.
     }
   });
+  window.addEventListener("storage", (ev) => applyBreakoutFlagBroadcast(ev.key, ev.newValue));
   document.addEventListener("visibilitychange", () => {
     if (document.visibilityState === "visible") void rereadFlags();
   });
@@ -305,9 +353,9 @@ export function useProjectQueueEnabled(): boolean {
   return current;
 }
 
-/** Subscribe to the recap titles switch (see `recapTitles`). Triggers the one
+/** Subscribe to the chat recap switch (see `recapTitles`). Triggers the one
  *  prefs read, like `useProjectQueueEnabled`. */
-export function useTaskRecapTitlesEnabled(): boolean {
+export function useChatRecapEnabled(): boolean {
   const [current, setCurrent] = useState<boolean>(() => recapTitles);
   useEffect(() => {
     recapListeners.add(setCurrent);
@@ -315,6 +363,21 @@ export function useTaskRecapTitlesEnabled(): boolean {
     void read();
     return () => {
       recapListeners.delete(setCurrent);
+    };
+  }, []);
+  return current;
+}
+
+/** Subscribe to the Breakout switch (see `breakout`). Triggers the one prefs
+ *  read, like `useChatRecapEnabled`. */
+export function useBreakoutEnabled(): boolean {
+  const [current, setCurrent] = useState<boolean>(() => breakout);
+  useEffect(() => {
+    breakoutListeners.add(setCurrent);
+    setCurrent(breakout);
+    void read();
+    return () => {
+      breakoutListeners.delete(setCurrent);
     };
   }, []);
   return current;
@@ -339,6 +402,7 @@ export function resetFlagsForTests() {
   generation += 1;
   prefsDeadlineMs = GATE_FALLBACK_MS;
   setQueue(false);
-  setRecapTitles(false);
+  setRecapTitles(true);
+  setBreakout(false);
   setDefaultPermission("auto");
 }

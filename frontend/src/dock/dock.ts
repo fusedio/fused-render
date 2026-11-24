@@ -1,6 +1,5 @@
-// The menu-bar Dock tray (dock.html → here): Render App's dock.html script, as FusedBot ported it, now with
-// fused-render's tiles — the user's APPS and BOTS (Fused Render) or BOTS (Fused Bot); fused_render/dock.py decides, lib.ts
-// holds the data model and the face drawing. Everything the data model does not force is the old page's logic, kept
+// The menu-bar Dock tray (dock.html → here): Render App's dock.html script, now with fused-render's tiles — the
+// user's APPS and BOTS; fused_render/dock.py decides, lib.ts holds the data model and the face drawing. Everything the data model does not force is the old page's logic, kept
 // as it was: the fisheye, the rest layout, the bubble, the keyboard, drag-to-reorder, the separator resize with ⌥
 // snaps, report()/dockAnchor/dockShown/dockMenuClosed, the size/tray/resize/menu messages to the native panel
 // (fused_render/menubar_dock.py), the in-app vs dev-mode classes and the 1.5 s poll with the newest-poll-wins rule.
@@ -8,7 +7,6 @@ import {
   browserHref, bubbleText, displayName, fallbackTile, faceSvg, openBody, tileKey, trayOrder,
   type DockPayload, type Row,
 } from "./lib";
-import botHomeImg from "@assets/fusedbot-icon-1024.png";
 import renderHomeImg from "@assets/fusedrender-icon-1024.png";
 
 declare global {
@@ -24,7 +22,7 @@ const dockHandler = (): DockHandler | undefined =>
   (window as unknown as { webkit?: { messageHandlers?: { dock?: DockHandler } } }).webkit?.messageHandlers?.dock;
 const toNative = (m: Record<string, unknown>) => dockHandler()?.postMessage(m);
 
-// The same marker the app windows carry (mac_window.USER_AGENT_MARKER, both flavors): inside the native panel the
+// The same marker the app windows carry (mac_window.USER_AGENT_MARKER): inside the native panel the
 // page draws no glass and no backdrop of its own and places itself by the anchor the panel sends.
 const INAPP = navigator.userAgent.includes("FusedRender/");
 document.body.classList.add(INAPP ? "inapp" : "dev");
@@ -78,7 +76,6 @@ async function refresh() {
 function apply(d: DockPayload, tilesize?: number) {
   if (state.dragging || state.menuFor || state.resizing) return;
   if (typeof tilesize === "number" && tilesize !== TILE) setTile(tilesize);
-  setHome(d.kind === "bots" ? "bots" : "apps");
   const t = trayOrder(d);
   state.pinned = t.pinned; state.recent = t.recent; state.loaded = true;
   render();
@@ -152,11 +149,9 @@ function utilItem(label: string, html: string, onClick: () => void): Item {
   b.addEventListener("click", onClick);
   return b;
 }
-// Home wears the app's own icon, the one in /Applications: Fused Bot's 1024px artwork (the dark squircle on the
-// macOS grid, 100 px margin in 1024 → scale 1024/824) or Fused Render's sparkle card (assets/fusedrender-icon-1024.png,
-// the build_dmg.sh render: 6 % margin → scale 1/0.88). The CSS scales the image by --home-scale so the card fills the
-// tile and the tile's radius clips the transparent margin. Which one is the payload's `kind` (the server knows the
-// flavor; the page does not).
+// Home wears the app's own icon, the one in /Applications: Fused Render's sparkle card
+// (assets/fusedrender-icon-1024.png, the build_dmg.sh render: 6 % margin → scale 1/0.88). The CSS scales the image by
+// --home-scale (dock.html) so the card fills the tile and the tile's radius clips the transparent margin.
 const homeBtn = utilItem("Home", "", async () => {
   bump(homeBtn);
   try { const r = await post("/api/dock/home"); if (!r.ok || r.native === false) location.href = r.view || "/"; }
@@ -164,18 +159,11 @@ const homeBtn = utilItem("Home", "", async () => {
 });
 const hint = document.createElement("span"); hint.className = "hint"; hint.textContent = "Apps and bots you use appear here";
 homeBtn.classList.add("home");
-let homeKind: "apps" | "bots" | null = null;
-function setHome(kind: "apps" | "bots") {
-  if (homeKind === kind) return;
-  homeKind = kind;
-  const tile = homeBtn.firstElementChild as HTMLElement;
+{
   const im = document.createElement("img"); im.alt = ""; im.draggable = false;
-  im.src = kind === "bots" ? botHomeImg : renderHomeImg;
-  tile.replaceChildren(im);
-  homeBtn.style.setProperty("--home-scale", kind === "bots" ? "124.3%" : "113.7%");
-  hint.textContent = kind === "bots" ? "Bots you use appear here" : "Apps and bots you use appear here";
+  im.src = renderHomeImg;
+  (homeBtn.firstElementChild as HTMLElement).replaceChildren(im);
 }
-setHome("apps");
 const sepA = document.createElement("div"); sepA.className = "sep"; sepA.dataset.role = "pin-sep";
 sepA.setAttribute("role", "separator"); sepA.setAttribute("aria-label", "Resize Dock");
 for (const el of [homeBtn, hint]) el.addEventListener("pointerdown", onPointerDown);

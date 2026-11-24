@@ -1,6 +1,6 @@
 // The thread's DOM helpers (OpenBot chat.js): "at the end" measurement, the anchors a rebuild restores, pinning to the
 // end, and updateToBottom (the pinned flag + retiring the pill's count). Shared by Thread, ToBottom and Composer.
-import { cur, eventsOf, getState, setNewCount, setPinned, viewedSet } from "../state/store";
+import { eventsOf, getState, setNewCount, setPinned, viewedSet } from "../state/store";
 
 /** Within this many px of the bottom counts as "at the end" (following along). */
 export const END_GAP = 80;
@@ -57,9 +57,12 @@ export function viewAll(id: string): void {
  */
 export function updateToBottom(th: HTMLElement | null): void {
   if (!th) return;
-  const atEnd = gapOf(th) <= END_GAP, b = cur();
+  // THE THREAD'S OWN BOT (`data-bot`), never the store's selection: the rail's bot card off the page shows a bot
+  // nothing selected, and retiring the count against `cur()` marked the WRONG bot viewed while zeroing the count —
+  // the card's next commit recounted its own unviewed rows, and the two writes ping-ponged into React #185.
+  const atEnd = gapOf(th) <= END_GAP, id = th.dataset.bot;
   setPinned(atEnd);
-  if (b && atEnd && getState().newCount) { viewAll(b.id); setNewCount(0); }
+  if (id && atEnd && getState().newCount) { viewAll(id); setNewCount(0); }
 }
 
 // ---- thread search: light the matched text itself, not only the rows ----

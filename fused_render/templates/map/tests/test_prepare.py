@@ -24,6 +24,8 @@ rasterio = pytest.importorskip("rasterio")
 np = pytest.importorskip("numpy")
 xr = pytest.importorskip("xarray")
 gpd = pytest.importorskip("geopandas")
+pd = pytest.importorskip("pandas")
+pyogrio = pytest.importorskip("pyogrio")
 pytest.importorskip("h5netcdf")
 from rasterio.transform import from_bounds  # noqa: E402
 from shapely.geometry import box  # noqa: E402
@@ -197,6 +199,34 @@ def test_the_geojson_fallback_reprojects_to_wgs84(prepare, tmp_path):
     assert -1 < x < 1 and -1 < y < 1, "coordinates must be degrees, not metres"
 
 
+def _two_layer_gpkg(path):
+    _frame().to_file(path, layer="parcels", driver="GPKG")
+    gpd.GeoDataFrame({"note": ["x"]}, geometry=[box(0, 0, 10, 10)], crs=3857).to_file(path, layer="review", driver="GPKG")
+    pyogrio.write_dataframe(pd.DataFrame({"t": ["a"]}), str(path), layer="notes", driver="GPKG")
+    return str(path)
+
+
+def test_the_geojson_fallback_lists_a_multi_layer_file_and_converts_the_layer_asked_for(prepare, tmp_path):
+    gpkg = _two_layer_gpkg(tmp_path / "two.gpkg")
+    assert prepare.main(gpkg, action="geojson") == {
+        "status": "ok", "load": "vector", "path": gpkg, "layers": ["parcels", "review"]}
+    review = prepare.main(gpkg, action="geojson", layer="review")
+    data = json.loads(Path(review["path"]).read_text())
+    assert [f["properties"]["note"] for f in data["features"]] == ["x"]
+    parcels = prepare.main(gpkg, action="geojson", layer="parcels")
+    assert parcels["path"] != review["path"]
+    assert len(json.loads(Path(parcels["path"]).read_text())["features"]) == 2
+
+
+def test_inspect_lists_the_layers_of_a_multi_layer_file_and_describes_the_one_asked_for(prepare, tmp_path):
+    gpkg = _two_layer_gpkg(tmp_path / "two.gpkg")
+    first = prepare.main(gpkg, action="inspect")
+    assert first["layers"] == ["parcels", "review"] and first["features"] == 2
+    review = prepare.main(gpkg, action="inspect", layer="review")
+    assert review["layers"] == ["parcels", "review"]
+    assert review["features"] == 1 and set(review["fields"]) == {"note"}
+
+
 # ---- a user's .py -------------------------------------------------------------------
 
 @pytest.mark.parametrize("body, load", [
@@ -252,6 +282,7 @@ def test_inspect_describes_rasters_vectors_and_cubes(prepare, tmp_path):
     _frame().to_file(gpkg, driver="GPKG")
     vector = prepare.main(str(gpkg), action="inspect")
     assert vector["kind"] == "vector" and vector["features"] == 2 and set(vector["fields"]) == {"height", "use"}
+    assert "layers" not in vector
     cube = prepare.main(_netcdf(tmp_path / "c.nc"), action="inspect")
     assert cube["kind"] == "zarr" and cube["variables"]["temp"]["dims"] == {"time": 3, "lat": 20, "lon": 40}
 

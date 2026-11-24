@@ -5,6 +5,7 @@
 // launcher (FilesHome).
 import React, { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { navigateUrl, currentUrl, rootedFsPath, VIEW_PREFIX } from "@platform/lib/router";
+import { isRemoteLocation } from "@platform/lib/remote";
 // Folder-as-tabs entry (TM-8): composeFolderTabsUrl builds the `_tab` url
 // from a folder's children. This sidebar -> Tabs import is the documented
 // acyclic exception (Tabs never imports back), mirroring Breadcrumb -> Panel.
@@ -72,7 +73,11 @@ export function bookmarkFsPath(url: string): string {
 function bookmarkDropPath(url: string): string | null {
   const pathname = url.split("?")[0];
   const isView = [VIEW_PREFIX, "/view/"].some((p) => pathname.startsWith(p));
-  return isView ? bookmarkFsPath(url) : null;
+  if (!isView) return null;
+  // An `s3://` bookmark is a remote location: nothing can be dropped into it,
+  // and the kind probe must not stat it locally.
+  const target = bookmarkFsPath(url);
+  return isRemoteLocation(target) ? null : target;
 }
 
 // Leaf bookmarks at every depth — the collapsed heading's count pill, same

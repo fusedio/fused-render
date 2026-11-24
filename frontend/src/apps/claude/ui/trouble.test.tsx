@@ -21,6 +21,7 @@ import { afterEach, expect, test } from "bun:test";
 import { act, create, type ReactTestRendererJSON } from "react-test-renderer";
 
 import { splitTroubleMessage } from "../protocol/trouble";
+import { TroubleCard } from "@platform/ui/TroubleCard";
 import { TroubleView } from "./TroubleView";
 import { Turn } from "./Turn";
 
@@ -30,8 +31,8 @@ const HERE = dirname(new URL(import.meta.url).pathname);
  *  string this whole file is about; the backend text is NOT ours to change,
  *  the legacy template shares it). */
 const LOGIN =
-  "Claude Code isn't logged in. Open a terminal, run `claude`, type /login " +
-  "and finish the sign-in, then start a new chat here. " +
+  "Claude Code isn't logged in. Sign in from Preferences → Agents (or run " +
+  "`claude auth login` in a terminal), then start a new chat here. " +
   "Help: https://render.fused.io/#troubleshooting-login (Invalid API key · Please run /login)";
 
 /** Its limit sibling, same shape. */
@@ -87,8 +88,8 @@ test("the rewrite comes apart into the parts it was assembled from", () => {
   expect(splitTroubleMessage(LOGIN)).toEqual({
     lead: "Claude Code isn't logged in.",
     action:
-      "Open a terminal, run `claude`, type /login and finish the sign-in, " +
-      "then start a new chat here.",
+      "Sign in from Preferences → Agents (or run `claude auth login` in a " +
+      "terminal), then start a new chat here.",
     help: "https://render.fused.io/#troubleshooting-login",
     raw: "Invalid API key · Please run /login",
   });
@@ -106,8 +107,8 @@ test("the error row puts the instruction on its own line, with the raw text demo
   expect(rows[0]).toBe("Claude Code isn't logged in.");
   const action = all(r, "err-action").map(textOf);
   expect(action.length).toBe(1);
-  expect(action[0]).toContain("Open a terminal");
-  expect(action[0]).toContain("/login");
+  expect(action[0]).toContain("Preferences → Agents");
+  expect(action[0]).toContain("claude auth login");
   // The CLI's own words are still on screen, and still hoverable.
   const raw = all(r, "err-raw");
   expect(textOf(raw[0]!)).toBe("Invalid API key · Please run /login");
@@ -164,7 +165,7 @@ test("the card's verbatim block holds the CLI's error, not our own sentence back
   expect(pre.length).toBe(1);
   expect(textOf(pre[0]!)).toBe("Invalid API key · Please run /login");
   // The instruction is the card's description instead — said once, not twice.
-  expect(textOf(all(r, "trouble-explain")[0]!)).toContain("Open a terminal");
+  expect(textOf(all(r, "trouble-explain")[0]!)).toContain("Preferences → Agents");
   expect(textOf(all(r, "trouble-explain")[0]!)).not.toContain("`");
 });
 
@@ -268,4 +269,19 @@ test("…and twice only when the detail genuinely says something else", () => {
     />,
   );
   expect(all(r, "trouble-error")).toHaveLength(2);
+});
+
+test("an explanation that points at the message points above it when the message is shown above", () => {
+  const shown = textOf(
+    mount(<TroubleView trouble={{ kind: "cli-broken", message: "boom" }} messageShownAbove />).toJSON() as Json,
+  );
+  expect(shown).toContain("The message above");
+  expect(shown).not.toContain("The message below");
+  const quoted = textOf(mount(<TroubleView trouble={{ kind: "cli-broken", message: "boom" }} />).toJSON() as Json);
+  expect(quoted).toContain("The message below");
+  // The card's own limit fallback, with and without the quote.
+  const card = (quoteError: boolean) =>
+    textOf(mount(<TroubleCard what="x" kind="limit" error="" quoteError={quoteError} />).toJSON() as Json);
+  expect(card(false)).toContain("The message above says when it resets");
+  expect(card(true)).toContain("The message below says when it resets");
 });

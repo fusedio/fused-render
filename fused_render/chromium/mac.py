@@ -3,7 +3,7 @@ giving `mac_window.py` a view that fits where its WKWebView goes.
 
 `FusedChromium.framework` (source in `native/`) wraps the Chromium Embedded
 Framework in one `NSView` subclass, `FRChromiumView`, whose surface mirrors
-the WKWebView selectors `mac_window` uses (`URL`/`title` under KVO,
+the WKWebView selectors `mac_window` uses (`URL`/`title`/`canGoBack`/`canGoForward` under KVO,
 `loadRequest:`, `reload`, `goBack`, `evaluateJavaScript:completionHandler:`,
 …) and one delegate protocol, `FRChromiumViewDelegate`, that asks the same
 questions WebKit's navigation/UI/download delegates ask. `_ChromiumDelegate`
@@ -107,7 +107,11 @@ def _load() -> None:
         raise RuntimeError("engine not on disk")
     engine_dir = chromium.engine_dir()
     fw = chromium.framework_path()
-    objc.loadBundle("FusedChromium", globals(), bundle_path=fw)
+    # scan_classes=False: the default copies EVERY Objective-C class in the
+    # process into `globals()`, building a Python proxy for each (~65k classes,
+    # ~215 MB and ~0.9 s on the main thread). Only the two classes fetched by
+    # name with `lookUpClass` are ever used.
+    objc.loadBundle("FusedChromium", globals(), bundle_path=fw, scan_classes=False)
     engine_cls = objc.lookUpClass("FRChromiumEngine")
     cache = chromium.profile_dir()
     # Owner-only, and enforced on an existing dir too: with the mock keychain
@@ -262,11 +266,13 @@ class _ChromiumDelegate(NSObject):
     def chromiumView_downloadDidFinish_(self, view, path):
         from AppKit import NSDistributedNotificationCenter
 
+        window_policy.release_download_destination(str(path) if path else None)
         NSDistributedNotificationCenter.defaultCenter().postNotificationName_object_(
             "com.apple.DownloadFileFinished", None)
 
     @_sig(b"v@:@@@")
     def chromiumView_downloadDidFail_error_(self, view, path, message):
+        window_policy.release_download_destination(str(path) if path else None)
         logger.warning("download failed: %s", message)
 
     # ---- dialogs, pickers, permissions ------------------------------------------------
@@ -316,6 +322,21 @@ class _ChromiumDelegate(NSObject):
         # gates the hardware). Anything else: denied — same as WebKit's path
         # for geolocation; for media WebKit showed its own prompt, which
         # Chromium does not offer here.
+        #
+        # "multiple_downloads" (Chromium's automatic-downloads limiter, which
+        # WebKit never had): granted for every origin. A frame may already
+        # download once without asking, and a denial latches the page to "no
+        # downloads" until it reloads — a workbench canvas framed from its own
+        # origin could download one file from its file explorer and then
+        # none. Every download still lands under ~/Downloads by
+        # `download_destination`. The engine sets the limiter's content
+        # setting to "allow" at start-up (FRCefApp::OnContextInitialized), so
+        # this prompt should no longer be raised at all; granting it stays as
+        # the fallback.
+        if kind == "multiple_downloads":
+            logger.info("multiple downloads from %s -> grant",
+                        origin.absoluteString() if origin is not None else "?")
+            return True
         own = False
         if origin is not None:
             port = origin.port()

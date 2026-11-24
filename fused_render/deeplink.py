@@ -56,10 +56,8 @@ from fused_render._view_url_codec import view_url_path as _view_url_path
 router = APIRouter()
 
 # The action is host-position ("open"), payloads are query params (owner
-# call, D110). The scheme is the flavor's (`_flavor.scheme()`: `fused-render`
-# for Fused Render, `fused-bot` for Fused Bot — each bundle registers only its
-# own in CFBundleURLTypes). Every accepted form below is built from it, so the
-# two apps never claim each other's links.
+# call, D110). The scheme is `_flavor.scheme()` (`fused-render`, registered in
+# CFBundleURLTypes). Every accepted form below is built from it.
 _SCHEME = _flavor.scheme()
 _OPEN_GIT_PREFIXES = (f"{_SCHEME}://open?git=", f"{_SCHEME}://open/?git=")
 _OPEN_FILE_PREFIXES = (f"{_SCHEME}://open?file=", f"{_SCHEME}://open/?file=")

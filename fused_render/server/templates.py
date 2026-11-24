@@ -41,11 +41,20 @@ KNOWN_SENTINELS = {"_render", "_listing"}
 # never stored. No background eviction — a stale entry is overwritten on the next
 # miss. _CONDITIONS_TTL_S is a module attribute so tests can monkeypatch it.
 _CONDITIONS_TTL_S = 60.0
-# path -> (inserted_monotonic, prefs_mtime, payload). Gates may read the
-# preference store (the reader template's condition.py does), so a cached
-# verdict is only valid while prefs.json is unchanged — otherwise flipping a
-# Preferences toggle looks dead for a full TTL.
-_CONDITIONS_CACHE: dict[str, tuple[float, float, dict]] = {}
+# path -> (inserted_monotonic, prefs_mtime, toml_stamp, payload). Gates may
+# read the preference store (the reader template's condition.py does), so a
+# cached verdict is only valid while prefs.json is unchanged — otherwise
+# flipping a Preferences toggle looks dead for a full TTL. The canvas node
+# templates' gates (canvas_widget, canvas_note, canvas_udf) also read a node
+# file's canvas.toml (a row added there makes the file a node),
+# so for a path SHAPED like a node file `toml_stamp` is `(canvas.toml path,
+# its mtime)` and a hit re-stats that one file; for every other path it is
+# None and a hit costs what it always did (the prefs stat). The shape is
+# worked out on a miss only (`_conditions_toml_stamp`): it resolves the
+# canvases roots, a dozen syscalls no hit should pay. Not in the key: a
+# file APPEARING beside a path (a sibling `foo.json` another gate might
+# look for) — that waits out the TTL, as before.
+_CONDITIONS_CACHE: dict[str, tuple[float, float, tuple | None, dict]] = {}
 
 
 def _prefs_mtime() -> float:
@@ -55,6 +64,32 @@ def _prefs_mtime() -> float:
         return os.path.getmtime(os.path.join(storage.home_dir(), "prefs.json"))
     except OSError:
         return 0.0
+
+
+def _mtime_or_none(path: str) -> float | None:
+    try:
+        return os.path.getmtime(path)
+    except OSError:
+        return None
+
+
+def _conditions_toml_stamp(path: str) -> tuple | None:
+    """On a miss: `(canvas.toml path, mtime)` when `path` is shaped like a
+    canvas node file (`canvases.node_file_shape`), else None."""
+    try:
+        from fused_render import canvases
+
+        if canvases.node_file_shape(path) is None:
+            return None
+    except Exception:  # noqa: BLE001 — no shape: the prefs key alone, as before
+        return None
+    toml = os.path.join(os.path.dirname(path), "canvas.toml")
+    return (toml, _mtime_or_none(toml))
+
+
+def _conditions_toml_unchanged(stamp: tuple | None) -> bool:
+    """On a hit: the recorded canvas.toml (if any) has not moved."""
+    return stamp is None or _mtime_or_none(stamp[0]) == stamp[1]
 
 
 # User templates + their registry live under the shell home dir's templates/
@@ -108,8 +143,8 @@ def _resolve_name(name):
     if name.startswith("_"):
         return None, (
             f"invalid template name: {name!r} — the '_' prefix is reserved "
-            "for shell sentinel modes (SPEC PT-12); the only referenceable "
-            "sentinel is '_render'"
+            "for shell sentinel modes (SPEC PT-12); the referenceable "
+            "sentinels are " + ", ".join(repr(n) for n in sorted(KNOWN_SENTINELS))
         )
     # A CORE NATIVE TEMPLATE CANNOT BE SHADOWED (D1310). The one there is
     # (`claude`) used to be an iframe page, so a user who once forked it has a
@@ -246,8 +281,8 @@ def _run_condition(condition_file: str, target_path: str):
 
 def _mark_conditions(entries: list):
     """Flag resolved template entries whose folder carries a `condition.py`
-    gate with `"conditional": True` (SPEC PT-8/CT-12). Sentinel entries
-    (`path is None`, D73) and folders with no gate are left untouched.
+    gate with `"conditional": True` (SPEC PT-8/CT-12). Sentinels (`path is
+    None`, D73) and folders with no gate are left untouched.
 
     Stat no longer *evaluates* gates — a gate may do real I/O (the H3 gate
     reads a parquet footer), and that stalled every stat
@@ -262,9 +297,59 @@ def _mark_conditions(entries: list):
             entry["conditional"] = True
 
 
+# The canvas node templates (SPEC §53.2): each a gated template folder that
+# draws one kind of node file of a cloned canvas. Stat marks their entries
+# `"node": True`, which the shell reads as: offered only on the gate's
+# explicit yes, and never under a git snapshot (they draw the node as it
+# stands now). One of them may also be its file's DEFAULT CANDIDATE (SPEC
+# PT-8's `prefer` exception).
+NODE_TEMPLATES = frozenset({"canvas_widget", "canvas_note", "canvas_udf"})
+
+
+def _mark_node_templates(entries: list, path: str) -> None:
+    """Flag the canvas node templates' entries `"node": True`, and the first
+    of them `"prefer": True` when `path` is shaped like a canvas node file
+    and the `canvases_enabled` preference is on (SPEC PT-8, §53.2 NT-3). The
+    client then holds the content pane on the "checking" placeholder until
+    the gate answers, and opens the node's template on a yes — rather than
+    painting the code editor first. A cheap precheck only: the path's shape
+    decides with no syscall on it (`canvases.node_file_shape`), then one
+    prefs read; canvas.toml is the gate's business, not stat's. Only a
+    BUILT-IN folder is marked (a user folder of the same name is an ordinary
+    gated template), so every other file's stat is unchanged."""
+    nodes = [e for e in entries
+             if e.get("mode") in NODE_TEMPLATES and e.get("conditional")
+             and _is_core_template_path(e.get("path"))]
+    if not nodes:
+        return
+    for entry in nodes:
+        entry["node"] = True
+    try:
+        from fused_render import canvases
+        from fused_render.shell import prefs
+
+        if canvases.node_file_shape(path) is not None and prefs.canvases_enabled():
+            nodes[0]["prefer"] = True
+    except Exception:  # noqa: BLE001 — no mark is the ordinary default, never an error
+        return
+
+
+def _is_core_template_path(template_path) -> bool:
+    """True when `template_path` (an entry's resolved `template.html`) lies in
+    the built-in templates dir."""
+    if not isinstance(template_path, str) or not template_path:
+        return False
+    try:
+        return os.path.commonpath(
+            [os.path.realpath(template_path), os.path.realpath(TEMPLATES_DIR)]
+        ) == os.path.realpath(TEMPLATES_DIR)
+    except ValueError:
+        return False
+
+
 def _evaluate_conditions(gated: list, target_path: str):
-    """Evaluate `condition.py` gates: `gated` is [(key, condition_file)];
-    returns {key: (allowed: bool, error: str|None)}.
+    """Evaluate gates: `gated` is [(key, condition.py path)]; returns
+    {key: (allowed: bool, error: str|None)}.
 
     Gates are independent and may be slow (user code — filesystem reads,
     remote I/O), so they are evaluated **concurrently**: the cost is the
@@ -273,9 +358,12 @@ def _evaluate_conditions(gated: list, target_path: str):
     """
     results = {}  # key -> (allowed, error)
 
+    def _run(gate):
+        return _run_condition(gate, target_path)
+
     def _serial():
-        for k, cf in gated:
-            results[k] = _run_condition(cf, target_path)
+        for k, gate in gated:
+            results[k] = _run(gate)
 
     if len(gated) == 1:
         _serial()
@@ -283,15 +371,15 @@ def _evaluate_conditions(gated: list, target_path: str):
         # Bounded fan-out — an extension has at most a handful of conditional
         # templates (SPEC CT-12), so one worker per gate is fine. The pool
         # machinery itself (thread creation, submit, result) lives OUTSIDE
-        # _run_condition's catch-all, so an OS refusing a new thread under load
+        # the runners' catch-alls, so an OS refusing a new thread under load
         # would otherwise escape and 500 the request — breaking the fail-closed
         # guarantee. Contain it: on any pool failure, fall back to serial
-        # evaluation, which is wholly inside _run_condition's catch-all.
+        # evaluation, which is wholly inside the runners' catch-alls.
         try:
             from concurrent.futures import ThreadPoolExecutor
 
             with ThreadPoolExecutor(max_workers=len(gated)) as pool:
-                futures = {pool.submit(_run_condition, cf, target_path): k for k, cf in gated}
+                futures = {pool.submit(_run, gate): k for k, gate in gated}
                 for fut, k in futures.items():
                     results[k] = fut.result()
         except BaseException:
@@ -311,23 +399,39 @@ def _conditions_payload(path: str):
     carries the first gate error in list order (a broken gate reports False —
     fail closed — with the reason), matching stat's `template_error` posture.
     """
+    from fused_render import remote_access
+
+    target = path
     try:
-        st = os.stat(path)
+        if path.startswith("s3://"):
+            from fused_render.shell import prefs
+
+            if not prefs.canvases_enabled():
+                return _error("the Fused integration is off — turn on Canvases in Preferences", status=403)
+            bucket, key = remote_access.parse_url(path)
+            target = remote_access.sign_read_url(bucket, key).url
+            entries = remote_templates(key.rsplit("/", 1)[-1])
+        else:
+            entries, _ = _templates_for(path, stat_mod.S_ISDIR(os.stat(path).st_mode))
     except OSError:
         return _error(f"no such file or directory: {path}", status=404)
-    is_dir = stat_mod.S_ISDIR(st.st_mode)
-    entries, _ = _templates_for(path, is_dir)
+    except remote_access.RemoteError as e:
+        return _error(e.message)
 
-    gated = []  # [(mode, condition_file)] — mode keys are unique per list
+    gated = []  # [(mode, gate)] — mode keys are unique per list
     for entry in entries:
-        if entry.get("conditional"):
-            cf = _condition_file(entry["path"])
-            if cf is not None:
-                gated.append((entry["mode"], cf))
+        if not entry.get("conditional"):
+            continue
+        mode = entry["mode"]
+        if entry.get("path") is None:
+            continue
+        cf = _condition_file(entry["path"])
+        if cf is not None:
+            gated.append((mode, cf))
 
-    results = _evaluate_conditions(gated, path)
+    results = _evaluate_conditions(gated, target)
     conditions, error = {}, None
-    for mode, _cf in gated:
+    for mode, _gate in gated:
         allowed, err = results[mode]
         conditions[mode] = allowed
         if err and error is None:
@@ -512,7 +616,54 @@ def _looks_like_text(path: str) -> bool:
     return True
 
 
-def _templates_for(path: str, is_dir: bool):
+def streamed_extensions(template_path: str) -> tuple:
+    """The extensions a template streams from S3 (D1492): the
+    `[tool.fused-render.template] stream` list in the `pyproject.toml` beside
+    its `template.html`, lower-cased, each starting with ".". A template that
+    lists one reads an `s3://` address in `_file` itself for those files
+    (signing it with `fused.s3.sign` / `fused_s3`, D1484), so the explorer
+    opens a bucket object in it without downloading. No manifest, no key, or
+    one that will not parse streams nothing."""
+    import tomllib
+
+    manifest = os.path.join(os.path.dirname(template_path), "pyproject.toml")
+    try:
+        with open(manifest, "rb") as f:
+            data = tomllib.load(f)
+    except (OSError, ValueError):
+        return ()
+    table = data
+    for key in ("tool", "fused-render", "template"):
+        table = table.get(key) if isinstance(table, dict) else None
+    exts = table.get("stream") if isinstance(table, dict) else None
+    if not isinstance(exts, list):
+        return ()
+    return tuple(e.lower() for e in exts
+                 if isinstance(e, str) and e.startswith(".") and len(e) > 1)
+
+
+def remote_templates(name: str) -> list:
+    """The modes a bucket object named `name` opens in, before it is
+    downloaded: the same registry resolution a local file gets (user over
+    core), each entry marked `stream` when its template streams this
+    extension. The rest open on a downloaded copy. Native entries are left
+    out, and so is a conditional one unless it streams: its gate then runs on
+    the signed URL (`_conditions_payload`), while any other gate needs a local
+    path. There is no text sniff: there are no local bytes to sniff."""
+    entries, _err = _templates_for(name, False, sniff_text=False)
+    lower = name.lower()
+    out = []
+    for e in entries:
+        path = e.get("path")
+        if not path or _is_native(path):
+            continue
+        stream = lower.endswith(streamed_extensions(path))
+        if stream or not e.get("conditional"):
+            out.append({**e, "stream": stream})
+    return out
+
+
+def _templates_for(path: str, is_dir: bool, *, sniff_text: bool = True):
     """Returns (templates: list[dict], template_error: str|None) — SPEC PT-8.
 
     Both binding tables are registries in one format (D73): the built-in
@@ -564,7 +715,7 @@ def _templates_for(path: str, is_dir: bool):
             # The user's value resolved to nothing at all -> built-in fallback.
             entries, _ = _resolve_mode_list(builtin_names)
 
-    if not entries and not is_dir and _looks_like_text(path):
+    if not entries and not is_dir and sniff_text and _looks_like_text(path):
         # Nothing in either registry matched. Many config/dotfiles are plain
         # text the suffix matcher structurally can't reach — its keys are
         # dot-anchored *suffixes* needing a non-empty stem, so a whole-name
@@ -583,4 +734,6 @@ def _templates_for(path: str, is_dir: bool):
     # built-in or user, main path or text-sniff fallback. Evaluation is
     # deferred to /api/fs/conditions so a slow gate never stalls the stat.
     _mark_conditions(entries)
+    if not is_dir:
+        _mark_node_templates(entries, path)
     return entries, error

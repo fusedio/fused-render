@@ -15,7 +15,6 @@ import {
 } from "@platform/lib/api";
 import { THEME_PRESETS, useThemePref, useThemePreset } from "@platform/lib/theme";
 import { updateLabel, updateRelevant, useUpdateStatus } from "@platform/lib/update-status";
-import { isBot } from "@platform/lib/flavor";
 import { ToggleGroup, ToggleGroupItem } from "@platform/shadcn/ui/toggle-group";
 import { Button } from "@platform/shadcn/ui/button";
 import { Modal } from "@platform/ui/modal/Modal";
@@ -217,18 +216,14 @@ export function ChromiumWindowsControl({ prefs, onChange }: PrefControlProps) {
 // the spec — what maps to a Carbon keycode whatever the keyboard layout. The
 // bind happens on the app's main thread a tick after the PUT, so the
 // response's `bound` is the previous state; the row re-reads shortly after.
-// Under Fused Bot the same two controls edit the `bot_launcher_*` prefs; the
-// wire keys are the same either way and the server picks the flavor's keys.
 const ROW_MODIFIERS: { spec: string; label: string; title: string }[] = [
   { spec: "alt", label: "⌥", title: "Option" },
   { spec: "cmd", label: "⌘", title: "Command" },
   { spec: "ctrl", label: "⌃", title: "Control" },
   { spec: "alt+cmd", label: "⌥⌘", title: "Option-Command" },
   { spec: "ctrl+alt", label: "⌃⌥", title: "Control-Option" },
-  // Fused Bot's default (launcher.BOT_DEFAULT_ROW_MODIFIER): one modifier more
-  // than Render's ⌥ so both apps' row shortcuts bind side by side. Canonical
-  // spelling (hotkey.MODIFIER_ORDER: ctrl, alt, shift, cmd) or it never reads
-  // as selected.
+  // Canonical spelling (hotkey.MODIFIER_ORDER: ctrl, alt, shift, cmd) or it
+  // never reads as selected.
   { spec: "alt+shift", label: "⌥⇧", title: "Option-Shift" },
 ];
 const MODIFIER_KEYS = new Set(["Shift", "Control", "Alt", "Meta", "CapsLock", "Fn"]);
@@ -337,8 +332,6 @@ export function LauncherRowControl({ prefs, onChange }: PrefControlProps) {
           <span className="settings-warn">
             Some of {launcher.row_modifier_display}1–9 could not be bound system-wide — another app may own them.
           </span>
-        ) : isBot() ? (
-          "Opens the Nth bot in the search's list — or, once you type, the Nth result."
         ) : (
           "Your recently opened apps, newest first, then the sidebar's Projects — or, once you type, the Nth result."
         )
@@ -372,7 +365,7 @@ export function LauncherRowControl({ prefs, onChange }: PrefControlProps) {
 
 // Updates: only the background-download switch. "Check now" lives on the
 // status bar's Updates chip (shell/UpdatesDock.tsx), which runs the same
-// useManualUpdateCheck and is mounted in both flavors — a second button here
+// useManualUpdateCheck — a second button here
 // was the same question asked in two places. A found or installing update is
 // UpdateNotifier's to announce; this row only says so in its status line.
 export function AutoUpdateControl({ prefs, onChange }: PrefControlProps) {

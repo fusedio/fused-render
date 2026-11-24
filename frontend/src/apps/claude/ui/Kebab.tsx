@@ -21,6 +21,7 @@
 // `refreshArchiveOpt` then re-reads the listing and corrects a WORD rather than
 // the menu's height (T:13130-13140, 2026-08-24).
 import { useCallback, useEffect, useRef, useState } from "react";
+import { MessagesSquare } from "lucide-react";
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -317,6 +318,28 @@ export interface KebabProps {
    *  first. Passed only when this chat lives in a side pane; absent elsewhere,
    *  and the item with it. */
   fullScreen?: { on: boolean; onToggle: () => void };
+  /** BREAKOUT PICK MODE's door (the bar's old button). Passed only where a
+   *  breakout can start; absent, no item is drawn. */
+  breakout?: { picking: boolean; onToggle: () => void };
+  /**
+   * THE HOST'S OWN DOORS, in the first group after Full screen and Breakout
+   * (shell/TaskHead; design.md "One task head, everywhere"). The shared task
+   * head folds its ↗ Open into this menu when the row runs out of width, and a
+   * task whose folder is gone shows the same door greyed with why — the host
+   * knows both facts, this menu only seats them. Absent or empty: the menu it
+   * always was.
+   */
+  extraItems?: KebabExtraItem[];
+}
+
+/** One host row (`KebabProps.extraItems`): a label, its mark, the press. */
+export interface KebabExtraItem {
+  label: string;
+  icon?: React.ReactNode;
+  onClick(): void;
+  disabled?: boolean;
+  title?: string;
+  danger?: boolean;
 }
 
 export function Kebab({
@@ -331,9 +354,15 @@ export function Kebab({
   lockedReason,
   queued = false,
   fullScreen,
+  breakout,
   asking = false,
+  extraItems,
 }: KebabProps) {
   const [open, setOpen] = useState(false);
+  // The trigger, kept here too (`btnRef` is the caller's and optional): the
+  // menu asks at open time whether it hangs off a shared task head.
+  const ownBtn = useRef<HTMLElement | null>(null);
+  const [inHead, setInHead] = useState(false);
   const [erasing, setErasing] = useState(false);
   /** Bumped whenever a cache write should repaint the items. */
   const [rev, setRev] = useState(0);
@@ -474,6 +503,10 @@ export function Kebab({
     (next: boolean) => {
       setOpen(next);
       if (!next) return;
+      // A SHARED TASK HEAD IS CHROME (shell/TaskHead, task-head.css): its menu
+      // does not follow the chat text zoom either. Anywhere else the menu is
+      // drawn exactly as before.
+      setInHead(!!ownBtn.current?.closest?.(".task-head"));
       // Named at open time: the session param changes without a reload
       // (T:13415).
       setTerminalLabel(
@@ -681,8 +714,12 @@ export function Kebab({
               type="button"
               className="c-kebabbtn"
               aria-label="More options"
-              title="More options"
+              // The app's instant caption (platform/lib/hints), as the head's
+              // other seats have it — not the browser's slow `title` (owner,
+              // 2026-11-18).
+              data-hint="More options"
               ref={(el) => {
+                ownBtn.current = el;
                 if (btnRef) btnRef.current = el;
               }}
             >
@@ -695,19 +732,45 @@ export function Kebab({
           align="end"
           sideOffset={6}
           aria-label="More options"
-          className="c-overlay c-kebabpop w-auto min-w-[196px] rounded-[10px] bg-[var(--c-panel)] p-1 text-[var(--c-fg)] shadow-none ring-0"
+          className={
+            "c-overlay c-kebabpop w-auto min-w-[196px] rounded-[10px] bg-[var(--c-panel)] p-1 text-[var(--c-fg)] shadow-none ring-0" +
+            (inHead ? " c-kebabpop--head" : "")
+          }
         >
           {/* ONE ORDER, both task menus (platform/lib/task-actions): this
               surface's own door, then the hand-offs, then filing — a separator
               between groups, an icon on every row. */}
-          {fullScreen ? (
+          {fullScreen || breakout || extraItems?.length ? (
             <>
-              <DropdownMenuItem className="c-kebab-opt" onClick={fullScreen.onToggle}>
-                <span className="c-kebab-icon">
-                  {fullScreen.on ? TASK_ICON_EXIT_FULL_SCREEN : TASK_ICON_FULL_SCREEN}
-                </span>
-                {fullScreen.on ? TASK_ACTION_LABELS.exitFullScreen : TASK_ACTION_LABELS.fullScreen}
-              </DropdownMenuItem>
+              {fullScreen ? (
+                <DropdownMenuItem className="c-kebab-opt" onClick={fullScreen.onToggle}>
+                  <span className="c-kebab-icon">
+                    {fullScreen.on ? TASK_ICON_EXIT_FULL_SCREEN : TASK_ICON_FULL_SCREEN}
+                  </span>
+                  {fullScreen.on ? TASK_ACTION_LABELS.exitFullScreen : TASK_ACTION_LABELS.fullScreen}
+                </DropdownMenuItem>
+              ) : null}
+              {breakout ? (
+                <DropdownMenuItem className="c-kebab-opt" onClick={breakout.onToggle}>
+                  <span className="c-kebab-icon">
+                    <MessagesSquare size={16} aria-hidden="true" />
+                  </span>
+                  {breakout.picking ? "Cancel breakout pick" : "Breakout…"}
+                </DropdownMenuItem>
+              ) : null}
+              {extraItems?.map((item, i) => (
+                <DropdownMenuItem
+                  key={`${i}:${item.label}`}
+                  className={"c-kebab-opt" + (item.danger ? " is-danger" : "")}
+                  {...(item.danger ? { variant: "destructive" as const } : {})}
+                  disabled={!!item.disabled}
+                  title={item.title}
+                  onClick={() => item.onClick()}
+                >
+                  <span className="c-kebab-icon">{item.icon}</span>
+                  {item.label}
+                </DropdownMenuItem>
+              ))}
               {showHandoffs || showFiling ? <DropdownMenuSeparator className="c-kebab-sep" /> : null}
             </>
           ) : null}

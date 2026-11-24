@@ -186,7 +186,19 @@ export function clampSharedPaneWidth(containerW: number, px: number): number {
 // An unmeasured container (0, NaN) takes the same early return —
 // `companionFrac` already treats that as "not small" — rather than dividing
 // by a width that cannot back a fraction.
-export function paneFracFromSharedWidth(sharedPx: number | null, containerW: number): number {
+//
+// `inset` is what a Claude rail standing past the pane takes off the split's
+// right edge (favourites on, rail-peek-lib `railInset`): the pane and the list
+// share only what is left beside it (`containerW - inset`), so the floors and
+// the ceiling are taken against that ROOM — the list keeps its LIST_MIN_W on
+// a resize or an undragged layout as it does on a drag (`dragPaneFrac`, called
+// with the room too). The answer stays a share of the WHOLE split, which is
+// what the pane's flex-basis is a percentage of.
+export function paneFracFromSharedWidth(sharedPx: number | null, containerW: number, inset = 0): number {
+  if (inset > 0 && containerW > inset) {
+    const room = containerW - inset;
+    return (paneFracFromSharedWidth(sharedPx, room) * room) / containerW;
+  }
   if (!(containerW >= PANE_MIN_W + LIST_MIN_W)) return companionFrac(containerW);
   if (sharedPx === null) return companionFrac(containerW);
   return clampSharedPaneWidth(containerW, sharedPx) / containerW;

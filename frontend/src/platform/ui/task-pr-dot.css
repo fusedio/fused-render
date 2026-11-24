@@ -47,3 +47,11 @@
 .task-pr-pop a:hover {
   text-decoration: underline;
 }
+
+/* THE PR TAG'S GLYPH (platform/ui/TaskPrChip): drawn only where a host asks
+   for it — the shared task head (task-head.css `.task-head-chips`), which
+   then drops the word "PR". Here, with the dot, because the chat and the
+   shell load different stylesheet sets. */
+.task-pr-glyph {
+  display: none;
+}

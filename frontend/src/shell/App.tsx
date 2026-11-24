@@ -31,11 +31,12 @@ import {
   navHintIsDir,
   navigateUrl,
 } from "@platform/lib/router";
+import { installVerdict, useStatIsDir } from "./install-view-lib";
 import { useRecentsTracking } from "@apps/explorer/lib/recents";
 import { setSideTab } from "@apps/explorer/lib/side-tab-store";
 // The route parser, not the barrel: api.ts is already in the main bundle (the
 // sidebar's sign-in probe imports it); the barrel would pull the sub-app in.
-import { ENV_NAMES, canvasNameFromPath, canvasProjectFromPath } from "@apps/canvases/api";
+import { ENV_NAMES, canvasNameFromPath } from "@apps/canvases/api";
 import {
   appIconUrl,
   getAppIcon,
@@ -59,11 +60,19 @@ import { autoStartTourFor, maybeAutoStartTour } from "@platform/lib/tours";
 import { useThemePresetSync, useThemeSync } from "@platform/lib/theme";
 import { installHints } from "@platform/lib/hints";
 import GlobalSidebar from "@shell/GlobalSidebar";
-import { isBot } from "@platform/lib/flavor";
 import { appPathFromPath } from "@shell/current-apps-lib";
 import NotificationHost from "@platform/ui/NotificationHost";
 import RestartOverlay from "@platform/ui/RestartOverlay";
 import UpdateNotifier from "@platform/ui/UpdateNotifier";
+import { FavouritePeek, FavouritePeekSlotY } from "@shell/claude-rail/FavouritePeek";
+import { ListCardHost } from "@shell/claude-rail/ListCardHost";
+import { TasksPeek } from "@shell/claude-rail/TasksPeek";
+import { PlusCardHost } from "@shell/claude-rail/PlusCardHost";
+import { BotsPeek } from "@shell/claude-rail/BotsPeek";
+import { GitPeek } from "@shell/claude-rail/GitPeek";
+import { ModePeek } from "@shell/claude-rail/ModePeek";
+import { BotCardHost, BotCardHostSlotY } from "@shell/claude-rail/BotCardHost";
+import { FallbackRail } from "@shell/claude-rail/FallbackRail";
 import { ShareAppHost } from "@platform/ui/ShareAppModal";
 import { UninstallAppHost } from "@platform/ui/UninstallAppModal";
 import InstallLinkPage from "@shell/InstallLinkPage";
@@ -77,6 +86,7 @@ import SystemDock from "@shell/SystemDock";
 import UpdatesDock from "@shell/UpdatesDock";
 import { useMonitorFeature } from "@platform/lib/monitor-flag";
 import ActivityDock from "@shell/ActivityDock";
+import BreakoutCards from "@shell/breakout/BreakoutCards";
 import RepoUpdatesDock from "@shell/RepoUpdatesDock";
 import NativeAppSyncNotices from "@shell/NativeAppSyncNotices";
 import TerminalDock from "@shell/TerminalDock";
@@ -99,6 +109,8 @@ import EmbedStrip from "@apps/explorer/EmbedStrip";
 import Listing from "@apps/explorer/Listing";
 import Preview from "@apps/explorer/Preview";
 import { PreviewSideSlot } from "@apps/explorer/PreviewSidebar";
+import { RemoteView } from "@apps/explorer/RemoteView";
+import { isRemoteLocation } from "@platform/lib/remote";
 import Panel from "@apps/explorer/Panel";
 import Tabs from "@apps/explorer/Tabs";
 import FilesHome from "@apps/explorer/FilesHome";
@@ -109,6 +121,7 @@ import {
   isAiModelsPath,
 } from "@apps/ai_models/routes";
 import { isBotsPath } from "@apps/bots/routes";
+import { useExpertsFlagKnown } from "@platform/lib/experts-flag";
 
 // The boot-time "send a fresh install to the wizard" decision is made once
 // per page load (App's render below), not on every re-render — a user who
@@ -133,6 +146,9 @@ const MonitorPage = lazy(() => import("@shell/monitor/MonitorPage"));
 const MarketplacePage = lazy(() =>
   import("@apps/marketplace").then((m) => ({ default: m.MarketplacePage })),
 );
+// The `.fusedbot` install page (apps/bots/file): its own chunk, so a package
+// opened from a listing does not pull the whole Bots page in.
+const BotFilePage = lazy(() => import("@apps/bots/file/BotFilePage"));
 
 /** Params that belong to a PAGE rather than to a route — see `useNavEpoch`.
  *  Module-level so the array identity is stable across renders. */
@@ -167,10 +183,6 @@ const Canvases = lazy(() =>
 const CanvasWorkspace = lazy(() =>
   import("@apps/canvases").then((m) => ({ default: m.CanvasWorkspace })),
 );
-// The canvas PROJECT page (shell/CanvasPage.tsx, /canvases-project/…): the
-// workbench framed read-only in an Overview tab beside the shell's Tasks and
-// Files pages. The editor above is a separate route (owner, 2026-10-20).
-const CanvasPage = lazy(() => import("@shell/CanvasPage"));
 // Bots (ported from FusedBot): browser bots, each driving its own Chrome
 // window. The page carries its own scoped stylesheet in the lazy chunk.
 const Bots = lazy(() => import("@apps/bots").then((m) => ({ default: m.Bots })));
@@ -471,9 +483,10 @@ function StatView({
 // a frozen snapshot, and not when the URL asks for another mode by name
 // (`?_mode=claude`): the mode switcher's other views stay reachable.
 // Never an app's own `.fused/` metadata FOLDER (app_fused_dir.py): a bare
-// `.fused` basename has no stem, so it is not an app file, and a navigation
-// that already knows it is opening a directory (navHintIsDir) is not one
-// either — both fall through to StatView's listing.
+// `.fused` basename has no stem, so it is not an app file. A directory named
+// `x.fused` is not one either: a navigation that knows it is opening a
+// directory (navHintIsDir) says so, and when that hint is absent App stats the
+// path (useStatIsDir) — both fall through to StatView's listing.
 function isFusedInstallView(fsPath: string): boolean {
   if (IS_PREVIEW || IS_SNAPSHOT || !/.\.fused$/i.test(basename(fsPath))) return false;
   if (navHintIsDir() === true) return false;
@@ -490,6 +503,36 @@ function FusedFileView({ fsPath }: { fsPath: string }) {
       <Suspense fallback={<RouteFallback />}>
         <MarketplacePage fusedFile={fsPath} />
       </Suspense>
+    </div>
+  );
+}
+
+// A `.fusedbot` bot package opened anywhere — the same interception as
+// isFusedInstallView, for the Bots install page (apps/bots/file BotFilePage).
+// Same exclusions: a thumbnail, a frozen snapshot, another named mode, a
+// navigation known to be a directory.
+function isBotFileInstallView(fsPath: string): boolean {
+  if (IS_PREVIEW || IS_SNAPSHOT || !/.\.fusedbot$/i.test(basename(fsPath))) return false;
+  if (navHintIsDir() === true) return false;
+  const mode = new URLSearchParams(location.search).get("_mode");
+  return !mode || mode === "fusedbot";
+}
+
+// The bot install page in place of StatView; records the file in recents like
+// FusedFileView. Framed the way MarketplacePage frames FusedFilePage: the
+// `.mp-page` scroller and the centred `.mp-inner` column (styles/marketplace.css)
+// — always bare, since no store header ever sits above a bot package.
+function BotFileView({ fsPath }: { fsPath: string }) {
+  useRecentsTracking(fsPath, false, null);
+  return (
+    <div id="content">
+      <div className="mp-page is-bare">
+        <main className="mp-inner">
+          <Suspense fallback={<RouteFallback />}>
+            <BotFilePage path={fsPath} />
+          </Suspense>
+        </main>
+      </div>
     </div>
   );
 }
@@ -675,21 +718,23 @@ export default function App({ config }: { config: Config }) {
     return () => document.removeEventListener("keydown", onKey, { capture: true });
   }, []);
 
-  // The FRONT DOOR — "/" lands on Home, or on Bots under the Fused Bot
-  // flavor (platform/lib/flavor, seeded before the first render), which has
-  // no Home page. Render-time write is safe — it changes pathname, so the
+  // The FRONT DOOR — "/" lands on Home. Render-time write is safe — it changes pathname, so the
   // re-render (via fused:urlchange) derives the real route. (Legacy
   // /view/_home, /view/_account, and the whole /view//embed namespaces are
   // rewritten at boot by router.ts.)
-  const frontDoor = isBot() ? "/bots" : "/home";
   if (location.pathname === "/") {
-    history.replaceState(null, "", frontDoor);
+    history.replaceState(null, "", "/home");
   }
-  // The server runs no bots on Windows: a bookmarked /bots URL goes Home rather
-  // than to a page whose every call answers 503.
+  // The server runs no bots on Windows, but the Bots page still opens there for
+  // the experts (task sessions, not bots: docs/experts.md; the page
+  // leaves its `/api/bots*` parts out, apps/bots `useBotsMissing`). So a
+  // bookmarked /bots URL goes Home only once the experts flag is KNOWN off
+  // — not on the first render, before the prefs read has answered.
   const botsOn = botsAvailable(config);
+  const expertsKnown = useExpertsFlagKnown();
+  const botsPageOn = botsOn || expertsKnown !== false;
   const terminalOn = terminalAvailable(config);
-  if (!botsOn && isBotsPath(location.pathname)) {
+  if (!botsPageOn && isBotsPath(location.pathname)) {
     history.replaceState(null, "", "/home");
   }
   // A fresh install's first load lands on the setup wizard instead (its own
@@ -702,7 +747,7 @@ export default function App({ config }: { config: Config }) {
   if (
     !IS_EMBED &&
     !autoShowDecided &&
-    location.pathname === frontDoor &&
+    location.pathname === "/home" &&
     shouldAutoShow(config)
   ) {
     history.replaceState(null, "", onboardingUrl(config.onboarding?.stages));
@@ -786,13 +831,11 @@ export default function App({ config }: { config: Config }) {
   // Preferences pages are sub-paths (apps/bots/routes.ts), asked through the
   // app's own predicate so the route is spelled once. test_shell_routes.py
   // derives this page's paths from that module, as it does for AI Models.
-  const isBots = isBotsPath(pathname) && botsOn;
+  const isBots = isBotsPath(pathname) && botsPageOn;
   // `/canvases/<env>/<name>` (see canvasNameFromPath): the old one-segment
   // `/canvases/<name>` matches nothing and falls to the "Unrecognized URL"
   // branch below, deliberately unredirected.
   const canvasWorkspace = canvasNameFromPath(pathname);
-  // `/canvases-project/<env>/<name>`: the tabbed, read-only project page.
-  const canvasProject = canvasProjectFromPath(pathname);
   // `/apps/<tag>/<name>` used to resolve HERE, to the app folder under the
   // workspace (a pure fused_dir codec) or — for the virtual "linked" tag, whose
   // folders live anywhere on disk — through GET /api/apps/linked-path, one async
@@ -828,13 +871,26 @@ export default function App({ config }: { config: Config }) {
     isHome ||
     isCanvases ||
     isBots ||
-    canvasWorkspace !== null ||
-    canvasProject !== null;
+    canvasWorkspace !== null;
   const fsPath = isSentinel ? null : fsPathFromLocation();
+  // An `s3://bucket/key` LOCATION (platform/lib/remote.ts) decodes through
+  // the same codec but is no filesystem path: it mounts RemoteView, never
+  // StatView or the install pages below (a key ending `.fused` is an S3
+  // object, not an app file to install), and nothing local gets it as a cwd.
+  const remoteLocation = fsPath && isRemoteLocation(fsPath) ? fsPath : null;
+  const localFsPath = remoteLocation ? null : fsPath;
   // Not behind the Marketplace flag: the install page is the one `.fused`
   // view there is (see isFusedInstallView); the flag gates the store's entry
   // points only.
-  const fusedFile = fsPath && isFusedInstallView(fsPath) ? fsPath : null;
+  const fusedNamed = localFsPath && isFusedInstallView(localFsPath) ? localFsPath : null;
+  const botNamed = localFsPath && isBotFileInstallView(localFsPath) ? localFsPath : null;
+  const installVerdictNow = installVerdict(
+    navHintIsDir(),
+    useStatIsDir(localFsPath, !!(fusedNamed || botNamed)),
+  );
+  const installPending = !!(fusedNamed || botNamed) && installVerdictNow === "pending";
+  const fusedFile = installVerdictNow === "install" ? fusedNamed : null;
+  const botFile = installVerdictNow === "install" ? botNamed : null;
   // A resolved fsPath mounts StatView below, which owns the title itself.
   useDocumentTitle(
     isPanel
@@ -877,8 +933,6 @@ export default function App({ config }: { config: Config }) {
                                 ? "Bots"
                               : canvasWorkspace
                                 ? `Canvas: ${canvasWorkspace.name} · ${ENV_NAMES[canvasWorkspace.env].label}`
-                              : canvasProject
-                                ? `Canvas: ${canvasProject.name} · ${ENV_NAMES[canvasProject.env].label}`
                                 : fsPath
                                   ? undefined
                                   : null,
@@ -1090,24 +1144,6 @@ export default function App({ config }: { config: Config }) {
         </Suspense>
       </div>
     );
-  } else if (canvasProject !== null) {
-    // The canvas project page (shell/CanvasPage.tsx): the workbench framed
-    // read-only in an Overview tab, its tasks in a Tasks tab, the clone's
-    // files in a Files tab. Keyed on (env, name) (not epoch): the tab is a
-    // query param, so switching it is a navigation, and a remount would
-    // reload the workbench frame — seconds of boot — to change tabs. A
-    // different canvas still mounts fresh.
-    main = (
-      <div id="content">
-        <Suspense fallback={<RouteFallback />}>
-          <CanvasPage
-            key={`${canvasProject.env}/${canvasProject.name}`}
-            env={canvasProject.env}
-            name={canvasProject.name}
-          />
-        </Suspense>
-      </div>
-    );
   } else if (isAiModels) {
     // AI Models (apps/ai_models/) — five tabs in the cc-* page chrome, one
     // sub-path each. Reachable by URL even where the sidebar hides its entry
@@ -1192,8 +1228,20 @@ export default function App({ config }: { config: Config }) {
         </div>
       </>
     );
+  } else if (remoteLocation) {
+    main = (
+      <RemoteView
+        key={epoch + ":" + remoteLocation}
+        location={remoteLocation}
+        home={config.home}
+      />
+    );
+  } else if (installPending) {
+    main = <RouteFallback />;
   } else if (fusedFile) {
     main = <FusedFileView key={epoch + ":" + fusedFile} fsPath={fusedFile} />;
+  } else if (botFile) {
+    main = <BotFileView key={epoch + ":" + botFile} fsPath={botFile} />;
   } else {
     main = (
       <StatView
@@ -1208,13 +1256,8 @@ export default function App({ config }: { config: Config }) {
   // ONE sidebar for every route (it replaced the per-context pair: the
   // explorer's on fs routes, the shell app-switcher elsewhere). The shell no
   // longer picks — GlobalSidebar carries nav, recents, bookmarks and the
-  // bottom Preferences menu itself. Fused Bot has none: the Bots page is the
-  // whole window, as it was in the standalone FusedBot; Tasks and
-  // Preferences open from the native menu bar there (mac_window.py).
-  // Fused Bot has no shell chrome at all (owner's call): Tasks and
-  // Preferences open from the native menu bar (mac_window.py); a plain
-  // browser tab reaches them by URL.
-  const sidebar = isBot() ? null : <GlobalSidebar config={config} />;
+  // bottom Preferences menu itself.
+  const sidebar = <GlobalSidebar config={config} />;
 
   // The setup wizard (shell/onboarding) is the whole window: no sidebar, no
   // status bar, no docks — a pre-app surface, which is why it is not one more
@@ -1253,7 +1296,16 @@ export default function App({ config }: { config: Config }) {
       <ModelConflictNotifier />
       {!IS_EMBED && sidebar}
       <div id="main">
-        {main}
+        {/* THE SHELL'S FALLBACK RAIL (shell/claude-rail FallbackRail): the
+            favourites' rail on a page that draws no Claude rail of its own.
+            The two wrappers are `display: contents` — the page laid out as
+            ever — until it stands, when they become the page's column and
+            the rail beside it (claude-rail.css). Always in the tree, so the
+            rail coming and going never remounts the page. */}
+        <div className="shell-main-row">
+          <div className="shell-main-col">{main}</div>
+          {!IS_EMBED && <FallbackRail />}
+        </div>
         {/* Three sections, not three surfaces: ModelsDock is the shell's
             wrapper around Models' own chip (it speaks apps/ai_models/lib's
             shared runtime poll, which platform may not import). ActivityDock
@@ -1283,7 +1335,10 @@ export default function App({ config }: { config: Config }) {
             pywinpty): `canRunInTerminal()` and `window._fusedOpenTerminal`
             both ride this mount, so every Run affordance and
             `fused.terminal.open/run` go away with it instead of failing. */}
-        {!IS_EMBED && terminalOn && <TerminalDrawer cwd={fsPath} />}
+        {!IS_EMBED && terminalOn && <TerminalDrawer cwd={localFsPath} />}
+        {/* Breakout cards: research-only side chats, shell-level so they
+            outlive the page they were opened from. */}
+        {!IS_EMBED && <BreakoutCards />}
         {!IS_EMBED && (
           <StatusBar
             terminalDock={terminalOn && <TerminalDock />}
@@ -1335,6 +1390,46 @@ export default function App({ config }: { config: Config }) {
           duplicate work, never add coverage. */}
       {!IS_EMBED && <UpdateNotifier />}
       {!IS_EMBED && <RestartOverlay />}
+      {/* The open favourite's chat card, beside whichever page's Claude rail
+          is up (shell/claude-rail FavouritePeek): mounted once here so a hop
+          between pages never remounts it. */}
+      {!IS_EMBED && <FavouritePeek />}
+      {/* …and its second slot, with free pins on (owner, 2026-11-18): the
+          favourite's window is two cards that swap roles — the non-pin and
+          the pin — so pinning never remounts the chat the reader pinned. */}
+      {!IS_EMBED && <FavouritePeekSlotY />}
+      {/* The list's chat card, with free pins on (shell/claude-rail
+          ListCardHost): the rail builds it, the shell draws it, so a pinned
+          list task is never remounted by a page hop. */}
+      {!IS_EMBED && <ListCardHost />}
+      {/* The Tasks card off the rail's Tasks door (shell/claude-rail
+          TasksPeek): mounted once here for the same reason — its view,
+          filters and scroll survive a hop (owner, 2026-11-07). */}
+      {!IS_EMBED && <TasksPeek />}
+      {/* The +'s New task card (shell/claude-rail PlusCardHost): window A's
+          too, drawn here so a hop keeps it — words, open chat and all
+          (owner, 2026-11-09). */}
+      {!IS_EMBED && <PlusCardHost />}
+      {/* The Bots card off the rail's Bots door (shell/claude-rail BotsPeek):
+          window A's too, mounted once here for the same reason — its list's
+          search and scroll survive a hop (owner, 2026-11-09). */}
+      {!IS_EMBED && <BotsPeek />}
+      {/* The Git card off the rail's Git door (shell/claude-rail GitPeek):
+          window A's too, mounted once here for the same reason (owner,
+          2026-11-10: Git moved off the status bar onto the rail). */}
+      {!IS_EMBED && <GitPeek />}
+      {/* The mode card off the rail's mode doors (shell/claude-rail ModePeek):
+          window A's too, mounted once here for the same reason (owner,
+          2026-11-20: a file's other modes as doors above Git). */}
+      {!IS_EMBED && <ModePeek />}
+      {/* The pinned bot's card (shell/claude-rail BotCardHost): window B's
+          other card, mounted once here for the favourite's reason — a page's
+          view switch remounts its rail, and a card that lived there
+          flickered out and back (owner, 2026-11-08). */}
+      {/* In an embed too: its rail draws pinned bots, whose rings would pin a
+          card nothing drew (CodeRabbit on #2201). */}
+      <BotCardHost />
+      <BotCardHostSlotY />
       {/* One dialog for every "Share" entry (card chip, card menu, app page,
           explorer kebab): the menu entries cannot own a dialog, so they post
           a request to platform/lib/share-app and this host renders it. */}

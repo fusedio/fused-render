@@ -10,7 +10,10 @@ canvases.py).
 THE RING (`SyncLog`): 200 structured events per canvas — `{seq, t, leg,
 action, ms, ok, detail}` — each also written as one `logger.info` line, so a
 diag bundle and the page's drawer tell the same story. `seq` only grows; the
-page pages with `after=<last seq it saw>`.
+page pages with `after=<last seq it saw>`. Given a `path`, every event is
+also appended to it as one JSON line (`.sync/<name>.log`, rotated to
+`.log.1` past `rotate_bytes`): the ring forgets on restart, the journal is
+what a diag bundle reads days later.
 
 THE NOTIFIER: one registry keyed by CANVAS, not by manager — the key is
 canvases.py's `_sync_key(env, name)` (`"<env>/<name>"`: prod's and unstable's
@@ -59,12 +62,16 @@ class SyncLog:
     """Bounded, thread-safe event ring for one canvas. `name` is the label its
     log lines carry (canvases.py passes the `<env>/<name>` key)."""
 
-    def __init__(self, name: str, notify) -> None:
+    def __init__(self, name: str, notify, *, path: str | None = None,
+                 rotate_bytes: int = 2 * 1024 * 1024) -> None:
         self.name = name
         self._notify = notify
         self._lock = threading.Lock()
         self._events: collections.deque = collections.deque(maxlen=LOG_RING_MAX)
         self._seq = 0
+        self._path = path
+        self._rotate_bytes = rotate_bytes
+        self._narrowed = False
 
     def add(self, leg: str, action: str, *, ms: float | int | None = None,
             ok: bool = True, detail: str = "") -> dict:
@@ -80,10 +87,56 @@ class SyncLog:
                 "detail": detail or "",
             }
             self._events.append(event)
+            self._journal(event)
         logger.info("canvas %s: %s %s %s", self.name, leg, action,
                     (detail or "") + ("" if ms is None else f" ({int(ms)} ms)"))
         self._notify()
         return event
+
+    def _journal(self, event: dict) -> None:
+        """Append `event` to the persistent journal (under the ring lock, so
+        lines never interleave). Best-effort: a full disk costs the journal,
+        never the sync."""
+        if not self._path:
+            return
+        try:
+            if not self._narrowed:
+                # Once per manager: journals written before the owner-only
+                # rule keep their old mode until something narrows them — the
+                # live one on its next open (below), but a `.log.1` already
+                # rotated out is never opened again.
+                self._narrowed = True
+                self._narrow(self._path + ".1")
+            try:
+                if os.path.getsize(self._path) >= self._rotate_bytes:
+                    # Narrowed BEFORE the rename: the fchmod below reaches
+                    # only the file opened after it, so a wide journal that
+                    # is already at the threshold would rotate out wide.
+                    self._narrow(self._path)
+                    os.replace(self._path, self._path + ".1")
+            except OSError:
+                pass  # no journal yet
+            os.makedirs(os.path.dirname(self._path), exist_ok=True)
+            # Owner-only: the journal names files, canvases and errors. Created
+            # 0600, and an existing one (from before this rule) narrowed to it
+            # on every open.
+            fd = os.open(self._path, os.O_WRONLY | os.O_APPEND | os.O_CREAT, 0o600)
+            try:
+                if hasattr(os, "fchmod"):
+                    os.fchmod(fd, 0o600)
+                os.write(fd, (json.dumps({**event, "canvas": self.name}) + "\n").encode("utf-8"))
+            finally:
+                os.close(fd)
+        except OSError:
+            pass
+
+    @staticmethod
+    def _narrow(path: str) -> None:
+        """Owner-only, when `path` exists (a no-op where modes mean nothing)."""
+        try:
+            os.chmod(path, 0o600)
+        except OSError:
+            pass
 
     def since(self, after: int = 0) -> dict:
         """Events with seq > `after`, oldest first, and the `after` to pass
@@ -114,6 +167,7 @@ def subscribe(key: str) -> tuple:
     token = (asyncio.get_running_loop(), asyncio.Event())
     with _LISTENERS_LOCK:
         _LISTENERS.setdefault(key, set()).add(token)
+        _PRESENT_AT[key] = time.time()
     return token
 
 
@@ -124,6 +178,21 @@ def unsubscribe(key: str, token) -> None:
             subs.discard(token)
             if not subs:
                 del _LISTENERS[key]
+        _PRESENT_AT[key] = time.time()
+
+
+# PRESENCE: the open sockets above ARE the canvas pages showing a canvas (the
+# page opens one per canvas it shows), so their count is whether anyone is
+# looking. `_PRESENT_AT` is when a socket last opened or closed — the start of
+# an idle stretch once the count is 0 (canvases.IDLE_STOP_S).
+_PRESENT_AT: dict[str, float] = {}
+
+
+def presence(key: str) -> tuple[int, float | None]:
+    """(open sync/events sockets for canvas `key`, when one last opened or
+    closed — None if never)."""
+    with _LISTENERS_LOCK:
+        return len(_LISTENERS.get(key, ())), _PRESENT_AT.get(key)
 
 
 def notify(key: str) -> None:

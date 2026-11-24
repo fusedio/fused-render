@@ -8,12 +8,16 @@
 // (routes.ts: the selection IS the path), the UI request slots (dialog / context menu) the panes open each other
 // with, and the Builds chip. The Tasks / Apps / Preferences pages are routes too (App.tsx reads them), not a slot.
 import { useSyncExternalStore } from "react";
-import { api, apiHooks, markBotSeen, type Bot, type BotEvent, type ImessageState, type SlowCall, type UsageSummary, ApiError } from "../lib/api";
+import { isLanHost } from "@platform/lib/host";
+import { api, apiHooks, isWorkspaceBusy, markBotSeen, type Bot, type BotEvent, type Face, type ImessageState, type SlowCall, type StatusReply, type UsageSummary, ApiError } from "../lib/api";
+import { readBotsMissing } from "@platform/lib/bots-available";
+import { listExperts, type Expert } from "@platform/lib/experts";
+import { readExpertsFlag, expertsEnabledNow } from "@platform/lib/experts-flag";
 import { SEEN_KEY, newMarkFor, parseSeenMap, unreadOf, unviewedOf } from "../lib/unread";
 import { landingBot } from "../lib/landing";
 import { botHasUnread } from "@platform/lib/botsPulse";
 import { getPrefsShared, putBotsPref } from "@platform/lib/api";
-import { sentByYou } from "../lib/derive";
+import { lastUserTs, noBrowser, sentByYou } from "../lib/derive";
 import { chime, notifyEvents, notifyHandover, updateTitle } from "../lib/notify";
 import type { NewBotPick } from "../lib/presets";
 import { botsMounted } from "../lib/root";
@@ -26,9 +30,9 @@ export { SLOW_MS, STALL_MS } from "../lib/api";
 // ------------------------------------------------------------------ shape ----
 export interface Toast { id: number; text: string; label: string; dot: string; ts: number; out: boolean }
 export interface BuildsChip { n: string; live: boolean; warn: boolean; fresh: boolean; title: string; hidden: boolean }
-/** A dialog another module asked for. Known kinds: newBot, settings, routines, skills, usage (dialogs/Dialogs.tsx owns them).
+/** A dialog another module asked for. Known kinds: newBot, settings, usage, browsers, failures, exportBot (dialogs/Dialogs.tsx owns them).
  *  newBot without `pick` is the preset chooser (#pmodal); with `pick` it is the bot dialog filled in from that pick. */
-export interface DialogReq { kind: "newBot" | "settings" | "usage" | "browsers" | "failures" | (string & {}); id?: string | null; pick?: NewBotPick; [k: string]: unknown }
+export interface DialogReq { kind: "newBot" | "settings" | "usage" | "browsers" | "failures" | "exportBot" | (string & {}); id?: string | null; pick?: NewBotPick; [k: string]: unknown }
 /** The bot context menu (components/BotMenu.tsx): openMenu(id, x, y, live, alignRight); one row set wherever it opens. */
 export interface MenuReq { id: string; x: number; y: number; live?: boolean; alignRight?: boolean }
 
@@ -55,6 +59,9 @@ export interface BotsState {
   /** The thread sits at its end (following along). */
   pinned: boolean;
   showHidden: boolean;
+  /** A poll has answered at least once in this document (pollOnce): until then an empty `bots` is "not yet known",
+   *  not "none" — the rail's Bots card shows "Loading…" on the one and "No bots yet" on the other (Bugbot on #2206). */
+  polled: boolean;
   /** A poll landed while the live view was open; the thread pins to the end when it closes. */
   /** Calls slower than SLOW_MS (last 30). */
   slow: SlowCall[];
@@ -66,7 +73,9 @@ export interface BotsState {
   scrollSeq: { bot: string; seq: number } | null;
   /** Set by send(): the next render shows the message you just sent. The thread clears it (setScrollToEnd(false)). */
   scrollToEnd: boolean;
-  banner: { show: boolean; text: string };
+  /** `sticky`: survives the poll's and the stall hook's hideBanner (only Retry / Dismiss or the action clear it).
+   *  `action`: a button beside Retry (the "workspace_busy" 409's Override). */
+  banner: { show: boolean; text: string; sticky?: boolean; action?: { label: string; run: () => Promise<void> } };
   toasts: Toast[];
   buildsChip: BuildsChip;
   ui: { dialog: DialogReq | null; menu: MenuReq | null };
@@ -86,7 +95,7 @@ let S: BotsState = {
   bots: [], events: {}, cursors: {}, sel: typeof location === "undefined" ? null : urlSel(),
   usage: null, imessage: null,
   seen: {}, base: {}, viewed: {}, newMark: null, newCount: 0, pinned: true,
-  showHidden: false, slow: [], fast: false, scrollThread: 0, scrollToEnd: false, scrollSeq: null,
+  showHidden: false, polled: false, slow: [], fast: false, scrollThread: 0, scrollToEnd: false, scrollSeq: null,
   banner: { show: false, text: "" }, toasts: [],
   buildsChip: { n: "", live: false, warn: false, fresh: false, title: "Tasks · Claude tasks that create fused apps", hidden: false },
   ui: { dialog: null, menu: null },
@@ -237,7 +246,7 @@ let autoOpened: string | null = null;
 export const needsYou = (b: Bot | undefined): boolean => !!b && !!b.control && b.control_by === "bot";
 /** ...and Stage can show it: the task has not ended and the browser is not popped out (nothing to stream). The same
  *  checks that close an auto-opened Stage, so a remount never flashes one open for a poll. */
-const stageable = (b: Bot | undefined): boolean => needsYou(b) && b!.status !== "idle" && b!.status !== "error" && !b!.browser?.headed;
+const stageable = (b: Bot | undefined): boolean => needsYou(b) && !noBrowser(b) && b!.status !== "idle" && b!.status !== "error" && !b!.browser?.headed;
 /** Open Stage for the selected bot `id` unless it is already open or the pref is off; with a dialog / menu up, later
  *  (closeDialog / closeMenu). Unsent composer text keeps its focus: the page does not take the keyboard then. */
 function requestStage(id: string): void {
@@ -264,8 +273,24 @@ function flushPendingStage(): void {
 }
 
 // ------------------------------------------------------------------ banner ----
-export function showBanner(msg: string): void { commit({ banner: { show: true, text: msg } }); }
-export function hideBanner(): void { if (S.banner.show) commit({ banner: { ...S.banner, show: false } }); }
+export function showBanner(msg: string, opts: { sticky?: boolean; action?: { label: string; run: () => Promise<void> } } = {}): void {
+  if (S.banner.show && S.banner.sticky && !opts.sticky) return;  // a sticky banner is not displaced by a passing one
+  commit({ banner: { show: true, text: msg, sticky: !!opts.sticky, action: opts.action } });
+}
+/** `force`: Retry / Dismiss and a finished action; without it a sticky banner stays (the poll hides only passing ones). */
+export function hideBanner(force = false): void { if (S.banner.show && (force || !S.banner.sticky)) commit({ banner: { show: false, text: S.banner.text } }); }
+
+/** A door the workspace gate refused (409 "workspace_busy"): the banner stays until acted on, and Override asks
+ *  the holding server to yield, claims the workspace here, then polls so the doors read as open. */
+function showWorkspaceBusy(e: ApiError): void {
+  // A phone cannot claim the workspace (the LAN door 404s /api/bots/workspace/take, lan.py): the banner says
+  // why, with no Override.
+  if (isLanHost()) { showBanner(e.message, { sticky: true }); return; }
+  showBanner(e.message, { sticky: true, action: { label: "Take over here", run: async () => {
+    try { await api.workspaceTake(); hideBanner(true); await poll(); }
+    catch (err) { showBanner(errMsg(err), { sticky: true, action: S.banner.action }); }
+  } } });
+}
 
 // ------------------------------------------------------------------ unread ----
 // "Seen" is the server's Bot.seen_seq (D1386; it was localStorage, which the port walk empties on relaunch). markSeen
@@ -291,7 +316,8 @@ function pushSeen(id: string, seq: number): void {
   });
 }
 export function markSeen(id: string | null | undefined, seq: number): void {
-  if (!id || S.seen[id] >= seq) return;
+  // An expert's read mark is its own (its Learning tab); the bots backend does not know it.
+  if (!id || S.seen[id] >= seq || botById(id)?.expert) return;
   pushSeen(id, seq);
   commit({ seen: { ...S.seen, [id]: seq } });
   // The sidebar's chip counts this bot until it hears the mark moved; the next poll is up to 3 s away (CodeRabbit, #1796).
@@ -302,7 +328,14 @@ export function markSeen(id: string | null | undefined, seq: number): void {
  *  the server's raw `seen_seq`: a bot you just opened is read here at once, and the chip must not count it for the
  *  poll or two until the server echoes the POST. Called on every poll and on every local mark. */
 function publishPulse(): void {
-  publishBots(S.bots.map((b) => ({ id: b.id, status: b.status, seq: b.seq, news_seq: b.news_seq, seen_seq: S.seen[b.id], hidden: b.hidden })));
+  // …with the pin, the name and the face: the Claude rail's pinned bots read
+  // these rows while this page is the feeder (CodeRabbit, #2136).
+  // …and the page's own recency (BotList `recency`: your last message, else when it was made), so the rail's pinned
+  // bots sort as this list does while the page feeds them (owner, 2026-11-09: the foot's order disagreed with the page).
+  publishBots(S.bots.filter((b) => !b.expert).map((b) => ({
+    id: b.id, status: b.status, seq: b.seq, news_seq: b.news_seq, seen_seq: S.seen[b.id], hidden: b.hidden, pinned: b.pinned,
+    name: b.name, face: b.face, last_user_ts: lastUserTs(eventsOf(b.id)) || b.last_user_ts || 0, created: b.created,
+  })));
 }
 export const unreadCount = (b: Bot): number => unreadOf(S.seen[b.id], eventsOf(b.id), b);
 /** The "new" rule sits at the seen mark as of opening this bot and stays put until you switch bots; set only when something is past it, else cleared. */
@@ -371,6 +404,9 @@ function writeUrl(id: string | null, mode: "push" | "replace") {
     const r = parseBotsPath(location.pathname);
     if (r.kind === "bot" && r.id === id) return;
     if (mode === "replace" && r.kind !== "list" && r.kind !== "bot") return;
+    // On the phone the bare `/bots` IS a page — the list, one column at a time (lan.css) — so the store's own
+    // fallback never fills it in with the default pick: that would bounce every Back from a chat straight into it.
+    if (mode === "replace" && r.kind === "list" && isLanHost()) return;
     const href = (id ? botHref(id) : BOTS_PREFIX) + location.search + location.hash;
     if (mode === "push") navigateUrl(href); else replaceSearch(href);
   } catch { /* no history (tests) */ }
@@ -394,6 +430,8 @@ const OPEN_RETRY_MS = 3_000;
  *  OPEN_RETRY_MS so linking Claude later, or a measure landing, still starts it. The server rate-limits the measure
  *  itself (one a minute) and finishes a recent open on its own once it lands, so asking often is cheap and a fallback. */
 function sendOpen(id: string): void {
+  // An expert's dot is its learning, cleared by its Learning tab (ExpertPane), not by opening the chat.
+  if (botById(id)?.expert) return;
   if (openedOnce.has(id) || (openRetryAt[id] || 0) > Date.now()) return;
   openedOnce.add(id);
   void act(() => api.open(id), true).then((r) => {
@@ -419,6 +457,8 @@ function applySel(id: string | null): void {
   const b = cur(); if (b) { setNewMark(b); markSeen(b.id, b.seq); }
   // A bot waiting for you in its browser opens Stage the moment you pick it.
   if (b && stageable(b)) requestStage(b.id);
+  // An expert has no browser: a Stage left open for the previous bot closes rather than show it nothing.
+  else if (S.fast && noBrowser(b)) closeStage();
 }
 
 /** `replace`: the store's own fallback pick (see writeUrl); a user gesture pushes. `sel` is committed BEFORE the
@@ -448,6 +488,9 @@ const hasNews = (b: Bot): boolean => botHasUnread({ seq: b.seq, news_seq: b.news
  *  entry. A different bot than the one on screen gets the select resets (applySel), and landing marks it read.
  *  With no rows yet the pick waits for the first poll (pollOnce), which calls this again. */
 function landOnBare(): void {
+  // The phone's `/bots` IS the list (D1468): landing would select a bot off-screen, and selecting marks it read
+  // (applySel → markSeen) for a chat nobody is looking at. The Mac's rule only.
+  if (isLanHost()) return;
   const pick = S.bots.length ? landingBot(S.bots, hasNews, S.sel) : S.sel;
   if (!pick) return;
   batch(() => {
@@ -491,17 +534,71 @@ export const closeMenu = (): void => { if (S.ui.menu) { commit({ ui: { ...S.ui, 
 /** builds/ owns the numbers; the list footer renders them. */
 export const setBuildsChip = (patch: Partial<BuildsChip>): void => commit({ buildsChip: { ...S.buildsChip, ...patch } });
 
+// ------------------------------------------------------------------ experts ----
+// The page lists experts (docs/experts.md) as rows of their own kind: read from /api/experts at most
+// every EXPERTS_MS and right after an expert action, never off the page or on the phone. The bots backend
+// does not know them. With the switch off nothing is asked; the first poll waits for the switch, so a fresh load of
+// /bots/<expert> finds its row.
+const EXPERTS_MS = 10_000;
+let specRows: Bot[] = [], specAt = 0;
+const asBot = (s: Expert): Bot => ({
+  id: s.id, name: s.name, kind: "expert", expert: s, status: s.working ? "running" : "idle", seq: 0, events: [],
+  model: "", effort: "", face: s.face as Face | null, created: s.last?.at || 0,
+});
+async function expertBots(): Promise<Bot[]> {
+  if (isLanHost()) return [];
+  await readExpertsFlag();
+  if (!expertsEnabledNow()) { specAt = 0; return []; }
+  if (Date.now() - specAt < EXPERTS_MS) return specRows;
+  specAt = Date.now();
+  // A failed refresh keeps the rows it had: emptying them would also throw the user out of an open expert chat.
+  specRows = await listExperts().then((r) => r.map(asBot), () => specRows);
+  return specRows;
+}
+/** An expert action, then a poll that reads the experts again. */
+export function actExpert<T>(call: () => Promise<T>): Promise<T | undefined> {
+  return act(() => call().then((r) => { specAt = 0; return r; }));
+}
+
 // ------------------------------------------------------------------ poll ----
+/** The status a server without bots would give (Windows; `readBotsMissing`): no rows, nothing else. */
+const NO_BOTS: StatusReply = { bots: [], ts: 0, usage: null, imessage: null };
+
 // One poll in flight at a time; one requested meanwhile runs after it settles, so callers never see pre-action state.
 let pollBusy: Promise<void> | null = null;
 export function poll(): Promise<void> {
   if (pollBusy) return pollBusy.then(poll);
-  return (pollBusy = pollOnce().finally(() => { pollBusy = null; }));
+  const p: Promise<void> = pollOnce().finally(() => { if (pollBusy === p) pollBusy = null; });
+  return (pollBusy = p);
+}
+
+/** Test-only: forget the poll in flight. bun runs every file in one process, and a poll another file started against
+ *  a `fetch` stub that never answers (the rail's bot card feeds this store) would otherwise be what every later act()
+ *  waits on. The forgotten poll's `finally` cannot clear a newer one: it nulls only its own slot. */
+export function resetPollForTests(): void {
+  pollBusy = null;
 }
 
 export async function pollOnce(): Promise<void> {
+  // OFF THE BOTS PAGE the poll is the rail's bot card's (shell/claude-rail BotPeek; `feedBotQuietly` below, and the
+  // card composer's act()): the rows, the events and the read marks are merged as on the page, and everything the
+  // page does with them — landing the bare door, selecting, toasting, opening Stage, the OS notification, the title
+  // prefix, the `open` call — is not done: a page that is not there does nothing, and `select` would write the URL
+  // (`writeUrl` refuses off `/bots`, but its resets would still run). The page's own poll is unchanged: it only ever
+  // ran mounted.
+  const page = botsMounted();
   try {
-    const r = await api.status({ cursors: S.cursors, shot_for: S.sel || "", fast: S.fast });
+    // No bots on this server (Windows): the page lists the experts alone, and `/api/bots` (a 503 there) is
+    // never asked — its failure would also take the experts' rows down with it. Off the page this poll is the
+    // rail's bot card's, which only stands where the server has bots (useBotsAvailable), so nothing is read there.
+    const botsOff = page && await readBotsMissing();
+    const [r, spec] = await Promise.all([
+      botsOff ? NO_BOTS : api.status({ cursors: S.cursors, shot_for: page ? S.sel || "" : "", fast: page && S.fast }),
+      page ? expertBots() : [],
+    ]);
+    // What landing picks from: the bots, or with none on this server the experts (on a Mac an expert is never
+    // landed on by itself, as before).
+    const landRows = botsOff ? spec : r.bots;
     batch(() => {
       hideBanner();
       const first = !S.bots.length;
@@ -513,10 +610,10 @@ export async function pollOnce(): Promise<void> {
         if (b.events.length) {
           list = list.concat(b.events);
           cursors[b.id] = b.seq;
-          if (!first) notifyEvents(b, b.events);
+          if (!first && page) notifyEvents(b, b.events);
           // Fresh system notes for the bot on screen surface as a toast; never on first load, never stale ones. Hand-off
           // lines (docs §11) render in the thread instead, so they do not toast as well.
-          if (!first && b.id === S.sel) toast = b.events.filter((e) => e.role === "system" && e.source !== "handoff" && Date.now() / 1000 - e.ts < TOAST_FRESH_S).pop() || toast;
+          if (!first && page && b.id === S.sel) toast = b.events.filter((e) => e.role === "system" && e.source !== "handoff" && Date.now() / 1000 - e.ts < TOAST_FRESH_S).pop() || toast;
         }
         if (!(b.id in cursors)) cursors[b.id] = b.seq;
         if (list.length > EVENT_CAP) list = list.slice(list.length - EVENT_CAP);
@@ -534,12 +631,14 @@ export async function pollOnce(): Promise<void> {
       // Nothing moved (and no bot left): keep the reference.
       if (seenSame && Object.keys(seen).length === Object.keys(S.seen).length) seen = S.seen;
       commit({
-        bots: r.bots, events, cursors, seen,
+        bots: [...r.bots, ...spec], events, cursors, seen, polled: true,
         ...(r.usage ? { usage: r.usage } : {}), ...(r.imessage ? { imessage: r.imessage } : {}),
       });
       // The sidebar's Bots entry: while this page polls, it is the one source, and the rail moves on the same tick
       // the list does (publishPulse).
       publishPulse();
+      // The rest is the page's (header): off it, the merge above is the whole poll.
+      if (!page) return;
       if (toast) showToast(toast);
       // Hand-overs: the bot asked for you in its browser (control_by flipped to "bot"; a take-over of yours is "user" and
       // stays quiet). The selected bot opens Stage, any other one gets a toast; chime + OS notification either way. On
@@ -569,7 +668,12 @@ export async function pollOnce(): Promise<void> {
         if (!b || !b.control || b.status === "idle" || b.status === "error" || b.browser?.headed) closeStage();
       }
       // A bot picked from the URL skips select(): place its "New" rule and clear its dot once, on first load. Later polls leave "seen" alone so the dot lights while you watch.
-      if (first && S.sel && !document.hidden) { const c = cur(); if (c) { setNewMark(c); markSeen(c.id, c.seq); } }
+      // "First load" is the PAGE's first poll (`pageFirstPoll`, startStore), not the store's first rows: the rail's
+      // quiet feed may have filled the rows before the page mounted.
+      // …and only ON THE CHAT ROUTE: a remount at /bots/tasks or /bots/apps keeps `sel` with its chat off screen, and
+      // marking it read there would clear a dot over news nobody saw (CodeRabbit on #2143).
+      if ((first || (pageFirstPoll && parseBotsPath(location.pathname).kind === "bot")) && S.sel && !document.hidden) { const c = cur(); if (c) { setNewMark(c); markSeen(c.id, c.seq); } }
+      pageFirstPoll = false;
       // A remount landed on stale rows (startStore): a bot that started waiting, or got a reply, while you were on
       // another page is only known now. After the mark above, so a switch places its own "New" rule. Not while
       // hidden: landing marks the bot read (applySel), and nobody saw it — the flag holds for the poll visibility kicks.
@@ -580,11 +684,12 @@ export async function pollOnce(): Promise<void> {
       }
       // Nothing selected yet: a bot waiting on you, else one with news, else Super Bot (seeded on first run,
       // registry.seed_super) — the chat a new user should land in (lib/landing.ts).
-      if (!S.sel && r.bots.length && !document.hidden) landOnBare();
-      if (S.sel && !r.bots.find((b) => b.id === S.sel)) select(r.bots[0]?.id || null, { replace: true });
+      if (!S.sel && landRows.length && !document.hidden) landOnBare();
+      if (S.sel && !S.bots.some((b) => b.id === S.sel)) select(landRows[0]?.id || null, { replace: true });
       // The bot on screen is open: the Bots page shows it (by a click, a deep link or landing here). Only this page
       // polls, so onboarding or another page never counts. Once per bot per page load; the server ignores repeats.
-      if (S.sel && !document.hidden) sendOpen(S.sel);
+      // Not from the phone's list page: the chat on screen there is none (D1468).
+      if (S.sel && !document.hidden && !(isLanHost() && parseBotsPath(location.pathname).kind === "list")) sendOpen(S.sel);
       updateTitle();
     });
   } catch (e) {
@@ -595,7 +700,7 @@ export async function pollOnce(): Promise<void> {
 /** Run a mutation, then poll so the page shows its effect; errors land in the banner unless silent. Resolves undefined on failure. */
 export async function act<T>(call: () => Promise<T>, silent = false): Promise<T | undefined> {
   try { const r = await call(); await poll(); return r; }
-  catch (e) { if (!silent) showBanner(errMsg(e)); return undefined; }
+  catch (e) { if (isWorkspaceBusy(e)) showWorkspaceBusy(e); else if (!silent) showBanner(errMsg(e)); return undefined; }
 }
 
 /** The live view (Stage) opened/closed: poll every 400 ms while open. The thread stays beside the page, so nothing re-pins. */
@@ -637,6 +742,39 @@ function kickLoop(): void {
   void loop(loopGen);
 }
 
+// ------------------------------------------------------------------ the rail's quiet feed ----
+// THE BOT CARD OFF THE BOTS PAGE (shell/claude-rail BotPeek, 2026-11-05): a pinned bot's chat shown in a card on any
+// other page needs this store's rows and events, which only the page's loop (startStore) fills. While a card holds a
+// reader, this loop polls in the page's cadence (loopDelay, never `fast`) — and STEPS ASIDE while the page's own loop
+// runs (loopGen > 0: the page is mounted), so the two never poll side by side; the page's poll feeds the same store.
+// pollOnce does only the merge off the page (its `page` guard). Nothing starts until a card asks; the last card
+// leaving stops it.
+let quietReaders = 0, quietGen = 0, quietTimer: ReturnType<typeof setTimeout> | null = null;
+/** The page's next poll is its first since mounting (pollOnce's first-load mark for a URL-picked bot). */
+let pageFirstPoll = false;
+async function quietLoop(gen: number): Promise<void> {
+  if (gen !== quietGen) return;
+  if (loopGen <= 0) await poll();
+  if (gen !== quietGen) return;
+  quietTimer = setTimeout(() => { quietTimer = null; void quietLoop(gen); }, loopDelay());
+}
+/** Hold the store fed for a bot card off the page; the answer releases it. Idempotent across readers: one loop. */
+export function feedBotQuietly(): () => void {
+  quietReaders += 1;
+  if (quietReaders === 1) { quietGen += 1; void quietLoop(quietGen); }
+  let done = false;
+  return () => {
+    if (done) return;
+    done = true;
+    quietReaders -= 1;
+    if (quietReaders > 0) return;
+    quietGen += 1;  // a loop mid-await sees the moved generation and stops
+    if (quietTimer) { clearTimeout(quietTimer); quietTimer = null; }
+  };
+}
+/** Test seam: whether the rail's quiet feed holds any reader. */
+export const quietFeedReaders = (): number => quietReaders;
+
 /** Boot: wire the api hooks and URL listeners, start the loop. Returns the teardown. Call once per mount (App).
  *  The state outlives a remount (leaving /bots and coming back): the URL's `/bots/<id>` wins when it names one, else
  *  the bot that was open goes back onto the URL (a replace: the bare `/bots` becomes its chat). */
@@ -649,6 +787,7 @@ export function startStore(): () => void {
   window.addEventListener("fused:urlchange", syncFromUrl);
   window.addEventListener(OPEN_EVENT, onOpenEvent);
   const urlBot = urlSel();
+  pageFirstPoll = true;
   relandOnPoll = false;  // a flag left by a mount that unmounted before its first poll must not re-land this one (a deep link)
   if (urlBot && urlBot !== S.sel) commit({ sel: urlBot, scrollThread: S.scrollThread + 1 });
   // The bare door from another page (`/bots` itself — not /bots/tasks, apps or preferences, which select nothing):
@@ -669,6 +808,7 @@ export function startStore(): () => void {
     document.removeEventListener("visibilitychange", onVisible);
     if (S.ui.dialog || S.ui.menu) commit({ ui: { dialog: null, menu: null } });  // a route change closes them
     pendingStage = null; if (S.fast) closeStage();  // Stage does not outlive the route (and a queued auto-open must not fire into it)
+    commit({ bots: S.bots.filter((b) => !b.expert) });  // the rail's bot card lists bots only
     window.removeEventListener("popstate", syncFromUrl);
     window.removeEventListener("fused:navigate", syncFromUrl);
     window.removeEventListener("fused:urlchange", syncFromUrl);

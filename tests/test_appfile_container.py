@@ -189,3 +189,20 @@ def test_bombs_never_inflate_past_the_declared_size(tmp_path, monkeypatch):
     # compressed bytes for cap+1 output and yields at most cap+1.
     got = c.read_member(str(f), idx, "p.png", 10)
     assert len(got) == 11 and biggest <= 11
+
+
+@pytest.mark.parametrize("kind,key,bad", [
+    ("bot", "fused_bot_file", True),      # True == 1 in Python: a JSON `true` must not pass as version 1
+    ("bot", "fused_bot_file", 1.0),
+    ("app", "fused_app_file", "2"),
+])
+def test_kind_version_must_be_an_int_not_a_bool(tmp_path, kind, key, bad):
+    f = tmp_path / "x.fused"
+    f.write_bytes(raw_container({key: bad, "files": []}))
+    with pytest.raises(c.ContainerError, match=f"carries no {key}"):
+        c.read_index(str(f), **CAPS, kind=kind)
+    assert c.kind_of(str(f)) is None
+    # The real integer still opens.
+    f.write_bytes(raw_container({key: c.KINDS[kind][1], "files": []}))
+    assert c.read_index(str(f), **CAPS, kind=kind)["files"] == []
+    assert c.kind_of(str(f)) == kind

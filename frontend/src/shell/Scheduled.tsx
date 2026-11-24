@@ -77,10 +77,7 @@ import { draftChatUrl } from "@apps/claude";
 import {
   chatKeySession,
   fetchDrafts,
-  NEW_CHAT_PREFIX,
-  newChatFile,
 } from "@platform/lib/drafts";
-import type { ChatDraft } from "@platform/lib/drafts";
 import { ErrorBanner } from "@platform/ui/ErrorBanner";
 import { SkeletonLines } from "@platform/ui/Skeleton";
 import ScheduleCalendar, {
@@ -92,7 +89,11 @@ import ScheduleCalendar, {
   ICON_VIEW_CARDS,
   ICON_VIEW_LIST,
 } from "./ScheduleCalendar";
-import NewJobModal, { seededDraftForm, splitDraft } from "./NewJobModal";
+import NewJobModal, { chatHopSeed, reopenTime, seededDraftForm } from "./NewJobModal";
+// Moved beside the card so the canvas rail can open a draft on it the same
+// way (apps may import NewJobModal, never this page); re-exported for readers
+// who learnt them here.
+export { chatHopSeed, reopenTime } from "./NewJobModal";
 import type { DraftSeed } from "./NewJobModal";
 import {
   EMPTY_FILTERS,
@@ -467,9 +468,15 @@ function ViewTabsEditor({ tabs, active, onPick, onChange, onCancel, onDone, sort
   // Escape = Cancel (or close the + menu first), wherever focus is: a removed
   // chip takes the focus with it, so a listener on the strip alone missed the
   // key right after the most natural edit.
+  // …but not from an editor put away with the rail's Tasks card, or under
+  // its chat: that editor is inert, which a window listener cannot see, and
+  // the key is someone else's then — the page's own menu's, say (CodeRabbit,
+  // 2026-11-08: a closed card's editor cancelling its draft and eating the
+  // Escape meant for the More menu).
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       if (e.key !== "Escape") return;
+      if (stripRef.current?.closest("[inert]")) return;
       e.stopPropagation();
       if (adding) setAdding(false);
       else if (sorting) closeSort();
@@ -678,92 +685,14 @@ interface ChatHop {
  *  A module constant so `openForm`'s default argument is one stable value. */
 const NO_HOP: ChatHop = { key: "", from: "" };
 
-/**
- * ONE CHAT RECORD, AS THE NEW TASK CARD OPENS ON IT (design "one record", §1).
- *
- * The hop no longer carries a sentence, a tray or a session in its URL — it
- * carries the KEY, and this turns what is stored under that key into the seed
- * the card already knows how to mount on (`DraftSeed`, the shape a reopened
- * task draft uses). One seeding rule for both kinds of draft, which is what
- * makes "the modal opens on the record" a true sentence rather than two
- * near-identical paths.
- *
- * THE WORDS COME OUT OF `text`, SPLIT, and they go back into `text`, JOINED
- * (contract §1: the words live in `text`, never in `form.description`; the
- * modal splits and joins with `splitDraft`/`joinDraft`). So the composer's box
- * and the card's two prose fields are two views of one string, and a hop out
- * followed by Back to chat is lossless. Nothing here reads `form.title` — the
- * title IS the first line, which is also what the listing row prints.
- *
- * `session_id` is the KEY when the key is a session: a hop out of a chat that
- * has already run is a message into that thread, and that is what the Schedule
- * payload's `sessionId` is built from. `new:<file>` has no thread to continue,
- * and its `<file>` is the folder the card falls back to when the record names
- * no target of its own.
- *
- * `at` IS WHAT A SESSION KEY CANNOT SAY (Akshil, 2026-09-16). A `new:<file>` key
- * spells its folder; a session id spells only the thread, so this used to fall
- * through to `""` and the card opened on the reader's HOME — and its first
- * autosave then wrote that home path onto the conversation's own record as the
- * target. Every door that knows the folder now states it: the hop's `?target=`
- * (the composer's own `file`), or a draft row's `project`. The stored form still
- * outranks it, because a form that names a target is a choice somebody made.
- */
-export function chatHopSeed(
-  key: string,
-  record: ChatDraft | null,
-  at = "",
-): DraftSeed | null {
-  if (!record) return null;
-  const split = splitDraft(record.text);
-  const form = (record.form ?? {}) as Record<string, unknown>;
-  const newChat = key.startsWith(NEW_CHAT_PREFIX);
-  return {
-    id: "",
-    form: {
-      ...form,
-      title: split.title,
-      description: split.description,
-      attachments: record.attachments ?? [],
-      target: (typeof form.target === "string" && form.target)
-        || (newChat ? newChatFile(key) : "") || at || "",
-      session_id: newChat ? "" : key,
-    },
-  };
-}
-
-/**
- * WHAT TIME A FORM THAT ALREADY EXISTS OPENS ON — its own, or none (Bugbot, PR
- * #1126, 2026-09-12).
- *
- * `NEW_LINK_LEAD_MS` is an answer to a question a FRESH link asks: a card that
- * has never been saved opens on now+2m because a deep link means "set this up",
- * and a near-now time is the one to adjust from. A form that has been saved
- * already answered that question, and the answer is in it — `when`, which the
- * store keeps as null until somebody actually opens the when-row and picks one
- * (NewJobModal `draftBody`). Null there means IMMEDIATE: a task to run, not a
- * task to plan.
- *
- * Handing the lead date to such a form overwrote that. `creating` being a Date
- * is what makes the card `planning`, `planning` is what makes `timePicked` open
- * true, and `timePicked` is what puts `when` in the next autosave — so merely
- * reopening an immediate draft rewrote it as one scheduled for two minutes'
- * time, and Schedule sent it that way. So: the stored time when there is one,
- * and nothing at all when there is not. Only the opening with no stored form
- * behind it keeps the lead (see both call sites).
- *
- * An unreadable `when` reads as none here. The card seeds its own field from
- * the string verbatim (`seededDraftForm`), so nothing is lost by this one
- * declining to guess a Date out of it.
- */
-export function reopenTime(seed: DraftSeed | null): Date | null {
-  const when = (seed?.form as { when?: unknown } | null | undefined)?.when;
-  if (typeof when !== "string" || !when) return null;
-  const at = new Date(when);
-  return Number.isNaN(at.getTime()) ? null : at;
-}
-
-export default function Scheduled({ scope }: { scope?: TasksScope } = {}) {
+/** THE TASKS PAGE IN THE RAIL'S CARD (owner, 2026-11-07; shell/claude-rail
+ *  TasksPeek, `inCard`): the same page, less what belongs to a page — no
+ *  "Tasks" heading (the card's head says it), no side peek of its own (a press
+ *  opens the chat in the card: task-peek-store `CardPeekContext`), and no URL
+ *  read or written (the view is the remembered one; `?edit=`, `?new=1` and
+ *  `?draft=` are the page's to spend). The toolbar's fit ladder is always on:
+ *  the card is window A's width. */
+export default function Scheduled({ scope, inCard = false }: { scope?: TasksScope; inCard?: boolean } = {}) {
   // THIS PAGE IS THE POLLER while it is open. The sidebar's Tasks entry reads the
   // same rows (shell/tasksPulse) and would otherwise run a timer of its own
   // alongside this one — two calls to /api/tasks for one answer, at two
@@ -848,8 +777,19 @@ export default function Scheduled({ scope }: { scope?: TasksScope } = {}) {
     // falls back to. Read once, in the initialiser: the page remounts on every
     // navigation (App.tsx keys it on the nav epoch), so a back button onto
     // `?view=board` comes through here rather than needing a subscription.
-    return viewFromSearch(location.search, saved);
+    // In the rail's card the URL is the page's, not the card's (header).
+    return inCard ? saved : viewFromSearch(location.search, saved);
   });
+  // Back/Forward onto a URL whose `?view=` differs from the one on screen: the
+  // shell remounts this page per navigation (App.tsx keys it on the nav epoch)
+  // so the initialiser above reads it there; the phone page (lan/main.tsx)
+  // keeps it mounted across the peek's own history entries, so it is read here.
+  useEffect(() => {
+    if (inCard) return;
+    const on = () => setView((v) => viewFromSearch(location.search, v));
+    window.addEventListener("popstate", on);
+    return () => window.removeEventListener("popstate", on);
+  }, [inCard]);
   // WHICH TABS THE SWITCHER SHOWS (Akshil, 2026-10-16) — the reader's own
   // row, a preference since D1386 (see `readViewTabs`); the defaults until
   // they edit it, and until the first read of this document lands.
@@ -890,9 +830,11 @@ export default function Scheduled({ scope }: { scope?: TasksScope } = {}) {
   };
   // Focus back on the cog once the strip is gone, so Tab carries on from
   // where the reader was rather than from the top of the document.
+  // This page's own cog: the page and the rail's card may both be mounted.
+  const pageRef = useRef<HTMLDivElement | null>(null);
   const refocusCog = () => {
     requestAnimationFrame(() => {
-      document.querySelector<HTMLElement>(".schedule-view-edit")?.focus();
+      (pageRef.current ?? document).querySelector<HTMLElement>(".schedule-view-edit")?.focus();
     });
   };
   const cancelTabs = () => {
@@ -1168,6 +1110,8 @@ export default function Scheduled({ scope }: { scope?: TasksScope } = {}) {
   // schedule lands.
   const [editId, setEditId] = useState<string | null>(null);
   useEffect(() => {
+    // The page's params to spend, never the rail card's (header).
+    if (inCard) return;
     const q = new URLSearchParams(location.search);
     // `?edit=` TRAVELS ON ITS OWN TOO (Akshil, 2026-09-16): a scheduled-later row
     // in a chat's Recent list presses it, and that press carries no `new=1`
@@ -1228,7 +1172,7 @@ export default function Scheduled({ scope }: { scope?: TasksScope } = {}) {
     q.delete("edit");
     const rest = q.toString();
     history.replaceState(history.state, "", location.pathname + (rest ? `?${rest}` : ""));
-  }, []);
+  }, [inCard]);
 
   /**
    * `?draft=<id>` — AN UNFINISHED NEW TASK FORM, PRESSED SOMEWHERE ELSE
@@ -1262,6 +1206,7 @@ export default function Scheduled({ scope }: { scope?: TasksScope } = {}) {
    * card for ever is a URL worth nothing to go back to.
    */
   useEffect(() => {
+    if (inCard) return;
     const q = new URLSearchParams(location.search);
     if (q.get("new") === "1") return; // the hop's own param — see above
     const id = q.get("draft");
@@ -1314,7 +1259,7 @@ export default function Scheduled({ scope }: { scope?: TasksScope } = {}) {
     q.delete("from");
     const rest = q.toString();
     history.replaceState(history.state, "", location.pathname + (rest ? `?${rest}` : ""));
-  }, []);
+  }, [inCard]);
 
   // Three feeds, one poll, INDEPENDENT failures — each is allowed to fail
   // without taking the others down, because each answers a different question
@@ -1478,11 +1423,14 @@ export default function Scheduled({ scope }: { scope?: TasksScope } = {}) {
     // replaceState, not push: see tasks-lib.viewUrl — the toggle is a way of
     // reading this page, not a place to come back to. The path is taken from
     // `location` rather than hardcoded so this cannot be the thing that has to
-    // be remembered on the next rename.
-    try {
-      history.replaceState(history.state, "", viewUrl(location.pathname, location.search, v));
-    } catch {
-      // Some embeddings refuse history writes; the switch itself still happens.
+    // be remembered on the next rename. Never from the rail's card: the URL is
+    // whatever page the card stands over (header).
+    if (!inCard) {
+      try {
+        history.replaceState(history.state, "", viewUrl(location.pathname, location.search, v));
+      } catch {
+        // Some embeddings refuse history writes; the switch itself still happens.
+      }
     }
     patchUiLayout((d) => (d.tasks?.view === v ? d : { ...d, tasks: { ...d.tasks, view: v } }));
   };
@@ -1537,7 +1485,11 @@ export default function Scheduled({ scope }: { scope?: TasksScope } = {}) {
   // lands — means this page is the page it has always been: no panel, no
   // `?peek=`, no measured fit, no walk attributes. Read here and handed down,
   // so there is one answer for the whole page.
-  const peekOn = useTaskPeekEnabled();
+  // IN THE RAIL'S CARD (header) the card is the peek host — its views stamp
+  // their items, fit their rows and send presses through `openPeek`, which
+  // the card answers — and this page hosts none of its own.
+  const peekFlag = useTaskPeekEnabled();
+  const peekOn = peekFlag || inCard;
   // The toolbar folds its words before it clips them (shell/row-fit.ts) — and
   // only while the feature is on, since the ladder arrived with it.
   const [toolbar, toolbarRef] = useToolbarFit(peekOn);
@@ -1546,7 +1498,7 @@ export default function Scheduled({ scope }: { scope?: TasksScope } = {}) {
   // the very same panel, portalled into the frame the app page draws around
   // itself (TaskPeekFrame.tsx `useTaskPeekSlot`). The sidebar's task list and
   // the notifications are still outside any frame and still navigate.
-  const peekable = peekOn;
+  const peekable = peekFlag && !inCard;
   useTaskPeekHost(peekable);
   const peek = useTaskPeekLayout(peekable);
   // Where a Scheduled mounted inside SOMEONE ELSE'S frame puts its panel: the
@@ -1560,7 +1512,8 @@ export default function Scheduled({ scope }: { scope?: TasksScope } = {}) {
   // the column): under it the list's content is held at the widest row's need
   // and the pane scrolls sideways. Floored is a subset of tight (500 < any
   // baseline), so nothing the floor did is lost.
-  const scrolls = peek.open && peek.tight;
+  // The page's peek layout is the page's: the rail's card reads none of it.
+  const scrolls = peekable && peek.open && peek.tight;
   // ONE sentence for "there is nothing here", handed to every view, so a
   // reader flipping List → Board → Cards → Calendar over the same empty set
   // reads the same words in the same place (Akshil, 2026-09-09). Which sentence
@@ -1665,14 +1618,14 @@ export default function Scheduled({ scope }: { scope?: TasksScope } = {}) {
     // `schedule-page` is not decoration: it is what lets the card sections opt
     // out of the 760px content column `.prefs-page > *` imposes, while the prose
     // inside them stays at that measure. See styles/schedule.css.
-    <div className="prefs-page schedule-page">
+    <div ref={pageRef} className="prefs-page schedule-page">
       {/* Title only — no description, no mechanics paragraph: the page says
           what it is by shape, and the line under it was buying nothing but
           vertical space the views wanted. The app-must-be-running caveat lives
           where a person meets its consequence — the Queued strip. */}
       {/* Scoped, the app page's own header names the app and the tab already
           says "Tasks"; a second heading would be the page saying its name twice. */}
-      {!scope && (
+      {!scope && !inCard && (
         <header className="schedule-header">
           <h1>Tasks</h1>
         </header>
@@ -1784,10 +1737,17 @@ export default function Scheduled({ scope }: { scope?: TasksScope } = {}) {
               // taking it away.
               merged={toolbar.level >= TOOLBAR_MERGE_LEVEL}
             />
-            <button type="button" className="btn btn-primary schedule-new"
-                    onClick={() => openForm("blank", null)}>
-              +<span className="schedule-fit-lbl"> New task</span>
-            </button>
+            {/* NOT IN THE RAIL'S TASKS CARD (owner, 2026-11-08: "remove the +
+                button inside the window A tasks page"): the rail's own + is
+                that door, one row away, and opens the New task card as
+                window A's popover; a second + inside the card opened the
+                modal over it. */}
+            {!inCard && (
+              <button type="button" className="btn btn-primary schedule-new"
+                      onClick={() => openForm("blank", null)}>
+                +<span className="schedule-fit-lbl"> New task</span>
+              </button>
+            )}
             </>)}
           </div>
 
@@ -1853,6 +1813,7 @@ export default function Scheduled({ scope }: { scope?: TasksScope } = {}) {
               home={home}
               onReload={reload}
               onNewTask={() => openForm("blank", null)}
+              onOpenDraft={openDraft}
             />
           ) : view === "cards" ? (
             <TaskCards
@@ -2013,7 +1974,8 @@ export default function Scheduled({ scope }: { scope?: TasksScope } = {}) {
                 taskId: sourceTask.task_id,
                 // Pressable only where there is a peek to open — see
                 // `openSourceTask`.
-                onOpen: peekable ? () => openSourceTask(sourceTask) : null,
+                // …or the rail's card, which opens it in itself.
+                onOpen: peekable || inCard ? () => openSourceTask(sourceTask) : null,
               }
               : null
           }

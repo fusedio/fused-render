@@ -35,5 +35,12 @@
 # the affected files ran, as an "Unhandled error between tests" bun attributes
 # to whichever suite happened to be running. `preload` runs once, before bun
 # opens the FIRST test file, closing the race for every order bun can pick.
+#
+# ISOLATION IS A FLAG, NOT A SETTING: bun 1.4 reads no `isolate`/`parallel`
+# key here (tried — both are silently ignored). CI runs `bun test --parallel`
+# (implies `--isolate`: a fresh global and module registry per file), and so
+# does `npm test`. A bare `bun test` still shares one process across every
+# file, so a test that passes there and fails isolated is leaning on another
+# file's leftovers — fix the test, not the flag.
 [test]
 preload = ["./src/platform/lib/testPreload.ts"]

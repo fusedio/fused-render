@@ -206,6 +206,25 @@ def resolve_target(value, field: str = "target"):
     return resolved, None
 
 
+EXPERT_HOME = "This folder is an expert's home; open it from the Bots page."
+
+
+def expert_home_refusal(resolved: str):
+    """A 400 for a NEW TASK whose target is inside the experts root, with the flag on (agent._start refuses
+    such a start with the same sentence; refusing here, before anything is stored, leaves no broken row). A
+    string test first, so any other target costs no prefs read; with the flag off nothing changes."""
+    try:
+        from fused_render.experts import paths as sp_paths  # noqa: PLC0415
+        if not sp_paths.is_inside_root(resolved):
+            return None
+        from fused_render.experts import flag as sp_flag  # noqa: PLC0415
+        if not sp_flag.on():
+            return None
+    except Exception:  # noqa: BLE001 — cannot tell: the start's own refusal still stands
+        return None
+    return JSONResponse({"error": EXPERT_HOME, "reason": "expert_home"}, status_code=400)
+
+
 def create_entry(target: str, body: dict, due, *, repeats: str = "",
                  rule: dict | None = None, create_target: bool = False,
                  origin: str = "") -> dict:
@@ -460,6 +479,9 @@ def api_schedule_create(body: dict = Body(...),
     resolved, refusal = resolve_target(body.get("target"))
     if refusal is not None:
         return refusal
+    refusal = expert_home_refusal(resolved)
+    if refusal is not None:
+        return refusal
 
     # `delay_seconds` is the other way to say when: a page offering "in 30
     # minutes" should not have to do timezone arithmetic to say it. Exactly one
@@ -527,6 +549,16 @@ def api_schedule_create(body: dict = Body(...),
         return JSONResponse(exc.body, status_code=400)
     except ValueError as exc:
         return _error(str(exc), status=400)
+
+    # ONE USAGE-LIMIT COMEBACK PER CONVERSATION. A chat that hits the limit
+    # again (a Retry now that was still limited, a second window, a reload)
+    # books a fresh comeback; the older ones on the same session are the same
+    # promise and go (`schedule.supersede_comebacks`). Best-effort: the new
+    # one is booked either way.
+    try:
+        schedule.supersede_comebacks(entry)
+    except OSError:
+        pass
 
     # THE TASK NUMBER SURVIVES AN EDIT. Editing a scheduled message is cancel +
     # re-create — there is no PATCH — so the entry the user was looking at stops

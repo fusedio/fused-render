@@ -15,8 +15,10 @@
 import { useEffect, useRef, useState, type MouseEvent } from "react";
 import { createPortal } from "react-dom";
 import { resolveConditions, statPath, type TemplateEntry } from "@platform/lib/api";
+import { isSha } from "@platform/lib/snapshot-param";
 import {
   isModePending,
+  modesUnderSnapshot,
   visibleModes,
   defaultMode,
   effectiveActive,
@@ -43,6 +45,25 @@ interface PaneModeMenuProps {
   // Which trigger to render (see the module comment). Defaults to "tab", the
   // constrained surface.
   variant?: "bar" | "tab";
+}
+
+/** The menu's two readings of a pane's modes: `selected`, the entry the
+ *  URL's `_mode` selects (the default when it names none on offer — a
+ *  pending preferred `udf` included), and `active`, the trigger's label: a
+ *  pending entry has no icon yet, so the label falls back to the first entry
+ *  that is not pending. They differ only while the selected entry is
+ *  pending; `applyMode` compares against `selected`. */
+export function paneModeChoice(
+  visible: TemplateEntry[],
+  conditions: Parameters<typeof isModePending>[1],
+  activeMode: string | null,
+): { defaultEntry: TemplateEntry; active: TemplateEntry; selected: TemplateEntry } {
+  const isPending = (t: TemplateEntry) => isModePending(t, conditions);
+  const defaultEntry = defaultMode(visible) as TemplateEntry;
+  const selected = effectiveActive(visible, activeMode) ?? defaultEntry;
+  const settled = visible.find((t) => !isPending(t)) ?? defaultEntry;
+  const active = !isPending(selected) ? selected : isPending(defaultEntry) ? settled : defaultEntry;
+  return { defaultEntry, active, selected };
 }
 
 export default function PaneModeMenu({ path, query, onNavigate, variant = "tab" }: PaneModeMenuProps) {
@@ -115,18 +136,23 @@ export default function PaneModeMenu({ path, query, onNavigate, variant = "tab" 
   // Visibility/pending policy lives in lib/mode-visibility, shared with
   // Preview, ListingPreviewPane and Open With so every surface offers the
   // same mode set for the same path. The default (and the trigger's
-  // fallback) is the first UNCONDITIONAL entry — a gated template is never
-  // the default while a normal one exists (CT-12).
-  const activeMode = new URLSearchParams(splitAtLayout(query)[0]).get("_mode");
+  // fallback) is `defaultMode`'s: the first UNCONDITIONAL entry (CT-12),
+  // except a node file's preferred node template (PT-8), which is the default even
+  // while its verdict is out.
+  const paneParams = new URLSearchParams(splitAtLayout(query)[0]);
+  const activeMode = paneParams.get("_mode");
   const isPending = (t: TemplateEntry) => isModePending(t, conditions);
-  const visible = visibleModes(templates, conditions);
+  // A pane can carry the shell's `_snapshot` (enterPanel hands the page's
+  // params to its panes): a canvas node template is live, so its menu never offers one
+  // under a snapshot — the same rule as the pane's own Preview.
+  const snapshotRaw = paneParams.get("_snapshot");
+  const visible = visibleModes(
+    modesUnderSnapshot(templates, isSha(snapshotRaw) ? snapshotRaw : null),
+    conditions,
+  );
   if (visible.length < 2) return null;
 
-  const defaultEntry = defaultMode(visible) as TemplateEntry;
-  // A pending entry can't be the trigger's label (it has no icon yet), so it
-  // falls back to the default too — otherwise this is the shared resolution.
-  const requested = effectiveActive(visible, activeMode);
-  const active = requested && !isPending(requested) ? requested : defaultEntry;
+  const { defaultEntry, active, selected } = paneModeChoice(visible, conditions, activeMode);
 
   const toggle = (e: MouseEvent) => {
     e.stopPropagation();
@@ -141,7 +167,11 @@ export default function PaneModeMenu({ path, query, onNavigate, variant = "tab" 
   };
 
   const applyMode = (mode: string) => {
-    if (mode === active.mode) return;
+    // Against what the URL SELECTS, not the trigger's label: while the
+    // preferred `udf` is pending the label falls back to Code, and picking
+    // Code must still pin `?_mode=code` (or the verdict's yes would switch
+    // the pane away from what was just picked).
+    if (mode === selected.mode) return;
     const [head, tail] = splitAtLayout(query);
     const params = new URLSearchParams(head);
     // Selecting the default mode DELETES _mode (clean URLs, PT-9).

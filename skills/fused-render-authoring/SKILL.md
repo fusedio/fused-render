@@ -120,6 +120,8 @@ Auto-created at app root. Convention, no helper API — build paths off `os.path
 | `fused.ai.*` | → `fused-render-ai`. |
 | `fused.fileIndex.search/query` | Machine-wide file index — use instead of walking fs → `fused-render-index`. Full fused-render only (Render App below). |
 | `fused.capture.*` | Native screen/mic/screenshot → `fused-render-capture`. |
+| `await fused.s3.sign("s3://bucket/key")` | `{url, expires_at}`: HTTPS URL that reads that one object (Range works; bucket answers CORS) — stream it (DuckDB `read_parquet(url)`, GDAL `/vsicurl/`, `fetch`) instead of downloading. Server decides what is signed; today only `fused-asset`, public, `expires_at: null`. Keep the `s3://` address as identity (`fused.params`, cache keys). Sign in the page and pass the URL to your `runPython` (it lands in the call log — fine for today's public URLs); a long-lived Python process signs itself with `templates/shared/fused_s3.py` (`fused_s3.sign`, `is_s3`, `expired`). Re-sign on 403 or near `expires_at`. Rejects with `.status/.code` (`disabled` = Canvases off). |
+| `fused.workbench.udf(ref).run(params?, {format, cache})` | Run a Fused UDF with the user's `fused login` (local only). `ref`: `{file: "/abs/udf.py"}` (canvas node file; any other `.py` adds `env`), `{canvas, name, env}` or `"canvas/udf"`. The run: `await run.saved` (last good answer, at once, or null), `await run` (fresh Result: `url`, `contentType`, `source`, `json()`, `text()`, `blob()`). `format`: `auto` (Fused's html/png), `html`, `png`, `json` (rows, geometry as WKT), `parquet`. `cache`: `auto` / `prefer-saved` / `fresh`. Batch/map UDFs and results over 50 MB are asked about by the runtime itself; `{confirm: false}` declines instead. Errors carry `.code` (`udf_error` has `.line`). `handle.schema()` = its params. Show `url` HTML only in a sandboxed frame. |
 | `fused.trackJob(spec)` | Report long work to download manager; never rejects → `fused-render-jobs`. |
 | `fused.tasks.*` | List/create/follow up/cancel/watch the app's Claude tasks (headless, returns a handle); `ui()` gives an iframe URL of the shell's Tasks page → `fused-render-tasks`. |
 | `fused.bots.*` | See the Bots on this Mac (Super Bot included) and give one a message with images; the turn handle follows that task to its result → `fused-render-bots`. |
@@ -179,7 +181,7 @@ Real browser against the server that is ALREADY running. Never assume a port —
 
 1. `$FUSED_RENDER_ORIGIN` — exported by both servers to every process they spawn (a session opened from the app has it).
 2. `~/.fused-render/server.json` (Render App: `~/.fused-render-app/server.json`) — `origin` field, for a terminal session. Probe `<origin>/api/config` before trusting it; a crashed server leaves the file behind.
-3. Neither → nothing is running; start one (`fused-render --no-browser --port <free>`; Render App: `open -a RenderApp`, it writes `server.json`).
+3. Neither → nothing is running; start one (`fused-render --no-browser --port <free>`; Fused Render: `open -a "Fused Render"`, it writes `server.json`).
 
 URLs under that origin:
 

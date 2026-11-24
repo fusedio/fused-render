@@ -11,7 +11,8 @@ import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { cn } from "@platform/lib/utils";
 
 import type { RunStatus, Working } from "../protocol/controller-api";
-import { explicitModelLabel, taskVerb } from "../protocol/tasks";
+import { explicitModelLabel, isAgentTool, taskVerb } from "../protocol/tasks";
+import { isExpertTool, expertToolLabel } from "../experts/tool-labels";
 import type { Activity, RetryInfo, TaskRecord } from "../protocol/types";
 import { AgentMark } from "@platform/ui/AgentMark";
 import { useAgent } from "./agent-context";
@@ -59,7 +60,8 @@ export interface VerbStats {
  *  `activity`. `quietSecs` is how long the poll has reported nothing new. */
 export function activityVerb(stats: VerbStats, thinkVerb: string, quietSecs: number, agent = "Claude"): string {
   const act = stats.activity;
-  if (act?.hook) return "Running project setup";
+  if (isSetupHook(act?.hook)) return "Running project setup";
+  if (stats.phase === "compacting") return "Compacting conversation";
   if (stats.phase === "tooling") {
     const t = act?.tool;
     if (!t) return "Finishing a step";
@@ -98,32 +100,40 @@ export function activityVerb(stats: VerbStats, thinkVerb: string, quietSecs: num
       // MCP tools arrive as mcp__server__tool — the last segment is the name a
       // person would recognize; the raw id is nobody's vocabulary.
       default:
-        return "Using " + String(t.name).split("__").pop()?.replace(/_/g, " ");
+        return (
+          expertToolLabel(t.name, t.detail, false) ??
+          "Using " + String(t.name).split("__").pop()?.replace(/_/g, " ")
+        );
     }
   }
-  // A long silence in the model's own turn is the one ambiguity worth naming —
-  // and if a background command is still running, that is almost always what
-  // the wait is. "Waiting for a reply" read as waiting for the USER's reply
-  // (Akshil, 2026-09-02): the words must say who owes whom.
-  if (quietSecs >= QUIET_SECS) {
-    return act?.tasks?.length
-      ? "Waiting for a background command to finish"
-      : `${agent} is taking longer than usual`;
-  }
+  // Every phase below is the model itself at work; the task registry names a
+  // wait only when the model is idle (no phase, or parked on an approval), so a
+  // monitor that outlives the turn never mislabels a model that is thinking.
+  const modelPhase = !!stats.phase && stats.phase !== "awaiting";
+  const waitingOnTasks = !!act?.tasks?.length || !!taskVerb(stats.tasks);
+  // A long silence is the one ambiguity worth naming: the words must say who
+  // owes whom ("Waiting for a reply" read as waiting for the USER's reply,
+  // Akshil, 2026-09-02).
+  if (quietSecs >= QUIET_SECS && (modelPhase || !waitingOnTasks)) return `${agent} is taking longer than usual`;
+  if (quietSecs >= QUIET_SECS) return "Waiting for a background command to finish";
   if (stats.phase === "requesting") return `Sending to ${agent}`;
   if (stats.phase === "composing") return `${agent} is replying`;
-  // BACKGROUND WORK THE REGISTRY CAN NAME (SPEC T-5): agents, then monitors,
-  // then shells — a truer verb than a mood, but only in the mood's place: while
-  // the model is streaming, what it is doing right now is the news.
+  if (modelPhase) return thinkVerb;
   return taskVerb(stats.tasks) || thinkVerb;
+}
+
+/** Whether `hook` (an open hook's name, `SessionStart:startup`) is the project
+ *  setup the line names; any other hook leaves the verb to the phase. */
+function isSetupHook(hook: string | undefined): boolean {
+  return !!hook && hook.startsWith("SessionStart");
 }
 
 /** T:14848-14855 — the ONE thing that goes in the brackets beside the time.
  *  Nothing while the model itself is working: there is no useful noun for that. */
 export function activityDetail(stats: VerbStats): string {
   const act = stats.activity;
-  if (act?.hook) return "";
-  if (stats.phase === "tooling" && act?.tool?.detail) return act.tool.detail;
+  if (isSetupHook(act?.hook)) return "";
+  if (stats.phase === "tooling" && act?.tool?.detail && !isExpertTool(act.tool.name)) return act.tool.detail;
   return "";
 }
 
@@ -131,7 +141,7 @@ export interface WorkingLineProps {
   working: Working;
   status: RunStatus;
   onStop: () => void;
-  /** Send the running foreground Bash call to the background (Ctrl+B). Absent = not offered. */
+  /** Send the running foreground Bash call or subagent to the background (Ctrl+B). Absent = not offered. */
   onBackground?: () => void;
   /** `ChatState.tasks` — the run's background tasks, for the verb. */
   tasks?: readonly TaskRecord[] | null;
@@ -139,22 +149,22 @@ export interface WorkingLineProps {
   now?: () => number;
 }
 
-/** Only a running foreground Bash call can be sent to the background (Agent
- *  backgrounding is unverified), and only on a run this page owns. The shell
- *  only exists once the CLI's `task_started` for that tool_use_id has landed
- *  (in auto mode the safety classifier runs first), and a request before that
- *  is refused with `backgrounded: false` — so a matching running, not yet
- *  backgrounded task is required. */
+/** A running foreground Bash call or subagent (`Agent`, or its older name
+ *  `Task`) can be sent to the background, only on a run this page owns. The
+ *  shell or subagent only exists once the CLI's `task_started` for that
+ *  tool_use_id has landed (in auto mode the safety classifier runs first), and
+ *  a request before that is refused with `backgrounded: false` — so a matching
+ *  running, not yet backgrounded task is required. */
 export function backgroundable(working: Working, status: RunStatus, tasks?: readonly TaskRecord[] | null): boolean {
+  const tool = working.activity?.tool;
   return (
     !working.external &&
     status !== "stopping" &&
     working.phase === "tooling" &&
-    working.activity?.tool?.name === "Bash" &&
-    !!working.activity.tool.id &&
-    !!tasks?.some(
-      (t) => t.tool_use_id === working.activity?.tool?.id && t.status === "running" && !t.backgrounded,
-    )
+    !!tool &&
+    (tool.name === "Bash" || isAgentTool(tool.name)) &&
+    !!tool.id &&
+    !!tasks?.some((t) => t.tool_use_id === tool.id && t.status === "running" && !t.backgrounded)
   );
 }
 
@@ -297,7 +307,11 @@ export function WorkingLine({ working, status, onStop, onBackground, tasks, now 
       <span className="verb">{verb}</span>
       <span className="meta">{" (" + parts.join(" · ") + ")"}</span>
       {canBackground ? (
-        <button type="button" className="stop background" title="Send this command to the background (Ctrl+B)" onClick={onBackground}>
+        <button type="button" className="stop background" title={
+            isAgentTool(working.activity?.tool?.name ?? "")
+              ? "Send this subagent to the background (Ctrl+B)"
+              : "Send this command to the background (Ctrl+B)"
+          } onClick={onBackground}>
           background
         </button>
       ) : null}

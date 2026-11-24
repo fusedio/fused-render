@@ -23,13 +23,16 @@ pytestmark = pytest.mark.skipif(os.name == "nt", reason="the pty is POSIX-only")
 TERMINAL_NAMES = {"terminal_run", "terminal_read", "terminal_interrupt"}
 
 
+TB1 = "7b17b17b"  # ids are 8 hex (paths._ID_RE)
+
+
 class TBot(FakeBot):
     terminal_id = botmod.Bot.terminal_id
     terminal_session = botmod.Bot.terminal_session
     close_terminal = botmod.Bot.close_terminal
     _terminal_id = None
 
-    def __init__(self, tmp_path, bid="tb1", **meta):
+    def __init__(self, tmp_path, bid=TB1, **meta):
         super().__init__(bid)
         self.dir = str(tmp_path)
         self.task_via = dict(chan.WEB)
@@ -314,7 +317,7 @@ def test_forever_rule_runs_without_a_card_and_deny_runs_nothing(server, fake_cli
     finally:
         bot.close_terminal()
 
-    bot2 = TBot(tmp_path, bid="tb2")
+    bot2 = TBot(tmp_path, bid="7b27b27b")
     marker = tmp_path / "ran"
     try:
         t = start(bot2, _approval_script(f"touch {marker}"), monkeypatch)
@@ -343,7 +346,7 @@ def test_outside_task_cards_even_a_covered_command(server, fake_cli, monkeypatch
 
 def test_bot_sessions_do_not_count_against_the_user_cap(tbot):
     sess = tbot.terminal_session()
-    assert sess.owner == "bot:tb1"
+    assert sess.owner == f"bot:{TB1}"
     assert sum(1 for s in pty_session.REGISTRY.list() if (s.owner or "").startswith("bot:")) >= 1
 
 

@@ -18,6 +18,17 @@
 >   the Chrome probe of FusedBot's `onboarding.chrome_snapshot()` plus
 >   `claude_health.cached()` (never a spawn; `{found: null, cached: false}`
 >   when the cache is cold, `/api/claude/health` is the live probe).
+>   A missing Chrome also carries `wsl` and `install: {available, reason,
+>   command}` (`bots/chrome_install.plan()`).
+> - New `POST /api/bots/setup/chrome` (and its `GET`, the record
+>   `{state, detail, output, error}`): install Google Chrome inside WSL from
+>   the page's **Install Chrome in WSL** button (`bots/chrome_install.py`).
+>   It downloads Google's `.deb`, then runs `apt-get update` and
+>   `apt-get install -y <deb>` as root through `wsl.exe -d <distro> -u root -e`
+>   (no password: the Windows account owns the distro), and ends by looking
+>   for the browser again. Offered only inside WSL with apt on x86-64; the
+>   button sits under the empty hero's setup lines and under a thread that
+>   ends on the "No … browser found" error.
 > - Embedding an app page: **`/render?path=<abs index.html or app dir>`**
 >   (`&_preview=1` for gallery thumbnails). There is no `/embed?path=` route;
 >   fused-render's `/embed/{path}` serves the shell.
@@ -96,8 +107,12 @@ names.
 ```
 fused_render/bots/            the backend package (in-process; no daemon, no fused.daemon)
   __init__.py
-  paths.py        state roots: <home>/bots/data/<id>, <home>/bots/cache/<id>, ~/Fused/bots (inbox), ~/Fused/app (apps)
-  store.py        bot dirs, bot.json (atomic write), events.jsonl, usage.jsonl ledger + summary
+  paths.py        state roots: root() (<home>/bots, machine-level), bots_root() (~/Fused/bots), bot_folder(bid)
+                  (public), bot_private(bid) == bot_dir(bid) (<folder>/.fused), bot_cache_dir, bot_inbox, bot_drop; place/forget/
+                  folders (the id -> folder index); is_bot_workdir; legacy_data_dir/legacy_cache_dir (read-only probes)
+  store.py        bot.json (public half, PUBLIC_KEYS) + .fused/state.json (the rest), split at read_meta/write_meta so
+                  Bot.meta stays one dict; events.jsonl, usage.jsonl ledger + summary
+  migrate_v3.py   one-shot lift of the legacy home-side trees into ~/Fused/bots/<folder>/, backup first (section 17)
   browser.py      per-bot Chrome over CDP (port of OpenBot browser.py) + AX-tree snapshot + change report
   bot.py          class Bot: lifecycle, memory, skills, artifacts/inbox, routines, offers, builds, send/pause/resume/stop,
                   takeover/giveback/popout/dock, file inbox (botsend), summary(); the engine-neutral half of agents.py
@@ -114,7 +129,10 @@ fused_render/bots/            the backend package (in-process; no daemon, no fus
                   Bot, engine, Chrome, the scheduler and the channels; every other process forwards), scheduler
                   thread (routines, file inbox), takeover walk, routines wake agent, slow-call log
   routes.py       the HTTP API (section 3), an `_web.APIRouter` included from server.py
-  botsend.py      CLI: `python -m fused_render.bots.botsend <bot> "<task>"` (drops into the bot's inbox dir)
+  botsend.py      CLI: `python -m fused_render.bots.botsend <bot> "<task>"` (drops into the bot's `.fused/drop/`)
+  package.py      .fusedbot export: resolve_source, plan(bid), write(bid, ...) (section 17)
+  botfile.py      .fusedbot import: probe(path), install(path, ...) (section 17)
+  file_routes.py  /api/botfile/* (install probe + install, icon, upload), its own router (section 17)
 frontend/
   bots.html                 the page `/` serves (second Vite input beside lite.html)
   src/apps/bots/            the React app (section 4)
@@ -122,31 +140,51 @@ tests/test_bots_*.py        store, routes (fake claude), steps engine, agent eng
 docs/bots.md             this file
 ```
 
-State: `paths.home()/bots/`, never beside the code, laid out **byte-for-byte
-like OpenBot's `.fused/`** so moving an OpenBot install is one copy
-(`rsync -a <OpenBot>/.fused/ ~/.fused-render/bots/`; owner's call,
-2026-10-02):
+State is split in two roots (v3, 2026-11-02, D1458). Everything per-bot lives
+in one folder under the workspace (`FUSED_RENDER_DIR` overrides `~/Fused`):
+public files at the folder root, private and transient ones under its
+gitignored `.fused/`. Cross-bot machine state stays home-side
+(`shell.storage.home_dir()/bots`, branch-nested in dev):
 
 ```
-~/.fused-render/bots/
-  data/bots/<id>/        bot.json, events.jsonl, memory.md, skills/, downloads/, files/, inbox/
-  data/browsers/<bid>/   browser.json, profile/ or profile.enc — a set of logins; bot.json's `browser_id`
-                         names it, several bots may name the same one (shared logins, §6)
-  data/usage.jsonl       usage ledger
-  data/builds.json       Builds panel list
-  data/imessage*.json    iMessage cursor / state / lock
-  cache/bots/<id>/       shot.png, window.json (the bot's Chrome window ids, its tabs, viewport), steps/ (deletable)
-  cache/browsers/<bid>/  session.json (the live Chrome handle)
-  cache/slow.jsonl       slow-call log
-  dock.json              ours (no OpenBot counterpart)
+~/.fused-render/bots/                     paths.root()        machine-level
+  data/browsers/<bid>/profile, browser.json   a set of logins; bot.json's `browser_id` names it,
+                                          several bots may name the same one (shared logins, §6)
+  data/usage.jsonl  data/builds.json  data/imessage*.json  data/routines.lock
+  cache/browsers/<bid>/session.json   cache/slow.jsonl   dock.json
+  .layout-v2  .layout-v3  .layout-v3-drop  imported-from-fusedbot.json  super-seeded.json
+  backup/ is NOT here: backups go to <base_home>/backup/bot-migration-v3/<ts>/  (base_home = ~/.fused-render, never branch-nested)
+
+~/Fused/bots/                             paths.bots_root()   per-bot folders
+  <folder>/                               paths.bot_folder(bid)      PUBLIC
+    bot.json                              store.meta_path(bid)       public half (PUBLIC_KEYS, §2)
+    skills/<name>.md                      Bot.skills_dir
+    README.md                             optional, authored by the user; never generated
+    .gitignore                            seeded once by paths.place(): ".fused/\n"
+    .fused/                               paths.bot_dir(bid) == paths.bot_private(bid)   PRIVATE
+      state.json                          store.state_path(bid)      every other meta key
+      events.jsonl                        store.events_path(bid)
+      memory.md  files/  downloads/  inbox/<task>/  (inbox = the Inbox; index.jsonl lives in inbox/)
+      drop/*.txt                          paths.bot_drop(bid) == Bot.drop_dir: botsend's drop folder, drained into tasks by the scheduler; the Inbox is never drained
+      cache/                              paths.bot_cache_dir(bid): shot.png, window.json, steps/, badjson/, mcp.json, viewport.json, tabs.json
 ```
 
-0.11.x shipped the bots one level up (`bots/data/<id>`, ledgers at `bots/`);
-`bots/paths.migrate_layout()` moves such a home over once at startup, before
-`onboarding.seed_for_existing_users` counts bots. The Inbox root stays
-`~/Fused/bots/<bot name>/`; the apps root stays `~/Fused/app`
-(`_config()["fused_dir"] + "/app"`; `FUSED_RENDER_DIR` overrides the
-workspace as everywhere else).
+`<folder>` is the slug of the bot's name at creation (`paths.place`: fallback
+the id; a folder of that name holding another id's `bot.json` gets
+`<slug>-<id4>`; a folder with no `bot.json`, an old Inbox, is adopted).
+Renaming the bot never renames the folder (apps do not either); the 8-hex `id`
+stays the API key everywhere, and `paths.folders()` maps id -> folder by
+scanning `*/bot.json` (cached per process, rescanned once on a miss).
+`paths.bot_folder` raises `LookupError` for an id no `bot.json` carries.
+`bot_dir` keeps its name: it is where a bot's private files live, `.fused/`.
+
+Until v3 the tree mirrored OpenBot's `.fused/` (`data/bots/<id>/`,
+`cache/bots/<id>/`, the Inbox at `~/Fused/bots/<name>/<task>/`); `migrate_v3`
+lifts it (§17). 0.11.x shipped the bots one level up (`bots/data/<id>`,
+ledgers at `bots/`); `bots/paths.migrate_layout()` still moves such a home
+into that legacy layout once at startup, before `migrate_v3` and before
+`onboarding.seed_for_existing_users` counts bots. The apps root stays
+`~/Fused/app` (`_config()["fused_dir"] + "/app"`).
 
 Three OpenBot fallbacks read `~/.fused-render/server.json`; here they are
 `os.environ["FUSED_RENDER_ORIGIN"]` (set by `make_server`) else
@@ -170,7 +208,7 @@ reply:  {seq, role, text}   (quoted message the user replied to)
 
 Bot summary (`Bot.summary(light, detail)`): every key of `bot.json`
 (`id, name, model, effort, status, instructions, created, task, step, url,
-title, note, updated, approval, build_access, terminal, trusted_apps, allow_rules, folders, face, routines, pinned, hidden,
+title, note, updated, approval, build_access, terminal, trusted_apps, connections, allow_rules, folders, face, routines, pinned, hidden,
 reactions, encrypt, chrome_profile, browser_id, imessage, imessage_to, builds,
 pending_offer, offers_declined, artifacts_dir, control, dl_pct`) plus
 `seq`, `browser: {running, url, title, headed, sealed, encrypt, shared, tabs?[{i,id,title,url,active,ws}], files?, artifacts?, artifacts_dir?}`,
@@ -180,7 +218,42 @@ pending_offer, offers_declined, artifacts_dir, control, dl_pct`) plus
 `memory` (detail only), `skills` (detail only), `learning` (a learn-from-last
 worker is running; a second `learn` is refused meanwhile), `shot` (the shot URL,
 `/api/bots/<id>/shot`, or null), `shot_ts`, `viewport: [1280, 800]`, `events`
-(since the page's cursor).
+(since the page's cursor). `artifacts_dir` is no longer stored: `summary()`
+answers `paths.bot_inbox(id)`, and the key is dropped from the meta on load.
+
+On disk (v3, `store.py`) the meta is split by key. `bot.json` holds the
+public keys, and each routine row in it only the public routine keys:
+
+```python
+PUBLIC_KEYS = frozenset({"id", "name", "model", "effort", "instructions", "face", "preset", "kind", "approval",
+                         "build_access", "terminal", "engine", "max_steps", "step_cap", "super_access", "created",
+                         "apps", "routines"})
+ROUTINE_PUBLIC_KEYS = frozenset({"id", "task", "kind", "created", "minutes", "anchor", "time", "weekdays", "at"})
+# `enabled` is private: the runtime flips it (a once-routine completing, the circuit breaker), and the public file must not churn.
+```
+
+Everything else lives in `.fused/state.json` (a routine's `last`,
+`last_result`, `next`, `fails`, `runs`, … merge back by routine id; a private
+row with no public twin is dropped). `Bot.meta` is still one dict and
+`Bot.save()` is unchanged; nothing outside `store.py` knows about the split.
+`state.json` (compact) is written on every save; `bot.json` (`indent=2,
+sort_keys=True`, trailing newline) is rewritten only when its text changes, so
+runtime saves leave a git checkout of the folder clean. `bot.json` also carries
+`_gen`, re-minted only when its public content changes, and `state.json` carries
+`_public_gen` (the gen it was saved beside; bot.json is written first): a pair
+whose gens differ (a crash between the two writes) loads with each routine's
+`next` dropped so the scheduler recomputes it. Each `state.json` routine row
+also carries `sched_rev` (a short sha256 of its bot.json twin's schedule
+fields, `kind minutes anchor time weekdays at`); a row whose rev no longer
+matches (a torn save, git pull or hand edit that changed the schedule) loads
+with `next` AND `last` dropped, so a routine flipped to `once` still fires; a
+row without one keeps the gen rule alone. `read_meta` raises
+`FileNotFoundError` when `bot.json` is missing. `apps` is the bot's app
+manifest, `[{folder, name, app_id, source: {kind: "bundled"|"marketplace"|
+"starter", …}}]`: seeded once (on load when absent, and by `migrate_v3`) from
+`trusted_apps` ∪ the basenames of `builds[].dir` still under the apps root ∪
+the preset's starters, each source resolved by `package.resolve_source`; after
+that only the export dialog edits it, the bot never regrows it.
 
 Status reply: `{bots: [summary…], ts, usage: null|summary, imessage: null|state}`.
 Usage summary and iMessage state are the OpenBot shapes (`_usage_summary`,
@@ -216,7 +289,25 @@ the card and beats the model's `risky: true` flag (for a click that flag is the
 only trigger). Never for `bot_create` / `bot_settings` (§12) or a phone-started
 Super Bot task (§5: no button on the card, no match), and for a built-in only
 while the task has not read the web (the posture in §6 stands). Revoked under
-Settings → Permissions → Approved forever (`allow_rules_remove`: removals only, applied to the live list, since the task thread writes it too); the `clone` copies them. `folders`: `["<abs path>", …]`, the user's own
+Settings → Permissions → Approved forever (`allow_rules_remove`: removals only, applied to the live list, since the task thread writes it too); the `clone` copies them.
+`connections`: provider keys of `fused_render.connect` (`notion`, `github`,
+`slack`…, normalised like app folders) this bot may use (2026-11-04). The
+sign-in is GLOBAL (Preferences → Connections, one token per service on this
+Mac); access is PER BOT and off by default. A `tool` call into a service not
+listed raises an approval card on EVERY call, read-only or not, and under
+"Never ask" too (`tools.must_ask`, read by both engines before `approval`:
+a bot gets a signed-in service only from the user's yes); the card's third
+button ticks the service (rule kind `connect`, key = the provider key,
+`apptools.allow_connection`; never an `allow_rules` row). A listed service
+runs without a card, risky or not, like a trusted app. `trusted_apps` never
+opens a service (a local app folder and a service may share a name). Shown as
+Settings → Connections (one row per provider: the global sign-in buttons, and
+the bot's switch); the dialog sends `connections_add` / `connections_remove`
+against the live list, since cards write it too. The APP TOOLS prompt heads
+a listed service "(enabled for you: its tools never ask)" and any other
+"(not enabled for this bot: every call asks first)" with every tool tagged
+`[approval]`. User-only (never in `MANAGE_FIELDS`), private (not in
+`store.PUBLIC_KEYS`), copied by `clone`. `folders`: `["<abs path>", …]`, the user's own
 folders this bot may READ (Settings → Permissions → "Folders it may read",
 2026-10-15): plain paths, no per-folder state, nothing managed by the bot. They
 are the only paths a bot's file tools (`readfile`, `upload`, `ls`, `find`) may
@@ -259,7 +350,8 @@ POST   /api/bots/<id>/attach          {name, data: <base64>}                -> {
 POST   /api/bots/<id>/react           {seq, emoji}                          -> {ok, reactions}
 POST   /api/bots/<id>/flag            {pinned?, hidden?, face?: {shape, color, icon}} -> {ok}   (icon: a preset key = brand mark)
 POST   /api/bots/<id>/settings        {name?, model?, effort?, instructions?, memory?, approval?, build_access?,
-                                       encrypt?, imessage_handle?, imessage_to?, trusted_apps?, allow_rules_remove?,
+                                       encrypt?, imessage_handle?, imessage_to?, trusted_apps?, trusted_apps_add?,
+                                       trusted_apps_remove?, connections_add?, connections_remove?, allow_rules_remove?,
                                        folders?}  -> {ok}   ("rename" in OpenBot;
                                        POST because the server has no do_PATCH)
 POST   /api/bots/<id>/profile         {profile}                             -> {ok}   (import a Chrome profile into the bot's
@@ -315,7 +407,9 @@ POST   /api/claude/health/refresh | install {action} | link-path | doctor | logi
 `GET /api/config` carries the same snapshot as `onboarding`. The stored stage
 statuses are overruled on every read by what the server can see: Claude Code
 from `claude_health`'s disk cache (never a spawn), Chrome from
-`browser.CHROME_CANDIDATES`, local models from the Hub cache, "first bot" from
+`browser.found_chrome()` (`FUSED_RENDER_BOTS_CHROME` first when set, then
+the macOS apps, the Linux PATH names and bin dirs, the Windows roots; walked on
+every read, so a browser installed while the server runs is found without a restart), local models from the Hub cache, "first bot" from
 the bots data dir. `FUSED_RENDER_ONBOARDING=0|1` forces the wizard off/on
 (tests force it off); the state file is `<home>/onboarding.json`.
 
@@ -465,7 +559,7 @@ profile folder, so sharing is one `BrowserProcess` (browser.py) with one
 a tab is the bot's when Chrome says it sits in one of the bot's windows
 (`Browser.getWindowForTarget`, D1341) or its opener chain leads there (a
 popup; one with window features gets a window of its own, recorded as the
-bot's too). `cache/bots/<id>/window.json` holds the window ids (valid for one
+bot's too). `.fused/cache/window.json` holds the window ids (valid for one
 Chrome pid), the tabs in them and the bot's viewport. Every bot, alone or
 not, runs the same code: its first action adopts the blank launch window or
 opens one (`Target.createTarget(newWindow)`; headless composites every
@@ -530,7 +624,7 @@ disk, a fire writes "Routine fired" then the prompt as a `user` line via `routin
 lands the result on it; ROUTINE_RUNS kept, newest first), skills (`learn`, `skills_for`), memory
 (`remember`, caps), artifacts/Inbox (`save_file`, `collect_task_artifacts`,
 README.md per task, `index.jsonl`), attachments (`save_bytes`,
-`resolve_path`, `list_dir`, `find_files`, `folders_section`), file inbox (`drain_file_inbox`, botsend / iMessage), offers
+`resolve_path`, `list_dir`, `find_files`, `folders_section`), drop folder (`drop_dir`, `drain_file_inbox`: botsend; refuses a drop that resolves to the Inbox), offers
 (`_offer`, `_answer_pending_offer`, declined for 7 days, 10 min wait),
 builds (`build`, `_watch_build`, `_build_prompt` update/new), `show_app`,
 `_resolve_app`, `_app_at`, the risk rule (`_risk`, `_RISKY_BTN`, `_YES`,
@@ -565,7 +659,7 @@ every other (botsend, …) with a system line; `start_task` accepts a web via
 with origin `manual`, a `routine` via (the user's own schedule, amended
 2026-10-12: Super Bot has Routines like any bot) or an `imessage` via (judged
 on the via, never on the origin label) and ignores everything else;
-`drain_file_inbox` reads every inbox file, on every bot, as botsend and so
+`drain_file_inbox` reads every `.fused/drop/*.txt` file, on every bot, as botsend and so
 Super Bot drops it (its thread shows only the refusal, no "Task received" line). Posture by origin
 (`channels.base.is_local`: web or routine = set up at the Mac, keeps the bot's
 settings): a phone-started task always runs in
@@ -612,7 +706,7 @@ rule as the FusedBot import, which runs before it and may already carry
 one). `create(kind="super", greet=False)` skips the model-written hello;
 the seed emits `SUPER_GREETING` as a `done` with `source: "seed"`, which
 the page renders with a "Connect your phone" button (Settings > Phone).
-Both flavors seed: the tree is shared. The store selects Super Bot when
+The store selects Super Bot when
 nothing is selected, so a first open lands in its chat. Tests: the bots
 fixture no-ops `registry.start`, so `seed_super()` is called directly.
 
@@ -1015,8 +1109,9 @@ semantics, `fused_ai.text(prompt, system_prompt, model, effort)` per step.
 ## 7. Server and shell changes
 
 - **One owner process per machine** (2026-10-13, `registry.py` module
-  docstring; design page "Bots Owner Process"). Fused Render, Fused Bot and a
-  dev checkout on main share `<home>/bots`; before this each built its own
+  docstring; design page "Bots Owner Process"). The installed app and a dev
+  checkout on main (and, until it was retired, the separate Fused Bot app)
+  share `<home>/bots`; before this each built its own
   `Bot` per bot, ran engines on it and wrote bot.json from its own memory,
   so a routine added in one app never fired in the other (which owned the
   scheduler and never re-read the file, and whose next save deleted it), two
@@ -1060,6 +1155,44 @@ semantics, `fused_ai.text(prompt, system_prompt, model, effort)` per step.
   agent). Interval routines are left out on purpose: a 5-minute routine would
   relaunch a quit app five minutes after every Quit (owner's call, 2026-10-13).
   macOS only; Linux keeps the old single-process behaviour.
+
+  **One workspace, one engine host** (PR #2057). Two homes can share one
+  workspace (the main app and a `FUSED_RENDER_BRANCH` install both default to
+  `~/Fused/bots`), so an owner also flocks `<bots_root>/.routines.lock` (the
+  workspace claim). Without it the owner serves its home (reads, forwarding,
+  the dock, the export plan and `.fusedbot` write, `open`) but starts no bot
+  engine and is read-only for bot state (the claimant's next save would
+  revert an edit): send, app send and app stop, a phone message, a channel
+  text (the router texts back "another fused-render instance owns the bots in
+  this workspace"), every routines op (add, edit, delete, enable, disable,
+  Run), settings, profile import, flag, react, seen, attach, skills (save,
+  delete, learn), goto / nav / tab / viewport (the browser drive writes the
+  bot folder's `window.json`), take-over, give back, pop out, wake, Clear
+  context, delete, creating, cloning or installing a bot, the browser
+  settings' encrypt / profile / sign-in / delete, and the phone's settings,
+  routines, Clear and delete all refuse through `registry.require_workspace()`
+  with `WorkspaceBusy` → 409 "another fused-render instance owns the bots in
+  this workspace (<bots_root>); use that window or quit it", and `open`
+  answers `setup: "pending"`. A Bot built there loads as-is (`Bot.read_only`:
+  no browser adoption, no load-time reconcile — running stays running, an
+  open hand-off stays open —, no event, an id-less routine gets a transient
+  id); `registry.get` rebuilds it from disk once the claim is won. It also skips the routine ticks, the hand-off
+  sweep and the workspace steps (v3 migration, Super Bot seed, the takeover
+  walk, which would stop the claimant's running tasks as stale, the browser
+  sweep); the pass that later wins the claim runs those steps once, and the
+  doors open after that pass. **The claim moves without a quit** (2026-11-06):
+  the claimant writes its record (`{pid, origin, app, version, home}`) into
+  `.routines.lock`, the 409 carries `reason: "workspace_busy"` and `holder`
+  (`registry.workspace_info`), and the page keeps that banner up (sticky; the
+  poll hides only passing ones) with a "Take over here" button → `POST
+  /api/bots/workspace/take`, which posts `/api/bots/workspace/yield` to the
+  holder's origin (it stops its tasks and Chromes, drops the claim, forgets its
+  Bots so they rebuild read-only, and skips re-claiming for 30 s) and then
+  claims here and runs the workspace steps inline under `ws_lock` (the pass
+  takes the same lock), so the doors open on return. A holder without a
+  record (an older build) cannot be asked: the 409 says to quit it. The seed also waits while a legacy BOT remains
+  (a `bot.json` in the legacy data dir or under `.unmigrated/<id>/`; strays
+  never count): it could be a Super Bot the seed cannot see.
 - `server.py`: include `bots.routes.router` and `apps` routes; `/` →
   `bots.html`; add `/embed`; third `app_dir_for` rule; remove the showcase /
   dock / launcher / settings / open routes and their imports; `start_ai` adds
@@ -1210,7 +1343,7 @@ tray dismisses it.
 
 `scripts/dev.sh` (per-branch port + home), Chrome with
 `--remote-debugging-port` driven through Argent (`describe` / `tap` /
-`screenshot`), the OpenBot page open in FusedRender.app beside it for
+`screenshot`), the OpenBot page open in Fused Render.app beside it for
 comparison. `pytest -q` green; `cd frontend && bun run build` (typecheck +
 boundaries) green; `bun test` for the ported pure libs (`md`, `format`,
 `unread`, `layout`).
@@ -1218,7 +1351,7 @@ boundaries) green; `bun test` for the ported pure libs (`md`, `format`,
 ## 9. Status (2026-10-02)
 
 Landed and checked live against a dev server on 2799 (Chrome driven through
-Argent over CDP; OpenBot open in FusedRender.app in the next tab):
+Argent over CDP; OpenBot open in Fused Render.app in the next tab):
 
 - Backend: 1053 pytest green (2 skipped). Real `claude` (haiku) + real
   Chrome through the agent engine: goto → thought/action/done with step
@@ -1233,7 +1366,7 @@ Argent over CDP; OpenBot open in FusedRender.app in the next tab):
   loads an app's SKILL.md onto that same tool result (the first message is
   never rebuilt — fixed after the load silently never surfaced), and the bot
   answers from it (tip-calculator's `bill` / `tip` params and defaults);
-  `tool` runs an app's mcp.toml tools natively (no FusedRender module
+  `tool` runs an app's mcp.toml tools natively (no Fused Render module
   needed: AST-derived params, the app's own venv via `env.run_python` with
   the manifest's entrypoint) — `linkedin_list_pending` ran read-only with
   no approval card, `linkedin_add_messages` raised the approval card, ran on
@@ -1329,7 +1462,7 @@ imessage.py           pure helpers only (chat.db queries, osascript send, handle
 ```
 
 **Via kinds.** `web` (the page; never stamped), `imessage` (addr = the
-sender's normalised handle), `routine`, `botsend` (addr = the inbox file
+sender's normalised handle), `routine`, `botsend` (addr = the drop file
 stem), and `handoff` (addr = `<Super Bot id>:<hand-off id>`, unique per
 hand-off, `channels.base.handoff_via`; stamped on a task Super Bot
 handed to a bot and so on its events, label "Super Bot", §11), and `app`
@@ -1364,7 +1497,7 @@ approval card that was texted to the sender (**Approve by text**, below);
 never as the answer to an app offer; a
 running chat-started task does not get it at all (§5); an idle Super Bot starts a task
 with `task_via` set, `origin` = `imessage`. No inbox files, no scheduler hop:
-~3 s from text to task. The botsend file inbox stays for ordinary bots
+~3 s from text to task. The botsend drop folder (`.fused/drop/`) stays for ordinary bots
 (`drain_file_inbox` -> `receive(via botsend)`).
 
 **Outbound.** `bot.emit()` stamps the task's `via` on events written by the
@@ -1800,7 +1933,43 @@ gates or widen its reach). Model and effort checks are the Settings
 dialog's, lifted into `bot.check_settings`; the face rules into
 `bot.check_face` (`routes._settings` / `_flag` call the same two).
 
-**Always ask.** `tools.ALWAYS_ASK = frozenset(MANAGE_TOOLS)`.
+**A bot's own routines — `routine_add` (`tools.ROUTINE_TOOLS`, 2026-11-06).**
+Owner's ask: "bots should be able to create routine themself" (a bot had
+answered "I can't create routines myself, add one in Settings"). Every bot,
+Super Bot included, gets `routine_add {task, kind: interval|daily|once,
+minutes?, time?, weekdays?, at?}` on its roster (both engines; the steps
+engine's JSON carries the task in `text` and the time in `value`,
+`tools._routine_args` reads either). It schedules a routine on the CALLING
+bot only: a routine for another bot stays the user's (or a `handoff` so that
+bot schedules its own), since `bot_settings` must not widen another bot's
+reach. `bot.routine_check` validates without writing (task non-empty and
+under `ROUTINE_TASK_CAP`, `minutes` a whole number, `weekdays` a list of
+0..6, a `once` time parsed by `bot.parse_when` from a local
+"YYYY-MM-DD HH:MM" or epoch seconds, then `Bot._routine_fields`, the
+dialog's own clamps) and returns the schedule exactly as it will be stored,
+so the card (`tools._routine_preview`: `add routine every 60 min: "<task>"`,
+`bot.routine_words` for the schedule, the task text capped like
+instructions) shows the floor-clamped interval the write will keep. A call
+that fails validation gets no card (`risk()` is "") and the `error:` back;
+so does a call from a scheduled run (`tools.routine_run`, `task_via` kind
+`routine`): nobody is at that card, and one unanswered ask in a routine
+wedges every later slot (the 2026-10-13 audit), so the run gets "a
+scheduled run cannot add routines" and the chip for a saved one reads
+`routine saved · every 60 min` (`ui_summary`, the model's "Tell the user…"
+tail stays off the chip). The write is `Bot.routine_add` (the dialog's path: `next` computed, wake
+agent synced), plus `system "Routine added (…)"` (`source: "routine"`) on
+the thread; the Routines panel reads bot.json on its next poll, no new
+route. ALWAYS_ASK (a standing task is the user's call every time, never
+approved forever, under "Never ask" too), `call_key` keyed on the args so a
+repeated identical add in one instruction is refused like a repeated
+`bot_create`. The guide's "Counts now" line (`bot.routines_brief`) now lists
+every routine's schedule and task, not just a count, so "check Slack every
+hour" on a bot that already does is answered, not duplicated. Edit,
+disable, run now and delete stay the user's: `APP_GUIDE` says so, and the
+BOT MANAGEMENT paragraph of `SUPER_PROMPT` keeps other bots' routines out of
+Super Bot's hands.
+
+**Always ask.** `tools.ALWAYS_ASK = frozenset(MANAGE_TOOLS + ROUTINE_TOOLS + ("marketplace_install",))`.
 `agent_engine._act` raises the card when `risk()` is non-empty and (the
 name is in `ALWAYS_ASK` or `effective_approval != "auto"`), so a Super Bot
 on "Never ask" still asks, and a phone-started task asks as it always did
@@ -1955,82 +2124,60 @@ expanded to `thumbUrl` (`/api/bots/<id>/steps/<seq>.jpg`).
 routines, skills, bot creation, an embedded chat. `stop` stops only the app's
 own task (`Bot.app_stop`, as `handoff_stop` stops only its hand-off).
 
-## 14. The phone — the iOS app's Bots screens (`bots/phone.py`, `lan.py`, `frontend/src/lan/`, 2026-10-13)
+## 14. The phone — the iOS app renders the desktop's own pages through an allow-listed door (`lan.py`, `frontend/src/lan/`, 2026-11-06, D1468)
 
 The Fused Render iOS app (`ios/`) is a thin native shell around the LAN
-listener's page (`lan.py`, `frontend/lan.html`). Beside the apps grid it now
-shows the bots: a list at `/bots` and one bot's chat at `/bots/<id>`, both
-the same lan page (its own pathname router), phone-first and small. The
-desktop Bots page is not reused (three panes, the CDP screencast, the whole
-shell bundle).
+listener's page (`lan.py`, `frontend/lan.html`). Beside the apps grid it shows
+Bots at `/bots` and `/bots/<id>` and Tasks at `/tasks` and `/tasks/<key>`, and
+both are THE DESKTOP'S OWN REACT PAGES: `frontend/src/lan/main.tsx` mounts
+`@apps/bots` (the list, the chat, the dialogs, the store) and the shell's Tasks
+page (`shell/Scheduled`, whose peek is `@apps/claude`'s chat) unchanged, under
+`html[data-host="lan"]`. One UI, one wire: a fix in the thread, a card or the
+composer lands on the phone with no second copy to patch. The phone-only code
+is the section switch, the grid, the New app sheet and the layout rules in
+`lan.css` (one column at a time, the chat full screen under a Back, dialogs as
+bottom sheets, 16px fields so iOS never zooms). This reverses 2026-10-13's
+`bots/phone.py` and 2026-11-05's `phone_tasks.py` (D1358, D1464): a trimmed
+phone wire and a hand-copied phone UI that lagged the desktop within weeks (no
+tables, no sanitiser, no reactions, no always-approve).
 
-**A channel of its own.** A message from the phone carries
-`via = {kind: "phone", addr: "<paired device id>"}` (`channels.base.PHONE_KIND`,
-`phone_via`, label "the phone"). It is outside (`is_outside`): Super Bot takes
-it (the `receive` and `start_task` gates admit it beside `imessage` and `app`,
-`bot._SUPER_OUTSIDE`) and runs it under the phone posture — every write, edit,
-shell command and build asks on a card, whatever `super_access` says.
-Ordinary bots keep their own `approval` setting. `caps_for` gives it
-`PHONE_CAPS`: cards, chips and media show on the phone, but a `login` still
-means walking to the Mac (`can_login` false; the phone never takes the
-browser over). The router has no phone channel object: the phone reads the
-chat itself, so nothing is pushed.
+**The door (`lan.py` `_DOORS`).** For a paired device the listener forwards an
+ALLOW-LIST of the desktop's routes — a table of (path pattern, methods, body
+gate) that fails closed: a route not in it (and not in `_EXACT`/`_PREFIXES`) is
+a 404 on the LAN. Every forward is `_AsDevice`-stamped (`X-Fused-Device` from
+the pairing record; a client-sent one is dropped). `/api/claude/agent`,
+`/api/claude/artifacts` and `/api/claude/worktrees` are gated on the JSON
+body's `action` (the chat multiplexes on it): start, send, poll, cancel,
+history, cards, commands, decide, defaults, sessions, shots_dir, image_to_png,
+task_* and tasks are in; snapshot_*, terminal_command, set_mode, app_state and
+canvas_shot are not, and worktrees admits `list` alone. Under `/api/bots` the
+list, status (`?cursors=`), presets, setup, pulse, create, delete, send, the
+shot and step pictures and these ops are in: pause resume stop clear open
+settings routines skills seen react flag attach goto nav tab tool viewport
+failures. Not in, by the owner's call (2026-11-06): takeover, giveback, popout,
+dock, wake, profile, reveal, clone, package, export, the browsers, iMessage,
+builds, usage, roster and workspace routes, `/api/bot-apps`,
+`/api/tasks/erase`, `/api/capture/*`, `/api/prefs` writes — everything that
+drives the Mac's screen, terminal, disk or worktrees. `tests/test_lan_door.py`
+pins both lists. The chat's attachments live in the agent's `SHOTS` folder,
+which joins `allowed_roots()` so `/api/fs/upload` and `/api/fs/raw` (scoped
+like every file route) can carry a picture in and draw it back.
 
-**The phone answers the card it shows.** The phone is the user's own paired
-device (QR pairing), not a stranger's text. A send carrying `answer: <seq>`
-is checked — the bot waits on that seq right now (`status` waiting,
-`waiting_on` = seq) and the event there is an `approval` — and its text must
-be a yes or a no (agent_engine `YES` / `NO`; the page sends "approve" /
-"deny"). Then the route stamps `via["answers"] = seq`, exactly the texted-card
-mechanism (§10, `channels.base.answers_card`): `_texted_approval` lets it
-through and the gate takes it as the verdict. Any other `answer` is a 400
-("that card is not waiting on an answer"); a plain "yes" without the stamp is
-held back with the usual "answered here at the Mac" line. It holds for a card
-of any task, Mac-started too: the user is looking at it. "Approve, don't ask
-again" (`Forever`) is never offered from the phone.
+**What a component hides.** `@platform/lib/host.isLanHost()` reads the
+`data-host` stamp; the few controls whose route the door 404s ask it:
+BotSettings drops its Connections, Browser and Phone tabs, the bot list its
+Builds and Apps buttons, the workspace-busy banner its "Take over here", the
+chat its worktree menu. Everything else is drawn as on the Mac and, where the
+door refuses, the desktop's own error surfaces (a 404 toast), the same
+backstop the Mac has for a dead worker.
 
-**The phone may steer a running task, too.** A phone message while a bot —
-Super Bot included, on a task started at the Mac — is busy reaches it as a
-mid-task instruction, as the chat's own would. iMessage holds such a text
-back ("Busy with a task from the Mac") and an app page may steer only the
-task it started; the phone gets neither hold, for the same reason it may
-answer a Mac-started card: it is the user's own paired device, and the user
-who typed the task at the Mac is the one holding the phone. What the phone
-posture still governs is what a phone-STARTED task may do unasked (nothing
-that writes, runs or builds). Decided 2026-10-13 (D1358), reviewer's question.
-
-**Routes** (`/api/phone/bots`, its own router in `bots/phone.py`, included
-beside the bots router and listed in `routes.OWNED_PREFIXES`, so a non-owner
-process forwards it). Every POST/DELETE needs `X-Fused: 1`; errors are
-`{"error": "<sentence>"}` (400 from the bot layer, 404 unknown bot or op).
-
-| Route | Does |
-|---|---|
-| `GET /api/phone/bots` | `{bots: [PhoneBot], ts, setup: {claude, owner, models, efforts}}`; Super Bot first, then `updated` desc. PhoneBot: id, name, kind, status, busy, waitingOn, step, task, last (the newest user/done/question/approval/error line), seq, updated, control, routines (count), face (the bot.json `face`: with id, name and status all the desktop's `faceOf` / `moodOf` read), hidden, pinned |
-| `GET /api/phone/bots/presets` | `/api/bots/presets`' answer |
-| `GET /api/phone/bots/{id}?since&before&limit&detail` | `{bot, events, seq, first_seq, ts}`. `since=0`: the last `limit` (80, max 400); with `before=<seq>` the `limit` before it; `since=<seq>`: everything after (`events_since`). Events keep the desktop's keys minus `trace`, `artifacts`, `forever`; `thumb` becomes `/api/phone/bots/{id}/steps/<n>.jpg`, `detail` is cut to 600 chars. The bot adds instructions, model, effort, approval, engine, max_steps, `waiting_seq` (the one card whose buttons are live), shot, shot_ts, viewport, browser {running, url, title}, routines, and memory / skills with `detail=1` |
-| `GET …/{id}/shot`, `…/{id}/steps/{name}` | the PNG / JPEG, as under `/api/bots` |
-| `POST /api/phone/bots` | create `{name, preset?, instructions?, model?, effort?, approval?}`: always an ordinary bot, never encrypted |
-| `POST …/{id}/send` | `{text, reply_to?, answer?, files?}` → `receive(via=phone_via)`; files through `routes.decode_files` / `save_files`, the app door's own (§13: files/, the "Attached (…)" line, images as blocks). `{ok, seq, held, files}`; `held` when the user holds the browser at the Mac (`receive` parks it) |
-| `POST …/{id}/pause\|resume\|stop\|clear` | the bot methods (`clear` = `clear_context`) |
-| `POST …/{id}/settings` | name, instructions, model, effort, approval, max_steps, memory through `routes._settings`; any other key is ignored. On Super Bot, instructions, memory and approval are a 400: they go into every task it runs, a Mac-written routine's included, which runs with its own access |
-| `POST …/{id}/routines` | `routes._routines` as is, except Super Bot's `add` / `edit` (400: a routine runs as the user's own Mac task, with Super Bot's own access, so its text is written at the Mac) |
-| `DELETE /api/phone/bots/{id}` | delete; Super Bot → 400 |
-
-Not on the phone: take-over, give-back, pop-out, dock, wake, profile import,
-reveal, browsers, encryption, trusted apps, allow rules, build access, Super
-Bot's access, the engine, iMessage settings, clone, skills, reactions, flags —
-the Mac's screen and the desktop's settings. An unknown op is a 404.
-
-**On the LAN** (`lan.py`): `/bots` and `/bots/<id>` (one segment, GET, paired)
-serve `shell-dist/lan.html` as `/` does (503 when it is not built; an unpaired
-browser gets the pairing page). The `/api/phone/bots` prefix is forwarded for
-a paired device on GET/POST/DELETE (`_AsDevice`): a copy of the scope with
-any client `x-fused-device` header dropped and `X-Fused-Device: <id>` set from
-the pairing record (`_paired_record`, the cookie lookup `_paired` now wraps;
-the `last_seen` bump unchanged). `/api/bots` itself stays a 404 on the LAN.
-On loopback (D3: trusted) the routes answer too; without the header the via
-addr is "".
+**Still true.** A message typed on the phone is the desktop's own `send`; the
+`phone` channel (`channels.base.PHONE_KIND`, `phone_via`) remains for a texted
+approval's `via`. Unread is the server's `seen_seq`, shared with the Mac
+(reading on the phone clears it there). `POST /api/phone/tasks/new-app`
+(`server/routers/phone_tasks.py`) is the phone's one route of its own: the
+grid's "+" names, scaffolds and builds an app as a task, server-side so a slow
+hop never shows a half-made app.
 
 ## 15. The Marketplace — `marketplace_search` / `marketplace_install` (`tools.MARKET_TOOLS`, 2026-10-15)
 
@@ -2153,3 +2300,322 @@ per-bot opt-out and the global pref going off.
 `terminal` allow rules (`preset.json` `terminal_allow`) for the read-only commands `gh pr view|list|diff|checks`,
 `gh issue view|list`, `gh run view|list`, `gh repo view` and `gh search`; never `gh api`. The rules are inert until
 the user turns the bot's Terminal on.
+
+## 17. Bot package — `.fusedbot` (`package.py`, `botfile.py`, `file_routes.py`, `migrate_v3.py`, 2026-11-02)
+
+A bot travels as one file: its public folder (§1) plus, optionally, its memory
+and the apps it uses. Export writes it from the bot's menu or Settings footer
+("Export bot…"; the old `export` action is now labelled "Export transcript");
+opening one shows an install page; installing makes a new bot or, when that bot
+is already here (keyed by its id, below), updates it in place. Design
+page with the owner's answers: <https://claude.ai/artifact/MgZLky3CyjTzH3mNZsXDr6>
+(D1458 layout, D1459 package).
+
+**The file.** The `.fused` app file's container (`appfile_container.py`, D870:
+magic `FUSEDAPP`, deflated JSON index, per-member deflate streams), told apart
+by a kind key in the index. `KINDS = {"app": ("fused_app_file", 2), "bot":
+("fused_bot_file", 1)}`; `write(..., kind=)` stamps one key and refuses an
+index carrying the other, `read_index(..., kind=)` refuses the other kind with
+a sentence ("this is a fused bot package, not an app file" and vice versa), and
+`kind_of(path)` (a bounded read of header + index only) answers `"app" |
+"bot" | None` for routing a dropped file. Defaults keep every app caller
+byte-identical; `bots/apps.py::_container_index` answers a bot package with
+`ValueError("this is a bot package; open it from the Bots page")`.
+
+| member | what |
+|---|---|
+| `bot.json` | the public half: `store.public_json` of the PUBLIC_KEYS of the merged meta — the disk file minus its `_gen` stamp once split, filtered when a private key sits in an unsplit file |
+| `skills/<name>.md` | every skill whose name can travel (a symlink, a refused name or a non-UTF-8 name is skipped and listed under `skills_skipped`) |
+| `README.md` | when the folder has one |
+| `icon.svg` | when the folder has one (≤ `appfile.MAX_ICON_BYTES`); the install page falls back to the face |
+| `.fused/memory.md` | only when the export ticked Memory and the file exists |
+| `apps/<folder>.fused` | one complete app file per bundled app (`export_app_file`) |
+
+Index: `{fused_bot_file: 1, name, exported_at, origin: {bot_id, exported_at},
+apps: [{folder, name, app_id, source}]}` (the chosen rows of `plan()` without
+`bytes` / `problem`). Caps: `PACKAGE_MAX_BYTES` 1 GiB total,
+`TEXT_MAX_BYTES` 1 MiB for memory + skills together, checked on declared sizes
+before writing and by the container's own write caps after. `EXT = ".fusedbot"`.
+
+**Four reference kinds.** `package.resolve_source(app_dir)` decides from the
+installed copy's own stamps, in this order: `{kind: "starter", key}` when
+`<app>/.fused/starter.json` has a key; else `{kind: "marketplace", slug,
+repo?, commit?}` when `contrib.store.get_raw(key(app_dir))` (read-only; `get()`
+re-binds and may write) is a marketplace record with a slug; else `{kind:
+"github", url, repo, commit?}` when `share_app.github_link_state(app_dir)` is
+`ok` — the folder is the root of a clone whose `origin` is on GitHub with nothing
+uncommitted or unpushed (the user's own repo, or a copy installed from someone's
+GitHub link, for which the state answers the AUTHOR's repo); `url` is the
+canonical `https://github.com/<owner>/<name>` (what `appfetch.download_github_app`
+clones and `appfile_git` compares on, not the state's install-page link),
+`commit` the exporter's HEAD, for display only; else `{kind: "bundled"}`. A
+GitHub app whose link would NOT carry it faithfully (state code `dirty`,
+`unpushed` or `no_default`) is bundled instead and the plan row carries
+`fallback: {kind: "github", code, repo}` so the dialog says why ("Bundled: its
+GitHub copy has uncommitted changes (owner/name)"); `write()` never puts
+`fallback` in an index row. A contributor's copy (state code `contributor`) with
+edits of its own (`changes > 0`) is bundled the same way (`code: "dirty"`) so the
+edits travel; without edits it is a github reference with no `commit` (its local
+HEAD need not exist upstream). Only bundled apps ride in the file; starters,
+marketplace and GitHub apps travel as references (`bytes: 0`, never sized, never
+stamped with an id) and install from their source on the other Mac. A reference
+that cannot be fetched there shows the error with Retry; it is never bundled as
+a fallback.
+
+**Export.** `GET /api/bots/{bid}/package` → `plan(bid)`:
+
+```
+{ok: true, name, file_name: "<slug>.fusedbot", public: <the public half>,
+ skills: [{name, title, trigger}], skills_bytes, skills_skipped: [{name, problem}],
+ memory_bytes, text_problem: str|null, super: bool,
+ apps: [{folder, name, app_id, source, bytes, problem?, mints_app_id?}],
+ secrets: [{where: "instructions"|"memory"|"skills/<name>"|"readme"|"routines"|"scan", snippet}],
+ secrets_scope: ["instructions", "memory", "skills", "readme", "routines"]}
+```
+
+`apps` is the bot's `apps` manifest (§2) unioned with what the bot uses now — its
+`trusted_apps` and the apps it built (`migrate_v3.seed_apps`, the union that
+seeded the manifest), so an app ticked under Permissions after the bot was made
+comes up selected — each row re-resolved and sized:
+starter / marketplace `bytes: 0`, bundled = the folder's exportable members
+(`appfile._iter_app_files`); `problem` when the folder is gone, is not a fused
+app, or is over the app-file caps; `mints_app_id` on a bundled row says the
+app has no id and no git remote yet, so `export_app_file` will stamp one into
+its entry page (the dialog discloses it). `secrets` reuses App Doctor's secret
+patterns over instructions, memory, every skill body, README and routine tasks
+(the engine's MASKED excerpt, never the raw value; a scan that breaks adds a
+visible `where: "scan"` hit); the dialog shows a caution line and does not
+block. Text is read bounded (`TEXT_MAX_BYTES + 1`); over the cap the plan
+carries `text_problem` and the dialog disables Export. `POST
+/api/bots/{bid}/package` `{memory, apps: [folder], file_name?}` → `{ok, path}`:
+`write()` refuses Super Bot (`ValueError`); `apps` may name folders outside the
+manifest ("Add app…"), which must be fused apps present now and are appended to
+the bot's `apps` manifest afterwards through the live Bot under its lock; the
+package is built in a scratch dir, its final size re-checked against the cap,
+then hard-linked onto a unique name in Downloads
+(`routers/appfile._export_destination_dir` / `_unique_export_path`; `os.link`
+refuses a name a racing writer took, `os.replace` only where links are not
+supported).
+Both routes sit before the `/{bid}/{op}` catch-all so `package` is not
+swallowed; the POST needs the `X-Fused` header like every mutation. The dialog
+opens with every app ticked (a `problem` row muted and untickable) and Memory
+OFF.
+
+**Install routes** (`file_routes.py`, its own router at `/api/botfile/*`; the
+POSTs run in the owner, forwarding through `routes._forward_client` like the
+bots router's middleware, §7):
+
+| route | answer |
+|---|---|
+| `GET /install?path=<abs>[&light=1]` | `probe(path)`; `light` reads only the index + `bot.json` (the template's card peek) |
+| `POST /install` `{path, apps: [folder], memory, mode?: "new"\|"update", target?, request_id?, bot_id?}` | `install(...)`, `X-Fused`; `mode` absent = `new`; `update` needs `target` (the probe's `bot.existing.id`), else 400; the body is read streamed and capped at 64 KiB (413 over). `request_id` (≤64 `[A-Za-z0-9_-]`) makes the POST idempotent in the owner: a resend answers the first result (a 200-entry, 1 h memo), so a page Retry after a lost reply never mints a second bot. `bot_id` is re-install mode (the per-row Retry): no bot is created; the file's `origin` must match that bot's, `package_sha` included, only the listed rows install, and they join its `apps` + `trusted_apps` |
+| `GET /icon?path=` | the `icon.svg` member, else 404 (the page falls back to the face) |
+| `POST /upload?name=<file name>` (body = the raw bytes) | writes `<downloads dir>/<safe name>.fusedbot` (appfetch's dir), `Content-Length` checked against the 1 GiB cap before a byte is read, streamed to a temp file, `X-Fused` → `{ok, path}`; refused with the probe's own error (nothing saved) unless `botfile._validate` passes — the full probe's own read-only checks: index, text budget, `bot.json`, the `apps` list, every `skills/*.md` member's size + sha256 |
+
+`probe` answers `{ok, name, public, skills, memory: bool, exported_at, origin,
+bot: {state, existing: {id, name, face|null}|null, edited_here},
+apps: [{folder, name, app_id, source, state, ticked, tickable, reason?}],
+staging}` (`bot` in the light probe too, as the id match alone: `update` when a
+bot here holds the package id, else `new`, `edited_here: false`, no origin scan
+and no digest, since a card peek never pays for the open; see Identity below). Bundled members are extracted to
+`appfile.install_dir()/.install-bot-<sha10 of path+mtime>/<folder>.fused`, the
+`.install-` prefix letting `appfile._sweep_install_staging` clean it after its
+TTL. Per-row state:
+
+| source | state | ticked | tickable |
+|---|---|---|---|
+| bundled | `appfile.install_target(member, light=True)["state"]` | `new`, `update` | not `WARN_STATES` (`diverged`, `same`, `downgrade`, `unknown`) and not `clash`; `same` reads "Already installed" |
+| starter | `installed` / `missing` (`starters.list_state`) | when missing | yes |
+| marketplace | `installed` / `missing` (`marketplace.installed_copies()`) | when missing | yes |
+| github | `installed` / `missing` (`appfile_git.installed_clone_of(normalize_url(url))`: a real clone only; local git only, no network); a row whose `url` is not a `https://github.com/<owner>/<repo>` link of at most 256 chars (`appfetch.parse_github_repo`) reads `unknown`; `repo` and `url` are rewritten from the url's owner/name (the file's `repo` is never shown) | when missing | yes |
+
+**Install order.** `install` → `{ok, bot_id, apps: [{folder, ok, state,
+error?}], warnings: [str]}`. Once `bot.create()` has returned the POST answers
+200 whatever fails afterwards (a skill that did not parse, memory, the greeting)
+— those become `warnings`; a non-200 can only happen before the bot exists, so
+a Retry is always safe. Apps first, in the order given: bundled → `appfile.install_app_file`,
+**never `force`** (a state that would need force is reported skipped, so a
+package can never overwrite an app the user edited); starter →
+`starters.ensure([key])`; marketplace → `marketplace.start_install(slug)`,
+polled up to `tools.MARKET_INSTALL_WAIT_S` (240 s); github → `_install_github`:
+already a clone of the repo (`installed_clone_of`) → ok, nothing written; a
+hand-made app carrying the row's `app_id` counts for nothing, on the probe or
+the install (ids are public), so the row reads `missing` and is cloned; else
+`appfetch.download_github_app(url)` (synchronous; the clone the `open?git=` deep
+link makes, packed into a staged `.fused`) then the bundled path on that file
+(`install_target`; `same` → ok with nothing written; `install_app_file`, never
+forced). It follows the author's default-branch HEAD — what the platform's
+GitHub link installs — not the exporter's `commit`, which stays in the row for
+display; a pinned install would silently diverge from every other
+GitHub-installed copy. A clone failure (offline, private or deleted repo) is
+that row's error — "could not clone <repo> from GitHub: <reason>" — the bot is
+still made and the row's Retry runs it again. Then the bot, in the owner
+process: `bot.create(name, model, effort, instructions, greet=False, bot_id=<id>)` — the package's id when it
+is free here, else one minted by the install (8 hex, neither a bot nor a placed folder; `create` refuses a taken
+one), so a `create` that raises
+after its `bot.json` exists is recognised by that id, never by diffing the ids on disk (which would adopt a bot
+a concurrent request made); face,
+approval, build_access, terminal, engine, max_steps / step_cap; `preset` as the
+key only (no `apply_preset`: the skills are in the file); routines from the
+file with run fields stripped and every row **`enabled: false`**; `apps` = the
+file rows; `trusted_apps` = the folders that installed OK and are in the
+index's `apps` rows (`trusted_apps` is private, never in the file); skills written
+verbatim under their member names (`_write_skills`; one with no trigger is
+written and warned about; of names equal but for case only the first in sorted
+order installs, warned about, and the digest counts the same one; a package with
+more than `Bot.SKILL_MAX` playbooks or one past `Bot.SKILL_BODY_CAP` characters
+of steps is refused, by the probe, the upload and the install alike, never
+truncated); memory via `set_memory` only when asked and present; the
+package's `README.md` and `icon.svg` (≤ `appfile.MAX_ICON_BYTES`) copied into
+the new bot's folder so a re-export keeps them (never over an existing file; a
+miss is a warning); private state gets `origin` (the exporter's `{bot_id,
+exported_at}` plus `public_sha` (below) and `package_sha`, the sha256 of the index's member hashes and
+`apps` rows: two exports of one bot in the same second share `bot_id` +
+`exported_at`, so re-install mode refuses any package whose digest differs —
+"this package is not the one this bot was installed from"); a `system` event
+"Imported from <file>"; then `greet()`. The page's failed row re-POSTs with only that folder and the
+`bot_id` it was given (re-install mode above). An app that installed but whose bot update (`apps` +
+`trusted_apps`, its own save after `origin`'s) failed comes back as `{folder: <index key>, ok: false, state:
+"settings", error: "installed, but the bot could not be updated: …", path}` plus the `settings:` warning, so its
+row offers that Retry, which is idempotent (app already there → ok, no write; manifest row matched by folder;
+trust skips a listed folder).
+
+**Identity and update (owner 2026-11-03, reversing "always a new bot").** A bot
+is keyed by its id like an app by its `app_id`: `bot.json`'s `id` (else the
+index's `origin.bot_id`) travels with the file, survives re-export, and a new
+install keeps it when free. "Already here" (`_find_match`, read off disk, any
+process, side-effect free: a corrupt `state.json` reads as empty, never moved
+aside) = the bot whose id IS the package id, else one whose private
+`origin.bot_id` is (bots installed by earlier builds minted a fresh id); the id
+match wins; the Super Bot never matches. The oracle is the **public digest**
+`botfile.public_digest`, one function fed by `_package_public_sha(path, idx)`
+(bot.json parsed, every other part from the index's member hashes) and
+`package.public_sha(bid)` (disk): sha256 over `store.public_json` of the public
+half PROJECTED onto what an install carries (name, model, effort, instructions
+as `create` stores them, `face` / `preset` / `engine` / `max_steps` /
+`step_cap` past `_public_fields`, routines cut to `id, task, kind, minutes,
+time, weekdays, at`; never the bot's `id`, `created`, `anchor`, `apps` or
+permissions, none of which an install copies verbatim), then each playbook's
+`name \0 sha256`, README.md's and icon.svg's sha256 (absent, or over the cap the
+install copies at, = ''). A package exported from a bot digests like it, and so
+does a bot right after its install or update. `origin.public_sha` = the
+package's digest at install / update time. Probe `bot.state`: `new` (no match);
+`same` (the bot's digest == the package's); `update` (differs, and the bot is
+unedited since its install, `origin.public_sha` == its digest, or has no
+`origin`: it is the exporter's own bot); `diverged` (differs and
+`origin.public_sha` != its digest: edited here; `edited_here: true`). The page
+defaults to Update for `same` / `update`, New for `diverged`. `install(mode=
+"new")` keeps the package id when free and mints one when a bot holds it (the
+user chose a second copy). `install(mode="update", target=)` re-derives the
+match (`target` must be it, never Super Bot; else "that bot did not come from
+this package"), refuses a bot whose `status` is running / waiting or whose task
+thread lives ("stop <name> before updating it"; the route's workspace-claim
+409 applies like every install), installs the ticked apps first (outside the
+bot lock), then under `b.lock`: skills/ REPLACED (built in a scratch dir and
+renamed in; a `*.md` the package lacks is gone, non-playbook files carried
+over); the public half applied as a new install applies it (`_APPLIED_KEYS`
+the package lacks are removed; permissions never imported; `created` kept);
+routines from the package keyed by id (`_merge_routines`: an existing id keeps
+its run state, `created` and, schedule unchanged, `anchor`; a changed schedule
+recomputes `next`; a new one arrives paused; one the package lacks is
+removed); manifest rows merged by folder and `trusted_apps` += what installed;
+`origin` restamped `{bot_id, exported_at, package_sha, public_sha}` (so the
+per-row Retry works on an updated bot); one save (a failed save restores the
+in-memory meta and answers an error; the re-POST is idempotent). Then README.md
+/ icon.svg replaced or removed to match the package (removed when it lacks
+them or one is not copied: over the cap or a failed write, with a warning),
+memory overwritten only when ticked and present. Events, files, inbox,
+downloads, browser and other trust are untouched; no transcript line. Answer
+`{ok, bot_id: target, updated: true, apps, warnings}` (`updated: false` on a new install and on re-install mode).
+
+**Opening one.** `templates/registry.json` maps `".fusedbot": ["fusedbot",
+"claude"]`; `templates/fusedbot/template.html` (modelled on `fusedapp`) peeks
+with `light=1` on a card and hands a whole-window load to the shell, whose
+`isBotFileInstallView` renders `BotFilePage` (`apps/bots/file/`). A `.fusedbot`
+dropped on the Bots page uploads and opens that view; dropped on the apps panel
+it is refused ("That is a bot package. Drop it on the Bots page, not the apps
+panel.").
+
+**Migration (`migrate_v3.migrate_once`).** Runs once in
+`registry._become_owner()`, after `_import_fusedbot` (which still writes the
+legacy layout, so one start lifts both) and before `seed_super`, before any
+`Bot` is built. Idempotent, never raises, answers `{moved, skipped, backup,
+stamped}`. Each rung is the precondition of the next:
+
+1. **Nothing to do.** `<home>/bots/.layout-v3` exists AND no legacy
+   `<id>/bot.json` remains → return (legacy bots that appear after the stamp,
+   a FusedBot import on a later start, are lifted the same way). No legacy bot
+   and no stamp → stamp and return (a fresh install never backs up). A
+   non-blocking `flock` on `<bots_root>/.migrate.lock` keeps two homes sharing
+   one `~/Fused` from lifting at once (the loser logs and returns).
+2. **Backup.** Both roots, browsers included: `root()` → `dest/home-bots/`,
+   `bots_root()` → `dest/fused-bots/`, `dest =
+   <base_home>/backup/bot-migration-v3/<UTC YYYYmmdd-HHMMSS>/` (base_home is
+   `~/.fused-render`, never branch-nested). Skipped: sockets and FIFOs by type,
+   and regular FILES named `Singleton*`, `RunningChromeVersion`, `*.lock`,
+   `*.tmp` (never a directory of such a name). Verified per root: no
+   unreadable entry on either side, and the copy's digest over every
+   `(relpath, size)` equals the source's. `dest/manifest.json`: `{version: 3,
+   created_at, home_bots, fused_bots, roots: {<sub>: {files, bytes, digest,
+   copy_digest, links}}, entries: [{id, name, src_data, src_cache,
+   src_inbox|null, dst_folder, already_placed?|unmigrated?}], files, bytes}`
+   (`digest` is over `(relpath, size, mtime_ns)`; `links` lists symlink
+   targets, one outside the roots is logged as not backed up). A failed or
+   short backup is left on disk with `failed.json` beside it and is never
+   reused; the run moves nothing, stamps nothing, and the new resolvers see
+   zero bots until a later start succeeds. A verified backup of the SAME trees
+   (per-root `digest` equal to a fresh walk, and the copy re-walked against
+   its `copy_digest`) is reused instead of copied again.
+3. **Place.** Every bot's old Inbox (pinned `artifacts_dir`, else the folder of
+   its name when it looks like an Inbox: `index.jsonl` or only task-shaped
+   children) is first STAGED to `<bots_root>/.inbox-<id>/`, so the bot lands
+   under its CURRENT name whatever folder its Inbox occupied and a namesake's
+   Inbox is never adopted; an Inbox pinned by two bots goes to the one whose
+   name it carries, else stays in place (recorded under `skipped`); one pinned
+   outside the root stays, pin dropped (recorded). Then `paths.place(bid,
+   name, adopt=True)`: slug of the name; a folder holding another id →
+   `<slug>-<id4>`; a bot.json-less folder with no `.fused/state.json` (a run
+   that died before writing the meta) is adopted. The SAME id already placed →
+   skipped (another branch home moved it first); its legacy files are lifted
+   into `<folder>/.fused/legacy-leftovers/<home tag>/`, never deleted. An
+   unreadable `bot.json` or a non-8-hex id → parked as-is under
+   `<bots_root>/.unmigrated/<id>/` (recorded; the stamp proceeds).
+4. **Move.** The staged Inbox children → `.fused/inbox/`, legacy `skills/` →
+   `<folder>/skills/`, the legacy `inbox/` (botsend's drop folder, never an
+   Inbox) → `.fused/drop/`, the rest of the data dir → `.fused/` (profiles too;
+   `browsers.adopt` lifts them as before), the cache dir → `.fused/cache/`;
+   finally `store.write_meta` without `artifacts_dir` and with `apps` seeded.
+   File by file (`_move_tree`): `os.rename`, or across volumes `copy2` +
+   verify size + `unlink`; ANY error raises and the bot fails (nothing of it is
+   deleted). A destination that already exists is a clash: the legacy file goes
+   to `<folder>/.fused/legacy-leftovers/<same relative path>` instead, never
+   over anything. A bot counts as moved only when its legacy data and cache
+   dirs hold nothing but `bot.json` (checked, empty dirs pruned).
+5. **Stamp + remove.** Only when every bot moved, was skipped as already
+   placed (leftovers lifted), or was parked: stray legacy entries that are not
+   a bot go to `.unmigrated/stray-<ts>/`; the legacy trees are verified drained
+   (bot.json files and empty dirs only, else no stamp); then they are RENAMED
+   aside atomically (`data/.bots-removed-<ts>`, `cache/.bots-removed-<ts>`),
+   `.layout-v3` is written (`{at, backup, moved, skipped, strays}`) with
+   `.layout-v3-drop` beside it, and the renamed dirs are removed. Any failure stamps and removes nothing; the next
+   start retries. `registry._sweep_browsers` runs only once the stamp exists,
+   and `browsers._metas_on_disk` also reads legacy `bot.json`s for
+   `browser_id`, so a legacy bot's logins are never swept in the window before.
+
+**Drop fixup.** Earlier builds of v3 lifted the legacy `inbox/` into
+`.fused/inbox/` and drained the Inbox as the drop folder. A home stamped
+`.layout-v3` without `.layout-v3-drop` runs `_drop_fixup_once` once, under
+the migrate lock: per bot folder, botsend-named files
+(`botsend.DROP_NAME_RE`, `YYYYmmdd-HHMMSS-<pid>.txt`) directly in
+`.fused/inbox/` move to `.fused/drop/` (clash → legacy-leftovers); task
+folders, `index.jsonl` and any other file stay. Then `.layout-v3-drop`.
+
+The backup is **never auto-pruned**: deleting `~/.fused-render/backup/bot-migration-v3/`
+is the user's call.
+
+Tests: `tests/test_bots_store.py` (the split, the git-clean public write, and
+migrate_v3: backup + manifest, move, stamp, remove, skip on same id with
+leftovers kept, Inbox staging incl. pinned and shared pins, clash → leftovers,
+an aborted or short backup leaving the legacy tree intact, no reuse of a
+changed tree or a failed backup, a cross-device copy failure keeping the
+source, the browser sweep waiting for the stamp).

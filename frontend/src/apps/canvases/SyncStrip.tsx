@@ -7,13 +7,14 @@
 // clock tick so the ageing embed_to_disk leg and "Published 12 s ago" never
 // re-render the whole workspace (and its two iframes' parents) every second.
 import { ArrowLeftIcon } from "lucide-react";
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState, type MouseEvent as ReactMouseEvent } from "react";
 import { ENV_NAMES, type WorkbenchEnv } from "./api";
 import {
   LEG_LABEL,
   legVerdicts,
   mergeEmbedLeg,
   ownedText,
+  pullChangesNothing,
   serverChangesText,
   stripText,
   type EmbedFailure,
@@ -51,7 +52,8 @@ const LEVEL_STYLE: Record<SyncLevel, { border: string; bg: string; dot: string }
   error: { border: "rgba(220,60,60,0.35)", bg: "rgba(220,60,60,0.08)", dot: "rgb(220,60,60)" },
 };
 
-function Dot({ level, size = 8 }: { level: SyncLevel; size?: number }) {
+/** The strip's level dot. */
+export function Dot({ level, size = 8 }: { level: SyncLevel; size?: number }) {
   return (
     <span
       aria-hidden
@@ -74,6 +76,12 @@ export interface PullControl {
   onPull: () => void;
 }
 
+export interface PublishControl {
+  busy: boolean;
+  error: string | null;
+  onPublish: () => void;
+}
+
 export function SyncStrip({
   env,
   name,
@@ -83,11 +91,12 @@ export function SyncStrip({
   owned,
   live,
   pull,
+  publish = null,
   open,
   onToggle,
   onBack,
   workbenchUrl,
-  embedded = false,
+  explorerLink = null,
   pushErrors = null,
 }: {
   /** The canvas's environment, shown as a chip beside the way back: with a
@@ -103,6 +112,9 @@ export function SyncStrip({
   /** The events socket is up (else the page is polling). */
   live: boolean;
   pull: PullControl;
+  /** "Publish now", shown while the publish waits on a Claude session's turn
+   *  (`waiting_on_session`). Null: never shown. */
+  publish?: PublishControl | null;
   open: boolean;
   onToggle: () => void;
   /** Back to the canvases listing, on this canvas's environment
@@ -113,10 +125,11 @@ export function SyncStrip({
    *  until the base URL and handle are known. Shown as "Open in workbench"
    *  while every leg is green. */
   workbenchUrl: string | null;
-  /** Inside the project page's Overview (CanvasWorkspace `embedded`): the
-   *  page header owns the way back, the env chip and the workbench link, so
-   *  the strip draws none of them. */
-  embedded?: boolean;
+  /** The canvas's folder on this machine, in the explorer (router
+   *  `spaLinkProps`): an anchor, so a plain click hops in place and
+   *  Cmd/middle-click opens a tab. Null until the folder is known. Shown
+   *  whatever the sync state — the folder is there either way. */
+  explorerLink?: { href: string; onClick: (e: ReactMouseEvent<HTMLAnchorElement>) => void } | null;
   /** A failed push's errors, as a count pill at the strip's right: click
    *  folds the detail panel (reason, Fix with Claude, the CLI's lines) open
    *  and shut under the strip. Null while the push leg is not in error. */
@@ -131,10 +144,14 @@ export function SyncStrip({
   const verdicts = legVerdicts(merged);
   const pulling = pull.busy || s2d.state === "pulling";
   const pullFailed = s2d.state === "error" && s2d.changed.length > 0;
+  const nothingChanges = pullChangesNothing(s2d);
   const pushState = merged.legs.disk_to_server.state;
   const inFlight =
     pushState === "pending" || pushState === "pushing" || s2d.state === "pulling" || queue.length > 0;
   const showPull = s2d.state === "stale" || s2d.state === "pulling" || pullFailed || pull.busy;
+  const d2s = merged.legs.disk_to_server;
+  const showPublish =
+    !!publish && (publish.busy || (d2s.state === "pending" && d2s.waiting_on_session === true));
   // This page's own pull error first (it is the click the user just made),
   // else the server's reason for the failed pull leg.
   const pullErrorText = pulling
@@ -171,8 +188,6 @@ export function SyncStrip({
         userSelect: "none",
       }}
     >
-      {!embedded && (
-        <>
       <button
         type="button"
         style={{
@@ -200,8 +215,6 @@ export function SyncStrip({
       <span className="canvases-env-chip" title={`${name} syncs with ${ENV_NAMES[env].label}`}>
         {ENV_NAMES[env].tag}
       </span>
-        </>
-      )}
       <Dot level={level} />
       <span
         style={{
@@ -230,10 +243,16 @@ export function SyncStrip({
           style={{ display: "flex", alignItems: "center", gap: 8, flex: "none", cursor: "default" }}
           title={
             serverChangesText(s2d) +
-            ". Nothing here is published until you pull. Pull merges them with your local edits " +
-            "where it can; anything it has to overwrite is kept in the canvas trash."
+            ". Held while Claude works in this folder and merged when its turn ends; Pull merges " +
+            "them now, with your local edits kept where it can; anything it has to overwrite is " +
+            "kept in the canvas trash."
           }
         >
+          {nothingChanges && !pullErrorText && (
+            <span style={{ opacity: 0.7, whiteSpace: "nowrap" }} title="Every file the server changed is already what this folder holds">
+              Nothing will change
+            </span>
+          )}
           {pullErrorText && (
             <span
               style={{
@@ -259,7 +278,57 @@ export function SyncStrip({
           </button>
         </span>
       )}
-      {!embedded && !owned && server && level === "ok" && !inFlight && workbenchUrl && (
+      {!owned && server && showPublish && publish && (
+        // The publish waits on a Claude session's turn (another session's
+        // half-done change set, or this folder's own live run): the user
+        // may publish anyway, unfinished changes included.
+        <span
+          onClick={(e) => e.stopPropagation()}
+          onKeyDown={(e) => e.stopPropagation()}
+          style={{ display: "flex", alignItems: "center", gap: 8, flex: "none", cursor: "default" }}
+        >
+          {publish.error && !publish.busy && (
+            <span
+              style={{
+                color: "rgb(200,60,60)",
+                overflow: "hidden",
+                textOverflow: "ellipsis",
+                whiteSpace: "nowrap",
+                maxWidth: 240,
+              }}
+              title={publish.error}
+            >
+              {publish.error}
+            </span>
+          )}
+          <button
+            type="button"
+            className="btn"
+            style={{ padding: "1px 10px", fontSize: 12 }}
+            disabled={publish.busy}
+            onClick={() => publish.onPublish()}
+            title="Publish this folder now, including changes a Claude session has not finished yet"
+          >
+            {publish.busy ? "Publishing…" : "Publish now"}
+          </button>
+        </span>
+      )}
+      {explorerLink && (
+        <a
+          href={explorerLink.href}
+          className="btn"
+          style={{ padding: "1px 10px", fontSize: 12, flex: "none", textDecoration: "none" }}
+          onClick={(e) => {
+            e.stopPropagation();
+            explorerLink.onClick(e);
+          }}
+          onKeyDown={(e) => e.stopPropagation()}
+          title="Open this canvas's folder in the explorer"
+        >
+          Open in Explorer
+        </a>
+      )}
+      {!owned && server && level === "ok" && !inFlight && workbenchUrl && (
         // All green and nothing moving: the canvas on the server is what
         // this folder holds, so the hosted editor is worth a look. A plain
         // link in a new tab. (A pending/pushing push is "ok" to worstLeg but

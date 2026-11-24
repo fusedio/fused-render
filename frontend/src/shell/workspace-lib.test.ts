@@ -6,9 +6,12 @@ import {
   holdReasons,
   holdMarker,
   visibleReasons,
+  CHECKING_REASON,
+  PR_UNKNOWN_REASON,
   dirtyBadge,
   dirtyTitle,
   moveSelection,
+  needsYou,
   nextNeedingYou,
   portBadges,
   searchTasks,
@@ -45,14 +48,14 @@ const facts = (over: Partial<WorkspaceFacts> = {}): WorkspaceFacts => ({
 });
 
 describe("workspaceTasks", () => {
-  test("every non-draft task (archived included), newest creation first", () => {
+  test("every task, drafts and archived included, newest creation first", () => {
     const rows = workspaceTasks([
       task({ key: "a", started: 10 }),
       task({ key: "b", started: 30 }),
       task({ key: "c", started: 20, status: "archived" }),
       task({ key: "d", started: 40, kind: "draft" }),
     ]);
-    expect(rows.map((t) => t.key)).toEqual(["b", "c", "a"]);
+    expect(rows.map((t) => t.key)).toEqual(["d", "b", "c", "a"]);
   });
   test("a status change never moves a row", () => {
     const a = workspaceTasks([task({ key: "a", started: 1, status: "done" }), task({ key: "b", started: 2 })]);
@@ -69,7 +72,13 @@ describe("statusWord", () => {
   test("today's words", () => {
     expect(statusWord(task({ status: "in_progress" }))).toBe("Running");
     expect(statusWord(task({ status: "needs_attention" }))).toBe("Needs attention");
+    expect(statusWord(task({ status: "upcoming", kind: "draft" }))).toBe("Draft");
+    expect(statusWord(task({ status: "upcoming" }))).toBe("Upcoming");
     expect(statusWord(task({ status: "done" }))).toBe("Done");
+    const jobs = { count: 1, jobs: [{ id: "b", title: "poll", kind: "bash" }] } as never;
+    expect(statusWord(task({ status: "done", background_jobs: jobs }))).toBe("Background");
+    expect(statusWord(task({ status: "done", background_jobs: { count: 0, jobs: [] } as never }))).toBe("Done");
+    expect(statusWord(task({ status: "archived", background_jobs: jobs }))).toBe("Archived");
     expect(statusWord(task({ status: "blocked", blocked_reason: "failed" }))).toBe("Failed");
     expect(statusWord(task({ status: "blocked", blocked_reason: "usage_limit" }))).toContain("Usage limit");
     expect(statusWord(task({ status: "blocked" }))).toBe("Blocked");
@@ -107,7 +116,7 @@ describe("holdReasons / holdMarker", () => {
   });
   test("a PR whose state is not known yet is not called clear", () => {
     const t = task({ prs: [{ repo: "a/b", number: 7, url: "u" }] });
-    expect(holdReasons(t, facts())).toEqual(["PR #7 unknown"]);
+    expect(holdReasons(t, facts())).toEqual(["PR #7 checking"]);
     expect(holdReasons(t, facts({ prStates: { "a/b#7": null } }))).toEqual(["PR #7 unknown"]);
   });
   test("worktree git state: uncommitted, unpushed, unknown", () => {
@@ -189,6 +198,14 @@ describe("nextNeedingYou", () => {
   test("none needs you", () => {
     expect(nextNeedingYou([task()], null)).toBeNull();
   });
+  test("an unfinished draft needs you, as its group says", () => {
+    const withDraft = [task({ key: "a" }), task({ key: "dr", kind: "draft", status: "upcoming" })];
+    expect(needsYou(withDraft[1])).toBe(true);
+    expect(nextNeedingYou(withDraft, null)).toBe("dr");
+  });
+  test("an archived draft does not", () => {
+    expect(needsYou(task({ kind: "draft", status: "archived" }))).toBe(false);
+  });
 });
 
 describe("searchTasks", () => {
@@ -199,17 +216,17 @@ describe("searchTasks", () => {
     task({ key: "d", task_id: "", title: "login draft", started: 4, kind: "draft" }),
   ];
   test("title match lists open tasks before closed ones", () => {
-    expect(searchTasks(all, "login").map((t) => t.key)).toEqual(["b", "a"]);
+    expect(searchTasks(all, "login").map((t) => t.key)).toEqual(["d", "b", "a"]);
   });
   test("a T-number finds its task, with or without the T", () => {
     expect(searchTasks(all, "T123").map((t) => t.key)).toEqual(["a"]);
     expect(searchTasks(all, "123").map((t) => t.key)).toEqual(["a"]);
   });
   test("empty query lists everything, open first then closed, newest first", () => {
-    expect(searchTasks(all, "").map((t) => t.key)).toEqual(["c", "b", "a"]);
+    expect(searchTasks(all, "").map((t) => t.key)).toEqual(["d", "c", "b", "a"]);
   });
-  test("drafts are never results", () => {
-    expect(searchTasks(all, "draft")).toEqual([]);
+  test("a draft is a result, ranked with the open tasks", () => {
+    expect(searchTasks(all, "draft").map((t) => t.key)).toEqual(["d"]);
   });
 });
 
@@ -257,11 +274,20 @@ describe("visibleReasons", () => {
     expect(visibleReasons(all)).toEqual(["1 uncommitted", "2 unpushed", "unknown"]);
   });
   test("keeps an unknown PR, queued and a pending run", () => {
+    expect(visibleReasons(["PR #7 unknown", "queued", "run pending"], "upcoming")).toEqual(["PR #7 unknown", "queued"]);
     expect(visibleReasons(["PR #7 unknown", "queued", "run pending"])).toEqual([
       "PR #7 unknown",
       "queued",
       "run pending",
     ]);
+  });
+  test("keeps a PR still being checked (the card draws it as a shimmer)", () => {
+    expect(visibleReasons(["PR #7 checking"])).toEqual(["PR #7 checking"]);
+    expect(CHECKING_REASON.test("PR #7 checking")).toBe(true);
+    expect(CHECKING_REASON.test("checking")).toBe(true);
+    expect(CHECKING_REASON.test("PR #7 unknown")).toBe(false);
+    expect(PR_UNKNOWN_REASON.test("PR #7 unknown")).toBe(true);
+    expect(PR_UNKNOWN_REASON.test("PR #7 checking")).toBe(false);
   });
   test("always drops running / needs you (the ring shows them)", () => {
     expect(visibleReasons(["running"])).toEqual([]);
@@ -313,6 +339,12 @@ describe("workspaceGroup / groupTasks", () => {
     expect(g(task({ last_active: NOW - 3600 }))).toBe("turn");
     expect(g(task({ status: "archived" }))).toBe("archived");
   });
+  test("an unfinished draft needs you, ahead of upcoming, working and idle rules", () => {
+    // A draft row arrives as status "upcoming" with kind "draft".
+    expect(g(task({ status: "upcoming", kind: "draft", ...idle }))).toBe("needs");
+    expect(g(task({ status: "upcoming" }))).toBe("upcoming");
+    expect(g(task({ status: "archived", kind: "draft" }))).toBe("archived");
+  });
   test("done, an hour idle, nothing holding it: your turn", () => {
     expect(g(task({ last_active: NOW - 3600 }))).toBe("turn");
   });
@@ -338,16 +370,27 @@ describe("workspaceGroup / groupTasks", () => {
   test("last_active falls back to started", () => {
     expect(g(task({ last_active: 0, started: NOW - 25 * 3600 }))).toBe("clear");
   });
-  test("queued, upcoming, bg jobs and a pending run are working", () => {
+  test("queued and bg jobs are working; a run still to come is upcoming", () => {
     expect(g(task({ status: "queued" }))).toBe("working");
-    expect(g(task({ status: "upcoming" }))).toBe("working");
-    expect(g(task({ next_run: 5 }))).toBe("working");
     expect(g(task({ background_jobs: { count: 1, run_id: "r", jobs: [] } }))).toBe("working");
+    expect(g(task({ status: "upcoming" }))).toBe("upcoming");
+    expect(g(task({ next_run: 5 }))).toBe("upcoming");
+    expect(g(task({ next_run: 5, ...pr, ...idle }), open)).toBe("upcoming");
   });
-  test("priority: archived and needs beat working, working beats PR open", () => {
+  test("priority: archived and needs beat working, working beats upcoming and PR open", () => {
     expect(g(task({ status: "archived", ...pr }), open)).toBe("archived");
     expect(g(task({ status: "in_progress", ...pr }), open)).toBe("working");
+    expect(g(task({ status: "in_progress", next_run: 5 }))).toBe("working");
     expect(g(task({ status: "needs_attention", unread: 3 }))).toBe("needs");
+  });
+  test("Upcoming reads soonest first; a run with no time on it last", () => {
+    const rows = [
+      task({ key: "late", started: 9, next_run: NOW + 7200 }),
+      task({ key: "never", started: 8, status: "upcoming" }),
+      task({ key: "soon", started: 7, next_run: NOW + 60 }),
+    ];
+    const grouped = groupTasks(rows, () => facts(), NOW, new Set());
+    expect(grouped.map((x) => [x.key, x.tasks.map((t) => t.key)])).toEqual([["upcoming", ["soon", "late", "never"]]]);
   });
   test("groups come in order, empty ones omitted, rows keep their order", () => {
     const rows = [
@@ -357,12 +400,14 @@ describe("workspaceGroup / groupTasks", () => {
       task({ key: "d", status: "archived" }),
       task({ key: "e", last_active: NOW - 60 }),
       task({ key: "f", status: "queued" }),
+      task({ key: "g", next_run: NOW + 600 }),
       task({ key: "h", ...pr, ...idle }),
     ];
     const grouped = groupTasks(rows, (t) => (t.key === "h" ? open : facts()), NOW, new Set());
     expect(grouped.map((x) => [x.key, x.label, x.tasks.map((t) => t.key)])).toEqual([
       ["needs", "Needs you", ["b"]],
       ["working", "Working", ["f"]],
+      ["upcoming", "Upcoming", ["g"]],
       ["pr", "PR open", ["h"]],
       ["turn", "Your turn", ["e"]],
       ["clear", "Safe to archive", ["a", "c"]],

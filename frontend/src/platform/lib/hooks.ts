@@ -22,6 +22,7 @@ import {
   subscribeSidebarState,
   type SidebarState,
 } from "@platform/lib/sidebarstate";
+import { getRailState, subscribeRailState, type RailState } from "@platform/lib/railstate";
 
 export function useEventCounter(events: readonly string[]): number {
   const [n, setN] = useState(0);
@@ -261,18 +262,6 @@ function setFaviconHref(href: string | typeof DEFAULT_FAVICON): void {
   else document.head.appendChild(link);
 }
 
-// Re-point the DEFAULT at a sibling of the icon the document arrived with —
-// `favicon-bot.png` beside `favicon.ico`, under whatever base Vite served
-// them from (dev or packaged; see the 404 note above). Called once from
-// main.tsx under the bot flavor, before the first render: every later
-// restore (an app's icon.svg leaving the screen) then lands on this one.
-export function setDefaultFavicon(file: string): void {
-  const current = document.querySelector<HTMLLinkElement>('link[rel="icon"]');
-  if (!current) return;
-  defaultHref = new URL(file, current.href).href;
-  setFaviconHref(DEFAULT_FAVICON);
-}
-
 // Tab icon: while a route inside an app is on screen, its optional icon.svg
 // replaces the shell's own, AS IS — no recolouring, no livery (owner,
 // 2026-08-27: render the author's svg untouched). The default comes back when
@@ -291,6 +280,11 @@ export function useFavicon(href: string | null): void {
 // dragged width, shared so every owner of the frame agrees on the layout.
 export function useSidebarState(): SidebarState {
   return useSyncExternalStore(subscribeSidebarState, getSidebarState, getSidebarState);
+}
+
+// Live right-rail state (platform/lib/railstate) — expanded flag and width.
+export function useRailState(): RailState {
+  return useSyncExternalStore(subscribeRailState, getRailState, getRailState);
 }
 
 // Whether Back / Forward have anywhere to go (platform/lib/nav-history). Not

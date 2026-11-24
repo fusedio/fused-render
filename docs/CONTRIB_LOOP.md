@@ -1273,7 +1273,7 @@ up-to-date branches): the merging maintainer catches it. GitHub disables
 
 ### 18.3 The backend (WS-CANVAS)
 
-Canvas `~/Fused/canvas/unstable/fused_app_marketplace` — THE one hosted
+Canvas `~/Fused/canvas/unstable/user/fused_app_marketplace` — THE one hosted
 canvas fused-render's backend lives on (owner 2026-10-27: "only have 1
 canvas for all the backend required in fused-render"; unstable for now).
 It is public (owner 2026-10-27) and addressed by name:
@@ -1810,7 +1810,7 @@ lookup is the count. The public listing page records one `views` event when
 served.
 
 **S3 is the canvas's database.** `S3_PREFIX =
-s3://fused-users/fused/vasu/fused-render-marketplace/` (overridable by the
+s3://<bucket>/<prefix>/fused-render-marketplace/` (overridable by the
 `MARKETPLACE_S3_PREFIX` env var / Fused secret). GitHub stays the source of
 truth; S3 keeps what was read, what was built, and the stats. Every write is
 best-effort (`fused.api.upload`, logged on failure): no row ever waits on,
@@ -1901,7 +1901,7 @@ What's new) follows the same path. The shared helper block (duplicated byte-for-
 `marketplace_*` / `fused_app_listing` / `fused_app_install` UDFs) carries
 all of it; `fused_app_github` is untouched.
 
-Pushing the canvas: the clone under `~/Fused/canvas/unstable/` is owned by
+Pushing the canvas: the clone under `~/Fused/canvas/unstable/user/` is owned by
 the installed fused-render's watcher (port 1777); a Claude session without
 the app's `fused` wrapper on PATH pushes through it — `POST
 http://127.0.0.1:1777/api/canvases/sync/push {name, env: "unstable"}` with
@@ -2214,3 +2214,48 @@ server's confirm. Q5: Add runs the review gate first (the inbox's rule,
 unchanged). Q6: Recent is read-only (§16.16); Undo lives where the
 server's actions offer it. Q7: Remix is not in Simple.
 Q8: no install counts (the client catalog carries none).
+
+## 21. App roles (2026-11-03)
+
+Owner 2026-11-03 (artifact 4Qz9C3DwwGnJJ3DsM8ECzA): one explicit, read-side
+**role** per app, derived ONCE — `ladder.role_of(app_dir, root, origin,
+login, *, ask)` (`ladder.role_for(app_dir)` reads the folder facts itself) —
+from the record (`store.get`) + the cached identity (`refresh.github_identity`
+/ `gh.cached_identity`, the org-role cache via `ladder._owns_cached`). No
+network: `ask` only queues the org-role lookup (`_ask_owner`), off with every
+Community switch off. **Git never reads it**: every git decision reads
+`classify.kind_of` and nothing else (§16.0 P1) — the role is words and
+views, not moves.
+
+| record | condition | role |
+|---|---|---|
+| none | `fused.kind`=marketplace in its own git config (`classify.ensure` refuses to invent a record, M4) | unknown · `no-record` |
+| none | origin not a github.com repo | owner |
+| none | origin owner == login, or org-admin cached true | owner |
+| none | org role cached false | contributor |
+| none | cache empty | unknown · `checking` (`identity` with no login) — `_ask_owner` queued |
+| own | `remix_of` set / not | remixer / owner |
+| github | `owner_checked` false | unknown · `checking` (`identity` with no login) |
+| github | checked, `can_push` true (`classify._with_push_rights`, asked for `can_push_login` = the current login; a record without the login is trusted) / else | collaborator / contributor |
+| marketplace | — | reader |
+| scratch | `try_of` set / not (legacy) | trier / owner |
+| own/scratch-owner | `classify._needs_rebind` (→ `rebind_in_background`) | the record's role (owner / remixer), `pending` true |
+| other kind | — | unknown · `checking` |
+
+`reason` is shared with the refusal code of an `ok:false` answer on the
+same routes: the role's `reason` is set only on `ok:true` answers (a
+refusal computes no role and keeps its own `reason`). `reason` ∈ {`identity` — no GitHub login known; `checking` — record missing
+or unchecked, classification queued/running; `no-record` — nothing will
+classify it}; `null` for every other role. `mine` = role ∈ {owner, remixer},
+kept in every output ONE release as an alias. `pending` = role unknown and
+reason ≠ `no-record` (the ladder's old meaning: something is settling it),
+or the rebind window: the role stays the record's claim so the ladder keeps
+drawing rung 2 right after a publish (§19.2 "must not lag") and the page
+never flips to the unknown card for a folder it drew as the user's.
+
+Carried by: §19.2 ladder read (top-level `role`, `reason`, beside `mine`,
+`pending`); §12.1 `AppContrib` (top-level `role`, `reason` on every answer —
+the pending one too — not the switches-off `disabled` answer, which stays
+zero-work; `copy` does not carry them);
+`actions.facts`/`for_app` (`role`, `reason` copied out, `decide` never
+branches on them). Cards (§12.2) unchanged.

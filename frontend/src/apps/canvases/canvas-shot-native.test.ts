@@ -2,7 +2,7 @@ import { installDomShim } from "@platform/lib/testDomShim";
 installDomShim();
 import { expect, test } from "bun:test";
 
-const { cropToPane, frameCovered, nativeCanvasShot, nativeShotAllowed, shotGateOf } =
+const { SHOT_OWN_ATTR, cropToPane, fitShotBlob, frameCovered, nativeCanvasShot, nativeShotAllowed, shotGateOf } =
   await import("./canvas-shot-native");
 
 test("a screen shot is allowed only when it would show the canvas", () => {
@@ -15,22 +15,44 @@ test("a screen shot is allowed only when it would show the canvas", () => {
   expect(nativeShotAllowed({ visible: true, focused: true, covered: true })).toBe(false);
 });
 
-test("covered = something else is topmost at the frame's centre, or nothing is", () => {
+test("the window road (D1472) needs no focus: the window is drawn wherever it is", () => {
+  expect(nativeShotAllowed({ visible: true, focused: false, covered: false }, "window")).toBe(true);
+  expect(nativeShotAllowed({ visible: true, focused: true, covered: false }, "window")).toBe(true);
+  // A web view that is not painting could hand back a stale window.
+  expect(nativeShotAllowed({ visible: false, focused: false, covered: false }, "window")).toBe(false);
+  // A dialog of ours is inside the window, so it would be in the picture.
+  expect(nativeShotAllowed({ visible: true, focused: true, covered: true }, "window")).toBe(false);
+  expect(nativeShotAllowed({ visible: true, focused: false, covered: false }, "region")).toBe(false);
+});
+
+test("covered = something not ours is over the frame at any sample point, or nothing is", () => {
   const frame = { getBoundingClientRect: () => ({ left: 10, top: 20, width: 400, height: 300 }) };
   const asFrame = frame as unknown as Element;
-  const docWith = (hit: Element | null) => ({
+  const asked: Array<[number, number]> = [];
+  // `at(x, y)`: what is topmost there; the frame everywhere else.
+  const docWith = (at: (x: number, y: number) => Element | null | undefined) => ({
     elementFromPoint: (x: number, y: number) => {
-      expect(x).toBe(210);
-      expect(y).toBe(170);
-      return hit;
+      asked.push([x, y]);
+      const hit = at(x, y);
+      return hit === undefined ? asFrame : hit;
     },
   });
-  expect(frameCovered(frame, docWith(asFrame))).toBe(false);
-  expect(frameCovered(frame, docWith({} as Element))).toBe(true);
-  expect(frameCovered(frame, docWith(null))).toBe(true);
+  expect(frameCovered(frame, docWith(() => undefined))).toBe(false);
+  // The centre and four points a quarter in.
+  expect(asked).toEqual([[210, 170], [110, 95], [310, 95], [110, 245], [310, 245]]);
+  const foreign = { closest: () => null } as unknown as Element;
+  expect(frameCovered(frame, docWith((x, y) => (x === 210 && y === 170 ? foreign : undefined)))).toBe(true);
+  // A viewer modal over one corner only: still covered (off-centre was missed before).
+  expect(frameCovered(frame, docWith((x, y) => (x === 310 && y === 245 ? foreign : undefined)))).toBe(true);
+  expect(frameCovered(frame, docWith((x) => (x === 110 ? null : undefined)))).toBe(true);
+  // Our own floating card (the rail's, a popover, a toast) over the centre: not a refusal.
+  const own = { closest: (sel: string) => (sel === `[${SHOT_OWN_ATTR}]` ? ({} as Element) : null) } as unknown as Element;
+  expect(frameCovered(frame, docWith((x, y) => (x === 210 && y === 170 ? own : undefined)))).toBe(false);
+  // …unless it hides the whole frame: then there is no canvas in the picture.
+  expect(frameCovered(frame, docWith(() => own))).toBe(true);
   // A frame with no box is not on screen.
   const flat = { getBoundingClientRect: () => ({ left: 0, top: 0, width: 0, height: 0 }) };
-  expect(frameCovered(flat, docWith(flat as unknown as Element))).toBe(true);
+  expect(frameCovered(flat, docWith(() => flat as unknown as Element))).toBe(true);
 });
 
 test("the user's own click is proof of focus; the agent's capture asks the document", () => {
@@ -77,20 +99,23 @@ test("nativeCanvasShot: no frame, no crop, a shut gate or a null still all answe
     return null;
   };
   const crop = { x: 0, y: 0, w: 500, h: 400 };
+  const windowOff = () => true;
   // No crop: the whole frame is not "the canvas" — the embed road draws it.
   expect(
     await nativeCanvasShot(frame, "user", {
       gate: () => ({ visible: true, focused: true, covered: false }),
       capture,
+      windowOff,
     }),
   ).toBeNull();
   expect(captures).toBe(0);
-  // Gate shut: the still is never even asked for.
+  // Gate shut (and no window road here): the still is never even asked for.
   expect(
     await nativeCanvasShot(frame, "agent", {
       crop,
       gate: () => ({ visible: true, focused: false, covered: false }),
       capture,
+      windowOff,
     }),
   ).toBeNull();
   expect(captures).toBe(0);
@@ -100,7 +125,110 @@ test("nativeCanvasShot: no frame, no crop, a shut gate or a null still all answe
       crop,
       gate: () => ({ visible: true, focused: true, covered: false }),
       capture,
+      windowOff,
     }),
   ).toBeNull();
   expect(captures).toBe(1);
+});
+
+test("fitShotBlob: a picture already inside the view budget is handed over as it is", async () => {
+  const small = new Blob([new Uint8Array(10)], { type: "image/png" });
+  expect(await fitShotBlob(small)).toBe(small);
+  // Too big, but nothing here can decode it: the original, never a throw.
+  const big = new Blob([new Uint8Array(2 * 1024 * 1024)], { type: "image/png" });
+  expect(await fitShotBlob(big)).toBe(big);
+});
+
+test("the window road first (D1472): an unfocused window is photographed, a hidden one is not, the region road is the fallback", async () => {
+  const frame = { isConnected: true } as unknown as HTMLIFrameElement;
+  const crop = { x: 0, y: 0, w: 500, h: 400 };
+  const roads: string[] = [];
+  const capture = (async (_f: unknown, _d?: number, o?: { window?: boolean }) => {
+    roads.push(o?.window ? "window" : "region");
+    return null;
+  }) as unknown as NonNullable<Parameters<typeof nativeCanvasShot>[2]>["capture"];
+  const windowOff = () => false;
+  // Another app in front: the window road is taken; the region road, whose
+  // pixels would be that other app, is not.
+  expect(
+    await nativeCanvasShot(frame, "agent", {
+      crop,
+      gate: () => ({ visible: true, focused: false, covered: false }),
+      capture,
+      windowOff,
+    }),
+  ).toBeNull();
+  expect(roads).toEqual(["window"]);
+  // In front: the window road, then the region road when it answers nothing.
+  roads.length = 0;
+  await nativeCanvasShot(frame, "agent", {
+    crop,
+    gate: () => ({ visible: true, focused: true, covered: false }),
+    capture,
+    windowOff,
+  });
+  expect(roads).toEqual(["window", "region"]);
+  // Focus left DURING the window road: the region road is gated afresh and
+  // never runs for the agent.
+  roads.length = 0;
+  let reads = 0;
+  await nativeCanvasShot(frame, "agent", {
+    crop,
+    gate: () => ({ visible: true, focused: reads++ === 0, covered: false }),
+    capture,
+    windowOff,
+  });
+  expect(roads).toEqual(["window"]);
+  // The last resort (`stale`): a hidden document still gets the window road,
+  // never the region road; a dialog over the frame still refuses.
+  roads.length = 0;
+  await nativeCanvasShot(frame, "agent", {
+    crop,
+    stale: true,
+    gate: () => ({ visible: false, focused: false, covered: false }),
+    capture,
+    windowOff,
+  });
+  expect(roads).toEqual(["window"]);
+  roads.length = 0;
+  await nativeCanvasShot(frame, "agent", {
+    crop,
+    stale: true,
+    gate: () => ({ visible: false, focused: false, covered: true }),
+    capture,
+    windowOff,
+  });
+  expect(roads).toEqual([]);
+  // A hidden document, or a dialog over the frame: neither road.
+  roads.length = 0;
+  await nativeCanvasShot(frame, "agent", {
+    crop,
+    gate: () => ({ visible: false, focused: true, covered: false }),
+    capture,
+    windowOff,
+  });
+  await nativeCanvasShot(frame, "agent", {
+    crop,
+    gate: () => ({ visible: true, focused: true, covered: true }),
+    capture,
+    windowOff,
+  });
+  expect(roads).toEqual([]);
+});
+
+test("a dialog that opened over the frame during the window still refuses it", async () => {
+  const frame = { isConnected: true } as unknown as HTMLIFrameElement;
+  const pane = { width: 500, height: 400, free() {} };
+  const capture = (async () => pane) as unknown as NonNullable<Parameters<typeof nativeCanvasShot>[2]>["capture"];
+  for (const stale of [false, true]) {
+    let reads = 0;
+    const out = await nativeCanvasShot(frame, "agent", {
+      crop: { x: 0, y: 0, w: 500, h: 400 },
+      stale,
+      gate: () => ({ visible: !stale, focused: true, covered: reads++ > 0 }),
+      capture,
+      windowOff: () => false,
+    });
+    expect(out).toBeNull();
+  }
 });

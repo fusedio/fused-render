@@ -18,12 +18,24 @@ the destination via .. or an absolute path is rejected), and non-regular members
 """
 import bz2
 import gzip
-import hashlib
 import lzma
+import hashlib
 import os
 import shutil
 import tarfile
 import tempfile
+import sys
+
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "shared"))
+try:
+    import remote_cache  # noqa: E402  (stdlib-only shared helper, see templates/shared/)
+except ModuleNotFoundError as exc:
+    # An exported app ships this file without templates/shared/ (export.py
+    # never bundles it). It has no server, so no remote cache either: keep the
+    # plain temp-dir behaviour below. Any other import failure is a real bug.
+    if exc.name != "remote_cache":
+        raise
+    remote_cache = None
 
 # Compression suffixes for a single (non-tar) compressed file, longest first so
 # ".tar.gz" is never treated as a plain ".gz" wrapper. Maps suffix -> opener.
@@ -176,12 +188,15 @@ def _extract_single(file, dest_root, readonly=False):
 
 
 def _preview_root(file):
-    """Stable per-archive temp dir, keyed on the archive's real path so repeated
-    previews of the same archive reuse one dir instead of littering temp."""
-    key = hashlib.sha1(os.path.realpath(file).encode("utf-8")).hexdigest()[:16]
-    root = os.path.join(tempfile.gettempdir(), "fused-render-tar", key)
-    os.makedirs(root, exist_ok=True)
-    return root
+    """`(dir, remote)`: a stable per-archive dir for previews — the system temp
+    dir, or the remote cache's guarded `.previews/` when the archive is a
+    bucket download (templates/shared/remote_cache.py)."""
+    if remote_cache is None:  # an exported app: see the import above
+        key = hashlib.sha1(os.path.realpath(file).encode("utf-8")).hexdigest()[:16]
+        root = os.path.join(tempfile.gettempdir(), "fused-render-tar", key)
+        os.makedirs(root, exist_ok=True)
+        return root, False
+    return remote_cache.preview_root(file, "tar")
 
 
 def _dest_root(file):
@@ -209,18 +224,19 @@ def _member(tf, entry):
 
 
 def _preview(file, entry):
+    root, remote = _preview_root(file)
     tf = _open_tar(file)
     if tf is None:
-        target = _extract_single(file, _preview_root(file), readonly=True)
-        return {"path": target, "size": os.path.getsize(target)}
+        target = _extract_single(file, root, readonly=True)
+        return {"path": target, "size": os.path.getsize(target), "remote": remote}
     with tf:
         member = _member(tf, entry)
         if member.isdir():
             return {"is_dir": True}
-        target = _extract_member(tf, member, _preview_root(file), readonly=True)
+        target = _extract_member(tf, member, root, readonly=True)
         if target is None:
             raise ValueError(f"cannot preview non-file member: {entry}")
-        return {"path": target, "size": member.size}
+        return {"path": target, "size": member.size, "remote": remote}
 
 
 def _extract(file, entry):

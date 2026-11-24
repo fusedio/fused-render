@@ -204,7 +204,30 @@ def resolve_py(py, html):
     return os.path.normpath(os.path.join(os.path.dirname(html), py)), None
 
 
-def _require_fused(x_fused: str | None) -> JSONResponse | None:
+#: Paths the D3 `X-Fused` guard does NOT apply to — guarded by something
+#: STRONGER instead. `/v1` (docs/LOCAL_MODEL_GATEWAY.md §1) is the local
+#: model gateway: its routes require `Authorization: Bearer <key>` checked
+#: against `ai/gateway_keys.is_valid`, and a bearer secret a foreign page
+#: cannot know is a better cross-origin guard than a custom header is (a blind
+#: no-cors POST cannot carry either, and a key is also real authentication,
+#: which `X-Fused` never was). The routers under these prefixes never call
+#: `_require_fused`; this table exists so the exemption is stated in ONE
+#: place beside the guard it bypasses, and so a test can pin it.
+CSRF_EXEMPT_PREFIXES: tuple[str, ...] = ("/v1/", "/v1")
+
+
+def csrf_exempt(path: str) -> bool:
+    """Is `path` under a prefix `_require_fused` does not apply to?"""
+    return any(path == p or path.startswith(p.rstrip("/") + "/")
+               for p in CSRF_EXEMPT_PREFIXES)
+
+
+def _require_fused(x_fused: str | None, path: str | None = None) -> JSONResponse | None:
+    # `path`, when a caller passes one, short-circuits for `CSRF_EXEMPT_PREFIXES`
+    # — the `/v1` gateway's bearer-key routes. Every existing caller passes
+    # only the header and is unchanged.
+    if path is not None and csrf_exempt(path):
+        return None
     # Guard for the mutating/executing POSTs. Read endpoints are already safe
     # cross-origin because the browser blocks a foreign page from reading our
     # response; but a POST can be fired blind (no-cors fetch) by any website,
@@ -246,7 +269,7 @@ def ws_origin_ok(ws) -> bool:
 async def unhandled_exception(request, exc):
     # A bare "Internal Server Error" with an empty body is undebuggable on
     # a DMG install: Finder-launched apps have no visible stderr, so the
-    # traceback used to vanish (e.g. a right-click "Open with FusedRender"
+    # traceback used to vanish (e.g. a right-click "Open with Fused Render"
     # that 500s on /render or /api/run leaves nothing to report). Put the
     # traceback in the response body (local single-user tool, D3 — the
     # only reader owns the machine) AND in the log file so a later
@@ -263,7 +286,7 @@ async def unhandled_exception(request, exc):
         f" [err_id {err_id}]" if err_id else "", tb
     )
     return _error(
-        f"fused-render internal error on {request.method} "
+        f"Fused Render internal error on {request.method} "
         f"{request.url.path}"
         + (f" (err_id {err_id})" if err_id else "")
         + f":\n\n{tb}",
@@ -295,6 +318,18 @@ async def unhandled_exception(request, exc):
 
 _LOG_SKIP_PREFIXES = ("/static/", "/template-assets/", "/template-shared/")
 
+
+def _log_path(path: str) -> str:
+    """`path` as it may be logged: the local SQL engine's file and table
+    names (`/api/sql/session/<s>/file/<name>`, `.../arrow/<table>`) are
+    content, not routing, and never reach the log (SPEC §55)."""
+    if path.startswith("/api/sql/session/"):
+        for marker in ("/file/", "/arrow/"):
+            head, sep, _ = path.partition(marker)
+            if sep:
+                return head + marker + "…"
+    return path
+
 # The one exemption from no-cache below: Vite's build output under
 # shell-dist/assets/ is content-hashed (`[name]-[hash].js|css|png`, the
 # rollup default vite.config.js keeps; base `/static/shell-dist/`), so a
@@ -310,10 +345,11 @@ _LOG_SKIP_PREFIXES = ("/static/", "/template-assets/", "/template-shared/")
 _IMMUTABLE_PREFIX = "/static/shell-dist/assets/"
 _VERSIONED_PREFIXES = ("/static/runtime.js", "/template-assets/", "/template-shared/")
 # Marketplace asset bytes (routers/marketplace.py) are cached per catalog
-# commit server-side and answered with their own `max-age=3600`, which this
+# commit server-side and answered with their own `max-age=3600` (and the saved
+# canvas, `no-store`, which the browser must never keep), which this
 # middleware keeps instead of overwriting with no-cache — the browse grid
 # re-requests every preview on each visit otherwise.
-_OWN_CACHE_PREFIX = "/api/marketplace/asset/"
+_OWN_CACHE_PREFIX = ("/api/marketplace/asset/", "/api/canvases/saved")
 
 def _net_begin(net, scope, path, headers):
     # Bookkeeping must never fail a request.
@@ -389,7 +425,7 @@ class NoCacheAndLog:
                 dur = (time.monotonic() - start) * 1000
                 st["server_ms"] = dur
                 if logged:
-                    logger.info("%s %s -> %s (%.0f ms)", method, path, status, dur)
+                    logger.info("%s %s -> %s (%.0f ms)", method, _log_path(path), status, dur)
                 headers = MutableHeaders(scope=message)
                 if call is not None:
                     shell_calls.finish(

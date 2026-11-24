@@ -94,7 +94,15 @@ function mount(over: Partial<Parameters<typeof ComposerCard>[0]> = {}) {
     });
   const press = (
     key: string,
-    mods: { shiftKey?: boolean; metaKey?: boolean; ctrlKey?: boolean } = {},
+    mods: {
+      shiftKey?: boolean;
+      metaKey?: boolean;
+      ctrlKey?: boolean;
+      keyCode?: number;
+      altKey?: boolean;
+      nativeEvent?: { isComposing: boolean };
+      currentTarget?: { selectionStart: number; selectionEnd: number };
+    } = {},
   ) => {
     let prevented = false;
     act(() => {
@@ -419,17 +427,9 @@ test("A BLOCK NEVER TAKES STOP: the button still ends a live turn (T:17193-17195
   expect(idle.sent).toEqual([]);
 });
 
-test("queued follow-ups are named under the box, singular and plural", () => {
+test("no follow-up count line under the box", () => {
   const hint = (c: ReturnType<typeof mount>) =>
-    c.root
-      .findAllByProps({ className: "c-queued" })
-      .map((n) => n.props.children);
-  expect(hint(mount({ queued: ["a"] }))).toEqual([
-    "1 follow-up is queued for this turn.",
-  ]);
-  expect(hint(mount({ queued: ["a", "b"] }))).toEqual([
-    "2 follow-ups are queued for this turn.",
-  ]);
+    c.root.findAllByProps({ className: "c-queued" }).map((n) => n.props.children);
   expect(hint(mount())).toEqual([]);
 });
 
@@ -623,12 +623,18 @@ test("the outbox hint names the parked lines under the box, and not-sent rows ap
   expect(pulled).toBe(1);
 });
 
-test("CTRL+Enter while LIVE is send-now; Cmd+Enter is never (it is ✓ Done's chord)", () => {
+test("CTRL+Enter while LIVE holds the line until done; Cmd+Enter is never (it is ✓ Done's chord)", () => {
   const now: string[] = [];
-  const live = mount({ status: "running", onSendNow: (t: string) => now.push(t) });
-  live.type("stop and do this");
+  const held: string[] = [];
+  const live = mount({
+    status: "running",
+    onSendNow: (t: string) => now.push(t),
+    onSendHeld: (t: string) => held.push(t),
+  });
+  live.type("after this turn");
   expect(live.press("Enter", { ctrlKey: true })).toBe(true);
-  expect(now).toEqual(["stop and do this"]);
+  expect(held).toEqual(["after this turn"]);
+  expect(now).toEqual([]);
   expect(live.followups).toEqual([]);
   expect(live.box().props.value).toBe("");
   // Plain Enter while live is still the follow-up road…
@@ -640,16 +646,31 @@ test("CTRL+Enter while LIVE is send-now; Cmd+Enter is never (it is ✓ Done's ch
   live.type("cmd line");
   live.press("Enter", { metaKey: true });
   expect(live.followups).toEqual(["and then this", "cmd line"]);
-  expect(now).toEqual(["stop and do this"]);
-  // Idle: Ctrl+Enter is the ordinary send, `onSendNow` untouched.
-  const idle = mount({ onSendNow: (t: string) => now.push(t) });
+  expect(held).toEqual(["after this turn"]);
+  // A STOPPING run is live too.
+  const stopping = mount({ status: "stopping", onSendHeld: (t: string) => held.push(t) });
+  stopping.type("wait for it");
+  stopping.press("Enter", { ctrlKey: true });
+  expect(held).toEqual(["after this turn", "wait for it"]);
+  // Idle: Ctrl+Enter is the ordinary send, the seat untouched.
+  const idle = mount({ onSendHeld: (t: string) => held.push(t) });
   idle.type("go");
   idle.press("Enter", { ctrlKey: true });
   expect(idle.sent.map((s) => s.text)).toEqual(["go"]);
-  expect(now).toEqual(["stop and do this"]);
+  expect(held).toHaveLength(2);
 });
 
-test("Ctrl+Enter while live with NO send-now seat falls back to the follow-up", () => {
+test("Enter during an IME composition commits the candidate and sends nothing", () => {
+  const c = mount();
+  c.type("にほん");
+  expect(c.press("Enter", { nativeEvent: { isComposing: true } })).toBe(false);
+  expect(c.sent).toEqual([]);
+  expect(c.press("Enter", { keyCode: 229 } as never)).toBe(false);
+  expect(c.sent).toEqual([]);
+  expect(c.press("Enter")).toBe(true);
+});
+
+test("Ctrl+Enter while live with NO hold seat falls back to the follow-up", () => {
   const c = mount({ status: "running" });
   c.type("x");
   c.press("Enter", { ctrlKey: true });
@@ -2040,6 +2061,178 @@ test("a folded chat card says its model · effort top-right; an open one hides t
     .props.className)).toContain("is-hidden");
 });
 
+test("a rail card's composer types folded, opens on the model · effort label, and stays open until the card shows another chat (Akshil, 2026-11-07)", () => {
+  const m = mount({ smallCard: true, smallCardShown: true, controls: { ...controls, model: "opus", effort: "max" } });
+  const form = () => m.root.findByType("form");
+  const cls = () => String(form().props.className);
+  const meta = () => m.root.findAll((n) => n.props?.["data-testid"] === "composer-meta")[0];
+  const outside = {
+    relatedTarget: null,
+    currentTarget: { contains: () => false, ownerDocument: { querySelector: () => null } },
+  };
+  expect(cls()).toContain("is-idle");
+  // Focus and typing never open it here.
+  act(() => form().props.onFocus({ target: { closest: () => null } }));
+  m.type("hello");
+  expect(cls()).toContain("is-idle");
+  // The label is a button, and the one press that opens the card.
+  expect(meta().type).toBe("button");
+  expect(meta().props.tabIndex).toBe(0);
+  act(() => meta().props.onClick());
+  expect(cls()).not.toContain("is-idle");
+  expect(meta().props.tabIndex).toBe(-1);
+  // Focus leaving the form does NOT fold it.
+  act(() => form().props.onBlur(outside));
+  expect(cls()).not.toContain("is-idle");
+  // The card showing another chat (or closing) folds it back.
+  m.rerender({ smallCard: true, smallCardShown: false, controls: { ...controls, model: "opus", effort: "max" } });
+  expect(cls()).toContain("is-idle");
+  m.rerender({ smallCard: true, smallCardShown: true, controls: { ...controls, model: "opus", effort: "max" } });
+  expect(cls()).toContain("is-idle");
+});
+
+test("a rail card with no model to name has no label door, so focus opens it as anywhere else", () => {
+  const m = mount({ smallCard: true, smallCardShown: true, controls: { ...controls, model: "", ready: true } });
+  const form = () => m.root.findByType("form");
+  expect(String(form().props.className)).toContain("is-idle");
+  act(() => form().props.onFocus({ target: { closest: () => null } }));
+  expect(String(form().props.className)).not.toContain("is-idle");
+});
+
+// ---- the rail card's overflow door, against a measured box -----------------
+
+/** A rail-card composer whose textarea is a stub with box metrics the test
+ *  moves (`createNodeMock`), and a ResizeObserver the test fires. */
+function mountMeasured(over: Partial<Parameters<typeof ComposerCard>[0]> = {}) {
+  const node = {
+    focus: () => {},
+    style: {} as Record<string, string>,
+    clientWidth: 200,
+    clientHeight: 32,
+    scrollHeight: 32,
+  };
+  const observers: Array<() => void> = [];
+  const G = globalThis as Record<string, unknown>;
+  const realCS = G.getComputedStyle;
+  const realRO = G.ResizeObserver;
+  G.getComputedStyle = () => ({ paddingTop: "0px", paddingBottom: "0px", lineHeight: "16px", fontSize: "14px" });
+  G.ResizeObserver = class {
+    cb: () => void;
+    constructor(cb: () => void) {
+      this.cb = cb;
+    }
+    observe() {
+      observers.push(this.cb);
+    }
+    disconnect() {
+      const i = observers.indexOf(this.cb);
+      if (i >= 0) observers.splice(i, 1);
+    }
+  };
+  const sent: string[] = [];
+  const props = (extra: Partial<Parameters<typeof ComposerCard>[0]> = {}) => (
+    <ComposerCard
+      variant="chat"
+      file="/p/app.py"
+      sessionId=""
+      controls={{ ...controls, model: "opus", effort: "max" }}
+      status="idle"
+      back="/explorer/view/p"
+      onSend={(text: string) => sent.push(text)}
+      onFollowUp={() => {}}
+      onStop={() => {}}
+      smallCard
+      smallCardShown
+      {...over}
+      {...extra}
+    />
+  );
+  let renderer!: ReactTestRenderer;
+  act(() => {
+    renderer = create(props(), { createNodeMock: (el) => (el.type === "textarea" ? node : null) });
+  });
+  mounted.push(renderer);
+  const form = () => renderer.root.findByType("form");
+  return {
+    node,
+    sent,
+    idle: () => String(form().props.className).includes("is-idle"),
+    focusIn: () => act(() => form().props.onFocus({ target: { closest: () => null } })),
+    leave: () =>
+      act(() =>
+        form().props.onBlur({
+          relatedTarget: null,
+          currentTarget: { contains: () => false, ownerDocument: { querySelector: () => null } },
+        }),
+      ),
+    type: (value: string, scrollHeight: number) => {
+      node.scrollHeight = scrollHeight;
+      act(() => renderer.root.findByType("textarea").props.onChange({ currentTarget: { value } }));
+    },
+    resize: (scrollHeight: number) => {
+      node.scrollHeight = scrollHeight;
+      act(() => observers.slice().forEach((cb) => cb()));
+    },
+    submit: () => act(() => form().props.onSubmit({ preventDefault() {} })),
+    rerender: (extra: Partial<Parameters<typeof ComposerCard>[0]>) => act(() => renderer.update(props(extra))),
+    restore: () => {
+      if (realCS === undefined) delete G.getComputedStyle;
+      else G.getComputedStyle = realCS;
+      if (realRO === undefined) delete G.ResizeObserver;
+      else G.ResizeObserver = realRO;
+    },
+  };
+}
+
+test("a rail card opens on a draft past the line only with the reader in it — a hover keeps it folded (Akshil, 2026-11-07)", () => {
+  const c = mountMeasured();
+  try {
+    // Words past the line with nobody in the box (a hover's seeded draft).
+    c.type("a long draft", 60);
+    expect(c.idle()).toBe(true);
+    // The press that puts the caret in the box opens it.
+    c.focusIn();
+    expect(c.idle()).toBe(false);
+    // …and it stays open: a leave, then a send, fold nothing.
+    c.leave();
+    expect(c.idle()).toBe(false);
+    c.submit();
+    expect(c.sent).toEqual(["a long draft"]);
+    expect(c.idle()).toBe(false);
+  } finally {
+    c.restore();
+  }
+});
+
+test("a rail card with the reader in it opens when a narrower card rewraps the line; a card not showing the chat never does", () => {
+  const c = mountMeasured();
+  try {
+    c.focusIn();
+    c.type("fits", 32);
+    expect(c.idle()).toBe(true);
+    c.resize(60);
+    expect(c.idle()).toBe(false);
+  } finally {
+    c.restore();
+  }
+  const h = mountMeasured({ smallCardShown: false });
+  try {
+    h.focusIn();
+    h.type("a long draft", 60);
+    h.resize(60);
+    expect(h.idle()).toBe(true);
+    // A box with no width yet is no reading either.
+    h.node.clientWidth = 0;
+    h.rerender({ smallCardShown: true });
+    expect(h.idle()).toBe(true);
+    h.node.clientWidth = 200;
+    h.resize(60);
+    expect(h.idle()).toBe(false);
+  } finally {
+    h.restore();
+  }
+});
+
 // ---- ↑/↓ prompt history, Claude Code's -------------------------------------
 
 test("↑ recalls the newest prompt, ↑ again the one before; ↓ walks back and returns the draft", () => {
@@ -2171,4 +2364,87 @@ test("a recalled slash command keeps the menu shut, so ↑/↓ stay history's (B
   // Typed by hand, the same line is a query and the menu opens as ever.
   c.type("/compact");
   expect(c.box().props["aria-expanded"]).toBe(true);
+});
+
+test("CTRL+X while live with text is send-now; a selection, IME, Alt/Shift/Cmd or no text leave it alone", () => {
+  const now: string[] = [];
+  const c = mount({ status: "running", onSendNow: (t: string) => now.push(t) });
+  c.type("stop and do this");
+  expect(c.press("x", { ctrlKey: true })).toBe(true);
+  expect(now).toEqual(["stop and do this"]);
+  expect(c.box().props.value).toBe("");
+  // A selection: Ctrl+X still cuts (Win/Linux), nothing is sent.
+  c.type("cut me");
+  expect(
+    c.press("x", { ctrlKey: true, currentTarget: { selectionStart: 0, selectionEnd: 3 } }),
+  ).toBe(false);
+  // A caret with no selection is not a selection.
+  c.type("caret only");
+  expect(
+    c.press("X", { ctrlKey: true, currentTarget: { selectionStart: 2, selectionEnd: 2 } }),
+  ).toBe(true);
+  expect(now).toEqual(["stop and do this", "caret only"]);
+  // IME composition, other modifiers.
+  c.type("more");
+  expect(c.press("x", { ctrlKey: true, nativeEvent: { isComposing: true } })).toBe(false);
+  expect(c.press("x", { ctrlKey: true, shiftKey: true })).toBe(false);
+  expect(c.press("x", { ctrlKey: true, altKey: true })).toBe(false);
+  expect(c.press("x", { ctrlKey: true, metaKey: true })).toBe(false);
+  expect(now.length).toBe(2);
+  // No text: Ctrl+X is the browser's.
+  c.type("  ");
+  expect(c.press("x", { ctrlKey: true })).toBe(false);
+  expect(now.length).toBe(2);
+});
+
+test("CTRL+X while idle is a normal send, and Ctrl+X with words while live sends now", () => {
+  const now: string[] = [];
+  const idle = mount({ onSendNow: (t: string) => now.push(t) });
+  idle.type("go");
+  expect(idle.press("x", { ctrlKey: true })).toBe(true);
+  expect(idle.sent.map((x) => x.text)).toEqual(["go"]);
+  expect(now).toEqual([]);
+  const live = mount({ status: "running", onSendNow: (t: string) => now.push(t) });
+  live.type("again");
+  live.press("x", { ctrlKey: true });
+  expect(now).toEqual(["again"]);
+});
+
+test("there is no Ctrl+X hint line under the box; the send button still names the chord", () => {
+  const hint = (c: ReturnType<typeof mount>) =>
+    c.root.findAll((n) => typeof n.props.className === "string" && n.props.className.includes("c-sendnow-hint"));
+  const title = (c: ReturnType<typeof mount>) => c.root.findByProps({ className: "c-send" }).props.title;
+  const live = mount({ status: "running", onSendNow: () => {} });
+  expect(title(live)).toBe("Stop this turn");
+  live.type("do this first");
+  expect(hint(live)).toHaveLength(0);
+  expect(title(live)).toBe("Send now (Ctrl+X) · Queue until done (Ctrl+Enter)");
+  const idle = mount({ onSendNow: () => {} });
+  idle.type("go");
+  expect(hint(idle)).toHaveLength(0);
+  expect(title(idle)).toBe("Send");
+});
+
+test("Ctrl+X on an empty box sends the queued lines now, only while a run is live and one is queued", () => {
+  let calls = 0;
+  const live = mount({ status: "running", hasQueued: true, onSendQueuedNow: () => (calls += 1) });
+  expect(live.press("x", { ctrlKey: true })).toBe(true);
+  expect(calls).toBe(1);
+  const none = mount({ status: "running", hasQueued: false, onSendQueuedNow: () => (calls += 1) });
+  expect(none.press("x", { ctrlKey: true })).toBe(false);
+  const idle = mount({ hasQueued: true, onSendQueuedNow: () => (calls += 1) });
+  expect(idle.press("x", { ctrlKey: true })).toBe(false);
+  expect(calls).toBe(1);
+});
+
+test("pick mode shows the Start icon, not the Stop square, while a turn runs", () => {
+  const send = (c: ReturnType<typeof mount>) =>
+    c.root.findAllByType("button").find((b) => b.props.className === "c-send")!;
+  const hasStopSquare = (c: ReturnType<typeof mount>) => send(c).findAllByType("rect").length > 0;
+  const live = mount({ status: "running" });
+  expect(send(live).props["aria-label"]).toBe("Stop");
+  expect(hasStopSquare(live)).toBe(true);
+  const picking = mount({ status: "running", pickSubmit: { canStart: true, onStart() {} } });
+  expect(send(picking).props["aria-label"]).toBe("Start breakout");
+  expect(hasStopSquare(picking)).toBe(false);
 });

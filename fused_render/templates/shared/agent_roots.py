@@ -1,16 +1,19 @@
 """Where each agent backend keeps its transcripts and its live-session registry,
 and how a session id is traced back to the backend that owns it.
 
-Four backends drive Tasks and Sessions: Claude Code (`claude`), GitHub
-Copilot CLI (`copilot`), OpenAI Codex CLI (`codex`) and Google Gemini CLI
-(`gemini`). Claude Code writes its own transcript to
+Six backends drive Tasks and Sessions: Claude Code (`claude`), GitHub
+Copilot CLI (`copilot`), OpenAI Codex CLI (`codex`), Google Gemini CLI
+(`gemini`), OpenCode (`opencode`) and Cursor CLI (`cursor`). Claude Code writes its own transcript to
 `~/.claude/projects/<munge(cwd)>/<sid>.jsonl` and its own live registry to
-`~/.claude/sessions/<pid>.json`. The other three write nothing fused can
+`~/.claude/sessions/<pid>.json`. The other five write nothing fused can
 read in place (Copilot's `events.jsonl` holds finals only; Codex's rollout
 files under `CODEX_HOME` and Gemini's chat files under `~/.gemini/tmp` are
-their own resume formats), so fused's hosts (`claude_agent/copilot_host.py`,
-`claude_agent/codex_host.py`, `claude_agent/gemini_host.py`) write the SAME
-two shapes under a root fused owns, one per backend:
+their own resume formats; OpenCode keeps one SQLite store; Cursor keeps its
+chats as blob stores under `~/.cursor/chats`), so fused's hosts
+(`claude_agent/copilot_host.py`, `claude_agent/codex_host.py`,
+`claude_agent/gemini_host.py`, `claude_agent/opencode_host.py`,
+`claude_agent/cursor_host.py`) write the
+SAME two shapes under a root fused owns, one per backend:
 
     <home>/copilot/projects/<munge(cwd)>/<sid>.jsonl
     <home>/copilot/sessions/<pid>.json
@@ -18,6 +21,10 @@ two shapes under a root fused owns, one per backend:
     <home>/codex/sessions/<pid>.json
     <home>/gemini/projects/<munge(cwd)>/<sid>.jsonl
     <home>/gemini/sessions/<pid>.json
+    <home>/opencode/projects/<munge(cwd)>/<sid>.jsonl
+    <home>/opencode/sessions/<pid>.json
+    <home>/cursor/projects/<munge(cwd)>/<sid>.jsonl
+    <home>/cursor/sessions/<pid>.json
 
 Same bucket layout, same munge rule, same row fields the tasks readers parse
 — so every reader that used to open ONE projects dir opens the list this
@@ -25,7 +32,9 @@ module returns and otherwise does not change. The root a transcript sits
 under is the authority on which backend owns the session: every kind of id
 is uuid-shaped (fused mints Claude's with --session-id; Copilot and Gemini
 mint their own in ACP's session/new; Codex mints its own uuid7 thread id in
-thread/start), so nothing about the id itself says which one it is.
+thread/start; OpenCode mints a `ses_<id>` in session/new; Cursor mints a
+uuid4 in session/new), so nothing about
+the id itself says which one it is.
 
 Stdlib only, never imports `fused_render` (this file is loaded BY PATH from
 `claude_agent/agent.py`, the two session hosts and the test suite, in
@@ -42,7 +51,7 @@ import importlib.util
 import os
 import re
 
-BACKENDS = ("claude", "copilot", "codex", "gemini")
+BACKENDS = ("claude", "copilot", "codex", "gemini", "opencode", "cursor")
 DEFAULT_BACKEND = "claude"
 
 
@@ -91,6 +100,26 @@ def gemini_dir() -> str:
     return os.path.join(home, "gemini")
 
 
+def opencode_dir() -> str:
+    """fused's own root for OpenCode sessions — the fourth twin of
+    `copilot_dir()`, under the same UNNESTED home. NOT OpenCode's own config
+    dir (`~/.config/opencode`, `OPENCODE_CONFIG_DIR` moves it) nor its SQLite
+    store: fused never writes either and never reads them, even to erase a
+    session (docs/OPENCODE_BACKEND.md D15)."""
+    home = os.environ.get("FUSED_RENDER_HOME") or os.path.expanduser("~/.fused-render")
+    return os.path.join(home, "opencode")
+
+
+def cursor_dir() -> str:
+    """fused's own root for Cursor CLI sessions — the fifth twin of
+    `copilot_dir()`, under the same UNNESTED home. NOT Cursor's own
+    `~/.cursor` (its credential, `cli-config.json` and chat stores live
+    there): fused never writes it and never reads it, even to erase a
+    session (docs/CURSOR_BACKEND.md D15)."""
+    home = os.environ.get("FUSED_RENDER_HOME") or os.path.expanduser("~/.fused-render")
+    return os.path.join(home, "cursor")
+
+
 def base_dir(backend: str) -> str:
     if backend == "copilot":
         return copilot_dir()
@@ -98,6 +127,10 @@ def base_dir(backend: str) -> str:
         return codex_dir()
     if backend == "gemini":
         return gemini_dir()
+    if backend == "opencode":
+        return opencode_dir()
+    if backend == "cursor":
+        return cursor_dir()
     return claude_dir()
 
 
@@ -110,7 +143,7 @@ def sessions_dir(backend: str) -> str:
 
 
 def transcript_roots() -> list[tuple[str, str]]:
-    """`[(backend, projects_dir), ...]` in BACKENDS order. Always all four — a
+    """`[(backend, projects_dir), ...]` in BACKENDS order. Always all six — a
     disabled backend's old transcripts still belong in the task list (read-
     only); the prefs gate is at the spawn sites, not here."""
     return [(b, projects_dir(b)) for b in BACKENDS]

@@ -35,7 +35,7 @@ Tool items (each `item/started` → maybe an approval → `item/completed`):
                     `readOnly` sandbox (verified) and a policy other than
                     `never` — `workspaceWrite` applies it unasked, which is
                     what fused's acceptEdits is
-  --mcp             one `mcpToolCall` (fused_approvals/app_state), no approval
+  --mcp             one `mcpToolCall` (fused_render/app_state), no approval
   --web             one `webSearch`, no approval
 An approval answered `accept`/`acceptForSession` completes the item
 `completed`; `decline` completes it `declined`; `cancel` completes it
@@ -457,7 +457,7 @@ def _turn(turn_id, params):
                 _edit(turn_id, policy, sandbox)
             if WITH_MCP:
                 call = {"type": "mcpToolCall", "id": "mcp-" + turn_id[-6:],
-                        "server": "fused_approvals", "tool": "app_state",
+                        "server": "fused_render", "tool": "app_state",
                         "arguments": {"reason": "look"}, "status": "inProgress",
                         "result": None, "error": None}
                 _item("item/started", turn_id, call)

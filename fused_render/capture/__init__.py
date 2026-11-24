@@ -35,6 +35,7 @@ from __future__ import annotations
 
 import atexit
 import logging
+import math
 import os
 import platform
 import sys
@@ -273,6 +274,16 @@ _sessions: dict[str, _Session] = {}
 # strictly better than a hot mic or a wedged quit.
 _native_lock = threading.Lock()
 STOP_LOCK_WAIT_S = 5.0
+#: The window still's whole server-side budget (D1472), lock wait included:
+#: under the page's own abort (`NATIVE_SHOT_ABORT_MS`, 4 s, native-capture.ts)
+#: so the lock is free again BEFORE the page falls back to the region still,
+#: which waits on the same lock. A window road that cannot answer inside it
+#: answers "no" and the region road runs, rather than both timing out.
+WINDOW_BUDGET_S = 3.0
+#: How long the window still waits for the native lock: a recording start
+#: or a region still behind a Screen Recording prompt holds it for up to
+#: `WAIT_S`, and the window road is the one that should give way.
+WINDOW_LOCK_WAIT_S = 0.5
 
 
 class _native:
@@ -410,6 +421,10 @@ def _rect(value):
                    for n in value)):
         raise CaptureError("'rect' must be [x, y, width, height] in points")
     x, y, w, h = (float(n) for n in value)
+    # NaN / Infinity are JSON-legal to Python's parser and pass the type
+    # check, then fail deep in the backend as a 500 (D1472 review).
+    if not all(math.isfinite(n) for n in (x, y, w, h)):
+        raise CaptureError("'rect' must be finite numbers")
     if w <= 0 or h <= 0:
         raise CaptureError("'rect' width and height must be positive")
     return (x, y, w, h)
@@ -1021,6 +1036,62 @@ def shot_region(body: dict) -> bytes:
         if display is not None:
             spec["display"] = display
         screenshot(spec)
+        with open(out, "rb") as fh:
+            return fh.read()
+    finally:
+        try:
+            os.remove(out)
+        except OSError:
+            pass
+
+
+def shot_window(body: dict) -> bytes:
+    """The pixels of a browser-measured screen rect, read off THE WINDOW the
+    page lives in rather than off the screen (D1472) — `{rect, window, dpr}`,
+    PNG bytes back, the same contract as `shot_region` with one more box:
+    `window` is the page's own window frame as the browser reports it
+    (`screenX/Y`, `outerWidth/Height`, screen points), which is how the
+    backend finds the window without an id the page cannot know.
+
+    What it buys over `shot_region`: the window is drawn from its own backing
+    store, so it may sit behind another app, on another Space or across two
+    displays and the picture is still the page. Everything else is
+    unchanged — the grant, the units, the refusal shape. A backend with no
+    `shot_window` hook (Linux, a Mac below 14) is `Unsupported` (409): the
+    page remembers and takes the region still instead. A rect not inside
+    the window is a 400, as a rect off its display is for `shot_region`.
+    """
+    import tempfile
+
+    rect = _rect(body.get("rect"))
+    if rect is None:
+        raise CaptureError("'rect' is required")
+    try:
+        window = _rect(body.get("window"))
+    except CaptureError as e:
+        raise CaptureError(str(e).replace("'rect'", "'window'")) from None
+    if window is None:
+        raise CaptureError("'window' is required")
+    # `dpr` rides along for symmetry with `shot_region` and is not read: the
+    # window still's scale comes from the image itself (`_darwin.crop_box`).
+    # `title` — the page's `document.title` — tells two windows at one box
+    # apart (`_darwin.pick_window`); optional, a page may have none.
+    title = body.get("title")
+    title = title.strip() if isinstance(title, str) else ""
+    backend = _backend()
+    hook = getattr(backend, "shot_window", None)
+    if hook is None:
+        raise Unsupported("this platform has no window still — the region still is the one to take")
+    # One deadline for the whole road (`WINDOW_BUDGET_S`): the backend bounds
+    # every wait by it, and the lock is waited for briefly and strictly — a
+    # busy recorder is a 400, the page takes the region still.
+    deadline = time.monotonic() + WINDOW_BUDGET_S
+    fd, out = tempfile.mkstemp(prefix="fused-shot-", suffix=".png")
+    os.close(fd)
+    try:
+        with _native(WINDOW_LOCK_WAIT_S, strict=True):
+            hook(out, {"path": out, "rect": list(rect), "window": list(window),
+                       "title": title, "deadline": deadline})
         with open(out, "rb") as fh:
             return fh.read()
     finally:

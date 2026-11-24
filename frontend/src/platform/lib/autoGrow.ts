@@ -6,6 +6,8 @@
 // height bug the comment below documents, which is the argument for one copy.
 import { useCallback, useEffect, useLayoutEffect, useRef } from "react";
 
+import { CHAT_ZOOM_EVENT } from "@platform/lib/chat-zoom";
+
 /** How many lines a composer grows to before it becomes a scroller. Ten is
  *  about as far as a prompt can push Run (or Build) and the result down before
  *  they leave the fold, and text longer than that is being pasted, not read
@@ -104,6 +106,13 @@ export function useAutoGrow(value: string, maxLines = COMPOSER_MAX_LINES) {
     });
     observer.observe(box);
     return () => observer.disconnect();
+  }, [grow]);
+  // The chat text zoom changes the box's line height without touching its
+  // width, so the observer above never hears it: re-fit on the zoom's event.
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    window.addEventListener(CHAT_ZOOM_EVENT, grow);
+    return () => window.removeEventListener(CHAT_ZOOM_EVENT, grow);
   }, [grow]);
   return { ref, grow };
 }

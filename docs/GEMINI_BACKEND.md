@@ -151,7 +151,7 @@ agent.py:      _HOST_FILES["gemini"] = gemini_host.py; _SELF_MINTED_ID_BACKENDS 
   (`discoverMemoryPaths` → `getEnvironmentMemoryPaths(workspaceContext.
   getDirectories())`, verified in the source; gated on `isTrustedFolder()`,
   which `--skip-trust` makes true). The pane tool is named
-  `mcp_fused_approvals_<tool>` in that file (Claude's `mcp__<server>__<tool>`
+  `mcp_fused_render_<tool>` in that file (Claude's `mcp__<server>__<tool>`
   with single underscores): `DiscoveredMCPTool` declares an MCP tool to the
   model as `generateValidName("<server>_<tool>")`, which prefixes `mcp_`
   (verified in the source). The display title is a different string: `<tool>
@@ -169,7 +169,11 @@ agent.py:      _HOST_FILES["gemini"] = gemini_host.py; _SELF_MINTED_ID_BACKENDS 
   and every `extra_read_dirs` entry go on the spawn line as
   `--include-directories` (directories that exist only); a message naming a
   directory the host was not spawned with is a **respawn** (`_send` →
-  `{respawn: True}`), as for Copilot. fused CLI → `_fused_cli_dir()` first on
+  `{respawn: True}`), as for Copilot. The reference canvases of a target in a
+  live canvas clone (`<env>/{team,public}`, the ones on disk, never
+  `<env>/user`; DECISIONS D1478) are included the same way, computed in `_gemini_argv` and never in
+  `extra_read_dirs`, so they cause no respawn; a workspace directory is
+  writable, so read-only rests on the prompt. fused CLI → `_fused_cli_dir()` first on
   the spawn's PATH; no allow-list flag exists, so the prompt note's
   "pre-approved" clause is dropped (`_NO_PREAPPROVE_BACKENDS`) — under Ask mode
   a `fused` command raises a card like any other. No terminal mirror.
@@ -263,7 +267,7 @@ agent.py:      _HOST_FILES["gemini"] = gemini_host.py; _SELF_MINTED_ID_BACKENDS 
   `locations`), so the title — the tool's own description of the call, a
   shell command's command line — is the command, and the path comes from
   `locations` or the `diff` content entry. An MCP tool is titled `<tool>
-  (<server> MCP Server)`: fused's own becomes `mcp__fused_approvals__<tool>`,
+  (<server> MCP Server)`: fused's own becomes `mcp__fused_render__<tool>`,
   another server's `<server>-<tool>`. Every input carries `_acp: {kind,
   title}`, which the frontend already strips.
 - **D15** erase removes the fused transcript + Gemini's own chat file(s):

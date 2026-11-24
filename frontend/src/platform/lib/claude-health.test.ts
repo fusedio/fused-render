@@ -15,12 +15,13 @@ import {
   CODEX_BIN_ENV,
   COPILOT_BIN_ENV,
   GEMINI_BIN_ENV,
+  OPENCODE_BIN_ENV,
   agentAccountLine,
   agentIssues,
   claudeIssues,
   issueHelpUrl,
 } from "./claude-health";
-import { CLAUDE_INSTALL_COMMAND, CODEX_INSTALL_COMMAND, GEMINI_INSTALL_COMMAND } from "./trouble";
+import { CLAUDE_INSTALL_COMMAND, CODEX_INSTALL_COMMAND, GEMINI_INSTALL_COMMAND, OPENCODE_INSTALL_COMMAND } from "./trouble";
 import type { ClaudeHealth } from "./api";
 
 // A machine where everything is fine. Each test breaks exactly one thing, so
@@ -343,6 +344,56 @@ test("gemini: the account line names the method in Gemini's words", () => {
   expect(line({ account: { method: "api_key", email: null, org: null, plan: null } })).toBe("Signed in with a Gemini API key");
   expect(line({ account: { method: "vertex", email: null, org: null, plan: null } })).toBe("Signed in through Vertex AI");
   expect(line({ account: { method: "gateway", email: null, org: null, plan: null } })).toBe("Signed in through an AI API gateway");
+  expect(line({ account: null })).toBe("Signed in");
+  expect(line({ signed_in: false })).toBeNull();
+});
+
+
+// -- OpenCode (docs/OPENCODE_BACKEND.md D10) -------------------------------------
+
+function opencodeHealthy(over: Partial<ClaudeHealth> = {}): ClaudeHealth {
+  return healthy({
+    path: "/Users/x/.opencode/bin/opencode",
+    version: "1.19.5",
+    min_version: "1.19.0",
+    install_command: OPENCODE_INSTALL_COMMAND,
+    account: { method: "providers", email: null, org: null, plan: null },
+    ...over,
+  });
+}
+
+test("opencode: a healthy machine produces no issues", () => {
+  expect(agentIssues(opencodeHealthy(), "opencode")).toEqual([]);
+});
+
+test("opencode: a missing CLI names OpenCode and offers npm, and a stale override names its env var", () => {
+  const [issue] = agentIssues(opencodeHealthy({ found: false, path: null, version: null, signed_in: false }), "opencode");
+  expect(issue.id).toBe("missing");
+  expect(issue.title).toBe("The app can't find OpenCode");
+  expect(issue.command).toBe(OPENCODE_INSTALL_COMMAND);
+  expect(issue.action).toBeUndefined();
+  const [override] = agentIssues(opencodeHealthy({ found: false, source: "override" }), "opencode");
+  expect(override.id).toBe("unusable-override");
+  expect(override.title).toContain(OPENCODE_BIN_ENV);
+  expect(OPENCODE_BIN_ENV).toBe("FUSED_RENDER_OPENCODE_BIN");
+  expect(override.title).not.toContain(GEMINI_BIN_ENV);
+});
+
+test("opencode: signed out says Sign in opens a terminal, never `claude doctor`", () => {
+  const issues = agentIssues(opencodeHealthy({ signed_in: false, account: null }), "opencode");
+  expect(issues.map((i) => i.id)).toEqual(["signed-out"]);
+  expect(issues[0].detail).toContain("Sign in opens a terminal");
+  expect(issues[0].detail).toContain("opencode auth login");
+  expect(issues[0].action?.kind).toBe("login");
+  const [broken] = agentIssues(opencodeHealthy({ broken: true }), "opencode");
+  expect(broken.id).toBe("broken");
+  expect(broken.action).toBeUndefined();
+});
+
+test("opencode: the account line names the method in OpenCode's words", () => {
+  const line = (over: Partial<ClaudeHealth>) => agentAccountLine(opencodeHealthy(over), "opencode", () => "CLAUDE LINE");
+  expect(line({})).toBe("OpenCode providers");
+  expect(line({ account: { method: "local", email: null, org: null, plan: null } })).toBe("Local models (no account needed)");
   expect(line({ account: null })).toBe("Signed in");
   expect(line({ signed_in: false })).toBeNull();
 });
