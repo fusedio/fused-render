@@ -9,9 +9,21 @@
 // computer knows a phone is trying and failing.
 import { useEffect, useState } from "react";
 import qrcode from "qrcode-generator";
-import { getLanDevices, getLanPairToken, getPrefs, putLanEnabled, revokeAllLanDevices, revokeLanDevice, type LanDevice, type LanWarning } from "@platform/lib/api";
+import {
+  getLanDevices,
+  getLanPairToken,
+  getPrefs,
+  putLanEnabled,
+  putLanRemote,
+  revokeAllLanDevices,
+  revokeLanDevice,
+  setLanDeviceRemote,
+  type LanDevice,
+  type LanWarning,
+} from "@platform/lib/api";
 import { ErrorBanner } from "@platform/ui/ErrorBanner";
 import { Button } from "@platform/shadcn/ui/button";
+import { Switch } from "@platform/shadcn/ui/switch";
 import { RowSwitch, SettingRow, type PrefControlProps } from "./SettingRow";
 
 /** How long a code may sit on screen with no pairing before the checklist
@@ -96,6 +108,17 @@ export function LanControl({ prefs, onChange }: PrefControlProps) {
     }
   };
 
+  const setAway = async (id: string, remote: boolean) => {
+    setError(null);
+    try {
+      const { devices: next } = await setLanDeviceRemote(id, remote);
+      setDevices(next);
+    } catch (e) {
+      setError((e as Error).message);
+    }
+  };
+  const awayOn = enabled && !!lan?.remote_enabled;
+
   const warnings = (enabled && lan?.warnings) || [];
 
   return (
@@ -115,7 +138,7 @@ export function LanControl({ prefs, onChange }: PrefControlProps) {
       control={<RowSwitch id="lan" checked={pending ?? enabled} disabled={busy} onChange={(v) => void toggle(v)} />}
     >
       {pairable && <LanPairing url={lan!.url!} deviceCount={devices.length} warnings={warnings} />}
-      {pairable && <LanDevices devices={devices} onRevoke={revoke} />}
+      {pairable && <LanDevices devices={devices} onRevoke={revoke} away={awayOn} onAway={setAway} />}
       {enabled && !running && <ErrorBanner>{lan?.error ? `Not sharing: ${lan.error}` : "Starting…"}</ErrorBanner>}
       {/* Up while a piece of it is off (no address): that must not hide
           behind a working QR. */}
@@ -246,7 +269,19 @@ function agoLabel(ts: number): string {
 /** A phone seen within this window is getting through right now. */
 const REACHABLE_WITHIN_S = 15 * 60;
 
-function LanDevices({ devices, onRevoke }: { devices: LanDevice[]; onRevoke: (id: string | null) => void }) {
+const VIA_LABEL: Record<string, string> = { lan: "on Wi-Fi", tailscale: "via Tailscale" };
+
+function LanDevices({
+  devices,
+  onRevoke,
+  away,
+  onAway,
+}: {
+  devices: LanDevice[];
+  onRevoke: (id: string | null) => void;
+  away: boolean;
+  onAway: (id: string, remote: boolean) => void;
+}) {
   if (!devices.length) return <p className="settings-row-desc">No paired phones yet.</p>;
   return (
     <div className="lan-devices">
@@ -263,9 +298,22 @@ function LanDevices({ devices, onRevoke }: { devices: LanDevice[]; onRevoke: (id
             <li key={d.id}>
               <span className="lan-device-name">{d.name}</span>
               <span className="deploy-muted">
-                {reachable ? `reachable, seen ${agoLabel(d.last_seen)}` : `last seen ${agoLabel(d.last_seen)}`} · paired{" "}
+                {reachable ? `reachable, seen ${agoLabel(d.last_seen)}` : `last seen ${agoLabel(d.last_seen)}`}
+                {d.last_via && d.last_via !== "lan" ? ` ${VIA_LABEL[d.last_via] ?? ""}` : ""} · paired{" "}
                 {agoLabel(d.paired_at)}
               </span>
+              {away && (
+                // Per phone: limit one to the Wi-Fi while the others roam.
+                <label className="lan-device-away" title="Let this phone in away from the Wi-Fi">
+                  <Switch
+                    className="settings-switch"
+                    checked={d.remote !== false}
+                    onCheckedChange={(v) => onAway(d.id, !!v)}
+                    aria-label={`Away access for ${d.name}`}
+                  />
+                  Away
+                </label>
+              )}
               <Button variant="outline" size="sm" onClick={() => onRevoke(d.id)}>
                 Revoke
               </Button>
@@ -274,5 +322,136 @@ function LanDevices({ devices, onRevoke }: { devices: LanDevice[]; onRevoke: (id
         })}
       </ul>
     </div>
+  );
+}
+
+export const TAILSCALE_DOWNLOAD_URL = "https://tailscale.com/download";
+
+// The Tailscale route, said out loud: which of three states this computer is
+// in (tunnel/tailscale.py `state`) and the one next step for it. Nothing to
+// switch on here, Fused only reads what Tailscale reports, so without this
+// row a missing or signed-out Tailscale looked the same as a working one.
+function TailscaleGuide({
+  state,
+  name,
+  route,
+  probe,
+}: {
+  state?: "missing" | "off" | "running" | null;
+  name: string | null;
+  route?: string | null;
+  probe?: "ok" | "address" | "failed" | null;
+}) {
+  if (!state) return null;
+  // Tailscale is up, but this computer could not reach its own phone listener
+  // through it: no phone will either, so the route is not handed out.
+  const unreachable = state === "running" && probe === "failed";
+  return (
+    <div className="lan-remote-ts" data-state={unreachable ? "unreachable" : state}>
+      <b className={state === "running" && !unreachable ? "settings-dot" : "settings-dot settings-dot-warn"}>Tailscale</b>
+      {unreachable ? (
+        <span>
+          Tailscale is on, but this computer does not answer on it. Check that a firewall is not blocking Fused Render,
+          then turn Phone access off and on again.
+        </span>
+      ) : state === "running" && probe === "address" && route ? (
+        <span>
+          Reachable at <code className="break-all">{route}</code>. The name <code className="break-all">{name}</code>{" "}
+          does not work on this computer, so phones use the address. The phone needs Tailscale too, signed in to the same
+          account and turned on.
+        </span>
+      ) : state === "running" ? (
+        <span>
+          Reachable as <code className="break-all">{name}</code>. The phone needs Tailscale too, signed in to the same
+          account and turned on.
+        </span>
+      ) : state === "off" ? (
+        <span>Installed, but not connected. Open Tailscale on this computer and sign in.</span>
+      ) : (
+        <span>
+          Not installed on this computer.{" "}
+          <a href={TAILSCALE_DOWNLOAD_URL} target="_blank" rel="noopener noreferrer">
+            Get Tailscale
+          </a>
+          , then sign in here and on the phone.
+        </span>
+      )}
+    </div>
+  );
+}
+
+// Away access (tunnel/, docs/REMOTE_ACCESS.md): a child of Phone access. On,
+// paired phones reach this computer off the Wi-Fi over Tailscale, when the
+// computer and the phone are on the same tailnet. Nothing to configure here:
+// the row says what state Tailscale is in and what to do next.
+export function LanRemoteControl({ prefs, onChange }: PrefControlProps) {
+  const lan = prefs.lan;
+  const enabled = !!lan?.remote_enabled;
+  const remote = lan?.remote;
+  const [pending, setPending] = useState<boolean | null>(null);
+  const [error, setError] = useState<string | null>(null);
+
+  const toggle = async (want: boolean) => {
+    setPending(want);
+    setError(null);
+    try {
+      onChange(await putLanRemote(want));
+    } catch (e) {
+      setError((e as Error).message);
+    }
+    setPending(null);
+  };
+
+  // Tailscale is set up outside this page (install, sign in): keep reading,
+  // slowly, so the row turns green without a reload. The server caches the
+  // read for 20 s, so this costs no extra CLI runs.
+  const awaitingTailscale =
+    enabled && !!remote?.tailscale_state && (remote.tailscale_state !== "running" || remote.tailscale_probe === "failed");
+  useEffect(() => {
+    if (!awaitingTailscale) return;
+    let alive = true;
+    const id = window.setInterval(async () => {
+      try {
+        const next = await getPrefs();
+        if (alive) onChange(next);
+      } catch {
+        /* the next tick retries */
+      }
+    }, 10_000);
+    return () => {
+      alive = false;
+      window.clearInterval(id);
+    };
+  }, [awaitingTailscale, onChange]);
+
+  const ts = remote?.tailscale;
+  const status = !enabled
+    ? undefined
+    : remote?.tailscale_route
+      ? `Reachable on your Tailscale network as ${remote.tailscale_route}.`
+      : "Not reachable away from the Wi-Fi yet. Set up Tailscale below.";
+
+  return (
+    <SettingRow
+      id="lan-remote"
+      status={status}
+      control={<RowSwitch id="lan-remote" checked={pending ?? enabled} disabled={pending !== null} onChange={(v) => void toggle(v)} />}
+    >
+      {enabled && (
+        <div className="lan-remote">
+          <TailscaleGuide
+            state={remote?.tailscale_state}
+            name={ts?.host ?? ts?.ips?.[0] ?? null}
+            route={remote?.tailscale_route}
+            probe={remote?.tailscale_probe}
+          />
+          <p className="settings-row-desc">
+            Phones pair on the Wi-Fi first (scan the code above). After that they connect from anywhere the phone has
+            Tailscale turned on. Traffic stays encrypted end to end with this computer's own certificate.
+          </p>
+        </div>
+      )}
+      {error && <ErrorBanner>{error}</ErrorBanner>}
+    </SettingRow>
   );
 }

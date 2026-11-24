@@ -180,6 +180,8 @@ struct ConnectedView: View {
     @State private var port: Int
     @State private var lanState: LanState?
     @State private var diagnoseRun = 0
+    /// How often an open app looks for a better route by itself.
+    private static let routeRecheckSeconds = 600
     /// A navigation died since the last diagnosis: a successful probe on
     /// the same host then reloads the page rather than only clearing the
     /// banner.
@@ -289,6 +291,23 @@ struct ConnectedView: View {
             .onChange(of: scenePhase) { _, phase in
                 if phase == .active { diagnoseRun += 1 }
             }
+            // And while the app stays open: when the network changes (left the
+            // Wi-Fi, came home, Tailscale turned on) and every ten minutes, so
+            // an open app finds the route that works now, and goes back to the
+            // direct Wi-Fi one, without being sent to the background first.
+            // A diagnosis that reaches the computer where the webview already
+            // is changes nothing on screen.
+            .task {
+                for await _ in Reachability.pathChanges() { diagnoseRun += 1 }
+            }
+            .task(id: scenePhase) {
+                guard scenePhase == .active else { return }
+                while !Task.isCancelled {
+                    try? await Task.sleep(for: .seconds(Self.routeRecheckSeconds))
+                    if Task.isCancelled { return }
+                    diagnoseRun += 1
+                }
+            }
             // A rescan of the same computer under a new name keeps this view
             // (same fingerprint): the chrome's links follow the new host.
             .onChange(of: server.host) { _, fresh in host = fresh }
@@ -397,6 +416,14 @@ struct ReachabilityBanner: View {
     let retry: () -> Void
     let scan: () -> Void
 
+    /// The computer named a Tailscale route (pairing code `ts=`, or
+    /// `/api/lan/routes`). When nothing answers, the usual cause is on this
+    /// phone: Tailscale is off, and iOS gives an app no way to see that. So
+    /// say it, rather than blame the computer.
+    private var hasTailnet: Bool {
+        !(server.tailnetHost ?? "").isEmpty
+    }
+
     private var message: String {
         switch state {
         case .ok:
@@ -404,8 +431,14 @@ struct ReachabilityBanner: View {
         case .localNetworkDenied:
             return "Fused Render needs Local Network access to reach your computer. It is turned off for this app."
         case .noWifi:
+            if hasTailnet {
+                return "Can't reach \(server.name) from here. Turn on Tailscale on this phone, then try again. If it is already on, the computer may be asleep or offline."
+            }
             return "Connect this phone to the same Wi-Fi as your computer."
         case .unreachable:
+            if hasTailnet {
+                return "Can't reach \(server.name) on this Wi-Fi or away from it. Turn on Tailscale on this phone, then try again. If it is already on, the computer may be asleep or offline."
+            }
             return "Can't reach \(server.name) on this Wi-Fi. Make sure both are on the same network — guest and hotel networks often keep devices from seeing each other. If the computer is asleep, wake it."
         }
     }

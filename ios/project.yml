@@ -80,6 +80,18 @@ targets:
         NSAppTransportSecurity:
           NSAllowsLocalNetworking: true
           NSAllowsArbitraryLoadsInWebContent: true
+          # The Tailscale route (docs/REMOTE_ACCESS.md) dials the computer's
+          # MagicDNS name, <machine>.<tailnet>.ts.net, and gets the same
+          # self-signed certificate as on the Wi-Fi. NSAllowsLocalNetworking
+          # covers only .local names and bare addresses, so without this the
+          # native pinned URLSession fails with -1200 before the pin is ever
+          # asked, and the route is never chosen. The pin still decides trust.
+          # (NSAllowsArbitraryLoads is no way out: iOS ignores it when either
+          # key above is present.)
+          NSExceptionDomains:
+            ts.net:
+              NSIncludesSubdomains: true
+              NSExceptionAllowsInsecureHTTPLoads: true
         # Never advertised by anyone: a browse for it is how the app finds out
         # whether Local Network access is allowed (Reachability.swift) — iOS
         # reports the policy error on the browse, and offers no other API.

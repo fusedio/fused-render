@@ -7,7 +7,9 @@
 //     lists (`_fusedrender._tcp`, never advertised by anyone) reporting the
 //     policy-denied DNS error within a few hundred milliseconds. The browse
 //     is also what triggers the system prompt the first time.
-//   - The phone is not on Wi-Fi (cellular, airplane mode).
+//   - The phone is not on Wi-Fi (cellular, airplane mode) — and, when the
+//     computer has away access on, its tailnet name did not answer either
+//     (docs/REMOTE_ACCESS.md).
 //   - Permission fine, Wi-Fi fine, but nobody answers: a different or
 //     isolated network (guest Wi-Fi), the computer asleep, its firewall.
 //     Before saying so, the phone's own /24 is probed for the pinned
@@ -46,27 +48,48 @@ enum Reachability {
 
     static func diagnose(_ server: Server) async -> LanState {
         let path = await currentPath()
-        guard path.status == .satisfied,
-              path.usesInterfaceType(.wifi) || path.usesInterfaceType(.wiredEthernet) else {
-            return .noWifi
-        }
-        if await localNetworkDenied(timeout: 1.5) { return .localNetworkDenied }
+        let online = path.status == .satisfied
+        let onLocal = online && (path.usesInterfaceType(.wifi) || path.usesInterfaceType(.wiredEthernet))
         var denied = false
-        // The stored port on every host first; the computer's fallback ports
-        // only after that (it moves off 1889 only when something else holds
-        // it at the time it starts).
-        for port in server.candidatePorts {
-            for host in server.candidateHosts {
-                switch await reach(host: host, port: port, fingerprint: server.fingerprint, timeout: 3) {
-                case .reached:
-                    return .ok(host: host, port: port)
-                case .denied:
-                    denied = true
-                case .failed:
-                    continue
+        if onLocal {
+            if await localNetworkDenied(timeout: 1.5) {
+                denied = true
+            } else {
+                // The stored port on every host first; the computer's
+                // fallback ports only after that (it moves off 1889 only when
+                // something else holds it at the time it starts).
+                for port in server.candidatePorts {
+                    for host in server.candidateHosts {
+                        switch await reach(host: host, port: port, fingerprint: server.fingerprint, timeout: 3) {
+                        case .reached:
+                            return .ok(host: host, port: port)
+                        case .denied:
+                            denied = true
+                        case .failed:
+                            continue
+                        }
+                    }
                 }
             }
         }
+        // THE AWAY ROUTE (docs/REMOTE_ACCESS.md): the tailnet — on cellular or
+        // on someone else's Wi-Fi. The same pinned certificate decides, so it
+        // never trusts more than the Wi-Fi does. Tried before the subnet scan:
+        // one request, where the scan is hundreds.
+        // The stored port first, with the long wait a cellular path needs;
+        // then the listener's fallback ports, as on the Wi-Fi: the computer
+        // may have restarted on another one since this phone last saw it.
+        if online {
+            for endpoint in server.awayEndpoints {
+                for port in server.candidatePorts {
+                    if await reach(host: endpoint.host, port: port, fingerprint: server.fingerprint,
+                                   timeout: port == endpoint.port ? 6 : 3) == .reached {
+                        return .ok(host: endpoint.host, port: port)
+                    }
+                }
+            }
+        }
+        guard onLocal else { return .noWifi }
         // Some iOS versions fail the connection with "no route to host" at
         // once, before the browser reports anything.
         if denied { return .localNetworkDenied }
@@ -88,6 +111,24 @@ enum Reachability {
                     cont.resume(returning: path)
                 }
             }
+            monitor.start(queue: queue)
+        }
+    }
+
+    /// One element each time the phone's network changes in a way that can
+    /// change the best route: it went on or off line, joined or left a Wi-Fi,
+    /// or a VPN (Tailscale) came up or went down. The first report, which is
+    /// only the state at the time of asking, is not an element. Ends when the
+    /// consuming task is cancelled.
+    static func pathChanges() -> AsyncStream<Void> {
+        AsyncStream { continuation in
+            let monitor = NWPathMonitor()
+            let last = PathSignature()
+            monitor.pathUpdateHandler = { path in
+                let names = path.availableInterfaces.map { "\($0.type):\($0.name)" }.sorted().joined(separator: ",")
+                if last.changed(to: "\(path.status)|\(names)") { continuation.yield() }
+            }
+            continuation.onTermination = { _ in monitor.cancel() }
             monitor.start(queue: queue)
         }
     }
@@ -286,5 +327,18 @@ private final class Once {
         done = true
         lock.unlock()
         if first { body() }
+    }
+}
+
+/// The last network path seen by `Reachability.pathChanges`, as a string.
+private final class PathSignature: @unchecked Sendable {
+    private let lock = NSLock()
+    private var value: String?
+
+    /// Whether `next` differs from the one before. The first is never a change.
+    func changed(to next: String) -> Bool {
+        lock.lock(); defer { lock.unlock() }
+        defer { value = next }
+        return value != nil && value != next
     }
 }

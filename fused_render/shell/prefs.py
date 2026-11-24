@@ -637,6 +637,13 @@ def lan_enabled() -> bool:
     return read_prefs().get("lan_enabled") is True
 
 
+def lan_remote_enabled() -> bool:
+    """Away access (docs/REMOTE_ACCESS.md): paired phones may also reach the
+    phone listener off the Wi-Fi, over the computer's tailnet (tunnel/).
+    Default off; needs ``lan_enabled`` (the same listener)."""
+    return read_prefs().get("lan_remote_enabled") is True
+
+
 #: The six agent switches (D17, docs/COPILOT_BACKEND.md; the third from
 #: docs/CODEX_BACKEND.md, the fourth from docs/GEMINI_BACKEND.md, the fifth
 #: from docs/OPENCODE_BACKEND.md, the sixth from docs/CURSOR_BACKEND.md).
@@ -1275,7 +1282,7 @@ def _prefs_response() -> dict:
         # Local-network sharing of ~/Fused/local (lan.py): the STORED switch plus
         # the live listener state (url once it is up, error when it is not), so
         # the Preferences section can show the address a phone types.
-        "lan": {"enabled": lan_enabled(), **_lan_status()},
+        "lan": {"enabled": lan_enabled(), "remote_enabled": lan_remote_enabled(), **_lan_status()},
         # The six agent switches and the agent new chats/tasks start from
         # (docs/COPILOT_BACKEND.md D17, docs/CODEX_BACKEND.md D17,
         # docs/GEMINI_BACKEND.md D17, docs/OPENCODE_BACKEND.md D17,
@@ -1707,6 +1714,12 @@ def put_prefs(body: dict = Body(...), x_fused: str | None = Header(default=None)
                 return JSONResponse({"error": "'lan_enabled' must be a boolean"}, status_code=400)
             prefs["lan_enabled"] = value
             changed = True
+        if "lan_remote_enabled" in body:
+            value = body.get("lan_remote_enabled")
+            if not isinstance(value, bool):
+                return JSONResponse({"error": "'lan_remote_enabled' must be a boolean"}, status_code=400)
+            prefs["lan_remote_enabled"] = value
+            changed = True
         if "engines" in body:
             # A MAP, applied key by key onto whatever is stored — the page changes
             # one capability's engine and must not have to echo the others, which is
@@ -1957,7 +1970,7 @@ def put_prefs(body: dict = Body(...), x_fused: str | None = Header(default=None)
                           "'claude_strict_mcp_enabled', 'claude_default_permission', "
                           "'bots_autostage', 'bots_sounds', 'bots_clear_enabled', "
                           "'tasks_view_tabs', 'pinned_tasks', "
-                          "'lan_enabled', 'canvases_embed_proxy', "
+                          "'lan_enabled', 'lan_remote_enabled', 'canvases_embed_proxy', "
                           "'claude_enabled', 'copilot_enabled', 'codex_enabled', "
                           "'gemini_enabled', 'opencode_enabled', 'cursor_enabled', "
                           "'default_backend', 'indexing_enabled', 'ranked_search_enabled', "
@@ -2042,6 +2055,12 @@ def put_prefs(body: dict = Body(...), x_fused: str | None = Header(default=None)
         from fused_render import lan
 
         lan.apply(prefs["lan_enabled"])
+    if any(k in body for k in ("lan_enabled", "lan_remote_enabled")):
+        # AFTER the write, like `lan_enabled`: away access follows the stored
+        # preferences (and is off whenever Phone access is).
+        from fused_render import lan
+
+        lan.apply_remote()
     unloaded: list[str] | None = None
     if "engines" in body or "model_engines" in body:
         # AFTER the write, because the reconciliation reads the new preference

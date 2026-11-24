@@ -54,6 +54,14 @@ What the computer can tell about reachability on its own (no address, a
 VPN, the firewall, the name not resolving, a rename since pairing) is
 lan_doctor.py; ``status()`` carries its ``warnings`` to Preferences.
 
+Away access (docs/REMOTE_ACCESS.md, off by default, a second switch under
+this one): the same listener reached over a tailnet (tunnel/tailscale.py).
+Each request is classified by ``_via``: ``lan`` or ``tailscale``. Away
+requests get exactly the LAN allowlist below, with two differences: ``/pair``
+is refused (pairing needs the Wi-Fi — a QR leaked in a screen share cannot
+pair someone who is merely on the same tailnet), and a device whose
+``remote`` flag is off is refused.
+
 Lifecycle: ``attach(app)`` at either entry point (cli.py / app.py) hands the
 inner app over; ``apply(enabled)`` — called from the prefs PUT and once at
 startup — starts or stops the listener on a daemon thread. Stopping is
@@ -77,6 +85,8 @@ from starlette.responses import (
 
 from fused_render import lan_doctor
 from fused_render._platform import is_within
+from fused_render.tunnel import tailscale
+from fused_render.tunnel.host import remote
 from fused_render.logs import uvicorn_log_config
 from fused_render.shell.seed import fused_dir
 
@@ -608,7 +618,9 @@ def _pair_device(user_agent: str, declared_name: str = "") -> tuple[str, dict]:
 
 
 def _public(record: dict) -> dict:
-    return {k: record[k] for k in ("id", "name", "paired_at", "last_seen") if k in record}
+    out = {k: record[k] for k in ("id", "name", "paired_at", "last_seen", "last_via") if k in record}
+    out["remote"] = record.get("remote", True) is not False
+    return out
 
 
 def list_devices() -> list[dict]:
@@ -622,12 +634,31 @@ def revoke_device(device_id: str) -> bool:
         if len(kept) == len(devices):
             return False
         _write_devices(kept)
+    close_sockets(device_id)
     return True
 
 
 def revoke_all_devices() -> None:
     with _devices_lock:
         _write_devices([])
+    close_sockets()
+
+
+def set_device_remote(device_id: str, allowed: bool) -> bool:
+    """Whether this phone may come in by the away route (the tailnet). On
+    by default; a phone limited to the Wi-Fi keeps working there."""
+    with _devices_lock:
+        devices = _read_devices()
+        for d in devices:
+            if d.get("id") == device_id:
+                d["remote"] = bool(allowed)
+                _write_devices(devices)
+                break
+        else:
+            return False
+    if not allowed:
+        close_sockets(device_id, away_only=True)
+    return True
 
 
 def _cookie_secret(scope) -> str | None:
@@ -645,24 +676,35 @@ def _paired(scope) -> bool:
     return _paired_record(scope) is not None
 
 
+def _device_ok(scope) -> bool:
+    """Paired, and — when it came by an away route — allowed away."""
+    record = _paired_record(scope)
+    if record is None:
+        return False
+    return scope.get("fused.via", "lan") == "lan" or record.get("remote", True) is not False
+
+
 def _paired_record(scope) -> dict | None:
     """The stored device record (a copy) the request's cookie belongs to, else
     None. Bumps that device's last_seen at most every ten minutes (a write per
-    request would churn the file on every asset). The phone bots door
-    (``_AsDevice``) reads the record's ``id``."""
+    request would churn the file on every asset), and at once when the route
+    it arrived by (``last_via``: lan / tailscale) changed. The phone
+    bots door (``_AsDevice``) reads the record's ``id``."""
     import time
 
     secret = _cookie_secret(scope)
     if not secret:
         return None
     digest = _hash(secret)
+    via = scope.get("fused.via") or "lan"
     with _devices_lock:
         devices = _read_devices()
         for d in devices:
             if d.get("hash") == digest:
                 now = time.time()
-                if now - float(d.get("last_seen") or 0) > _LAST_SEEN_STEP_S:
+                if now - float(d.get("last_seen") or 0) > _LAST_SEEN_STEP_S or d.get("last_via") != via:
                     d["last_seen"] = now
+                    d["last_via"] = via
                     try:
                         _write_devices(devices)
                     except OSError:
@@ -685,7 +727,97 @@ def _host_ok(scope) -> bool:
     # the computer only just got (a new lease, before any prefs read): the
     # read is cached for a few seconds in lan_doctor, so an unpaired peer
     # hammering the listener cannot turn it into a subprocess per request.
-    return host in _controller.ips or host in lan_doctor.lan_ips()
+    if host in _controller.ips or host in lan_doctor.lan_ips():
+        return True
+    # Away access: the tailnet name and addresses — empty while away access
+    # is off.
+    return host in remote.hosts()
+
+
+def _via(scope) -> tuple[str, str | None]:
+    """How the request reached the listener: ``("tailscale", ip)`` for a
+    tailnet source address, else ``("lan", ip)``. Decided by the transport
+    (the connection's own source), never by anything the client sends."""
+    client = scope.get("client") or ()
+    ip = str(client[0]) if len(client) > 0 and client[0] else ""
+    if ip and tailscale.is_tailnet_ip(ip):
+        # An address Tailscale itself lists is the tailnet, even when the
+        # Wi-Fi is numbered out of the same range and the two share a /24:
+        # the prefix alone would call that peer `lan`, past the away switches
+        # and able to pair. Only an address in the range that Tailscale does
+        # not know can be the Wi-Fi.
+        if _same_address(ip) in tailscale.peer_ips() or not _lan_overlaps_tailnet(ip):
+            return "tailscale", ip
+    return "lan", ip or None
+
+
+def _same_address(ip: str) -> str:
+    """``ip`` in the one spelling ``tailscale.peer_ips()`` uses."""
+    import ipaddress
+
+    try:
+        return str(ipaddress.ip_address(ip.split("%")[0]))
+    except ValueError:
+        return ip
+
+
+def _on_local_network(scope) -> bool:
+    """Did the connection come from a network this computer is on, going by
+    its source address — never by the Host header, which the client writes?
+
+    The listener binds every interface, so on a computer whose port is
+    reachable from the internet (a port forward, a public address) anyone can
+    send the computer's local name as Host. Pairing asks this first: a
+    private, link-local or loopback source, or one inside a network one of the
+    computer's own interfaces is attached to (so a campus network that hands
+    out public addresses still pairs)."""
+    import ipaddress
+
+    client = scope.get("client") or ()
+    try:
+        addr = ipaddress.ip_address(str(client[0]).split("%")[0])
+    except (ValueError, IndexError):
+        return False
+    mapped = getattr(addr, "ipv4_mapped", None)
+    if mapped is not None:
+        addr = mapped
+    if addr.is_loopback or addr.is_link_local or addr.is_private:
+        return True
+    try:
+        return any(addr in net for _, net in lan_doctor.networks())
+    except Exception:  # noqa: BLE001 — unknown is not local
+        return False
+
+
+def _lan_overlaps_tailnet(ip: str) -> bool:
+    """A few ISPs and routers number the LOCAL network out of 100.64.0.0/10,
+    Tailscale's range: then an address there is the Wi-Fi, not a tailnet, and
+    must keep working with away access off. Told apart by the computer's own
+    LAN addresses (tunnel interfaces excluded; cached in lan_doctor)."""
+    import ipaddress
+
+    try:
+        net = ipaddress.ip_network(f"{ipaddress.ip_address(ip.split('%')[0])}/24", strict=False)
+        # Physical interfaces only: `lan_ips()` lists tunnels too (last), and
+        # the computer's own tailnet address must not make its tailnet peers
+        # look like the Wi-Fi.
+        for name, own in lan_doctor.interfaces():
+            if lan_doctor._is_tunnel(name) or lan_doctor._is_virtual(name):
+                continue
+            if ipaddress.ip_network(f"{own}/24", strict=False) == net:
+                return True
+    except ValueError:
+        return False
+    return False
+
+
+def _classify(scope):
+    """``scope`` stamped with how it arrived (``fused.via``) — or None when
+    it came by the away route while away access is off."""
+    via, _ = _via(scope)
+    if via != "lan" and not remote.enabled:
+        return None
+    return {**scope, "fused.via": via}
 
 
 _PAIR_PAGE = """<!doctype html><meta charset="utf-8">
@@ -743,6 +875,102 @@ def _handle_pair(scope) -> Response:
     return _with_cookie(RedirectResponse("/", status_code=302), secret)
 
 
+#: Every open phone websocket: its task -> {device id, route, loop, revoked}.
+#: The gate above a socket is asked once, at the handshake; this is what lets
+#: a revoke or an away switch end one that is already open (``close_sockets``).
+_live_sockets: dict = {}
+_live_lock = threading.Lock()
+
+
+def close_sockets(device_id: str | None = None, away_only: bool = False) -> int:
+    """End open phone websockets: one device's (``device_id``) or everyone's,
+    on every route or only the away ones. Each gets close code 1008. Callable
+    from any thread; returns how many were asked to close."""
+    with _live_lock:
+        entries = list(_live_sockets.items())
+    asked = 0
+    for task, entry in entries:
+        if device_id is not None and entry["device"] != device_id:
+            continue
+        if away_only and entry["via"] == "lan":
+            continue
+        entry["revoked"] = True
+        try:
+            entry["loop"].call_soon_threadsafe(task.cancel)
+            asked += 1
+        except RuntimeError:  # that loop is gone, and its sockets with it
+            pass
+    return asked
+
+
+async def _serve_socket(inner, scope, receive, send) -> None:
+    """Hand an admitted websocket to the inner app, and keep it on record so
+    ``close_sockets`` can end it when its phone is revoked or loses the route
+    it came by."""
+    import asyncio
+
+    seen = {"closed": False}
+
+    async def watched(message):
+        if message.get("type") == "websocket.close":
+            seen["closed"] = True
+        await send(message)
+
+    task = asyncio.ensure_future(inner(scope, receive, watched))
+    entry = {"device": (_paired_record(scope) or {}).get("id"), "via": scope.get("fused.via", "lan"),
+             "loop": asyncio.get_running_loop(), "revoked": False}
+    with _live_lock:
+        _live_sockets[task] = entry
+    try:
+        await task
+    except asyncio.CancelledError:
+        if not entry["revoked"]:
+            task.cancel()  # we were cancelled ourselves (the listener is stopping)
+            raise
+        logger.info("lan: closed a %s socket of %s (access withdrawn)", entry["via"], entry["device"])
+        if not seen["closed"]:
+            try:
+                await send({"type": "websocket.close", "code": 1008})
+            except Exception:  # noqa: BLE001 — already gone
+                pass
+    finally:
+        with _live_lock:
+            _live_sockets.pop(task, None)
+
+
+#: (status, address) -> when it was last logged: see ``_log_refusal``.
+_refusal_logged: dict[tuple[int, str], float] = {}
+_REFUSAL_LOG_EVERY_S = 10.0
+
+
+def _log_refusal(scope, status: int, why: str = "") -> None:
+    """One line for a request the listener answered itself with a refusal:
+    the status, the route it came by, who asked and the Host they named.
+    Without it a phone that cannot get in leaves no trace here, and "it
+    never arrived" looks the same as "it was turned away" (the away-access
+    debugging of 2026-11-24 went the long way round for that reason).
+
+    At most one line per status and address every ten seconds, and a bounded
+    table: an unpaired peer hammering the listener must not fill the log."""
+    import time
+
+    client = scope.get("client") or ()
+    ip = str(client[0]) if client and client[0] else "?"
+    now = time.monotonic()
+    key = (status, ip)
+    last = _refusal_logged.get(key)
+    if last is not None and now - last < _REFUSAL_LOG_EVERY_S:
+        return
+    if len(_refusal_logged) >= 256:
+        _refusal_logged.clear()
+    _refusal_logged[key] = now
+    via = scope.get("fused.via") or _via(scope)[0]
+    host = _header(scope, b"host")[:120]
+    method = scope.get("method", "WS") if scope.get("type") == "http" else "WS"
+    logger.info("lan: answered %s to %s %s over %s from %s (Host %r)%s", status, method,
+                scope.get("path", "?")[:200], via, ip, host, f": {why}" if why else "")
+
+
 class LanApp:
     """ASGI wrapper: answers lifespan itself (never forwarded — the inner app's
     startup/shutdown handlers belong to the loopback server; forwarding them
@@ -764,6 +992,16 @@ class LanApp:
                     await send({"type": "lifespan.shutdown.complete"})
                     return
             return
+        if kind in ("http", "websocket"):
+            classified = _classify(scope)
+            if classified is None:
+                _log_refusal(scope, 1008 if kind == "websocket" else 404, "away access is off")
+                if kind == "websocket":
+                    await send({"type": "websocket.close", "code": 1008})
+                else:
+                    await _not_found()(scope, receive, send)
+                return
+            scope = classified
         if kind == "websocket":
             # /api/fs/events (the runtime's change feed) is the one socket a
             # page needs; forwarded when every watched `path` is in the roots.
@@ -781,10 +1019,11 @@ class LanApp:
             # problem, not a phone's.
             query = parse_qs(scope.get("query_string", b"").decode("utf-8", "replace"),
                              keep_blank_values=True)
-            if (_host_ok(scope) and _paired(scope) and scope["path"] == "/api/fs/events"
+            if (_host_ok(scope) and _device_ok(scope) and scope["path"] == "/api/fs/events"
                     and query.get("path") and _args_in_scope(query)):
-                await self.inner(scope, receive, send)
+                await _serve_socket(self.inner, scope, receive, send)
             else:
+                _log_refusal(scope, 1008)
                 await send({"type": "websocket.close", "code": 1008})
             return
         if kind != "http":
@@ -793,6 +1032,9 @@ class LanApp:
         if response is None:
             await self.inner(scope, receive, send)
         else:
+            if response.status_code >= 400:
+                _log_refusal(scope, response.status_code,
+                             "" if _host_ok(scope) else "that Host is not one of this computer's names")
             await response(scope, receive, send)
 
     async def _route(self, scope, receive) -> Response | None:
@@ -803,11 +1045,38 @@ class LanApp:
 
         if not _host_ok(scope):
             return _not_found()
+        via = scope.get("fused.via", "lan")
         if path == "/pair" and method == "GET":
+            if via != "lan" or not _on_local_network(scope):
+                logger.info("lan: refused pairing over %s from %s", via if via != "lan" else "another network",
+                            (scope.get("client") or ("?",))[0])
+                return _pair_page(
+                    "Pair on the same Wi-Fi first",
+                    "For safety, a phone can only pair while it is on the same network as the "
+                    "computer. Once paired, it can reach the computer from anywhere.",
+                    "Not paired.")
             return _handle_pair(scope)
         device = _paired_record(scope)
         if device is None:
             return _unauthorized(scope)
+        if via != "lan" and device.get("remote", True) is False:
+            logger.info("lan: refused %s over %s (away access off for this phone)", device.get("id"), via)
+            if _lan_page(path):
+                return _pair_page("Away access is off for this phone",
+                                  "On the computer, Preferences → Phone access lets this phone in "
+                                  "away from the Wi-Fi.", "Only on the same Wi-Fi.")
+            return JSONResponse({"error": "away access is off for this phone"}, status_code=403)
+        if path == "/api/lan/routes" and method == "GET":
+            # A phone limited to the Wi-Fi is not told the away routes.
+            # OFF THIS LOOP: `routes` probes this very listener (a blocking
+            # TLS connection to itself), which the loop it runs on could only
+            # answer after the probe gave up — every phone request stalled for
+            # seconds and the answer was "no tailnet route".
+            import asyncio
+
+            proven = _header(scope, b"host").rsplit(":", 1)[0].lower() if via == "tailscale" else None
+            return JSONResponse(await asyncio.to_thread(
+                routes, device.get("remote", True) is not False, proven))
 
         if path == "/" or path == "/index.html" or (method == "GET" and _lan_page(path)):
             # The grid is a second Vite page (frontend/lan.html → shell-dist/
@@ -1142,6 +1411,7 @@ class _Controller:
             "fingerprint": fingerprint,
             "devices": devices,
             "warnings": warnings,
+            "remote": _remote_status(),
         }
 
     # -- start/stop
@@ -1154,6 +1424,9 @@ class _Controller:
                 self._start()
             elif not enabled and self._thread is not None:
                 self._stop()
+            if not enabled:
+                # Away access rides this listener: off with it.
+                remote.stop()
 
     def _start(self) -> None:
         import uvicorn
@@ -1243,6 +1516,65 @@ def status() -> dict:
     return _controller.status()
 
 
+def _tailnet_probe(host: str) -> bool | None:
+    """Does this computer's own listener answer on ``host`` (its tailnet name
+    or address) with its own certificate? Cached for a few seconds in
+    lan_doctor, like the Wi-Fi self-probe."""
+    if not _controller.running:
+        return None
+    return lan_doctor.self_connect(host, _controller.port, _controller.fingerprint())
+
+
+def _remote_status() -> dict:
+    try:
+        return remote.status(_tailnet_probe)
+    except Exception as e:  # noqa: BLE001 — diagnostics never break prefs
+        logger.warning("lan: remote status failed", exc_info=True)
+        return {"enabled": remote.enabled, "error": str(e)}
+
+
+def apply_remote() -> None:
+    """Turn away access (tunnel/host.py) on or off to match the stored
+    preferences. Away access needs Phone access on: it is the same listener."""
+    from fused_render.shell import prefs
+
+    want = prefs.lan_enabled() and prefs.lan_remote_enabled()
+    remote.apply(want)
+    if not want:
+        close_sockets(away_only=True)
+
+
+def routes(away: bool = True, proven: str | None = None) -> dict:
+    """Every way this computer can be reached right now, in the order a
+    phone should try them: the Wi-Fi name and address, then the tailnet.
+    Paired phones read it (``/api/lan/routes``) after connecting so a tailnet
+    joined since pairing is learned without a new scan. One certificate, one
+    fingerprint, every route.
+
+    ``proven`` is the tailnet host the asking request itself came in on: that
+    route works, whatever this computer's own probe of it just said, so it is
+    never left out. ``away`` in the answer says whether this phone may use
+    away routes at all — the phone forgets its tailnet name only on a False,
+    never because one probe here failed.
+
+    Blocking (the probe): never call it on the listener's own event loop."""
+    out = []
+    if _controller.running:
+        port = _controller.port
+        if _controller.hostname:
+            out.append({"kind": "lan", "host": _controller.hostname, "port": port})
+        ip = lan_doctor.best_ip()
+        if ip:
+            out.append({"kind": "lan", "host": ip, "port": port})
+        tailnet = remote.routes(_tailnet_probe) if away else []
+        if away and not tailnet and proven and proven in remote.hosts():
+            tailnet = [{"kind": "tailscale", "host": proven}]
+        for r in tailnet:
+            out.append({**r, "port": r.get("port") or port})
+    return {"routes": out, "fingerprint": _controller.fingerprint() if _controller.running else None,
+            "away": bool(away and remote.enabled)}
+
+
 # ---- the desktop's own API (loopback; the LAN wrapper never forwards these) --
 
 from fastapi import APIRouter, Header  # noqa: E402
@@ -1275,8 +1607,15 @@ def api_lan_pair_token():
     ip = lan_doctor.best_ip()
     if ip and _controller.hostname:
         params["ip"] = ip
+    # The away route rides along so the phone works off the Wi-Fi from the
+    # first scan: `ts`, the computer's tailnet name. Pairing itself still has
+    # to happen on the Wi-Fi (`_route`).
+    away = {r["kind"]: r for r in remote.routes(_tailnet_probe)}
+    if "tailscale" in away:
+        params["ts"] = away["tailscale"]["host"]
     return {"url": base + "pair?" + urlencode(params), "ttl_s": PAIR_TOKEN_TTL_S,
-            "fingerprint": fingerprint, "hostname": _controller.hostname, "ip": ip}
+            "fingerprint": fingerprint, "hostname": _controller.hostname, "ip": ip,
+            "tailscale": params.get("ts")}
 
 
 @router.get("/api/lan/devices")
@@ -1289,6 +1628,22 @@ def api_lan_device_revoke(device_id: str, x_fused: str | None = Header(default=N
     if (guard := _require_fused(x_fused)) is not None:
         return guard
     if not revoke_device(device_id):
+        return JSONResponse({"error": "no such device"}, status_code=404)
+    return {"devices": list_devices()}
+
+
+@router.patch("/api/lan/devices/{device_id}")
+async def api_lan_device_update(device_id: str, request: Request, x_fused: str | None = Header(default=None)):
+    """``{"remote": bool}`` — may this phone come in away from the Wi-Fi."""
+    if (guard := _require_fused(x_fused)) is not None:
+        return guard
+    try:
+        body = await request.json()
+    except ValueError:
+        body = None
+    if not isinstance(body, dict) or not isinstance(body.get("remote"), bool):
+        return JSONResponse({"error": "'remote' must be a boolean"}, status_code=400)
+    if not set_device_remote(device_id, body["remote"]):
         return JSONResponse({"error": "no such device"}, status_code=404)
     return {"devices": list_devices()}
 
@@ -1307,4 +1662,8 @@ def start_if_enabled() -> None:
     from fused_render.shell import prefs
 
     if prefs.lan_enabled():
-        threading.Thread(target=lambda: apply(True), daemon=True, name="fused-lan-boot").start()
+        def boot():
+            apply(True)
+            apply_remote()
+
+        threading.Thread(target=boot, daemon=True, name="fused-lan-boot").start()

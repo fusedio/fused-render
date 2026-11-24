@@ -8282,3 +8282,16 @@ managed `managed-settings.d` drop-ins, the legacy `~/.claude.json`
 - **One source per chunk.** MapLibre's worker indexes each source once. `setData` or `updateData` on a single source re-indexes every feature on every chunk.
 - **Rejected.** `updateData` for colour-by: it re-tiled 302,466 polygons in 12.0 s against 9.9 s for `setData` (headless, same page). A higher cap, which moves the cliff. Sampling or reordering rows, which draws something that is not the file. GeoJSON text from Python, about twice the bytes plus a parse per feature. Properties in every chunk, which dominate the payload.
 - **Cost.** The page and MapLibre's worker hold every feature, so memory grows with the file. Preview thumbnails load the first chunk only.
+
+## D1510: Away access: the phone listener over Tailscale; pairing stays on the Wi-Fi (2026-11-24, away-access)
+
+- **What.** A second switch under Phone access ("Also reachable away from this Wi-Fi", `lan_remote_enabled`, off by default). Paired phones reach the SAME listener (`lan.py`) off the Wi-Fi over the computer's tailnet: nothing is run or hosted, the listener admits the tailnet name and addresses and tells the phone the name. Design and threat model: docs/REMOTE_ACCESS.md.
+- **No new trust.** The phone keeps pinning the computer's own certificate (`lan_tls.py`) on the tailnet name; the tailnet is a path, not a trust anchor.
+- **Classified by transport.** `_via`: Tailscale source ranges are `tailscale`, everything else `lan`. Headers are never read for this.
+- **Pairing needs the local network, by source address.** `/pair` over the tailnet, or from a source not on a network the computer is on, is refused without spending the code. Host is not evidence (the listener binds every interface). A leaked QR cannot pair someone on the tailnet or across the internet.
+- **Withdrawn access closes open sockets.** Revoke, a phone's Away switch going off and away access going off end the affected `/api/fs/events` sockets with 1008; the handshake check alone left them open.
+- **Per-phone Away switch** (`remote` on the device record; on by default) and `last_via` in the list.
+- **The computer tries the route first.** `_tailnet_probe` reaches its own listener on the tailnet name before a phone is told it; the address is the fallback when the name does not resolve; neither answering means no route is handed out.
+- **iOS needs a `ts.net` ATS exception.** `NSAllowsLocalNetworking` covers only `.local` and addresses, so the pinned `URLSession` failed with -1200 on the tailnet name before the pin was asked. `NSAllowsArbitraryLoads` is ignored beside the keys already set.
+- **Rejected.** Cloudflare Tunnel / ngrok (TLS ends at a third party: t3code's model). Tailscale Serve (a public certificate, but requests then arrive from loopback and cannot be told from local ones). Remote pairing.
+- **Taken out before shipping.** A blind SNI relay for people without Tailscale (`tunnel/relay.py`, `agent.py`, `protocol.py`; last commit with it `75fe9d959`): with no Fused-run relay it was a paste-an-address field, and on iOS a relay of unknown name cannot be given an ATS exception. Needs a Fused-run relay on a fixed domain, relay-side admission of paired phones, and per-computer caps.

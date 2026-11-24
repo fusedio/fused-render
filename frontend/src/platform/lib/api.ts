@@ -1687,6 +1687,9 @@ export interface Prefs {
     // list shows and can revoke.
     devices: LanDevice[];
     warnings: LanWarning[];
+    // Away access: the switch and the live state.
+    remote_enabled?: boolean;
+    remote?: LanRemoteStatus;
   };
   // The app call log (fused_render/calls.py): capture state, how much of a
   // run's params is kept, retention window, and where the store lives.
@@ -2307,6 +2310,28 @@ export interface LanDevice {
   name: string; // the name the app declared at pairing ("Vas iPhone"), else a plain kind
   paired_at: number; // epoch seconds
   last_seen: number;
+  // How it last came in (lan.py `_via`): the Wi-Fi or the tailnet.
+  last_via?: "lan" | "tailscale";
+  // May it come in away from the Wi-Fi (the tailnet)? On unless turned off.
+  remote?: boolean;
+}
+
+// Away access (tunnel/host.py, docs/REMOTE_ACCESS.md): the switch and the
+// tailnet, when there is one.
+export interface LanRemoteStatus {
+  enabled: boolean;
+  tailscale: { host: string | null; ips: string[] } | null;
+  // Why there is (not) a tailnet (tunnel/tailscale.py `state`): not installed,
+  // installed but not running or signed out, or running. Null while away
+  // access is off.
+  tailscale_state?: "missing" | "off" | "running" | null;
+  // What phones are told to dial, and how this computer's own try at it went
+  // (tunnel/host.py `_reachable`): the name answered, only the address did
+  // (the name does not resolve here), or neither did. Null with no tailnet.
+  tailscale_route?: string | null;
+  tailscale_probe?: "ok" | "address" | "failed" | null;
+  // Only when reading the state itself failed (lan.py `_remote_status`).
+  error?: string | null;
 }
 
 // One thing the computer can see that would keep a phone from reaching it
@@ -2350,6 +2375,21 @@ export function revokeAllLanDevices(): Promise<{ devices: LanDevice[] }> {
 
 export function putLanEnabled(enabled: boolean): Promise<Prefs> {
   return putJson<Prefs>("/api/prefs", { lan_enabled: enabled });
+}
+
+export function putLanRemote(enabled: boolean): Promise<Prefs> {
+  return putJson<Prefs>("/api/prefs", { lan_remote_enabled: enabled });
+}
+
+// Limit one phone to the Wi-Fi (remote=false) or let it in from anywhere.
+export async function setLanDeviceRemote(id: string, remote: boolean): Promise<{ devices: LanDevice[] }> {
+  const r = await fetch(`/api/lan/devices/${encodeURIComponent(id)}`, {
+    method: "PATCH",
+    headers: { "X-Fused": "1", "Content-Type": "application/json" },
+    body: JSON.stringify({ remote }),
+  });
+  if (!r.ok) throw new Error(`HTTP ${r.status}`);
+  return r.json();
 }
 
 export function putIndexingEnabled(enabled: boolean): Promise<Prefs> {

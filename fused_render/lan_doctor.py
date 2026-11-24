@@ -185,6 +185,45 @@ def _interfaces() -> list[tuple[str, str]]:
     return [(n, ip) for n, ip in found if not ip.startswith(("127.", "169.254."))]
 
 
+def networks() -> list[tuple[str, "ipaddress.IPv4Network"]]:
+    """``(interface, network)`` for every IPv4 the computer holds, with the
+    interface's own netmask: which source addresses are on a network this
+    computer is directly attached to. Same tools as ``interfaces()``."""
+    return _cached("networks", _networks)
+
+
+def _networks() -> list[tuple[str, "ipaddress.IPv4Network"]]:
+    """Uncached ``networks``."""
+    found: list[tuple[str, ipaddress.IPv4Network]] = []
+
+    def add(name: str, ip: str, mask: str) -> None:
+        if ip.startswith(("127.", "169.254.")):
+            return
+        try:
+            found.append((name, ipaddress.ip_network(f"{ip}/{mask}", strict=False)))
+        except ValueError:
+            pass
+
+    if _is_mac() or sys.platform.startswith(("freebsd", "openbsd")):
+        out = _run(["ifconfig", "-a"]) or ""
+        name = ""
+        for line in out.splitlines():
+            m = re.match(r"^([A-Za-z0-9_.-]+):", line)
+            if m:
+                name = m.group(1)
+                continue
+            m = re.match(r"^\s+inet\s+(\d+\.\d+\.\d+\.\d+)\s+netmask\s+0x([0-9a-fA-F]{8})", line)
+            if m and name:
+                add(name, m.group(1), str(ipaddress.ip_address(int(m.group(2), 16))))
+    elif sys.platform.startswith("linux"):
+        out = _run(["ip", "-4", "-o", "addr", "show"]) or ""
+        for line in out.splitlines():
+            m = re.match(r"^\d+:\s+(\S+)\s+inet\s+(\d+\.\d+\.\d+\.\d+)/(\d+)", line)
+            if m:
+                add(m.group(1), m.group(2), m.group(3))
+    return found
+
+
 def lan_ips() -> list[str]:
     """Every address a phone could dial, default-route first, tunnels last."""
     primary = lan_ip()

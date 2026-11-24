@@ -2169,6 +2169,36 @@
   flex: 1;
   font-size: 12px;
 }
+.lan-device-away {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  color: var(--fg-muted);
+}
+/* Away access: what shows under its switch. */
+.lan-remote {
+  margin-top: 10px;
+}
+/* The Tailscale route's state and next step (lan.tsx TailscaleGuide). */
+.lan-remote-ts {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  max-width: 34rem;
+  margin-bottom: 10px;
+  font-size: 13px;
+  color: var(--fg-muted);
+}
+.lan-remote-ts > b {
+  flex: 0 0 auto;
+  color: var(--fg);
+  font-weight: 500;
+}
+.lan-remote-ts a {
+  color: inherit;
+  text-decoration: underline;
+}
 
 .registry-source {
   display: inline-block;

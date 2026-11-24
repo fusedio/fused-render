@@ -25,7 +25,10 @@ def home(tmp_path, monkeypatch):
 
 def call(app, path, headers=(), host=b"studio.local:1889", query=b""):
     scope = {"type": "http", "path": path, "method": "GET", "query_string": query, "scheme": "https",
-             "headers": [(b"host", host), *headers]}
+             "headers": [(b"host", host), *headers],
+             # A phone on the Wi-Fi, as uvicorn reports it: pairing asks where
+             # the connection came from (lan._on_local_network).
+             "client": ("192.168.1.30", 40000)}
     sent = []
 
     async def receive():
@@ -166,7 +169,8 @@ def test_status_carries_warnings_and_never_raises(home, monkeypatch):
     monkeypatch.setattr(lan._controller, "_thread", None)
     status = lan.status()
     assert status["running"] is False and status["warnings"] == [] and status["fingerprint"] is None
-    assert set(status) == {"running", "url", "hostname", "ip", "port", "error", "fingerprint", "devices", "warnings"}
+    assert set(status) == {"running", "url", "hostname", "ip", "port", "error", "fingerprint", "devices", "warnings",
+                           "remote"}
 
 
 # ---- the doctor --------------------------------------------------------------------
