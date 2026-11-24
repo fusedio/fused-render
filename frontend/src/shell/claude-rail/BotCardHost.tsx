@@ -6,7 +6,7 @@
 // store's rings). The rail keeps every rule about its rings (hover, press,
 // toggle, outside press, Escape, the frame's blur, window B's exclusivity);
 // this host draws the card and answers its own events.
-import { useEffect, useMemo, useRef } from "react";
+import { useEffect, useLayoutEffect, useMemo, useRef } from "react";
 import { useBotsAvailable } from "@platform/lib/bots-available";
 import { botsPulseAnswered, botsRowsNow, useBotsRows } from "@platform/lib/botsPulse";
 import { navigateUrl } from "@platform/lib/router";
@@ -26,24 +26,41 @@ import { pinnedBots } from "./claude-rail-lib";
 import { useFavPeekState } from "./fav-peek-store";
 import { viewPress } from "./rail-pin-lib";
 import { useUrlVersion } from "@platform/lib/hooks";
-import { botOpen, setBotOpen, setFavPinned, useBotOpen } from "@platform/lib/last-chat";
+import { addBotPin, botPinId, dropBotPin, useBotPins } from "@platform/lib/last-chat";
 import { useRailExtras } from "./rail-extras-flag";
 import { freezeFromDock } from "./rail-move-store";
-import { otherSlot, registerPinFocus, setFreeSlot, setPinTitle, useFreeSlot, type Slot } from "./rail-slots-store";
-import { PIN_BOT_ID, usePinHasBox } from "./use-pin-box";
+import { pinSlot, registerPinFocus, syncSlots, useSlots, type Slot } from "./rail-slots-store";
+import { PIN_BOT_ID, pinDomId, usePinHasBox } from "./use-pin-box";
 
 export { BOT_PEEK_ID };
 
-/** The second slot of the bot's window (rail-slots-store "THE TWO SLOTS OF A
- *  CHAT WINDOW"): mounted only with free pins on. */
-export function BotCardHostSlotY() {
-  return useRailExtras() ? <BotCardHost slot="y" /> : null;
+/** THE BOT'S WINDOW, ONE CARD PER SLOT (rail-slots-store "THE SLOTS OF A CHAT
+ *  WINDOW"): with free pins on, the free slot and one slot per pinned bot —
+ *  as many as the reader pinned (owner, 2026-11-24) — each keyed by its
+ *  slot's id, so a pin's press never remounts the card it pins. The slots
+ *  follow this window's pinned bots (`botPins`). Off, the one card. */
+const FREE_X: Slot = { id: "x", pin: null, closing: false };
+export function BotCardHostSlots() {
+  const freePins = useRailExtras();
+  const slots = useSlots("bot");
+  const ids = useBotPins();
+  useLayoutEffect(() => {
+    if (freePins) syncSlots("bot", ids);
+  }, [freePins, ids]);
+  if (!freePins) return <BotCardHost key="x" slot={FREE_X} />;
+  return (
+    <>
+      {slots.map((s) => (
+        <BotCardHost key={s.id} slot={s} />
+      ))}
+    </>
+  );
 }
 
 const noop = () => {};
 const noRing = () => null;
 
-export function BotCardHost({ slot = "x" }: { slot?: Slot } = {}) {
+export function BotCardHost({ slot = FREE_X }: { slot?: Slot } = {}) {
   const offered = useBotsAvailable(true);
   const rows = useBotsRows(offered);
   const bots = useMemo(() => pinnedBots(rows), [rows]);
@@ -52,15 +69,15 @@ export function BotCardHost({ slot = "x" }: { slot?: Slot } = {}) {
   const intent = botCardIntent();
   const ref = useRef<BotPeekHandle | null>(null);
   const freePins = useRailExtras();
-  // ONE OF TWO SLOTS, BY ROLE (rail-slots-store): the FREE slot is this host
-  // as it always was — the store's card, the rings' hovers and presses; the
-  // other shows the PINNED bot (last-chat `botOpen`, a pinned bot's mark with
-  // free pins) and takes no part in the non-pin's rules. The pin's press
-  // swaps the two roles: the card the reader pinned is never remounted.
-  const freeNow = useFreeSlot("bot");
-  const isFree = !freePins || slot === freeNow;
+  // ONE SLOT, BY ROLE (rail-slots-store): the FREE slot is this host as it
+  // always was — the store's card, the rings' hovers and presses; a pinned
+  // slot shows ITS pinned bot (`slot.pin`, one of last-chat `botPins`) and
+  // takes no part in the non-pin's rules. The pin's press hands the free
+  // slot the pin: the card the reader pinned is never remounted.
+  const isFree = !freePins || slot.pin === null;
   const pinRole = !isFree;
-  const pinnedId = useBotOpen();
+  const pinnedId = pinRole ? slot.pin : null;
+  const pinId = pinnedId !== null ? botPinId(pinnedId) : null;
   // A PAGE HOP keeps only a pinned card (rail-pin-lib `hopKeeps`): a temp one
   // goes with it. The page is the URL's path (a view switch on one page keeps
   // it, as it keeps the favourite's).
@@ -89,38 +106,40 @@ export function BotCardHost({ slot = "x" }: { slot?: Slot } = {}) {
   // on #2349: the LAST rail bot removed left the mark standing, with no
   // window, and the rail quiet for good) — before that it is what the last
   // session remembered, or nothing.
-  const pinBot = useMemo(() => (pinRole && pinnedId ? (bots.find((b) => b.id === pinnedId) ?? null) : null), [pinRole, pinnedId, bots]);
+  const liveBot = useMemo(
+    () => (pinnedId !== null && !slot.closing ? (bots.find((b) => b.id === pinnedId) ?? null) : null),
+    [pinnedId, slot.closing, bots],
+  );
   useEffect(() => {
-    if (!pinRole || !pinnedId || !offered || !botsPulseAnswered()) return;
-    if (!pinnedBots(botsRowsNow()).some((b) => b.id === pinnedId) && botOpen() === pinnedId) setBotOpen(null);
-  }, [pinRole, pinnedId, offered, bots]);
+    if (pinnedId === null || slot.closing || !offered || !botsPulseAnswered()) return;
+    if (!pinnedBots(botsRowsNow()).some((b) => b.id === pinnedId)) dropBotPin(pinnedId);
+  }, [pinnedId, slot.closing, offered, bots]);
+  // A PINNED SLOT LET GO FADES OUT WHERE IT STANDS (rail-slots-lib): the bot
+  // it showed, drawn hidden until the slot goes.
+  const fadeBot = useRef<typeof liveBot>(null);
+  if (liveBot) fadeBot.current = liveBot;
   const freeShown = useMemo(
     () => (isFree && card.key ? (bots.find((b) => b.id === card.key) ?? null) : null),
     [isFree, card.key, bots],
   );
-  const placed = usePinHasBox("b", pinRole && !!pinBot, rail);
-  const shown = pinRole ? (placed ? pinBot : null) : freeShown;
-  // The keyboard's way into the pinned window, and its name for the
-  // non-pin's pin icon (rail-slots-store).
-  const pinUp = pinRole && !!shown;
+  const placed = usePinHasBox("b", pinId, !!liveBot, rail);
+  const shown = pinRole ? (placed ? liveBot : null) : freeShown;
+  // The keyboard's way into the pinned window, by its pin's id.
+  const pinUp = pinId !== null && !!shown;
   useEffect(() => {
-    if (!pinUp) return;
-    return registerPinFocus("b", () => !!ref.current?.focusComposer() || !!ref.current?.focusChat());
-  }, [pinUp]);
-  const pinName = pinUp && shown ? shown.name || "Bot" : null;
-  useEffect(() => {
-    if (!pinRole) return;
-    setPinTitle("b", "bot-" + slot, pinName);
-    return () => setPinTitle("b", "bot-" + slot, null);
-  }, [pinRole, slot, pinName]);
+    if (!pinUp || pinId === null) return;
+    return registerPinFocus(pinId, () => !!ref.current?.focusComposer() || !!ref.current?.focusChat());
+  }, [pinUp, pinId]);
   if (bots.length === 0) return null;
   // THE PINNED WINDOW: the same card, frozen where its pin left it, until its
-  // × closes it.
+  // × closes it — and it fades out where it stands.
   if (pinRole) {
+    if (!liveBot && !(slot.closing && fadeBot.current)) return null;
     return (
       <BotPeek
         ref={ref}
-        id={PIN_BOT_ID}
+        id={pinDomId(PIN_BOT_ID, slot.id)}
+        pinId={pinId}
         pinSlot
         shown={shown}
         anchorOf={noRing}
@@ -142,7 +161,7 @@ export function BotCardHost({ slot = "x" }: { slot?: Slot } = {}) {
         onOpen={(href) => {
           const id = pinnedId;
           void navigateUrl(href).then((ok) => {
-            if (ok !== false && id && botOpen() === id) setBotOpen(null);
+            if (ok !== false && id !== null) dropBotPin(id);
           });
         }}
         held
@@ -150,9 +169,10 @@ export function BotCardHost({ slot = "x" }: { slot?: Slot } = {}) {
         pinned
         pinCtl={{
           pinned: true,
-          // Its × (rail-slots-lib "A PINNED WINDOW CLOSES BY ITS ×").
+          // Its × (rail-slots-lib "A PINNED WINDOW CLOSES BY ITS ×"): this
+          // pin alone.
           onToggle: () => {
-            if (pinnedId && botOpen() === pinnedId) setBotOpen(null);
+            if (pinnedId !== null) dropBotPin(pinnedId);
           },
         }}
       />
@@ -200,17 +220,17 @@ export function BotCardHost({ slot = "x" }: { slot?: Slot } = {}) {
         pinned: card.held,
         onToggle: () => {
           // FREE PINS (rail-slots-lib): the pin's press freezes the
-          // window where it stands, and the two slots SWAP ROLES — this
-          // card, as it is, becomes window B's pinned window (replacing
-          // a favourite or a bot pinned there); the store's card, the
-          // non-pin, is the other slot's from here on and is put down.
+          // window where it stands, and this slot TAKES THE PIN — this
+          // card, as it is, becomes one more of window B's pinned windows
+          // (every other pin stays: many pins, 2026-11-24); the store's
+          // card, the non-pin, is a fresh slot's from here on and is put
+          // down.
           const id = botCardIntent().current;
           if (freePins) {
             if (!id) return;
-            freezeFromDock("b");
-            setFavPinned(null);
-            setBotOpen(id);
-            setFreeSlot("bot", otherSlot(slot));
+            freezeFromDock("b", botPinId(id));
+            pinSlot("bot", slot.id, id);
+            addBotPin(id);
             botCardIntent().dismiss();
             return;
           }

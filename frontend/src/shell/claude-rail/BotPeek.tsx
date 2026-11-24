@@ -87,7 +87,7 @@ import {
   wishSize,
   type MoveEdge,
 } from "./rail-move-lib";
-import { commitWindowBox, magnetBox, usePusher, useWindowBox, windowPos } from "./rail-move-store";
+import { magnetBox, usePusher, useWindowBox, windowPos } from "./rail-move-store";
 import { useRailExtras } from "./rail-extras-flag";
 import { watchRailWidth } from "./rail-width-watch";
 import { drawnBox, useCardMove, useRailResizing } from "./useCardMove";
@@ -193,6 +193,10 @@ export interface BotPeekProps {
    *  shell's pinned-bot host): it floats, frozen, and takes no part in the
    *  non-pin window B's bookkeeping (`publishFavBox`). */
   pinSlot?: boolean;
+  /** FREE PINS: the pin this card shows (platform/lib last-chat `bot:<id>`),
+   *  or null while it is the non-pin: what its box, its drag and its
+   *  stacking are kept under (useCardMove), and its `data-pin-id`. */
+  pinId?: string | null;
 }
 
 export const BotPeek = forwardRef<BotPeekHandle, BotPeekProps>(function BotPeek(
@@ -214,12 +218,13 @@ export const BotPeek = forwardRef<BotPeekHandle, BotPeekProps>(function BotPeek(
     pinned,
     pinCtl,
     pinSlot = false,
+    pinId = null,
   },
   ref,
 ) {
   const cardRef = useRef<HTMLDivElement | null>(null);
-  // FREE PINS (rail-slots-lib): pinned, the card is frozen at the box the
-  // window's mark holds; not pinned, it pushes the pins it would cover.
+  // FREE PINS (rail-slots-lib): pinned, the card is frozen at the box its own
+  // pin's id holds (`pinId`; many pins, 2026-11-24); not pinned, it pushes the pins it would cover.
   const freePins = useRailExtras();
   const freePinsRef = useRef(false);
   freePinsRef.current = freePins;
@@ -228,6 +233,7 @@ export const BotPeek = forwardRef<BotPeekHandle, BotPeekProps>(function BotPeek(
   // FLOATS at the window's position — kept through a swap to a favourite.
   const move = useCardMove({
     win: "b",
+    pinId,
     movable: pinCtl.pinned,
     headSelector: RAIL_HEAD_SELECTOR,
     shown: shown?.id ?? null,
@@ -322,7 +328,7 @@ export const BotPeek = forwardRef<BotPeekHandle, BotPeekProps>(function BotPeek(
     // THE EDGE MAGNET (rail-move-lib `snapResize`; RailPeek's rule), with
     // the pin: on the axes window A holds still on (`dockedBAxes`), against
     // its card as it stood at the press, read once.
-    const otherBox = magnetBox("a", floating);
+    const otherBox = magnetBox("a", floating, { self: move.key, box });
     // FREE PINS: a docked card's neighbour is window A's non-pin, which never
     // floats.
     const magnet = dockedBAxes({ floating, aFloats: !freePins && windowPos("a") !== null, mine: box, other: otherBox });
@@ -408,7 +414,7 @@ export const BotPeek = forwardRef<BotPeekHandle, BotPeekProps>(function BotPeek(
           lastBox.width !== start.box.width ||
           lastBox.height !== start.box.height)
       )
-        commitWindowBox("b", lastBox);
+        move.commitBox(lastBox);
       return;
     }
     // A FLOATING card's left or top grip moved its corner: the window stands
@@ -468,7 +474,7 @@ export const BotPeek = forwardRef<BotPeekHandle, BotPeekProps>(function BotPeek(
     [],
   );
   // Its live box for window A's head drag (rail-move-store `windowBox`).
-  useWindowBox("b", visible ? box : null, freePins && move.floating);
+  useWindowBox("b", visible ? box : null, freePins && move.floating ? move.key : null);
   // A clicked-open non-pin pushes the pins it covers (rail-slots-lib).
   usePusher("b", freePins && visible && !move.floating && pinned ? box : null);
   const dragKey = useRef<string | null>(null);
@@ -666,7 +672,9 @@ export const BotPeek = forwardRef<BotPeekHandle, BotPeekProps>(function BotPeek(
         className={"claude-rail-peek claude-rail-bot-peek favs-on" + (visible ? " is-on" : "") + (resizing ? " is-resizing" : "") + move.className}
         role="dialog"
         aria-label={view ? `${name} — chat` : "Bot chat"}
-        style={drawn ? { left: drawn.left, top: drawn.top, width: drawn.width, height: drawn.height } : undefined}
+        // A free pin stands in the pins' own stacking (useCardMove `z`).
+        style={drawn ? { left: drawn.left, top: drawn.top, width: drawn.width, height: drawn.height, ...(move.z !== null ? { zIndex: move.z } : {}) } : undefined}
+        {...(freePins && pinId ? { "data-pin-id": pinId } : {})}
         onPointerEnter={onPointerEnter}
         onPointerLeave={onPointerLeave}
         onPointerDownCapture={onPressInsideCapture}

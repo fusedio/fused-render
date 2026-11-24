@@ -65,7 +65,7 @@ import {
   viewportOf,
   type MoveEdge,
 } from "./rail-move-lib";
-import { commitWindowBox, freezeFromDock, magnetBox, usePusher, useWindowBox } from "./rail-move-store";
+import { freezeFromDock, magnetBox, usePusher, useWindowBox } from "./rail-move-store";
 import { drawnBox, useCardMove, useRailResizing } from "./useCardMove";
 import { railExtrasNow, useRailExtras } from "./rail-extras-flag";
 import { placeColumn } from "./rail-slots-lib";
@@ -202,9 +202,12 @@ export function DoorCard({ store, href, onNoRoomPress, rail: railProp, className
   // A PINNED WINDOW MOVES (rail-move-lib; owner, 2026-11-17): every door card
   // is window A's. Pinned and dragged by its head, it FLOATS at the window's
   // position — kept through a swap to a ring, another door or the + card.
+  // FREE PINS (many pins, 2026-11-24): at ITS OWN pin's box, under its word
+  // (the store's `pinWord`) — every door card a pin of its own.
   const togglePinRef = useRef<() => void>(() => {});
   const move = useCardMove({
     win: "a",
+    pinId: store.pinWord,
     movable: card.held,
     headSelector: RAIL_HEAD_SELECTOR,
     shown: up ? String(card.seq) : null,
@@ -214,8 +217,8 @@ export function DoorCard({ store, href, onNoRoomPress, rail: railProp, className
   });
   const floatingRef = useRef(false);
   floatingRef.current = move.floating;
-  // FREE PINS (rail-slots-lib): pinned, the card is frozen at the box the
-  // window's mark holds; not pinned, it shares the rail's column with window
+  // FREE PINS (rail-slots-lib): pinned, the card is frozen at the box its own
+  // pin's id holds (its word; many pins, 2026-11-24); not pinned, it shares the rail's column with window
   // B's non-pin and pushes the pins it would cover.
   const freePins = useRailExtras();
   const freePinsRef = useRef(false);
@@ -292,7 +295,7 @@ export function DoorCard({ store, href, onNoRoomPress, rail: railProp, className
       corner,
       el: e.currentTarget,
       floating: move.floating,
-      other: magnetBox("b", move.floating),
+      other: magnetBox("b", move.floating, { self: move.key, box }),
     };
     dragLast.current = null;
     setResizing(corner);
@@ -341,7 +344,7 @@ export function DoorCard({ store, href, onNoRoomPress, rail: railProp, className
     // A FREE PIN'S RESIZE IS THE PIN'S ALONE (rail-slots-lib): the window's
     // frozen box, never the shared size.
     if (start?.floating && freePinsRef.current) {
-      if (save && last && !sameBox(last, start.box)) commitWindowBox("a", last);
+      if (save && last && !sameBox(last, start.box)) move.commitBox(last);
       return;
     }
     // A FLOATING card's left or top grip moved its corner: the window stands
@@ -376,7 +379,7 @@ export function DoorCard({ store, href, onNoRoomPress, rail: railProp, className
     [],
   );
   // Its live box for window B's head drag (rail-move-store `windowBox`).
-  useWindowBox("a", visible ? box : null, freePins && move.floating);
+  useWindowBox("a", visible ? box : null, freePins && move.floating ? move.key : null);
   // A clicked-open non-pin pushes the pins it covers (rail-slots-lib).
   usePusher("a", freePins && visible && !move.floating && card.pinned ? box : null);
   // Window A's box, for window B's grips to snap to (card-snap.ts).
@@ -603,7 +606,7 @@ export function DoorCard({ store, href, onNoRoomPress, rail: railProp, className
     }
     // …and the pin's press freezes the window where it stands, before the
     // hold makes it float (rail-move-store `freezeFromDock`).
-    if (!held && railExtrasNow()) freezeFromDock("a");
+    if (!held && railExtrasNow() && store.pinWord) freezeFromDock("a", store.pinWord);
     store.setHeld(!held);
   }, [store, close]);
   togglePinRef.current = togglePin;
@@ -653,7 +656,8 @@ export function DoorCard({ store, href, onNoRoomPress, rail: railProp, className
         }
         role="dialog"
         aria-label={ariaLabel}
-        style={drawn ? { left: drawn.left, top: drawn.top, width: drawn.width, height: drawn.height } : undefined}
+        // A free pin stands in the pins' own stacking (useCardMove `z`).
+        style={drawn ? { left: drawn.left, top: drawn.top, width: drawn.width, height: drawn.height, ...(move.z !== null ? { zIndex: move.z } : {}) } : undefined}
         onPointerEnter={() => intent.enterCard()}
         onPointerLeave={() => intent.leaveCard()}
         onPointerDownCapture={() => {

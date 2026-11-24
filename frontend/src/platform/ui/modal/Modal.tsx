@@ -337,6 +337,9 @@ export interface ModalProps {
       className: string;
       onPointerDown: (e: ReactPointerEvent<HTMLElement>) => void;
       onDoubleClick: (e: ReactMouseEvent<HTMLElement>) => void;
+      /** The layer's z-index, when the caller stacks it itself (the rail's
+       *  free pins: last pressed on top); absent, its class rules. */
+      zIndex?: number | null;
     };
   };
 }
@@ -872,7 +875,14 @@ export function Modal({
       }
       // The card's left edge, for side panels that stand beside it (Browse,
       // Custom recurrence — schedule.css `.modal-popover`).
-      {...(popover && place ? { style: { "--modal-pop-left": `${place.left}px` } as CSSProperties } : {})}
+      {...(popover && (place || typeof popover.move?.zIndex === "number")
+        ? {
+            style: {
+              ...(place ? { "--modal-pop-left": `${place.left}px` } : {}),
+              ...(typeof popover.move?.zIndex === "number" ? { zIndex: popover.move.zIndex } : {}),
+            } as CSSProperties,
+          }
+        : {})}
       // A popover card is one of our own floating layers: over the canvas
       // frame it never refuses the canvas screenshot (canvas-shot-native).
       {...(popover ? { "data-shot-own": "" } : {})}

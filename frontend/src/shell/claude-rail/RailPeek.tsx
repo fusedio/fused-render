@@ -209,7 +209,7 @@ import {
   type MoveEdge,
   type RailWindow,
 } from "./rail-move-lib";
-import { commitWindowBox, magnetBox, usePusher, useWindowBox, windowPos } from "./rail-move-store";
+import { magnetBox, usePusher, useWindowBox, windowPos } from "./rail-move-store";
 import { drawnBox, useCardMove, useRailResizing } from "./useCardMove";
 import { useRailExtras } from "./rail-extras-flag";
 import { placeColumn } from "./rail-slots-lib";
@@ -451,6 +451,11 @@ export interface RailPeekProps {
    *  the card says it the way it always did: the favourite's (`resizeKey`) is
    *  window B's, any other window A's. */
   win?: RailWindow;
+  /** FREE PINS: the pin this card shows (platform/lib last-chat — `task:<key>`,
+   *  `fav:<key>`), or null while it is its section's non-pin: what its box,
+   *  its drag and its stacking are kept under (useCardMove), and its
+   *  `data-pin-id`. */
+  pinId?: string | null;
 }
 
 /** A seat with no conversation yet (header of the body above). */
@@ -543,12 +548,13 @@ export const RailPeek = forwardRef<RailPeekHandle, RailPeekProps>(function RailP
     pinned,
     pinCtl,
     win,
+    pinId = null,
   },
   ref,
 ) {
   const cardRef = useRef<HTMLDivElement | null>(null);
   // FREE PINS (rail-slots-lib): a pinned card is
-  // FROZEN — its size and position are the window's mark's, not the shared
+  // FROZEN — its size and position are its own pin's box (`pinId`), not the shared
   // remembered size — and a non-pin shares the rail's column and pushes the
   // pins it would cover.
   const freePins = useRailExtras();
@@ -560,6 +566,7 @@ export const RailPeek = forwardRef<RailPeekHandle, RailPeekProps>(function RailP
   const moveWin: RailWindow = win ?? (resizeKey === "canvasRailFav" ? "b" : "a");
   const move = useCardMove({
     win: moveWin,
+    pinId,
     movable: pinCtl.pinned,
     headSelector: RAIL_HEAD_SELECTOR,
     shown: shown?.pulse.key ?? null,
@@ -743,7 +750,7 @@ export const RailPeek = forwardRef<RailPeekHandle, RailPeekProps>(function RailP
     // THE EDGE MAGNET (rail-move-lib `snapResize`), with the pin: both axes
     // for window A's card (window B never moves for it); for window B's, the
     // axes window A holds still on (`dockedBAxes`).
-    const otherBox = magnetBox(otherWin, floating);
+    const otherBox = magnetBox(otherWin, floating, { self: move.key, box });
     const magnet =
       moveWin === "a"
         ? BOTH_AXES
@@ -852,7 +859,7 @@ export const RailPeek = forwardRef<RailPeekHandle, RailPeekProps>(function RailP
         last &&
         (last.left !== start.box.left || last.top !== start.box.top || last.width !== start.box.width || last.height !== start.box.height)
       )
-        commitWindowBox(moveWin, last);
+        move.commitBox(last);
       return;
     }
     // A FLOATING card's left or top grip moved its corner: the window stands
@@ -899,7 +906,7 @@ export const RailPeek = forwardRef<RailPeekHandle, RailPeekProps>(function RailP
   const visible = on && box !== null && shownKey !== null;
   // Its live box, docked or floating, for the other window's head drag to
   // snap to (rail-move-store `windowBox`).
-  useWindowBox(moveWin, visible ? box : null, freePins && move.floating);
+  useWindowBox(moveWin, visible ? box : null, freePins && move.floating ? move.key : null);
   // A CLICKED-OPEN NON-PIN PUSHES THE PINS IT COVERS (rail-slots-lib): open
   // by a press (`pinned`, the list's; `held`, the favourite's), beside the
   // rail. A hover's preview pushes nothing.
@@ -1560,16 +1567,23 @@ export const RailPeek = forwardRef<RailPeekHandle, RailPeekProps>(function RailP
         move.className
       }
       role="dialog"
-      // Which window the card is, for the pin icon (RailPin `windowOf`).
+      // Which window the card is, and — a free pin — which pin (many pins:
+      // no two pinned cards share an id stem's meaning any more).
       {...(freePins ? { "data-rail-win": moveWin } : {})}
+      {...(freePins && pinId ? { "data-pin-id": pinId } : {})}
       // Ours: never makes the canvas screenshot refuse (canvas-shot-native).
       data-shot-own=""
       aria-label={head ? `${head.label} — preview` : "Chat preview"}
       style={
         drawn
-          ? view?.pulse.session_id
-            ? { left: drawn.left, top: drawn.top, width: drawn.width, height: drawn.height }
-            : { left: drawn.left, top: drawn.top, width: drawn.width }
+          ? {
+              left: drawn.left,
+              top: drawn.top,
+              width: drawn.width,
+              ...(view?.pulse.session_id ? { height: drawn.height } : {}),
+              // A free pin stands in the pins' own stacking (useCardMove `z`).
+              ...(move.z !== null ? { zIndex: move.z } : {}),
+            }
           : undefined
       }
       onPointerEnter={onPointerEnter}

@@ -1,5 +1,33 @@
 import { describe, expect, it } from "bun:test";
 import {
+  aPinned,
+  aPins,
+  addAPin,
+  addBotPin,
+  addFavPin,
+  adoptLegacyWindowBoxes,
+  botOpen,
+  botPinId,
+  botPins,
+  dropAPin,
+  dropBotPin,
+  dropFavPin,
+  favPinId,
+  favPinned,
+  favPins,
+  hasAPin,
+  isPinnedId,
+  parsePinList,
+  pinIdSection,
+  pinPosIds,
+  pinPosRaw,
+  pinnedIds,
+  serialisePinList,
+  setAPinned,
+  setBotOpen,
+  setFavPinned,
+  setPinPosRaw,
+  setWindowPosMark,
   clearFavOpen,
   favOpen,
   favOpenedAtMs,
@@ -216,5 +244,121 @@ describe("last-chat", () => {
       if (had) g.sessionStorage = prev;
       else delete g.sessionStorage;
     }
+  });
+});
+
+// MANY PINS (owner, 2026-11-24): the three pin marks are lists, each pin with
+// its own box; what the earlier build wrote still reads.
+describe("the pin marks", () => {
+  const settle = () => new Promise((r) => setTimeout(r, 0));
+  it("a list is stored as the bare word while it has one item, as JSON past that, and reads back either way", () => {
+    expect(serialisePinList([])).toBeNull();
+    expect(serialisePinList(["task:k1"])).toBe("task:k1");
+    expect(serialisePinList(["task:k1", "git"])).toBe('["task:k1","git"]');
+    expect(parsePinList(null)).toEqual([]);
+    expect(parsePinList("")).toEqual([]);
+    // The earlier build's one word: a one-item list.
+    expect(parsePinList("task:k1")).toEqual(["task:k1"]);
+    expect(parsePinList("mode:read")).toEqual(["mode:read"]);
+    expect(parsePinList('["task:k1","git"]')).toEqual(["task:k1", "git"]);
+    // Junk inside the array is dropped, a repeat kept once; a bracket that is not JSON is a word.
+    expect(parsePinList('["a",3,"a","",null,"b"]')).toEqual(["a", "b"]);
+    expect(parsePinList("[oops")).toEqual(["[oops"]);
+    for (const l of [[], ["x"], ["x", "y", "z"], ["[odd"]]) expect(parsePinList(serialisePinList(l))).toEqual(l);
+  });
+  it("adds and drops one pin without touching the others; the scalar face is the newest, and its set replaces all", async () => {
+    setAPinned(null);
+    addAPin("task:k1");
+    addAPin("git");
+    addAPin("task:k1");
+    expect(aPins()).toEqual(["task:k1", "git"]);
+    // The same list while nothing changed (a hook's snapshot).
+    expect(aPins()).toBe(aPins());
+    expect(aPinned()).toBe("git");
+    expect(hasAPin("task:k1")).toBe(true);
+    dropAPin("task:k1");
+    expect(aPins()).toEqual(["git"]);
+    setAPinned("plus");
+    expect(aPins()).toEqual(["plus"]);
+    setAPinned(null);
+    expect(aPins()).toEqual([]);
+    addFavPin("f1");
+    addFavPin("f2");
+    expect(favPins()).toEqual(["f1", "f2"]);
+    expect(favPinned()).toBe("f2");
+    dropFavPin("f1");
+    expect(favPins()).toEqual(["f2"]);
+    setFavPinned(null);
+    addBotPin("b1");
+    addBotPin("b2");
+    expect(botPins()).toEqual(["b1", "b2"]);
+    expect(botOpen()).toBe("b2");
+    dropBotPin("b2");
+    expect(botPins()).toEqual(["b1"]);
+    setBotOpen(null);
+    await settle();
+  });
+  it("a pin's id says its section and whether it is pinned now", async () => {
+    expect(favPinId("k")).toBe("fav:k");
+    expect(botPinId("b")).toBe("bot:b");
+    expect(pinIdSection("fav:k")).toBe("b");
+    expect(pinIdSection("bot:b")).toBe("b");
+    expect(pinIdSection("task:k")).toBe("a");
+    expect(pinIdSection("mode:read")).toBe("a");
+    addAPin("tasks");
+    addFavPin("k");
+    addBotPin("b");
+    expect(pinnedIds()).toEqual(["tasks", "fav:k", "bot:b"]);
+    expect(isPinnedId("fav:k")).toBe(true);
+    expect(isPinnedId("bot:k")).toBe(false);
+    setAPinned(null);
+    setFavPinned(null);
+    setBotOpen(null);
+    await settle();
+  });
+  it("each pin's box is its own; a pin let go has its box cleared a moment later", async () => {
+    addAPin("task:k1");
+    addAPin("git");
+    setPinPosRaw("task:k1", '{"left":1,"top":2,"width":400,"height":500}');
+    setPinPosRaw("git", '{"left":9,"top":9,"width":400,"height":500}');
+    expect(pinPosIds().sort()).toEqual(["git", "task:k1"]);
+    dropAPin("task:k1");
+    // Still there for the card fading out…
+    expect(pinPosRaw("task:k1")).not.toBeNull();
+    await settle();
+    // …then gone; the other pin's box stays.
+    expect(pinPosRaw("task:k1")).toBeNull();
+    expect(pinPosRaw("git")).toBe('{"left":9,"top":9,"width":400,"height":500}');
+    setAPinned(null);
+    await settle();
+    setPinPosRaw("git", null);
+    expect(pinPosIds()).toEqual([]);
+  });
+  it("THE EARLIER BUILD'S WINDOW BOX is adopted by the section's one pin — never by one of many", async () => {
+    const raw = '{"left":40,"top":50,"width":420,"height":640}';
+    setAPinned("task:k1");
+    setWindowPosMark("a", raw);
+    setFavPinned("f1");
+    setWindowPosMark("b", '{"left":5,"top":6}');
+    adoptLegacyWindowBoxes();
+    expect(pinPosRaw("task:k1")).toBe(raw);
+    // A box with no size (a pin dragged before free pins) is adopted as it is.
+    expect(pinPosRaw("fav:f1")).toBe('{"left":5,"top":6}');
+    // A pin with a box of its own keeps it.
+    setWindowPosMark("a", '{"left":0,"top":0,"width":420,"height":640}');
+    adoptLegacyWindowBoxes();
+    expect(pinPosRaw("task:k1")).toBe(raw);
+    // Two pins in a section: neither takes the window's box.
+    setPinPosRaw("task:k1", null);
+    addAPin("git");
+    adoptLegacyWindowBoxes();
+    expect(pinPosRaw("task:k1")).toBeNull();
+    expect(pinPosRaw("git")).toBeNull();
+    setAPinned(null);
+    setFavPinned(null);
+    await settle();
+    setPinPosRaw("fav:f1", null);
+    setWindowPosMark("a", null);
+    setWindowPosMark("b", null);
   });
 });
