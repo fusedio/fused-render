@@ -398,6 +398,7 @@ export function TaskHead({
     [headRef],
   );
   const [hot, setHot] = useState(false);
+  const [focused, setFocused] = useState(false);
   useEffect(() => {
     // (A test's stand-in node has no tree to walk and no events to hear.)
     // A two-line panel (the expanded sidebar) takes the same trigger: the
@@ -418,11 +419,22 @@ export function TaskHead({
     // …OR WHILE THE CARD HAS THE KEYBOARD (Akshil, 2026-11-16: "show fav and
     // open when card is in focus as well, not just mouse in that area"): a
     // card the reader is typing in keeps its star, its door and its ⋮ up
-    // wherever the pointer went. The Archive still waits for the pointer on
-    // the head itself (task-head.css).
+    // wherever the pointer went.
+    // …AND THE ARCHIVE COMES WITH THE FOCUS TOO (Akshil, 2026-11-24: the
+    // Archive shows whenever the window is clicked / in focus, not only while
+    // the pointer is on the head). A click counts even where nothing takes
+    // the keyboard (the transcript's text): it holds the card until a press
+    // lands outside it or the keyboard moves to something outside it.
+    // `focused` drives `.is-focused`, which lifts the head-only wait on the
+    // Archive (task-head.css).
     let pointerIn = false;
     let focusIn = false;
-    const sync = () => setHot(pointerIn || focusIn);
+    let pressedIn = false;
+    const sync = () => {
+      const held = focusIn || pressedIn;
+      setFocused(held);
+      setHot(pointerIn || held);
+    };
     const on = () => {
       pointerIn = true;
       sync();
@@ -438,15 +450,30 @@ export function TaskHead({
       sync();
     };
     const focusOff = (e: FocusEvent) => {
-      // A move between two things inside the card is not a leave.
+      // A move between two things inside the card is not a leave. Focus
+      // dropped to nothing (a click on the card's plain text, the app losing
+      // the keyboard) leaves a press inside standing; focus taken by
+      // something outside ends it.
       const to = e.relatedTarget as Node | null;
       focusIn = !!to && win.contains(to);
+      if (to && !win.contains(to)) pressedIn = false;
+      sync();
+    };
+    // One listener on the document hears the press both inside the card and
+    // anywhere else (capture: a host that stops the press still tells us).
+    const doc = win.ownerDocument ?? (typeof document !== "undefined" ? document : null);
+    const press = (e: Event) => {
+      const at = e.target as Node | null;
+      const inside = !!at && win.contains(at);
+      if (inside === pressedIn) return;
+      pressedIn = inside;
       sync();
     };
     win.addEventListener("pointerenter", on);
     win.addEventListener("pointerleave", off);
     win.addEventListener("focusin", focusOn);
     win.addEventListener("focusout", focusOff);
+    doc?.addEventListener?.("pointerdown", press, true);
     // Mounted under a pointer that is already there (a card opened by a
     // press), or around the focus (its composer took the keyboard first).
     if (typeof win.matches === "function" && win.matches(":hover")) pointerIn = true;
@@ -459,7 +486,9 @@ export function TaskHead({
       win.removeEventListener("pointerleave", off);
       win.removeEventListener("focusin", focusOn);
       win.removeEventListener("focusout", focusOff);
+      doc?.removeEventListener?.("pointerdown", press, true);
       setHot(false);
+      setFocused(false);
     };
   }, [headEl, isWindow, twoLine]);
   // THE TITLE MOVES ROWS HERE, which remounts it: a rename half-typed when
@@ -752,6 +781,7 @@ export function TaskHead({
         (twoLine ? " is-two-line" : "") +
         (seatsTight ? " is-seats-tight" : "") +
         (hot ? " is-hot" : "") +
+        (focused ? " is-focused" : "") +
         (refiled ? " is-refiled" : "") +
         (className ? ` ${className}` : "")
       }

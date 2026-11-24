@@ -948,17 +948,101 @@ test("the stylesheet trades a slot's occupants on hover — the window's in a ra
     ".task-head:not(.is-window) .task-head-slot:is(.task-head-countslot, .task-head-timeslot):not(:has(> .task-head-slot-a)) > .task-head-slot-b { opacity: 1;",
   );
   // IN A RAIL WINDOW THE ARCHIVE WAITS FOR THE HEAD ITSELF (2026-11-16): the
-  // pointer elsewhere on the card (`.is-hot`, not `:hover`) keeps the number.
+  // pointer elsewhere on the card (`.is-hot`, not `:hover`) keeps the number —
+  // unless the window is clicked / in focus (`.is-focused`, 2026-11-24).
   expect(css).toContain(
-    ".task-head.task-head:is(.is-window, .is-two-line).is-hot:not(:hover) .task-head-slot.task-head-idslot > .task-head-slot-b:not(:has(:focus-visible)) { opacity: 0;",
+    ".task-head.task-head:is(.is-window, .is-two-line).is-hot:not(:hover):not(.is-focused) .task-head-slot.task-head-idslot > .task-head-slot-b:not(:has(:focus-visible)) { opacity: 0;",
   );
   expect(css).toContain(
-    ".task-head.task-head.task-head:is(.is-window, .is-two-line).is-hot:not(:hover) .task-head-slot.task-head-idslot.task-head-idslot:not(:has(:focus-visible)) > .task-head-slot-a { opacity: 1;",
+    ".task-head.task-head.task-head:is(.is-window, .is-two-line).is-hot:not(:hover):not(.is-focused) .task-head-slot.task-head-idslot.task-head-idslot:not(:has(:focus-visible)) > .task-head-slot-a { opacity: 1;",
   );
+  expect(css).not.toContain(".is-hot:not(:hover) .task-head-slot.task-head-idslot");
   // Where there is no hover, the acts stand.
   expect(css).toContain("@media (hover: none) {");
   // The status icon trades with nothing any more.
   expect(css).not.toContain(".task-side-peek-status:hover");
+});
+
+// ---- the window clicked / in focus shows the Archive (Akshil, 2026-11-24) ----
+
+/** A head mounted in a stand-in window that records its listeners, and a
+ *  stand-in document for the presses that land anywhere. */
+function renderInWindow(el: ReactElement) {
+  type Fn = (e: unknown) => void;
+  const on = (into: Map<string, Fn[]>) => (type: string, fn: Fn) => into.set(type, [...(into.get(type) ?? []), fn]);
+  const off = (from: Map<string, Fn[]>) => (type: string, fn: Fn) => from.set(type, (from.get(type) ?? []).filter((f) => f !== fn));
+  const docFns = new Map<string, Fn[]>();
+  const winFns = new Map<string, Fn[]>();
+  const inside = { id: "inside" };
+  const outside = { id: "outside" };
+  const doc = { addEventListener: on(docFns), removeEventListener: off(docFns) };
+  const win = {
+    addEventListener: on(winFns),
+    removeEventListener: off(winFns),
+    contains: (n: unknown) => n === inside,
+    matches: () => false,
+    ownerDocument: doc,
+  };
+  let r!: ReactTestRenderer;
+  act(() => {
+    r = create(el, {
+      createNodeMock: (node) =>
+        String((node.props as { className?: string }).className ?? "").split(" ")[0] === "task-head"
+          ? { ...headOf(2000), closest: () => win, addEventListener() {}, removeEventListener() {} }
+          : {},
+    });
+  });
+  mounted.push(r);
+  const fire = (fns: Map<string, Fn[]>, type: string, e: unknown) => act(() => (fns.get(type) ?? []).forEach((f) => f(e)));
+  return { r, win: (type: string, e: unknown = {}) => fire(winFns, type, e), doc: (type: string, e: unknown) => fire(docFns, type, e), inside, outside };
+}
+
+test("a rail window clicked or holding the keyboard is `.is-focused` (the Archive shows); the pointer alone is only `.is-hot`", () => {
+  const w = renderInWindow(head({ reveal: "window" }));
+  const has = (c: string) => cls(headNode(w.r)).split(" ").includes(c);
+  expect(has("is-hot")).toBe(false);
+  expect(has("is-focused")).toBe(false);
+  // The pointer anywhere on the card: hot, the number stays.
+  w.win("pointerenter");
+  expect(has("is-hot")).toBe(true);
+  expect(has("is-focused")).toBe(false);
+  w.win("pointerleave");
+  expect(has("is-hot")).toBe(false);
+  // The keyboard inside it: focused (and hot), wherever the pointer is…
+  w.win("focusin");
+  expect(has("is-focused")).toBe(true);
+  expect(has("is-hot")).toBe(true);
+  // …a move within the card is not a leave…
+  w.win("focusout", { relatedTarget: w.inside });
+  expect(has("is-focused")).toBe(true);
+  // …the keyboard leaving for something outside is.
+  w.win("focusout", { relatedTarget: w.outside });
+  expect(has("is-focused")).toBe(false);
+  expect(has("is-hot")).toBe(false);
+  // A click on the card's plain text (nothing takes the keyboard; the focus
+  // drops to nothing) still holds it…
+  w.doc("pointerdown", { target: w.inside });
+  w.win("focusout", { relatedTarget: null });
+  expect(has("is-focused")).toBe(true);
+  // …until a press lands outside the card.
+  w.doc("pointerdown", { target: w.outside });
+  expect(has("is-focused")).toBe(false);
+  // A click inside, then the keyboard taken by something outside: let go.
+  w.doc("pointerdown", { target: w.inside });
+  expect(has("is-focused")).toBe(true);
+  w.win("focusout", { relatedTarget: w.outside });
+  expect(has("is-focused")).toBe(false);
+});
+
+test("a focused window still has no Archive on a running task, nor under a rename", () => {
+  const running = renderInWindow(head({ reveal: "window", running: true }));
+  running.win("focusin");
+  expect(cls(headNode(running.r))).toContain("is-focused");
+  expect(seatOf(running.r)).toBeUndefined();
+  const renaming = renderInWindow(head({ reveal: "window" }));
+  renaming.win("focusin");
+  act(() => byLabel(renaming.r, "Rename task")!.props.onClick());
+  expect(seatOf(renaming.r)).toBeUndefined();
 });
 
 // ---- the ring is a button (TaskIconPick, 2026-11-15; any task 2026-11-16) ----
