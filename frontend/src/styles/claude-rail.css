@@ -832,8 +832,11 @@ html.rail-card-moving iframe {
    looking at, and where a pin could not be pushed clear of it (no room to
    its left) the non-pin lies over it. Under the hover's bridge too (44), so
    a pin lying across the gap never takes the pointer on its way to the card.
-   Between the two pins: last pressed on top. The ids are named for the door
-   cards' own rule (46), as above. */
+   Between the pins — any number of them (owner, 2026-11-24) — last pressed
+   on top, the others in their order: each pin's own inline z-index
+   (rail-move-store `pinZ`, 43 for the top one, a step down for each under
+   it, never under 31), which these two rules only stand in for until it is
+   drawn. The ids are named for the door cards' own rule (46), as above. */
 .claude-rail-peek.is-free-pin,
 #claude-rail-tasks-peek.is-free-pin,
 #claude-rail-bots-peek.is-free-pin,
@@ -859,17 +862,9 @@ html.rail-card-resizing .claude-rail-peek.is-free-pin .claude-rail-peek-card,
 html.rail-card-resizing .modal-popover.is-free-pin .modal-dialog {
   transition: none;
 }
-/* THE PIN A NON-PIN'S PIN ICON IS ABOUT TO REPLACE (`.is-doomed`,
-   rail-slots-store; Akshil, 2026-11-18: "we show the pin task window border
-   subtle red so we know this task is going to be killed"): a hairline in the
-   status red while that icon is hovered or focused. The icon's own caption
-   says it in words (rail-slots-lib `pinHint`). */
-.claude-rail-peek.is-free-pin.is-doomed > .claude-rail-peek-card,
-.modal-popover.is-free-pin.is-doomed .modal-dialog {
-  outline: 1.5px solid color-mix(in srgb, var(--status-failed) 70%, transparent);
-  outline-offset: -1px;
-  box-shadow: 0 0 0 4px color-mix(in srgb, var(--status-failed) 14%, transparent);
-}
+/* (THE PIN A NON-PIN'S PIN ICON WAS ABOUT TO REPLACE wore a red border here,
+   `.is-doomed`, until 2026-11-24: with many pins a pin's press replaces
+   nothing, and the border went with the rule.) */
 /* THE WIDTH MAGNET'S GUIDE (card-snap.ts, owner 2026-11-10): one line on
    <body> along the left edge two stacked cards share once a width drag
    snapped them level — a quiet grey, dashed (owner, 2026-11-10: "shouldn't

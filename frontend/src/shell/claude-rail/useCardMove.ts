@@ -23,7 +23,16 @@
 // card (docked or floating, while it is up — rail-move-store `windowBox`) or
 // of the viewport — or centred on either (owner, 2026-11-18: "top bottom
 // left right middle everywhere") — each axis on its own, with the dashed
-// guides along every line it stands on (card-snap) until the release.
+// guides along every line it stands on (card-snap) until the release. With
+// FREE PINS a pin's drag lines up with the NEAREST OTHER PIN, whichever
+// section (owner, 2026-11-24, many pins; rail-move-store `magnetBox`).
+//
+// MANY PINS (rail-slots-lib; owner, 2026-11-24): with free pins a pinned
+// card moves under its OWN key — its pin's id (`pinId`), never its window's —
+// so each pin has its own position, its own drag and its own place in the
+// stacking (an inline z-index, `z`, last pressed on top). A pin whose mark
+// goes (its ×) keeps the box it last drew while it fades out, and never
+// falls back to the dock.
 //
 // "BACK WHERE I LEFT IT" (owner, 2026-11-17, B10): the stored position is the
 // spot the reader dragged to, and a window that shrinks does NOT rewrite it —
@@ -55,19 +64,23 @@ import {
   type RailWindow,
 } from "./rail-move-lib";
 import {
+  PIN_Z_TOP,
+  commitWindowBox,
   commitWindowPos,
   noteFrontWindow,
+  pinZ,
+  sectionFloats,
   setLiveWindowPos,
   subscribeWindowPos,
   useFrontWindow,
   magnetBox,
-  pinEpoch,
   windowPos,
   windowSize,
+  type MoveKey,
 } from "./rail-move-store";
+import type { Box } from "./rail-peek-lib";
 import { setSnapGuides } from "./card-snap";
 import { useRailExtras } from "./rail-extras-flag";
-import { useDoomedWindow } from "./rail-slots-store";
 
 /** WHERE A FLOATING CARD IS DRAWN THIS RENDER: `box` as its chassis placed
  *  it, moved to the window's position now (`pos`, inside the viewport) — or
@@ -118,6 +131,11 @@ export interface CardMove {
    *  ` is-dragging`, ` is-front` (pressed last, rail-move-lib `raised`) —
    *  "" while none applies, so a card with nothing to move renders as it was. */
   className: string;
+  /** A FREE PIN'S z-index (rail-move-store `pinZ`: last pressed on top), for
+   *  the box's inline style; null for every other card (its class rules). */
+  z: number | null;
+  /** What this card moves under: its pin's id (free pins), else its window. */
+  key: MoveKey;
   /** The box's pointerdown (bubble phase). */
   onPointerDown(e: ReactPointerEvent<HTMLElement>): void;
   /** The box's double-click: a floating card docks, and stays pinned. */
@@ -127,13 +145,14 @@ export interface CardMove {
   /** Where the window now stands for good (a left or top resize moved it),
    *  or docked (`null`). */
   setPos(pos: Pos | null): void;
-  /** WHERE THIS CARD'S WINDOW FLOATS, read live (a placement outside render:
-   *  a resize, a scroll) — the window's position, or, for a pin that has been
-   *  REPLACED (rail-move-store `pinEpoch`), the spot it had: it is on its way
-   *  out and must not follow the pin that took its window. */
+  /** WHERE THIS CARD FLOATS, read live (a placement outside render: a resize,
+   *  a scroll) — its key's position, or, for a free pin whose mark has gone
+   *  (its ×, while it fades), the spot it had. */
   at(): Pos | null;
   /** …and its frozen size (free pins), the same way. */
   size(): Size | null;
+  /** A FREE PIN'S BOX, WHOLE (a resize's release): its frozen box now. */
+  commitBox(box: Box): void;
 }
 
 interface Drag {
@@ -183,6 +202,11 @@ function swallowNextClick(): void {
 
 export function useCardMove(o: {
   win: RailWindow;
+  /** FREE PINS: the pin this card is (platform/lib last-chat — a section A
+   *  word, `fav:<key>`, `bot:<id>`), or null while it is a non-pin. A card
+   *  pinned by its head's drag (`dragPins`) has it from the render its pin's
+   *  press flushes, and the drag carries on under it. */
+  pinId?: MoveKey | null;
   /** The window is PINNED (held) on this card: its head grabs. */
   movable: boolean;
   /** The card's head (rail-move-lib `RAIL_HEAD_SELECTOR`,
@@ -208,27 +232,31 @@ export function useCardMove(o: {
   // FREE PINS (rail-slots-lib): a pinned window is frozen where it stood, so
   // it always floats and nothing docks it but its unpin.
   const freePins = useRailExtras();
-  const doomed = useDoomedWindow();
+  const pinId = freePins ? (o.pinId ?? null) : null;
+  const key: MoveKey = pinId ?? win;
   const shown = o.shown ?? null;
-  useEffect(() => {
-    if (shown !== null) noteFrontWindow(win);
-  }, [shown, win]);
   const movable = o.movable;
-  // THE PIN THIS CARD IS (rail-move-store `pinEpoch`): the count its window
-  // was pinned at when this card took the pin. A later count: it was
-  // replaced, and reads the last position and size it had instead of the
-  // window's.
-  const epoch = useRef<number | null>(null);
-  if (!movable) epoch.current = null;
-  else if (epoch.current === null) epoch.current = pinEpoch(win);
-  const had = useRef<{ pos: Pos | null; size: Size | null }>({ pos: null, size: null });
+  // A card coming up, or swapping what it shows, goes on top — a pin over
+  // the other pins too.
+  const frontPin = movable ? pinId : null;
+  useEffect(() => {
+    if (shown !== null) noteFrontWindow(win, frontPin);
+  }, [shown, win, frontPin]);
+  // THE BOX A FREE PIN LAST HAD (header "MANY PINS"): its mark going (its ×)
+  // must not send the card it still draws while fading back to the dock —
+  // nor anywhere else. Kept per key: a card that changes pins starts afresh.
+  const had = useRef<{ key: MoveKey; pos: Pos | null; size: Size | null }>({ key, pos: null, size: null });
   const at = (): Pos | null => {
-    if (epoch.current !== null && epoch.current !== pinEpoch(win)) return had.current.pos;
-    const pos = windowPos(win);
-    had.current = { pos, size: windowSize(win) };
+    const pos = windowPos(key);
+    if (pos === null && freePins && had.current.key === key && had.current.pos) return had.current.pos;
+    had.current = { key, pos, size: windowSize(key) };
     return pos;
   };
-  const size = (): Size | null => (epoch.current !== null && epoch.current !== pinEpoch(win) ? had.current.size : windowSize(win));
+  const size = (): Size | null => {
+    const s = windowSize(key);
+    if (s === null && freePins && had.current.key === key && windowPos(key) === null) return had.current.size;
+    return s;
+  };
   // Read live only while this card can float: a drag's every frame would
   // otherwise re-render every card of both windows. The other window counts
   // only as "does it float" (the stacking).
@@ -240,17 +268,22 @@ export function useCardMove(o: {
   );
   const otherFloats = useSyncExternalStore(
     subscribeWindowPos,
-    () => windowPos(otherWin) !== null,
+    () => sectionFloats(otherWin),
     () => false,
   );
   const front = useFrontWindow();
   const floating = isFloating({ movable, pos });
+  const z = useSyncExternalStore(
+    subscribeWindowPos,
+    () => (pinId !== null && movable ? pinZ(pinId) : null),
+    () => null,
+  );
   const [dragging, setDragging] = useState(false);
   const drag = useRef<Drag | null>(null);
   const stop = useRef<(() => void) | null>(null);
   const dragPins = freePins && !movable ? (o.dragPins ?? null) : null;
-  const now = useRef({ movable, floating, headSelector, freePins, dragPins });
-  now.current = { movable, floating, headSelector, freePins, dragPins };
+  const now = useRef({ movable, floating, headSelector, freePins, dragPins, key });
+  now.current = { movable, floating, headSelector, freePins, dragPins, key };
 
   const finish = (commit: boolean) => {
     const d = drag.current;
@@ -269,10 +302,13 @@ export function useCardMove(o: {
     } catch {
       // The box left the page under the drag: nothing holds the pointer.
     }
+    // Under the key the card moves under now: a non-pin its head's drag
+    // pinned took its pin's id in the press's render (`dragPins`).
+    const k = now.current.key;
     if (commit && d.latest) {
-      commitWindowPos(win, d.latest);
+      commitWindowPos(k, d.latest);
       swallowNextClick();
-    } else setLiveWindowPos(win, null);
+    } else setLiveWindowPos(k, null);
   };
   const finishRef = useRef(finish);
   finishRef.current = finish;
@@ -341,16 +377,19 @@ export function useCardMove(o: {
       }
       const size = { width: d.width, height: d.height };
       const view = viewportOf(window);
-      // THE EDGE MAGNET (header): flush with the other window's card or the
-      // viewport — an edge or the middle — within EDGE_SNAP_PX, the guides
-      // along every line the box now stands on.
-      const snapped = snapEdges(clampPos({ left: d.left + dx, top: d.top + dy }, size, view), size, magnetBox(otherWin, true), view);
+      // THE EDGE MAGNET (header): flush with the other window's card — with
+      // free pins the nearest other pin — or the viewport, an edge or the
+      // middle, within EDGE_SNAP_PX, the guides along every line the box now
+      // stands on.
+      const asked = clampPos({ left: d.left + dx, top: d.top + dy }, size, view);
+      const other = magnetBox(otherWin, true, { self: now.current.key, box: { ...asked, ...size } });
+      const snapped = snapEdges(asked, size, other, view);
       d.latest = snapped.pos;
       setSnapGuides(snapped.x, snapped.y);
       if (!d.raf) {
         d.raf = requestAnimationFrame(() => {
           d.raf = 0;
-          if (drag.current === d && d.latest) setLiveWindowPos(win, d.latest);
+          if (drag.current === d && d.latest) setLiveWindowPos(now.current.key, d.latest);
         });
       }
     };
@@ -376,7 +415,7 @@ export function useCardMove(o: {
     if (!now.current.floating || now.current.freePins) return;
     const el = elementOf(e.target);
     if (!el || !e.currentTarget.contains(el) || !headDocks(el, now.current.headSelector)) return;
-    commitWindowPos(win, null);
+    commitWindowPos(now.current.key, null);
   };
 
   // The pin went under the drag (the pin icon by keyboard, a close): the drag
@@ -391,7 +430,11 @@ export function useCardMove(o: {
   // squeezed inside the viewport (rail-move-lib `floatPlacement`) until the
   // room returns.
 
-  const isFront = raised({ win, front, anyFloating: floating || otherFloats });
+  // A FREE PIN stands in the pins' own stacking (`z`): on top of them is
+  // `is-front`. Every other card: last pressed window on top, as ever.
+  const freePin = freePins && floating;
+  const pinTop = freePin && z === PIN_Z_TOP;
+  const isFront = freePin ? pinTop : raised({ win, front, anyFloating: floating || otherFloats });
   return {
     floating,
     pos: floating ? pos : null,
@@ -402,18 +445,19 @@ export function useCardMove(o: {
       (floating ? " is-floating" : "") +
       (dragging ? " is-dragging" : "") +
       (isFront ? " is-front" : "") +
-      // A FREE PIN (rail-slots-lib): under the non-pins, never dimmed by a
-      // ring's hover row, and the one a red border marks (claude-rail.css).
-      (freePins && floating ? " is-free-pin" : "") +
-      // …the pin a non-pin's pin icon is about to replace (rail-slots-store).
-      (freePins && floating && doomed === win ? " is-doomed" : ""),
+      // A FREE PIN (rail-slots-lib): under the non-pins, and never dimmed by a
+      // ring's hover row (claude-rail.css).
+      (freePin ? " is-free-pin" : ""),
+    z: freePin ? z : null,
+    key,
     onPointerDown,
     onDoubleClick,
     notePress: () => {
-      noteFrontWindow(win);
+      noteFrontWindow(win, now.current.movable ? pinId : null);
     },
-    setPos: (p) => commitWindowPos(win, p),
+    setPos: (p) => commitWindowPos(key, p),
     at,
     size,
+    commitBox: (box) => commitWindowBox(key, box),
   };
 }

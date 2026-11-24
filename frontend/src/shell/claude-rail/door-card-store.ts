@@ -19,9 +19,10 @@
 //     the door a plain link to its page (`doorAction`);
 //   - the keyboard into the card (`registerFocus` / `focusCard`): an Enter on
 //     the door pins the card, and the keyboard should land in it.
-import { aPinned, setAPinned } from "@platform/lib/last-chat";
+import { aPinned, addAPin, dropAPin, setAPinned } from "@platform/lib/last-chat";
 import { useSyncExternalStore } from "react";
 import { PeekIntent, type Timers } from "./rail-peek-lib";
+import { railExtrasNow } from "./rail-extras-flag";
 
 export interface DoorCardState {
   /** Up: a hover's preview or pinned. */
@@ -58,6 +59,9 @@ export interface DoorCardStore {
   readonly key: string;
   /** The card's DOM id — what the door's `aria-controls` names. */
   readonly id: string;
+  /** Its word among section A's pins (`aPinned`), when it has one — with free
+   *  pins also its pin's id: its box, its stacking (rail-move-store). */
+  readonly pinWord: string | null;
   /** The shell's one intent machine for the card. The door reports its
    *  pointer and presses to it; the card its own pointer, focus and presses. */
   intent(): PeekIntent;
@@ -98,7 +102,10 @@ export interface DoorCardStore {
 
 /** `pinWord`: what window A's mark says while this card is pinned (`aPinned`,
  *  rail-pin-lib `aPinWord`) — written here, where the hold is, so a close
- *  from anywhere (the card's own Open, a rail that is gone) lets the mark go. */
+ *  from anywhere (the card's own Open, a rail that is gone) lets the mark go.
+ *  FREE PINS (rail-slots-lib "MANY PINS", 2026-11-24): the mark is a list,
+ *  and this card's word joins it and leaves it on its own — no other pin is
+ *  touched. Off, the word is the window's one mark, as ever. */
 export function createDoorCardStore(key: string, id: string, pinWord?: string): DoorCardStore {
   let state: DoorCardState = { up: false, pinned: false, held: false, seq: 0, ready: false };
   const press = { inside: false };
@@ -122,7 +129,10 @@ export function createDoorCardStore(key: string, id: string, pinWord?: string): 
     const wasHeld = state.held;
     state = next;
     if (pinWord && wasHeld !== next.held) {
-      if (next.held) setAPinned(pinWord);
+      if (railExtrasNow()) {
+        if (next.held) addAPin(pinWord);
+        else dropAPin(pinWord);
+      } else if (next.held) setAPinned(pinWord);
       else if (aPinned() === pinWord) setAPinned(null);
     }
     for (const fn of [...subs]) fn();
@@ -141,6 +151,7 @@ export function createDoorCardStore(key: string, id: string, pinWord?: string): 
   return {
     key,
     id,
+    pinWord: pinWord ?? null,
     intent() {
       if (!intent) {
         intent = new PeekIntent(

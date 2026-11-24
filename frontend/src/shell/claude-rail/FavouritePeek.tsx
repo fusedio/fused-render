@@ -85,30 +85,34 @@
 // canvas page, a node of THAT canvas is selected in place, the page's canvas
 // read off the rail this card stands beside (fav-peek-store `railHere`).
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
-import { cardTitleLine } from "@shell/tasks-lib";
 import { type Task, type TaskPulseTask } from "@platform/lib/api";
 import { navigateUrl } from "@platform/lib/router";
 import { useUrlVersion } from "@platform/lib/hooks";
 import { opensOnThisPage } from "@shell/useAppPageClaudePane";
 import { readListing, readTasksRows, refreshListing, subscribeListing, tasksPulseLoaded, useTasksPulseRows } from "@shell/tasksPulse";
 import {
+  addFavPin,
   clearFavOpen,
+  dropFavPin,
   favOpen,
   favOpenedAtMs,
+  favPinId,
   favPinned,
+  hasFavPin,
   lastChatId,
   setFavOpen,
   setFavPinned,
   setLastFav,
+  useAPins,
   useFavOpen,
   useFavPinned,
+  useFavPins,
 } from "@platform/lib/last-chat";
-import { setBotOpen, useAPinned } from "@platform/lib/last-chat";
-import { aPinTask } from "./rail-slots-lib";
+import { aPinTasks } from "./rail-slots-lib";
 import { useRailExtras } from "./rail-extras-flag";
 import { freezeFromDock } from "./rail-move-store";
-import { otherSlot, registerPinFocus, setFreeSlot, setPinTitle, useFreeSlot, type Slot } from "./rail-slots-store";
-import { PIN_B_ID, usePinHasBox } from "./use-pin-box";
+import { pinSlot, registerPinFocus, syncSlots, useSlots, type Slot } from "./rail-slots-store";
+import { PIN_B_ID, pinDomId, usePinHasBox } from "./use-pin-box";
 import { RailPeek, type RailPeekHandle } from "./RailPeek";
 import {
   dismissFavHover,
@@ -171,14 +175,31 @@ const noop = () => {};
  *  wait on a faster display (Bugbot on #2170). */
 const FAV_COMPOSER_WAIT_MS = 2500;
 
-/** The second slot of the favourite's window (rail-slots-store "THE TWO SLOTS
- *  OF A CHAT WINDOW"): mounted only with free pins on — off, the one card
- *  below is all there is, as it always was. */
-export function FavouritePeekSlotY() {
-  return useRailExtras() ? <FavouritePeek slot="y" /> : null;
+/** THE FAVOURITE'S WINDOW, ONE CARD PER SLOT (rail-slots-store "THE SLOTS OF
+ *  A CHAT WINDOW"): with free pins on, the free slot and one slot per pinned
+ *  favourite — as many as the reader pinned (owner, 2026-11-24) — each keyed
+ *  by its slot's id, so a pin's press never remounts the card it pins. The
+ *  slots follow this window's pins (`favPins`): a reload, a pin made in the
+ *  node chat's frame. Off, the one card is all there is, as it always was. */
+const FREE_X: Slot = { id: "x", pin: null, closing: false };
+export function FavouritePeekSlots() {
+  const freePins = useRailExtras();
+  const slots = useSlots("fav");
+  const keys = useFavPins();
+  useLayoutEffect(() => {
+    if (freePins) syncSlots("fav", keys);
+  }, [freePins, keys]);
+  if (!freePins) return <FavouritePeek key="x" slot={FREE_X} />;
+  return (
+    <>
+      {slots.map((s) => (
+        <FavouritePeek key={s.id} slot={s} />
+      ))}
+    </>
+  );
 }
 
-export function FavouritePeek({ slot = "x" }: { slot?: Slot } = {}) {
+export function FavouritePeek({ slot = FREE_X }: { slot?: Slot } = {}) {
   const rows = useTasksPulseRows();
   const [listing, setListing] = useState<Task[] | null>(() => readListing());
   useEffect(() => {
@@ -193,31 +214,36 @@ export function FavouritePeek({ slot = "x" }: { slot?: Slot } = {}) {
   // (last-chat `favPinned`) naming the open key.
   const openKey = useFavOpen();
   const pinnedKey = useFavPinned();
-  // FREE PINS (rail-slots-lib): the favourite's window is two slots — its
-  // non-pin and its pin (below) — so the pin's key and the open key are two
+  // FREE PINS (rail-slots-lib): the favourite's window is slots — its
+  // non-pin and one per pin (below) — so a pin's key and the open key are
   // different chats.
   const freePins = useRailExtras();
-  // ONE OF TWO SLOTS, BY ROLE (rail-slots-store): the FREE slot is this card
-  // as it always was — the open key, the hover, every rule below; the other
-  // shows the PINNED favourite (`favPinned`) and nothing else, and none of
-  // the non-pin's rules run in it. The pin's press swaps the two roles, so
-  // the card the reader pinned is this very card, never remounted.
-  const freeNow = useFreeSlot("fav");
-  const isFree = !freePins || slot === freeNow;
+  // ONE SLOT, BY ROLE (rail-slots-store): the FREE slot is this card as it
+  // always was — the open key, the hover, every rule below; a pinned slot
+  // shows ITS pinned favourite (`slot.pin`) and nothing else, and none of the
+  // non-pin's rules run in it. The pin's press hands the free slot the pin,
+  // so the card the reader pinned is this very card, never remounted.
+  const isFree = !freePins || slot.pin === null;
   const pinRole = !isFree;
-  const cardId = pinRole ? PIN_B_ID : FAV_PEEK_ID;
+  const slotKey = pinRole ? slot.pin : null;
+  const pinId = slotKey !== null ? favPinId(slotKey) : null;
+  const cardId = pinRole ? pinDomId(PIN_B_ID, slot.id) : FAV_PEEK_ID;
+  const isFreeRef = useRef(isFree);
+  isFreeRef.current = isFree;
   // A pin mark on a key no longer open (closed, or another favourite took
   // the window: a swap is temp, the pin is per card) goes.
   useEffect(() => {
     if (!freePins && pinnedKey !== null && pinnedKey !== openKey) setFavPinned(null);
   }, [freePins, pinnedKey, openKey]);
   // …and never one chat in both (a hand-over or a restore that opened a
-  // pinned key): the pinned window has it — this section's, or section A's
+  // pinned key): its pinned window has it — this section's, or section A's
   // (a starred chat pinned off the list).
-  const aPinKey = aPinTask(useAPinned());
+  const favKeys = useFavPins();
+  const aWords = useAPins();
+  const pinnedHere = freePins && isFree && openKey !== null && (favKeys.includes(openKey) || aPinTasks(aWords).includes(openKey));
   useEffect(() => {
-    if (freePins && isFree && openKey !== null && (openKey === pinnedKey || openKey === aPinKey)) clearFavOpen(openKey);
-  }, [freePins, isFree, openKey, pinnedKey, aPinKey]);
+    if (pinnedHere && openKey !== null) clearFavOpen(openKey);
+  }, [pinnedHere, openKey]);
   // A RELOAD BRINGS BACK ONLY A PINNED CARD (design.md row 19): an open key
   // the storage kept from before this document loaded, with no pin on it, is
   // closed — once.
@@ -225,7 +251,7 @@ export function FavouritePeek({ slot = "x" }: { slot?: Slot } = {}) {
     if (reloadChecked) return;
     reloadChecked = true;
     const key = favOpen();
-    if (key && reloadDropsOpen({ openKey: key, pinnedKey: favPinned(), openedAt: favOpenedAtMs(key), loadedAt: LOADED_AT })) {
+    if (key && reloadDropsOpen({ openKey: key, pinnedKey: hasFavPin(key) ? key : null, openedAt: favOpenedAtMs(key), loadedAt: LOADED_AT })) {
       clearFavOpen(key);
     }
   }, []);
@@ -263,13 +289,13 @@ export function FavouritePeek({ slot = "x" }: { slot?: Slot } = {}) {
   // elsewhere, archived, erased — and the pin goes with it. Once the pulse has
   // ANSWERED, judged off the feed itself (shell/tasksPulse), so an empty list
   // is "none left" and not "not asked yet" (CodeRabbit on #2349).
-  const pinRow = useMemo(() => (pinRole && pinnedKey ? (rows.find((t) => t.key === pinnedKey) ?? null) : null), [pinRole, pinnedKey, rows]);
-  const pinGone = pinRole && pinnedKey !== null && !!pinRow && (pinRow.status === "archived" || !favLike(pinRow));
+  const pinRow = useMemo(() => (slotKey !== null && !slot.closing ? (rows.find((t) => t.key === slotKey) ?? null) : null), [slotKey, slot.closing, rows]);
+  const pinGone = pinRole && slotKey !== null && !!pinRow && (pinRow.status === "archived" || !favLike(pinRow));
   useEffect(() => {
-    if (!pinRole || !pinnedKey || !tasksPulseLoaded()) return;
-    const live = readTasksRows().find((t) => t.key === pinnedKey);
-    if ((!live || live.status === "archived" || !favLike(live)) && favPinned() === pinnedKey) setFavPinned(null);
-  }, [pinRole, pinnedKey, rows]);
+    if (slotKey === null || slot.closing || !tasksPulseLoaded()) return;
+    const live = readTasksRows().find((t) => t.key === slotKey);
+    if (!live || live.status === "archived" || !favLike(live)) dropFavPin(slotKey);
+  }, [slotKey, slot.closing, rows]);
   // …or, with none open, the one a hover wants (header): a live favourite
   // only — and not while a bot's card holds the window (header).
   const hoverKey = useFavHoverKey();
@@ -280,10 +306,16 @@ export function FavouritePeek({ slot = "x" }: { slot?: Slot } = {}) {
   );
   const hovering = isFree && !open && !!hoverRow;
   const shownRow = pinRole ? (pinGone ? null : pinRow) : (open ?? hoverRow);
-  const seat = useMemo((): RailRow | null => {
+  const liveSeat = useMemo((): RailRow | null => {
     if (!shownRow) return null;
     return { pulse: shownRow, row: listing?.find((t) => t.key === shownRow.key) ?? null };
   }, [shownRow, listing]);
+  // A PINNED SLOT LET GO FADES OUT WHERE IT STANDS (rail-slots-lib "A PINNED
+  // WINDOW CLOSES BY ITS ×"): its seat as it last was, drawn hidden (RailPeek
+  // fades a card with nothing shown) until the slot goes.
+  const fadeSeat = useRef<RailRow | null>(null);
+  if (pinRole && liveSeat && !slot.closing) fadeSeat.current = liveSeat;
+  const seat = pinRole && (slot.closing || !liveSeat) ? fadeSeat.current : liveSeat;
   // A hover never outlives its cause: the open key taking over (a press),
   // or another rail standing.
   useEffect(() => {
@@ -309,8 +341,8 @@ export function FavouritePeek({ slot = "x" }: { slot?: Slot } = {}) {
   // instead) is gone.
   // A pinned window floats: it needs no rail to stand beside, only a box
   // (use-pin-box).
-  const placed = usePinHasBox("b", pinRole && !!seat, rail);
-  const shown = seat && (pinRole ? placed : rail && !noRoom) ? seat : null;
+  const placed = usePinHasBox("b", pinId, pinRole && !!liveSeat && !slot.closing, rail);
+  const shown = pinRole ? (liveSeat && !slot.closing && placed ? liveSeat : null) : seat && rail && !noRoom ? seat : null;
   const kept = useMemo(() => (seat ? [seat] : []), [seat]);
 
   // FOCUS NEVER FALLS TO THE BODY (header). Whether the keyboard was last
@@ -444,7 +476,7 @@ export function FavouritePeek({ slot = "x" }: { slot?: Slot } = {}) {
       // THE PINNED WINDOW answers only to its unpin and its Open door
       // (`openChat`); an unstar here lets the pin go with the star.
       if (pinRole) {
-        if (why === "unstar" && pinnedKey && favPinned() === pinnedKey) setFavPinned(null);
+        if (why === "unstar" && slotKey !== null) dropFavPin(slotKey);
         return;
       }
       if (hovering) {
@@ -455,7 +487,7 @@ export function FavouritePeek({ slot = "x" }: { slot?: Slot } = {}) {
       if (why === "unstar") unstarred.current = open.key;
       clearFavOpen(open.key);
     },
-    [open, hovering, pinRole, pinnedKey],
+    [open, hovering, pinRole, slotKey],
   );
   // THE OPEN DOOR (header): the favourites' own last mark, then the page
   // rail's door — the pane expands on the chat, whatever it showed — or,
@@ -472,9 +504,9 @@ export function FavouritePeek({ slot = "x" }: { slot?: Slot } = {}) {
       const went = door ? door(href) : navigateUrl(href);
       // The pinned window's door is a hand-off: the pin goes once the hop went.
       if (pinRole) {
-        const pinned = pinnedKey;
+        const pinned = slotKey;
         void Promise.resolve(went).then((ok) => {
-          if (ok !== false && pinned && favPinned() === pinned) setFavPinned(null);
+          if (ok !== false && pinned !== null) dropFavPin(pinned);
         });
         return went;
       }
@@ -488,7 +520,7 @@ export function FavouritePeek({ slot = "x" }: { slot?: Slot } = {}) {
       }
       return went;
     },
-    [seat, rail, open, pinRole, pinnedKey],
+    [seat, rail, open, pinRole, slotKey],
   );
   // A press inside the hover card keeps it: the hover becomes the open key.
   const pressInside = useCallback(() => {
@@ -504,23 +536,22 @@ export function FavouritePeek({ slot = "x" }: { slot?: Slot } = {}) {
   // press — the press inside has just turned a hover into the open key.
   const togglePin = useCallback(() => {
     // ITS × (free pins; rail-slots-lib "A PINNED WINDOW CLOSES BY ITS ×"): the
-    // pin goes and the window with it.
+    // pin goes and the window with it — no other pin.
     if (pinRole) {
-      if (pinnedKey && favPinned() === pinnedKey) setFavPinned(null);
+      if (slotKey !== null) dropFavPin(slotKey);
       return;
     }
     const key = favOpen() ?? hoverRow?.key ?? null;
     if (!key) return;
-    // FREE PINS: the pin's press freezes the window where it stands, and the
-    // two slots SWAP ROLES — this card, as it is, becomes window B's pinned
-    // window (replacing a favourite or a bot pinned there), and the other
-    // slot is the non-pin from here on.
+    // FREE PINS: the pin's press freezes the window where it stands, and this
+    // slot TAKES THE PIN (rail-slots-store) — this card, as it is, becomes one
+    // more of window B's pinned windows (every other pin stays: many pins,
+    // 2026-11-24), and a fresh slot is the non-pin from here on.
     if (freePins) {
-      freezeFromDock("b");
+      freezeFromDock("b", favPinId(key));
       dismissFavHover();
-      setBotOpen(null);
-      setFavPinned(key);
-      setFreeSlot("fav", otherSlot(slot));
+      pinSlot("fav", slot.id, key);
+      addFavPin(key);
       clearFavOpen(key);
       return;
     }
@@ -531,7 +562,7 @@ export function FavouritePeek({ slot = "x" }: { slot?: Slot } = {}) {
     if (favOpen() !== key) setFavOpen(key);
     dismissFavHover();
     setFavPinned(key);
-  }, [hoverRow, freePins, pinRole, pinnedKey, slot]);
+  }, [hoverRow, freePins, pinRole, slotKey, slot.id]);
   // A PAGE HOP KEEPS ONLY A PINNED CARD (rail-pin-lib `hopKeeps`): the open
   // favourite that was already open before the URL's path changed, and is not
   // pinned, closes. A key opened BY the hop (the where-chip's hand-over, its
@@ -542,7 +573,7 @@ export function FavouritePeek({ slot = "x" }: { slot?: Slot } = {}) {
     const was = hopSeen.current;
     hopSeen.current = { path, key: openKey };
     if (!isFree) return;
-    if (openKey && hopDropsOpen({ was, now: { path, key: openKey }, pinnedKey: favPinned() })) clearFavOpen(openKey);
+    if (openKey && hopDropsOpen({ was, now: { path, key: openKey }, pinnedKey: hasFavPin(openKey) ? openKey : null })) clearFavOpen(openKey);
   }, [path, openKey, isFree]);
   // Only an OPEN card makes the rail's own card give way (`avoid`); a hover
   // overlaps it and publishes nothing.
@@ -558,11 +589,12 @@ export function FavouritePeek({ slot = "x" }: { slot?: Slot } = {}) {
   // `openIcon`): read against the URL now — a hop re-renders this card.
   useUrlVersion();
   const openIcon = (href: string) => !opensOnThisPage(href, location.pathname);
+  // The non-pin going takes its place in the column with it.
   useEffect(
     () => () => {
-      if (slot === "x") publishFavBox(null, "fav");
+      if (isFreeRef.current) publishFavBox(null, "fav");
     },
-    [slot],
+    [],
   );
   // A CARD THAT TAKES THE PIN LETS GO OF ITS PLACE IN THE RAIL'S COLUMN, once,
   // as its role changes (owner, 2026-11-19: "this limiting on 50% height is
@@ -576,25 +608,21 @@ export function FavouritePeek({ slot = "x" }: { slot?: Slot } = {}) {
     if (pinRole && !was) publishFavBox(null, "fav");
   }, [pinRole]);
   // The keyboard's way into the pinned window (a ring's click on the pinned
-  // favourite), and the name the non-pin's pin icon says it would replace.
+  // favourite), by its pin's id.
   const peekRef = useRef<RailPeekHandle | null>(null);
-  const pinUp = pinRole && !!shown;
+  const pinUp = pinId !== null && !!shown;
   useEffect(() => {
-    if (!pinUp) return;
-    return registerPinFocus("b", () => !!peekRef.current?.focusComposer() || !!peekRef.current?.focusChat());
-  }, [pinUp]);
-  const pinTitleText = pinUp && seat ? cardTitleLine({ ...seat.pulse, ...(seat.row ?? {}) } as Task).text || seat.pulse.title || "Chat" : null;
-  useEffect(() => {
-    if (!pinRole) return;
-    setPinTitle("b", "fav-" + slot, pinTitleText);
-    return () => setPinTitle("b", "fav-" + slot, null);
-  }, [pinRole, slot, pinTitleText]);
-  if (!seat || !place || (pinRole && !placed)) return null;
+    if (!pinUp || pinId === null) return;
+    return registerPinFocus(pinId, () => !!peekRef.current?.focusComposer() || !!peekRef.current?.focusChat());
+  }, [pinUp, pinId]);
+  // A slot fading out stands where it stood, its box gone with its pin.
+  if (!seat || !place || (pinRole && !placed && !slot.closing)) return null;
   return (
     <RailPeek
       ref={peekRef}
       id={cardId}
       win="b"
+      pinId={pinId}
       shown={shown}
       kept={kept}
       anchorOf={anchorOf}

@@ -1,38 +1,53 @@
-// FREE PINS: FOUR WINDOWS OFF THE RAIL (owner, 2026-11-18). Behind
-// Rail extras (`rail_extras_enabled`, rail-extras-flag.ts): off, every card keeps
-// the rules of rail-pin-lib and rail-move-lib as they were.
+// FREE PINS: WINDOWS OFF THE RAIL (owner, 2026-11-18; MANY PINS, 2026-11-24).
+// Behind Rail extras (`rail_extras_enabled`, rail-extras-flag.ts): off, every
+// card keeps the rules of rail-pin-lib and rail-move-lib as they were.
 //
 // THE RAIL HAS TWO SECTIONS (owner: "section a which opens window a → between
 // bots, tasks, + icon, tasks and git icon. section b → between fav tasks and
-// pin bots"), and EACH SECTION HAS TWO SLOTS:
+// pin bots"), and EACH SECTION HAS ONE NON-PIN AND ANY NUMBER OF PINS:
 //
 //   non-pin  the window a hover or a click opens. It stands beside the rail,
 //            always ("non pin window position is fixed next to the rail"), and
 //            the two sections' non-pins share the rail's ONE COLUMN, their
 //            heights adjusted to fit ("if unpinned we make sure that both
 //            windows show in same column, we adjust height etc"). One per
-//            section: the next ring's click swaps what it shows.
-//   pin      the window the pin icon made. THE PIN IS THE TASK'S, not the
-//            window's (until now another ring swapped what a pinned window
-//            showed): a click on any other ring opens that task in the
-//            section's NON-PIN slot and leaves the pin alone ("when we click
-//            on other tasks we open it next to rail in non pin form"). One
-//            per section, so four windows at most ("max 4 windows").
+//            section: the next ring's click swaps what it shows ("in normal
+//            click preview", 2026-11-24 — a plain click never pins).
+//   pins     the windows the pin icon made — or a drag of a non-pin's head
+//            (owner, 2026-11-24: "if i move the window we pin it, like from
+//            the topbar … when i click and drag the whole topbar, that should
+//            pin it"). THE PIN IS THE TASK'S, not the window's: a click on any
+//            other ring opens that task in the section's NON-PIN and leaves
+//            every pin alone ("when we click on other tasks we open it next
+//            to rail in non pin form"). AS MANY AS THE READER MAKES (owner,
+//            2026-11-24: "we should allow multiple pins"; cap: "No cap"; which
+//            cards: "Everything" — any list task, favourite and bot, and the
+//            Tasks, Bots, Git, each mode door's and the + New task card, each
+//            once). Pinning never closes or replaces another pin (until
+//            2026-11-24 a section had one pin, and a pin's press replaced it).
+//
+// A CARD IS PINNED AT MOST ONCE ("one chat, one window"): a ring's or a door's
+// click on what is pinned already RAISES that pinned window and puts the
+// keyboard in it (`slotClick` "raise", `pinOf`) — in whichever section it was
+// pinned; a starred chat has a ring in both.
 //
 // A PIN IS FROZEN WHERE IT STOOD ("when we pin it stores that exact state as
 // position and height, so even if i close other window it doesn't expand or
 // move"; "we pin we don't resize"): the non-pin window's box at the press
-// becomes the pin's box — position AND size, kept beside the pin's mark for as
-// long as the pin (rail-move-store `commitWindowBox`). It remembers nothing
-// from an earlier pin ("we pin we loose memory of size and position"), and
-// nothing moves or resizes it afterwards but the reader's own drag ("for
-// pinned windows we don't adjust position height width unless non pin windows
-// interact, we leave it to user"). Its size is its own ("pin should have loose
-// size"): a pin's resize never writes the shared `canvasRailPeek` /
-// `canvasRailFav` sizes, which stay the non-pins'.
+// becomes the pin's box — position AND size, kept under the pin's own id for
+// as long as the pin (rail-move-store `commitWindowBox`, platform/lib
+// last-chat `pinPosRaw`). It remembers nothing from an earlier pin ("we pin
+// we loose memory of size and position"), and nothing moves or resizes it
+// afterwards but the reader's own drag ("for pinned windows we don't adjust
+// position height width unless non pin windows interact, we leave it to
+// user"). Its size is its own ("pin should have loose size"): a pin's resize
+// never writes the shared `canvasRailPeek` / `canvasRailFav` sizes, which
+// stay the non-pins', nor another pin's box. Each pin has its own drag, its
+// own resize and its own ×.
 //
-// TWO PINS NEVER PUSH EACH OTHER ("two pins don't push each other, they will
-// overlap"): last pressed on top, the guides between them as before.
+// PINS NEVER PUSH EACH OTHER ("two pins don't push each other, they will
+// overlap"): LAST PRESSED ON TOP, the others keeping their order among
+// themselves (rail-move-store `pinOrder`), the guides between them as before.
 //
 // A NON-PIN PUSHES A PIN OUT OF ITS WAY ("non pin windows will push the
 // pins"), ON A CLICK ONLY (owner's answer, 2026-11-18: a hover's preview lies
@@ -45,19 +60,16 @@
 // again ("they will be pushed back when non pins are closed by click
 // outside"). With no room to its left the pin stays and the non-pin lies over
 // it. A pushed pin the reader drags is put where the drag ends: that is its
-// home now.
-//
-// PINNING A NON-PIN REPLACES ITS SECTION'S PIN ("if i do non pin window and
-// pin that window it replaces that window and pin start from non pin location
-// and size, next to the rail"): the old pin closes. The reader sees it coming
-// — the pin icon's hover on a non-pin wears the section's pinned window a red
-// border, and the icon's caption names what goes (`pinHint`; a colour alone
-// says nothing to a reader who cannot see it).
+// home now. Every pin at once (`pushedPins`): nearest the rail first, and a
+// pin the push moved is in the way of the ones after it.
 //
 // A PINNED WINDOW CLOSES BY ITS × (owner, 2026-11-19: "unpin should close it as
 // well, so instead of unpin filled pin icon it should be a 'x' button"): the
 // pin icon's seat, on a pinned window, is a × — the pin goes and the window
-// with it. (Until then the unpin put it back beside the rail as the non-pin.)
+// with it, fading out where it stands. (Until then the unpin put it back
+// beside the rail as the non-pin.) On a non-pin the icon says "Pin" and
+// nothing else: with no cap, a pin's press replaces nothing, and the red
+// border and "replaces …" caption that warned of it are gone (2026-11-24).
 //
 // WITH ANY WINDOW OPEN, A HOVER SAYS THE TITLE ONLY (owner, 2026-11-19: "when
 // we have a window already open pinned/non-pinned let's not show the full
@@ -68,29 +80,32 @@
 // A PIN GOES WITH ITS RING (owner, 2026-11-19: "when we have a task ring item
 // or git that isn't in next view in rail we should close it even if pinned"):
 // a view whose rail has no ring for a pinned list task, or no door for a
-// pinned Tasks / Bots / Git / + card, closes it (ClaudeRail). A favourite's
-// ring and a bot's face stand in every rail, so section B's pins stay.
+// pinned Tasks / Bots / Git / mode / + card, closes THAT pin (ClaudeRail),
+// every other one staying. A favourite's ring and a bot's face stand in every
+// rail, so section B's pins stay.
 //
 // A RING'S HOVER ROW DIMS ONLY THE NON-PIN (owner's answer: "do this only for
-// non pin windows because that is the one going to be replace"): the pin is
-// not what a click replaces any more.
+// non pin windows because that is the one going to be replace"): a pin is
+// not what a click replaces.
 //
 // NOTHING ON SCREEN MOVES UNLESS ITS RULE SAYS SO (owner, 2026-11-18: "when i
 // click pin the whole window moves … it should be smooth, no flicker,
 // jumping"). The pin's press changes a card's ROLE, never the card: a chat
-// window is two mounted cards of one kind that swap roles (rail-slots-store
-// "THE TWO SLOTS OF A CHAT WINDOW"), a door's card and the + pin where they
-// are, and the list's pair is drawn by the shell (rail-list-host-store) so a
-// page hop does not remount it. So: a pin's press leaves every pixel of its
-// card where it was; the pin it replaces fades out where it stood
-// (rail-move-store `pinEpoch`); its × fades it out where it is; a push
-// glides, and glides back.
+// window is a list of mounted cards of one kind — its free slot and one slot
+// per pin — and the press hands the free slot's card the pin's role, a fresh
+// free slot taking its place (rail-slots-store "THE SLOTS OF A CHAT WINDOW");
+// a door's card and the + pin where they are; and the list's slots are drawn
+// by the shell (rail-list-host-store) so a page hop does not remount them.
+// So: a pin's press leaves every pixel of its card where it was; its × fades
+// it out where it is (useCardMove keeps the box it last drew while its mark
+// goes); a push glides, and glides back.
 //
 // PINNING FREEZES THE WHOLE PICTURE (owner, 2026-11-19: "when we pin it shifts
 // back in and overlap happens on them"). A non-pin that is pinned stops
 // pushing — and a pin it had pushed aside would slide home, under the new
-// pin. So the pin's press freezes every window where it is DRAWN: the other
-// pin's pushed position becomes its home (rail-move-store `freezeFromDock`).
+// pin. So the pin's press freezes every window where it is DRAWN: each pin it
+// pushed has its pushed position made its home (rail-move-store
+// `freezeFromDock`).
 // The list's non-pin shares the rail's column with window B's NON-PIN only
 // (owner, 2026-11-19, of a build that kept it short above a pinned favourite
 // too: "this limiting on 50% height is bad"): over a pin it stands at its
@@ -303,29 +318,34 @@ export interface PinAt {
   size: Size;
 }
 
-/** BOTH PINS AT ONCE (owner, 2026-11-19, of a pushed pin landing on the other
- *  one: the user "would lose window and task"). Each pin is pushed clear of
- *  the non-pins as `pushedPos` says — the one standing nearer the rail first;
- *  and a pin that push MOVED is in the other's way too, so the two never end
- *  up stacked by the system's own doing. Two pins the reader laid over each
- *  other stay as they are ("two pins don't push each other"): only a pin a
- *  non-pin moved pushes, and everything is back home when the non-pin goes. */
-export function pushedPins(
-  pins: Partial<Record<RailWindow, PinAt | null>>,
+/** EVERY PIN AT ONCE (owner, 2026-11-19, of a pushed pin landing on the other
+ *  one: the user "would lose window and task"; any number of pins since
+ *  2026-11-24). Each pin is pushed clear of the non-pins as `pushedPos` says —
+ *  the one standing nearest the rail first (its right edge furthest right; a
+ *  tie in the order given); and a pin that push MOVED is in the way of the
+ *  ones after it, so no two end up stacked by the system's own doing. Pins
+ *  the reader laid over each other stay as they are ("two pins don't push
+ *  each other"): only a pin a non-pin moved pushes, and everything is back
+ *  home when the non-pin goes. Keyed by anything — a pin's id; every key
+ *  given comes back (null for one given as null). */
+export function pushedPins<K extends string>(
+  pins: Partial<Record<K, PinAt | null>>,
   docks: readonly Box[],
   gap = PUSH_GAP,
-): Record<RailWindow, PushedPos | null> {
-  const out: Record<RailWindow, PushedPos | null> = { a: null, b: null };
-  const order = (["a", "b"] as const)
+): Record<K, PushedPos | null> {
+  const out = {} as Record<K, PushedPos | null>;
+  const keys = Object.keys(pins) as K[];
+  for (const k of keys) out[k] = null;
+  const order = keys
     .filter((w) => !!pins[w])
     .sort((p, q) => pins[q]!.pos.left + pins[q]!.size.width - (pins[p]!.pos.left + pins[p]!.size.width));
   // The pins already placed, each with the box it had at home.
-  const placed: { win: RailWindow; home: Box; at: Box; moved: boolean }[] = [];
+  const placed: { win: K; home: Box; at: Box; moved: boolean }[] = [];
   for (const w of order) {
     const pin = pins[w]!;
     const boxAt = (pos: PushedPos): Box => ({ left: pos.left, top: pos.top, width: pin.size.width, height: pos.height ?? pin.size.height });
-    // The other pin, unless the reader laid the two over each other: a step
-    // up must not land this one on it.
+    // The other pins, but one the reader laid this one over: a step up must
+    // not land this one on any of them.
     const keepOff: Box[] = [];
     for (const o of order) {
       if (o === w) continue;
@@ -377,33 +397,39 @@ export function placeColumn(anchor: Box, rail: Box, row: Box, avoid: Box | null,
   return peekPlacement(anchor, rail, row, wish);
 }
 
-/** WHAT A SECTION'S PIN SHOWS, as its marks spell it (platform/lib last-chat):
- *  section A's one word (`aPinned`: `task:<key>`, `plus`, `tasks`, `bots`,
- *  `git`), section B's two (`favPinned` a task's key, `botOpen` a bot's id). */
+/** WHAT THE PINS SHOW, as their marks spell them (platform/lib last-chat):
+ *  section A's words (`aPins`: `task:<key>`, `plus`, `tasks`, `bots`, `git`,
+ *  `mode:<m>`), section B's favourites' keys (`favPins`) and bots' ids
+ *  (`botPins`). */
 export interface PinMarks {
-  aWord: string | null;
-  favKey: string | null;
-  botId: string | null;
+  aWords: readonly string[];
+  favKeys: readonly string[];
+  botIds: readonly string[];
 }
 
-/** The task key section A's pin shows, or null (no pin, or a door's card). */
+/** The task key a section A pin's word shows, or null (a door's card). */
 export function aPinTask(aWord: string | null): string | null {
   return aWord && aWord.startsWith("task:") && aWord.length > 5 ? aWord.slice(5) : null;
 }
 
-/** WHICH PINNED WINDOW ALREADY SHOWS THIS TASK (header "THE PIN IS THE
- *  TASK'S"): a ring's click on a pinned task raises its pin — in whichever
- *  section it was pinned; a starred chat has a ring in both — and opens no
- *  second window on the same chat (one chat, one composer). Null: none. */
-export function pinOf(key: string, marks: Pick<PinMarks, "aWord" | "favKey">): RailWindow | null {
-  if (aPinTask(marks.aWord) === key) return "a";
-  if (marks.favKey === key) return "b";
-  return null;
+/** Every task key section A's pins show, in their order. */
+export function aPinTasks(aWords: readonly string[]): string[] {
+  const out: string[] = [];
+  for (const w of aWords) {
+    const k = aPinTask(w);
+    if (k !== null) out.push(k);
+  }
+  return out;
 }
 
-/** Is section `win` pinned on anything? */
-export function sectionPinned(win: RailWindow, marks: PinMarks): boolean {
-  return win === "a" ? marks.aWord !== null : marks.favKey !== null || marks.botId !== null;
+/** WHICH PINNED WINDOW ALREADY SHOWS THIS TASK (header "A CARD IS PINNED AT
+ *  MOST ONCE"): a ring's click on a pinned task raises its pin — in whichever
+ *  section it was pinned; a starred chat has a ring in both — and opens no
+ *  second window on the same chat (one chat, one composer). Null: none. */
+export function pinOf(key: string, marks: Pick<PinMarks, "aWords" | "favKeys">): RailWindow | null {
+  if (marks.aWords.includes("task:" + key)) return "a";
+  if (marks.favKeys.includes(key)) return "b";
+  return null;
 }
 
 /** WHAT A RING'S CLICK DOES with free pins on (rail-pin-lib `ringClick` is
@@ -420,20 +446,10 @@ export function slotClick(o: { pinned: boolean; ownOpen: boolean }): SlotAct {
   return o.ownOpen ? "keep" : "open";
 }
 
-/** THE PIN ICON'S CAPTION (header "PINNING A NON-PIN REPLACES"): on a pinned
- *  window — its seat is the × there — "Close"; on a non-pin whose section has no pin, "Pin"; on one
- *  whose section has, what the press closes — by name when it has one. */
-export function pinHint(o: { pinned: boolean; replaces: string | null | false }): string {
-  if (o.pinned) return "Close";
-  if (o.replaces === false) return "Pin";
-  const name = (o.replaces ?? "").trim();
-  return name ? `Pin — replaces “${name}”` : "Pin — replaces the pinned window";
-}
-
-/** WHICH SECTION'S PINNED WINDOW A PIN ICON'S HOVER MARKS (the red border):
- *  the icon is on a NON-PIN card of section `win`, and that section has a pin
- *  — the one its press would close. A pinned window's own icon (its unpin)
- *  closes nothing. */
-export function doomedBy(o: { win: RailWindow; cardPinned: boolean; sectionPinned: boolean }): RailWindow | null {
-  return !o.cardPinned && o.sectionPinned ? o.win : null;
+/** THE PIN ICON'S CAPTION (header "A PINNED WINDOW CLOSES BY ITS ×"): on a
+ *  pinned window — its seat is the × there — "Close"; on a non-pin, "Pin".
+ *  With no cap a pin's press replaces nothing, so it names nothing it would
+ *  close (until 2026-11-24: "Pin — replaces …"). */
+export function pinHint(o: { pinned: boolean }): string {
+  return o.pinned ? "Close" : "Pin";
 }

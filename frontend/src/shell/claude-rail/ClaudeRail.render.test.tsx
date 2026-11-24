@@ -36,6 +36,10 @@ const { botsCardState, registerBotsCard, resetBotsCardForTests } = await import(
 const { registerTasksCard, resetTasksCardForTests, tasksCardState } = await import("./tasks-peek-store");
 const { resetFlagsForTests: resetClaudeFlagsForTests } = await import("@apps/claude/feature-flag");
 const { TaskHead: TaskHeadC } = await import("@shell/TaskHead");
+const { aPins } = await import("@platform/lib/last-chat");
+const { resetRailSlotsForTests } = await import("./rail-slots-store");
+const { resetRailMoveForTests, windowPos } = await import("./rail-move-store");
+const { RAIL_HEAD_SELECTOR } = await import("./rail-move-lib");
 
 const DIR = "/home/me/apps/demo";
 
@@ -1379,5 +1383,160 @@ describe("ClaudeRail: the expandable rail", () => {
     expect(getRailState().expanded).toBe(false);
     expect(said.get("--claude-rail-w")).toBe("48px");
     expect(titles(r)).toEqual([]);
+  });
+});
+
+// MANY PINS (rail-slots-lib "FREE PINS"; owner, 2026-11-24: "we should allow
+// multiple pins … if i move the window we pin it, like from the topbar").
+describe("free pins: many pins at once (owner, 2026-11-24)", () => {
+  async function press(r: ReactTestRenderer, key: string) {
+    const link = r.root.find((n) => n.type === "a" && typeof n.props["aria-label"] === "string" && n.props["aria-label"].startsWith(key));
+    await act(async () => {
+      link.props.onClick({ preventDefault() {}, stopPropagation() {}, button: 0, metaKey: false, ctrlKey: false, shiftKey: false, altKey: false, currentTarget: fakeEl(), detail: 1 });
+      await new Promise((res) => setTimeout(res, 0));
+    });
+  }
+  const tick = () => new Promise((res) => setTimeout(res, 0));
+  const doc = (globalThis as unknown as { document: Record<string, unknown> }).document;
+  let hadGetById = false;
+  beforeEach(() => {
+    installPortalContainer();
+    (doc.body as { createNodeMock: unknown }).createNodeMock = () => fakeEl();
+    hadGetById = "getElementById" in doc;
+    doc.getElementById ??= () => null;
+    resetRailSlotsForTests();
+    resetRailMoveForTests();
+    setAPinned(null);
+  });
+  afterEach(async () => {
+    setAPinned(null);
+    // The marks' own settle (a 0ms timer) runs here, not in the next suite —
+    // before the body goes, as the cards it re-renders portal into it.
+    await act(async () => {
+      await tick();
+    });
+    resetRailSlotsForTests();
+    resetRailMoveForTests();
+    removePortalContainer();
+    if (!hadGetById) delete doc.getElementById;
+  });
+  /** The list card showing `key` (its RailPeek), if one does. */
+  const peekOn = (r: ReactTestRenderer, key: string) =>
+    r.root.findAllByType(RailPeek).find((p) => (p.props.shown as { pulse: { key: string } } | null)?.pulse.key === key);
+  /** THE SAME MOUNTED CARD: React keeps two fibers per mounted component and
+   *  swaps them on every render; a remount makes new ones. */
+  type Fibered = { _fiber: { alternate: unknown } };
+  const sameMount = (before: ReactTestInstance, after: ReactTestInstance) => {
+    const f0 = (before as unknown as Fibered)._fiber;
+    const f1 = (after as unknown as Fibered)._fiber;
+    return f1 === f0 || f1 === f0.alternate;
+  };
+
+  test("two list tasks pinned at once: each pin's press keeps its card mounted, and neither closes the other", async () => {
+    const r = await mountRail({ paneOpen: false, chats: [chat("a"), chat("b"), chat("c")], extras: true });
+    await press(r, "a");
+    const freeA = peekOn(r, "a")!;
+    expect(freeA.props.id).toBe("claude-rail-peek");
+    expect(freeA.props.pinCtl.pinned).toBe(false);
+    await act(async () => {
+      freeA.props.pinCtl.onToggle();
+      await tick();
+    });
+    expect(aPins()).toEqual(["task:a"]);
+    const pinA = peekOn(r, "a")!;
+    expect(pinA.props.pinId).toBe("task:a");
+    expect(pinA.props.pinCtl.pinned).toBe(true);
+    expect(String(pinA.props.id).startsWith("claude-rail-pin-a-")).toBe(true);
+    // The card the reader pinned is the card that was there: no remount.
+    expect(sameMount(freeA, pinA)).toBe(true);
+    expect(windowPos("task:a")).not.toBeNull();
+
+    // A plain click on another ring opens it as the non-pin — beside the pin.
+    await press(r, "b");
+    const freeB = peekOn(r, "b")!;
+    expect(freeB.props.pinCtl.pinned).toBe(false);
+    expect(peekOn(r, "a")!.props.pinCtl.pinned).toBe(true);
+    // …and pinning it replaces nothing.
+    await act(async () => {
+      freeB.props.pinCtl.onToggle();
+      await tick();
+    });
+    expect(aPins()).toEqual(["task:a", "task:b"]);
+    const pins = r.root.findAllByType(RailPeek).filter((p) => !!p.props.pinId);
+    expect(pins.map((p) => (p.props.shown as { pulse: { key: string } }).pulse.key).sort()).toEqual(["a", "b"]);
+    // Each pinned card has an id of its own.
+    expect(new Set(pins.map((p) => p.props.id)).size).toBe(2);
+    expect(sameMount(freeB, peekOn(r, "b")!)).toBe(true);
+    expect(sameMount(pinA, peekOn(r, "a")!)).toBe(true);
+    expect(windowPos("task:b")).not.toBeNull();
+
+    // A ring's click on a pinned task opens no second window on it.
+    await press(r, "a");
+    expect(r.root.findAllByType(RailPeek).filter((p) => (p.props.shown as { pulse: { key: string } } | null)?.pulse.key === "a")).toHaveLength(1);
+
+    // Its × closes that pin alone: it fades out (nothing shown), the other stands.
+    const closing = peekOn(r, "a")!;
+    await act(async () => {
+      closing.props.pinCtl.onToggle();
+      await tick();
+    });
+    expect(aPins()).toEqual(["task:b"]);
+    expect(peekOn(r, "a")).toBeUndefined();
+    expect(peekOn(r, "b")!.props.pinCtl.pinned).toBe(true);
+    expect(sameMount(pinA, closing)).toBe(true);
+  });
+
+  test("a non-pin's head drag pins it — the same card — and the drag goes on as that pin's own", async () => {
+    const r = await mountRail({ paneOpen: false, chats: [chat("a"), chat("b")], extras: true });
+    await press(r, "a");
+    const free = peekOn(r, "a")!;
+    const box = free.find((n) => typeof n.type === "string" && n.props.role === "dialog");
+    const w = (globalThis as unknown as { window: Record<string, unknown> }).window;
+    const add = w.addEventListener;
+    const remove = w.removeEventListener;
+    // Every window listener added meanwhile, by type (the drag's, and any
+    // other card's): an event goes to all of them.
+    const heard = new Map<string, ((e: unknown) => void)[]>();
+    w.addEventListener = (type: string, fn: (e: unknown) => void) => heard.set(type, [...(heard.get(type) ?? []), fn]);
+    w.removeEventListener = (type: string, fn: (e: unknown) => void) => heard.set(type, (heard.get(type) ?? []).filter((f) => f !== fn));
+    const fire = (type: string, e: unknown) => {
+      for (const fn of heard.get(type) ?? []) fn(e);
+    };
+    try {
+      const head = { closest: (sel: string) => (sel === RAIL_HEAD_SELECTOR ? {} : null) };
+      const el = {
+        getBoundingClientRect: () => rect(900, 100, 420, 400),
+        contains: () => true,
+        addEventListener() {},
+        removeEventListener() {},
+        setPointerCapture() {},
+        hasPointerCapture: () => false,
+        releasePointerCapture() {},
+      };
+      act(() => {
+        box.props.onPointerDown({ button: 0, currentTarget: el, target: head, clientX: 1000, clientY: 110, pointerId: 1 });
+      });
+      // Under the move threshold: a click, still the preview.
+      act(() => fire("pointermove", { pointerId: 1, clientX: 1002, clientY: 110 }));
+      expect(aPins()).toEqual([]);
+      // Past it: pinned, in the same card. Outside `act`: the pin's press runs
+      // in `flushSync` (react-dom's, which this renderer's legacy root answers
+      // only unbatched), and the drag reads the card's new role right after.
+      fire("pointermove", { pointerId: 1, clientX: 900, clientY: 200 });
+      expect(aPins()).toEqual(["task:a"]);
+      const pin = peekOn(r, "a")!;
+      expect(pin.props.pinId).toBe("task:a");
+      expect(sameMount(free, pin)).toBe(true);
+      // Released: the pin stands where the drag left it — its own box, not the window's.
+      await act(async () => {
+        fire("pointerup", { pointerId: 1, type: "pointerup" });
+        await tick();
+      });
+      expect(windowPos("task:a")).toEqual({ left: 800, top: 190 });
+      expect(windowPos("a")).toBeNull();
+    } finally {
+      w.addEventListener = add;
+      w.removeEventListener = remove;
+    }
   });
 });

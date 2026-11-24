@@ -3,30 +3,34 @@
 // remounts with every page hop; a card it drew itself went down and up with
 // it — and a PINNED list task, which outlives the hop, blinked out and faded
 // back on every page change while the pinned favourite beside it (the shell's,
-// FavouritePeek) stood still. So the rail still BUILDS its card's two slots
-// (rail-slots-store) — every rule about them stays where it was — but hands
-// the elements here, and the shell draws them (ListCardHost, beside the +
-// card's host, plus-card-store's own pattern): same component, same key, so a
-// rail going and the next one coming keeps the pinned card mounted, its chat,
-// its scroll and its words with it.
+// FavouritePeek) stood still. So the rail still BUILDS its card's slots
+// (rail-slots-store: the free one and one per pinned task — any number since
+// 2026-11-24) — every rule about them stays where it was — but hands the
+// elements here, and the shell draws them (ListCardHost, beside the + card's
+// host, plus-card-store's own pattern): same component, same key (the slot's
+// id), so a rail going and the next one coming keeps every pinned card
+// mounted, its chat, its scroll and its words with it.
 //
 // A STACK OF RAILS, AS EVERYWHERE (fav-peek-store): the next page's rail can
 // publish before the last one's cleanup runs, so a withdrawal counts only
 // from the rail that published last.
 //
-// A RAIL GOING TAKES ITS NON-PIN ALONG AND LEAVES THE PIN: the free slot's
-// card is that rail's hover or click and means nothing without it; the pinned
+// A RAIL GOING TAKES ITS NON-PIN ALONG AND LEAVES THE PINS: the free slot's
+// card is that rail's hover or click and means nothing without it; each pinned
 // slot's card stays as it was last built until the next rail builds it again
 // (a page with no rail at all keeps it standing — it floats, and needs none).
 import { useSyncExternalStore, type ReactNode } from "react";
-import { freeSlot } from "./rail-slots-store";
 
-export interface ListCards {
-  x: ReactNode;
-  y: ReactNode;
+/** One slot's card as the rail built it: the slot's id, the task it shows
+ *  pinned (null: the free slot), and the element. */
+export interface ListCard {
+  id: string;
+  pin: string | null;
+  node: ReactNode;
 }
+export type ListCards = readonly ListCard[];
 
-const NONE: ListCards = { x: null, y: null };
+const NONE: ListCards = Object.freeze([]);
 let cards: ListCards = NONE;
 let owner: object | null = null;
 let hosts = 0;
@@ -41,7 +45,7 @@ function subscribe(fn: () => void): () => void {
   };
 }
 
-/** A rail's two slots, as it built them this render. */
+/** A rail's slots, as it built them this render. */
 export function publishListCards(id: object, next: ListCards): void {
   owner = id;
   cards = next;
@@ -49,12 +53,11 @@ export function publishListCards(id: object, next: ListCards): void {
 }
 
 /** The rail is gone (or no longer hands its card over): its non-pin goes, the
- *  pinned slot's card stays (header). Only the last publisher's word counts. */
+ *  pinned slots' cards stay (header). Only the last publisher's word counts. */
 export function withdrawListCards(id: object): void {
   if (owner !== id) return;
   owner = null;
-  const pin = freeSlot("a") === "x" ? "y" : "x";
-  cards = { x: pin === "x" ? cards.x : null, y: pin === "y" ? cards.y : null };
+  cards = cards.filter((c) => c.pin !== null);
   notify();
 }
 
@@ -84,8 +87,8 @@ export function useListCards(): ListCards {
 
 const orphaned = () => owner === null;
 /** No rail stands behind the cards held here: what is drawn is the pinned
- *  slot as the last rail built it (header). Nobody rebuilds it then, so the
- *  host itself must let it go when its pin does (ListCardHost). */
+ *  slots as the last rail built them (header). Nobody rebuilds them then, so
+ *  the host itself must let each go when its pin does (ListCardHost). */
 export function useListOrphaned(): boolean {
   return useSyncExternalStore(subscribe, orphaned, () => true);
 }
