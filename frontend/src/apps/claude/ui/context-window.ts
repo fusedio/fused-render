@@ -5,8 +5,12 @@
 // `.claude-design/context-meter/claude-code-parity.md`, then RE-MEASURED
 // against 2.1.300 on 2026-10-15 (`claude -p --output-format json` reports
 // `modelUsage.<id>.contextWindow`; `/context` prints the compact buffer): every
-// 5.x model and Opus 4.7+ now run a million-token window, nothing is pinned to
-// a 200k auto-compact window any more, and the compact buffer is 3k. The point of mirroring
+// 5.x model and Opus 4.7+ now run a million-token window, no MODEL is pinned to
+// a 200k auto-compact window any more, and the compact buffer is 3k. What can
+// still pin one is the USER: `autoCompactWindow` in settings (or the
+// CLAUDE_CODE_AUTO_COMPACT_WINDOW env var), which agent.py stamps on the
+// reading as `compact_window` and the CLI applies as `min(model window, it)`.
+// The point of mirroring
 // rather than inventing is that the reader ALREADY has a meter for this — the
 // CLI's statusline and its `/context` — and two meters over one conversation
 // that disagree by ten points are worse than one meter.
@@ -42,6 +46,10 @@ export const COMPACT_HEADROOM = 3_000;
 export const WARN_MARGIN = 20_000;
 /** The model-default auto-compact cap for the models that enforce one (`Mj`). */
 export const AUTOCOMPACT_CAP = 200_000;
+/** The buffer the CLI's `/context` prints under a USER-configured window (33k
+ *  on 2.1.328 with `autoCompactWindow: 200000`: the 13k compact margin plus the
+ *  20k reserve), against the 3k it prints when nobody set one. */
+export const USER_WINDOW_HEADROOM = 33_000;
 
 /** A trailing `[…]` qualifier, so an id can be read without it. */
 const QUALIFIER = /\[[^\]]*\]\s*$/;
@@ -109,12 +117,13 @@ export function modelWindow(
   return NATIVE_1M.some((re) => re.test(base)) ? WINDOW_1M : WINDOW_DEFAULT;
 }
 
-/** Where the auto-compact window came from. We can only ever see two of the
- *  CLI's six sources — the env var, the setting and the server-side tables are
- *  not ours to read — and the distinction that matters to the copy is the one
+/** Where the auto-compact window came from. We see three of the CLI's six
+ *  sources — the model default, the user's own (env var or setting, which
+ *  agent.py resolves and stamps as `compact_window`) and "nobody set one"; the
+ *  server-side tables are not ours to read — and the distinction that matters to the copy is the one
  *  `Dv` itself draws: `"auto"` means "nobody set a window, use the model's",
  *  and everything else is an ENFORCED one. */
-export type WindowSource = "model-default" | "auto";
+export type WindowSource = "model-default" | "auto" | "user";
 
 export interface AutoCompactWindow {
   window: number;
@@ -123,14 +132,19 @@ export interface AutoCompactWindow {
   enforced: boolean;
 }
 
-/** `Dv(model)` with only the sources this app can observe: the model default
- *  for the `cIr` set, the model's own window for everybody else. */
+/** `Dv(model)` with only the sources this app can observe: the user's
+ *  configured window (capped at the model's own, as the CLI does), the model
+ *  default for the `cIr` set, the model's own window for everybody else. */
 export function autoCompactWindow(
   model: string | null | undefined,
   usage?: ContextUsage | null,
 ): AutoCompactWindow {
   const base = ident(model).replace(QUALIFIER, "");
   const full = modelWindow(model, usage);
+  const user = usage?.compact_window;
+  if (typeof user === "number" && Number.isFinite(user) && user > 0) {
+    return { window: Math.min(full, user), source: "user", enforced: true };
+  }
   if (base && ENFORCED.some((re) => re.test(base))) {
     return {
       window: Math.min(full, AUTOCOMPACT_CAP),
@@ -166,9 +180,10 @@ export function contextThresholds(
   model: string | null | undefined,
   usage?: ContextUsage | null,
 ): ContextThresholds {
-  const { window, enforced } = autoCompactWindow(model, usage);
+  const { window, enforced, source } = autoCompactWindow(model, usage);
   const effective = window - OUTPUT_RESERVE;
-  const compactAt = effective - COMPACT_HEADROOM;
+  const compactAt =
+    effective - (source === "user" ? USER_WINDOW_HEADROOM : COMPACT_HEADROOM);
   return {
     model: modelWindow(model, usage),
     window,
@@ -538,6 +553,36 @@ function refreshStale(
 }
 
 /**
+ * With a LIVE breakdown the CLI has already said what its window and compact
+ * buffer are (`max_tokens`, the `buffer` rows), so the header's compaction
+ * point is `max_tokens` minus that buffer — the very pair the grid below is
+ * drawn on, and the same answer the CLI's own `/context` gives however the
+ * window was configured. A stale breakdown, or one that names no buffer, says
+ * nothing current and leaves the report as the page computed it.
+ */
+function liveCompactAt(
+  base: ContextReport,
+  usage: ContextUsage | null | undefined,
+  breakdown: ContextBreakdown,
+): ContextReport {
+  if (breakdown.stale || !(breakdown.max_tokens > 0)) return base;
+  const buffer = breakdown.categories
+    .filter((c) => c.kind === "buffer")
+    .reduce((sum, c) => sum + c.tokens, 0);
+  const compactAt = breakdown.max_tokens - buffer;
+  if (buffer <= 0 || compactAt <= 0) return base;
+  const total = contextTotal(usage);
+  const pct = Math.min(100, Math.max(0, Math.round((total / compactAt) * 100)));
+  return {
+    ...base,
+    compactAt,
+    used: Math.max(0, Math.min(total, compactAt)),
+    pct,
+    suggestion: pct >= 80 ? `Context is ${pct}% full` : "",
+  };
+}
+
+/**
  * `/context` as the CLI splits it: the headline is still `contextReport`'s
  * (the ring's number), but the grid and legend are the live CLI's categories
  * in its own order — used rows, then free space, the compact buffer last —
@@ -551,7 +596,7 @@ export function contextBreakdownReport(
   usage: ContextUsage | null | undefined,
   breakdown: ContextBreakdown,
 ): ContextReport {
-  const base = contextReport(model, usage);
+  const base = liveCompactAt(contextReport(model, usage), usage, breakdown);
   const cats = (breakdown.stale ? refreshStale(breakdown, usage) : breakdown.categories)
     .filter((c) => c.tokens > 0);
   const inWindow = cats.filter((c) => c.kind !== "deferred");

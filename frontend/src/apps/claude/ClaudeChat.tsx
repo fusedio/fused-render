@@ -44,8 +44,8 @@ import {
 } from "@platform/lib/drafts";
 import { TaskPrChip } from "@platform/ui/TaskPrChip";
 import { draftUpdatedAt, isDraftTask } from "@shell/tasks-lib";
-import { COMPOSER_DRAFT_EVENT, buildBreakoutContext, exchangeKeys, liveKeys, type BreakoutSpecialist, type ComposerDraftDetail } from "@platform/lib/breakouts";
-import { listSpecialists } from "@platform/lib/specialists";
+import { COMPOSER_DRAFT_EVENT, buildBreakoutContext, exchangeKeys, liveKeys, type BreakoutExpert, type ComposerDraftDetail } from "@platform/lib/breakouts";
+import { listExperts } from "@platform/lib/experts";
 
 import { createUrlParamsStore, type ParamsStore } from "./params/store";
 import { useChatParam } from "./params/useChatParams";
@@ -158,7 +158,7 @@ import {
 } from "./ui";
 import { ComposerGate, waitingKind } from "./ui/WaitingBar";
 import { BreakoutSelectionBar } from "./ui/BreakoutSelectionBar";
-import { SPECIALIST_BREAKOUT_TOOL } from "./specialists/tool-labels";
+import { EXPERT_BREAKOUT_TOOL } from "./experts/tool-labels";
 import { pickDefault, pickPlan } from "./ui/TurnPick";
 import { AGENT_PREFS_URL, agentLabel, capsOf, isBackendEnabled, useAgentBackends } from "@platform/lib/agent-backends";
 import { debugSentEnabled } from "./ui/debug-sent";
@@ -176,11 +176,10 @@ import { WorktreeMenu, paneChatUrl, type WorktreeRequest } from "./ui";
 import { isLanHost } from "@platform/lib/host";
 import { WorktreeHintChip, breakoutCwdFor, shownWorktreeHint } from "./ui/WorktreeHintChip";
 import { PlaceTags } from "@shell/claude-rail/PlaceTags";
-// THE ONE TASK HEAD (shell/TaskHead; design.md "One task head, everywhere"),
-// behind its flag: with it on, the strip and the identity line below are one
-// head — the same one every other task view draws.
+// THE ONE TASK HEAD (shell/TaskHead; design.md "One task head, everywhere"):
+// the strip and the identity line below are one head — the same one every
+// other task view draws.
 import { TaskHead } from "@shell/TaskHead";
-import { useTaskHeadUnified } from "@shell/task-head-flag";
 import { openInTasksItem, openInTasksProps } from "@platform/ui/openInTasks";
 import { TaskPeekProject } from "@shell/TaskPeekWho";
 import { StatusIcon } from "@shell/ScheduleTaskViews";
@@ -188,7 +187,6 @@ import { shortTaskId } from "@shell/tasks-lib";
 import { AgentMark } from "@platform/ui/AgentMark";
 import { queueCaption } from "@platform/lib/queue";
 import { hasWhereTag, ownPlace, railScope } from "@shell/claude-rail/claude-rail-lib";
-import { useTaskFavourites } from "@platform/lib/favourites-flag";
 import { AllowDeniedContext, TasksContext, TasksPanel, tasksPanelScope, useTasksOpen } from "./ui";
 import { FilePreviewProvider } from "./ui/filePreview";
 import { DockRow } from "./ui/DockRow";
@@ -207,6 +205,7 @@ import { copyToTaskShots } from "./ui/SchedButton";
 import type { DraftAttachment } from "@platform/lib/drafts";
 import { troubleFromError } from "./protocol/trouble";
 import { useSchedule } from "./sched/useSchedule";
+import { schedIsComeback } from "./sched/scheduled";
 import type { QueueFacts } from "@platform/lib/queue";
 import { PENDING_KEY_PREFIX, QUEUED_PARAM } from "@platform/lib/queue";
 import {
@@ -241,6 +240,7 @@ import {
   cancelScheduledMessage,
   forceStart,
   getClaudeSessionLiveness,
+  retryAfterLimit,
   type Task,
 } from "@platform/lib/api";
 import { hasAgentPeeks, openAgentPeek, publishPeekTurns, useAgentPeeks } from "./agent-peeks";
@@ -386,8 +386,8 @@ export interface ClaudeChatProps {
     /** Send `text` as a new message in this chat, the way a typed one goes. */
     send?: (text: string) => void;
   }) => void;
-  /** Fields merged into every `start` body (a specialist's chat:
-   *  `{specialist: "<id>:main"}`). Such a chat opens as a chat and has no
+  /** Fields merged into every `start` body (an expert's chat:
+   *  `{expert: "<id>:main"}`). Such a chat opens as a chat and has no
    *  Schedule seat. */
   extraParams?: Record<string, string>;
   /** `/clear` calls this instead of going back to Chats. */
@@ -702,7 +702,7 @@ function ChatBody(props: ChatBodyProps) {
   const showHead = !compact && (!peek || !!props.headerInPeek);
   // THE SHARED HEAD replaces the strip and the identity line wherever the chat
   // draws its own head (not compact, not a host's peek).
-  const headUnified = useTaskHeadUnified() && !compact && !peek;
+  const headUnified = !compact && !peek;
   const rootRef = useRef<HTMLDivElement | null>(null);
   const columnRef = useRef<HTMLDivElement | null>(null);
   const ownBox = useRef<HTMLTextAreaElement | null>(null);
@@ -1169,6 +1169,10 @@ function ChatBody(props: ChatBodyProps) {
   /** Force start is in flight: the card's one button is dead for its
    *  duration. */
   const [forcing, setForcing] = useState(false);
+  /** Retry now (usage limit) is in flight, and what its last press said when
+   *  it did not simply go — the banner's note line. */
+  const [limitRetrying, setLimitRetrying] = useState(false);
+  const [limitRetryNote, setLimitRetryNote] = useState("");
   /**
    * RUN NEXT WAS ACCEPTED, AND NO ROW HAS ANSWERED SINCE — the row generation as
    * it stood at the press (`useSchedule.recGen`), or null for "no claim".
@@ -3987,7 +3991,7 @@ function ChatBody(props: ChatBodyProps) {
    *  allowed while a run is active: the breakout is its own session. */
   const breakoutCwdRef = useRef<string | undefined>(undefined);
   const openBreakoutFor = useCallback(
-    (keys: readonly string[], prompt?: string, specialist?: BreakoutSpecialist) => {
+    (keys: readonly string[], prompt?: string, expert?: BreakoutExpert) => {
       const st = controller.getState();
       const sid = st.sessionId || params.get("session_id") || "";
       if (!props.onBreakout || !sid || !file) return;
@@ -4000,7 +4004,7 @@ function ChatBody(props: ChatBodyProps) {
         context,
         forkKey: [...keys].sort().join("|"),
         ...(prompt?.trim() ? { prompt: prompt.trim() } : {}),
-        ...(specialist ? { specialist } : {}),
+        ...(expert ? { expert } : {}),
       });
     },
     [controller, params, file, props.onBreakout],
@@ -4014,8 +4018,8 @@ function ChatBody(props: ChatBodyProps) {
   pickingRef.current = picking;
   /** The turns picked for the next breakout (whole exchanges). */
   const [pickedKeys, setBreakoutSel] = useState<ReadonlySet<string>>(new Set());
-  /** The pick bar's "With": the specialist the breakout runs with, or none. */
-  const [withSpecialist, setWithSpecialist] = useState<BreakoutSpecialist>();
+  /** The pick bar's "With": the expert the breakout runs with, or none. */
+  const [withExpert, setWithExpert] = useState<BreakoutExpert>();
   // Only keys of turns still on screen count: a re-keyed transcript or another
   // session leaves the old keys behind, and they must not size the selection
   // or reach the context.
@@ -4564,18 +4568,18 @@ function ChatBody(props: ChatBodyProps) {
 
   const actions = useMemo(
     () => ({
-      // Allowing a task's specialist_breakout opens the breakout it asked for,
+      // Allowing a task's expert_breakout opens the breakout it asked for,
       // seeded with the task's last exchange, with its reason as the question,
       // once the allow has landed.
       decidePermission: (...a: Parameters<typeof controller.decidePermission>) => {
         return controller.decidePermission(...a).then(() => {
           // The row as the server answered (a held or failed decision is not an allow).
           const row = controller.getState().permissions.find((p) => p.id === a[0]);
-          if (row?.tool !== SPECIALIST_BREAKOUT_TOOL || row.decision !== "allow" || row.queuedAhead !== undefined) return;
-          const { specialist, reason } = row.input as { specialist?: string; reason?: string };
+          if (row?.tool !== EXPERT_BREAKOUT_TOOL || row.decision !== "allow" || row.queuedAhead !== undefined) return;
+          const { expert, reason } = row.input as { expert?: string; reason?: string };
           // By id, or by name ignoring case and spacing, as the server's `store.find`.
-          const key = (specialist || "").split(/\s+/).filter(Boolean).join(" ");
-          void listSpecialists().then((all) => {
+          const key = (expert || "").split(/\s+/).filter(Boolean).join(" ");
+          void listExperts().then((all) => {
             const s = all.find((x) => x.id === key || x.name.toLowerCase() === key.toLowerCase());
             const turns = controller.getState().turns;
             const last = turns[turns.length - 1];
@@ -5023,6 +5027,45 @@ function ChatBody(props: ChatBodyProps) {
   }, [controller, schedRefresh, sched.rec, waiting]);
 
   /**
+   * RETRY NOW, on a chat the plan's usage limit paused (Akshil, 2026-11-23:
+   * "I can switch Claude accounts and then the limit-reset wait is gone").
+   * The server sends the continue prompt now and keeps the booked comeback
+   * until a reply retires it (`POST /api/tasks/limit/retry`), so a press that
+   * is still limited leaves exactly one comeback behind. The run it starts is
+   * adopted like any other run on this session (`sched/scheduled` tick), and
+   * the schedule poll is asked for a lap at once so the banner reads it.
+   */
+  /** The banner over the composer is showing the usage-limit comeback — the
+   *  Retry now seat. Without it (cancelled, never booked) the limit card in
+   *  the log carries the press instead, so it is on screen exactly once. */
+  const comebackBanner = schedIsComeback(sched.blockers[0]);
+  const limitRetryLive = useRef(false);
+  const retryLimitNow = useCallback(async () => {
+    const sid = state.sessionId;
+    // One press at a time: the card's button cannot be disabled, so a second
+    // press while the first is out is swallowed here.
+    if (!sid || limitRetryLive.current) return;
+    limitRetryLive.current = true;
+    setLimitRetrying(true);
+    setLimitRetryNote("");
+    try {
+      const res = await retryAfterLimit(sid);
+      setLimitRetryNote(res.note || "");
+      // The limit card has no note line of its own: a press from it that did
+      // not simply go says so in the log, where the card is.
+      if (res.note && !comebackBanner) controller.addNote(res.note);
+      schedRefresh();
+    } catch (err) {
+      const said = "Could not retry: " + (err instanceof Error ? err.message : String(err));
+      setLimitRetryNote(said);
+      if (!comebackBanner) controller.addNote(said);
+    } finally {
+      limitRetryLive.current = false;
+      setLimitRetrying(false);
+    }
+  }, [comebackBanner, controller, schedRefresh, state.sessionId]);
+
+  /**
    * DELETE, from a waiting row: the words are dropped and nothing runs.
    *
    * THE SAME ENDPOINT the Tasks page's cancel posts — `POST /api/schedule/cancel`
@@ -5438,7 +5481,7 @@ function ChatBody(props: ChatBodyProps) {
             pickSubmit: {
               canStart: breakoutSel.size > 0,
               onStart: (text: string) => {
-                openBreakoutFor([...breakoutSel], text, withSpecialist);
+                openBreakoutFor([...breakoutSel], text, withExpert);
                 setPicking(false);
                 setBreakoutSel(new Set());
               },
@@ -5475,7 +5518,7 @@ function ChatBody(props: ChatBodyProps) {
       props.extraParams,
       picking,
       breakoutSel,
-      withSpecialist,
+      withExpert,
       openBreakoutFor,
       file,
       state.sessionId,
@@ -5727,9 +5770,8 @@ function ChatBody(props: ChatBodyProps) {
   // THE PLACE TAGS (shell/claude-rail PlaceTags): the identity row's right
   // end, for a host that said where it stands — the same tags the rail's
   // small window wears.
-  const placeTagOn = useTaskFavourites();
   const placeTag =
-    placeTagOn && head.task && (props.pageRoot !== undefined || props.onSelectNode) ? (
+    head.task && (props.pageRoot !== undefined || props.onSelectNode) ? (
       <PlaceTags
         scope={railScope(head.task, ownPlace(head.task))}
         at={ownPlace(head.task)}
@@ -5854,7 +5896,7 @@ function ChatBody(props: ChatBodyProps) {
     }
     const pre = pickDefault(controller.getState().turns);
     setBreakoutSel(new Set(pre));
-    setWithSpecialist(undefined);
+    setWithExpert(undefined);
     setPicking(true);
   };
   const startBreakout = () => {
@@ -5862,7 +5904,7 @@ function ChatBody(props: ChatBodyProps) {
     // The composer spends its words into the breakout's first message.
     if (pickStartRef.current) pickStartRef.current();
     else {
-      openBreakoutFor([...breakoutSel], undefined, withSpecialist);
+      openBreakoutFor([...breakoutSel], undefined, withExpert);
       setPicking(false);
       setBreakoutSel(new Set());
     }
@@ -5946,7 +5988,7 @@ function ChatBody(props: ChatBodyProps) {
   const kebabMenu = (
       <Kebab
         {...(breakoutGate ? { breakout: { picking, onToggle: togglePicking } } : {})}
-        // OPEN IN TASKS (flag on, off the Tasks page): only a chat with a task
+        // OPEN IN TASKS (off the Tasks page): only a chat with a task
         // row — the landing and a never-run chat have none to open.
         {...openInTasksProps(
           openInTasksItem({
@@ -6004,7 +6046,7 @@ function ChatBody(props: ChatBodyProps) {
     </>
   );
   /**
-   * THE SHARED HEAD (flag on; shell/TaskHead): the strip and the identity line
+   * THE SHARED HEAD (shell/TaskHead): the strip and the identity line
    * as ONE row, in every task view's order —
    *
    *   [× hide pane][← Back to chats] │ ring ★ TASK-nnn title [queue][paused]
@@ -6101,8 +6143,7 @@ function ChatBody(props: ChatBodyProps) {
       // Two lines, the rail window's layout (Akshil, 2026-11-17) — but one row
       // in full screen, where the head is a seat inside the pane's own header.
       twoLine={inChat && !leadHost}
-      // No star seat while favourites are off (`placeTagOn` is that switch).
-      star={placeTagOn}
+      star
       {...(fallbackTitle ? { title: fallbackTitle } : {})}
       pending={inChat && head.pending && !headLine}
       running={running}
@@ -6226,6 +6267,10 @@ function ChatBody(props: ChatBodyProps) {
       <div
         className={"c-chat" + (dropping ? " dropping" : "")}
         ref={columnRef}
+        // The chat column is the head's window: the pointer anywhere on it
+        // shows the head's star and Open (TaskHead `is-hot`), whatever the
+        // layout was when the head mounted.
+        data-task-window=""
         // DRAG AND DROP ON THE WHOLE COLUMN rather than on the textarea: a
         // target the size of a one-line input is a target people miss, and
         // everything in this column is part of the same message (T:11745-11751).
@@ -6462,6 +6507,8 @@ function ChatBody(props: ChatBodyProps) {
               cwd={chatWorkdir(file, pane.noun)}
               state={transcriptState}
               comebackPending={sched.blocked}
+              {...(state.sessionId && !comebackBanner ? { onLimitRetry: () => void retryLimitNow() } : {})}
+              limitRetrying={limitRetrying}
               actions={actions}
               liveMode={state.permissionMode}
               tail={tail}
@@ -6525,6 +6572,8 @@ function ChatBody(props: ChatBodyProps) {
                          thing the reader actually meant — and it posts the TEMPLATE
                          id the row carries, which is the only id that stops it. */
                       onStopRepeat={() => void deleteWaiting(row.entryId, row.stopId)}
+                      {...(state.sessionId && row.comeback ? { onRetry: () => void retryLimitNow() } : {})}
+                      retrying={limitRetrying}
                     />
                   ))}
                 </>
@@ -6595,6 +6644,9 @@ function ChatBody(props: ChatBodyProps) {
               tick={sched.tick}
               onStop={sched.onStop}
               cardRef={sched.cardRef}
+              {...(state.sessionId ? { onRetry: () => void retryLimitNow() } : {})}
+              retrying={limitRetrying}
+              retryNote={limitRetryNote}
             />
             {/* FORK NOTICE: the next send starts a NEW session from the message
                 above; Cancel puts the hidden turns back. */}
@@ -6610,8 +6662,8 @@ function ChatBody(props: ChatBodyProps) {
             {breakoutGate && picking ? (
               <BreakoutSelectionBar
                 count={state.turns.filter((t) => t.role === "user" && breakoutSel.has(t.key)).length}
-                specialist={withSpecialist}
-                onSpecialist={setWithSpecialist}
+                expert={withExpert}
+                onExpert={setWithExpert}
                 onStart={startBreakout}
                 onCancel={() => {
                   setPicking(false);

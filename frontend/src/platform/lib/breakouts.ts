@@ -47,11 +47,11 @@ export interface BreakoutRequest {
   forkKey?: string;
   /** The breakout's first message, typed in the composer while picking. */
   prompt?: string;
-  /** Run the breakout with this specialist, in its home. */
-  specialist?: BreakoutSpecialist;
+  /** Run the breakout with this expert, in its home. */
+  expert?: BreakoutExpert;
 }
 
-export interface BreakoutSpecialist {
+export interface BreakoutExpert {
   id: string;
   name: string;
   home: string;
@@ -69,7 +69,7 @@ export interface BreakoutCard {
   forkKey?: string;
   /** Sent once as the card's first message; `consumeBreakoutPrompt` drops it. */
   prompt?: string;
-  specialist?: BreakoutSpecialist;
+  expert?: BreakoutExpert;
 }
 
 /** The window event Send back raises; `ClaudeChat` listens for its own chat. */
@@ -120,7 +120,7 @@ export function openBreakout(req: BreakoutRequest): string {
     context: req.context,
     ...(req.forkKey ? { forkKey: req.forkKey } : {}),
     ...(req.prompt ? { prompt: req.prompt } : {}),
-    ...(req.specialist ? { specialist: req.specialist } : {}),
+    ...(req.expert ? { expert: req.expert } : {}),
   };
   emit([...cards, card]);
   return card.id;

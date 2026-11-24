@@ -27,7 +27,7 @@
 import { installDomShim } from "@platform/lib/testDomShim";
 installDomShim();
 import { afterEach, beforeEach, expect, spyOn, test } from "bun:test";
-import { act, create } from "react-test-renderer";
+import { act, create, type ReactTestInstance, type ReactTestRenderer } from "react-test-renderer";
 import { dropSharedPrefsRead } from "@platform/lib/api";
 import { sharedHistoryCache } from "./protocol/history";
 import * as runControllerModule from "./protocol/run-controller";
@@ -705,36 +705,42 @@ test("the locked ← Chats SAYS WHY, in the title and in its accessible name", a
   // answer for a control the keyboard can no longer land on, and a dead way out
   // that will not say why is the worst of the refusal faces.
   //
-  // Back is only in the strip once there is a chat to leave, so this sends
-  // first (the landing has no way back).
+  // Back is only in the head once there is a chat to leave, so this sends
+  // first (the landing has no way back). The shared head's lead (TaskHead)
+  // says the sentence in its hint.
   const { r } = await mountChat();
   await typeInBox(r, "hello");
   await pressEnterInBox(r);
   await settle();
 
-  const back = () => byClass(r, "c-back")[0]!;
-  expect(back().props.disabled).toBe(false);
-  expect(back().props.title).toBeUndefined();
+  const back = () => backButton(r);
+  expect(back().props.disabled).toBeFalsy();
   expect(back().props["aria-label"]).toBe("Back to chats");
-  // The word sits in its own span so the side pane's container query can hide
-  // it (happy-dom cannot evaluate the query itself).
-  expect(byClass(r, "c-back-word").length).toBe(1);
 
   await act(async () => commentSeat(r).props.onClick());
   await settle();
 
   expect(back().props.disabled).toBe(true);
-  expect(back().props.title).toBe(NAV_LOCKED_REASON);
+  expect(back().props["data-hint"]).toBe(NAV_LOCKED_REASON);
   expect(String(back().props["aria-label"])).toContain(NAV_LOCKED_REASON);
   expect(String(back().props["aria-label"])).toContain("Back to chats");
 
   // …and it is given back, sentence and all, when the mode goes.
   await act(async () => commentSeat(r).props.onClick());
   await settle();
-  expect(back().props.disabled).toBe(false);
-  expect(back().props.title).toBeUndefined();
+  expect(back().props.disabled).toBeFalsy();
   expect(back().props["aria-label"]).toBe("Back to chats");
 });
+
+/** The shared head's ← Back to chats (TaskHead's lead). */
+function backButton(r: ReactTestRenderer): ReactTestInstance {
+  return r.root.find(
+    (n) =>
+      typeof n.type === "string" &&
+      String(n.props.className ?? "").includes("task-head-lead") &&
+      String(n.props["aria-label"] ?? "").startsWith("Back to chats"),
+  );
+}
 
 // ---- a note becomes a chip in the tray's own row --------------------------
 
@@ -1717,7 +1723,7 @@ test("Back with a line still PARKED empties the outbox: no bubble, no hint carri
   await pressEnterInBox(r);
   await settle();
   expect(byClass(r, "c-queue-row")).toHaveLength(1);
-  await act(async () => byClass(r, "c-back")[0]!.props.onClick({ preventDefault() {} }));
+  await act(async () => backButton(r).props.onClick({ preventDefault() {} }));
   await settle(60);
   expect(byClass(r, "bubble")).toHaveLength(0);
   expect(byClass(r, "c-queue-row")).toHaveLength(0);

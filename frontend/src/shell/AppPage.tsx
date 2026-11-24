@@ -137,7 +137,6 @@ import { chatDoorOnApp, useAppPageClaudePane } from "./useAppPageClaudePane";
 import { ClaudeRail, paneHomeHref } from "./claude-rail/ClaudeRail";
 import { CHAT_PARAMS, placeRoot } from "./claude-rail/claude-rail-lib";
 import { usePanePresence } from "@platform/lib/pane-presence";
-import { useTaskFavourites } from "@platform/lib/favourites-flag";
 import { ChatMount } from "@apps/claude";
 import { peekSearch } from "./task-peek-store";
 import {
@@ -761,10 +760,6 @@ export default function AppPage({
   const claude = useAppPageClaudePane(claudeSplitRef);
   // Held mounted through its exit so the pane slides like the left sidebar.
   const pane = usePanePresence(claude.open);
-  // THE RAIL BESIDE THE OPEN PANE (ClaudeRail `paneOpen`; owner,
-  // 2026-11-05): with favourites on the rail stands whether the pane is open
-  // or shut; off, only while it is shut, as before.
-  const railAlways = useTaskFavourites();
   // A ring's door (ClaudeRail `onOpenChat`, the card's Open, the chat's own
   // Recent-list hops) is this app's explorer URL with the chat's session
   // (`taskHref`): ON THIS PAGE, that chat opens in THIS pane — the page is
@@ -1247,7 +1242,7 @@ export default function AppPage({
           </div>
         </div>
       )}
-      {(!claude.open || railAlways) && (
+      {(
         // Past the pane, at the window's right edge (`paneOpen`); the same
         // slot either way, so the pane opening does not remount the rail.
         <ClaudeRail

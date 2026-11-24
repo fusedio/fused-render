@@ -572,10 +572,10 @@ test("the ladder: the chips one at a time, the facts, a rail window's title row,
   // pairs, so a head that swapped as the pointer went to the menu moved the
   // menu out from under it, and back). No rule keys on the ⋮'s menu alone.
   expect(css).not.toContain('.task-head-kebab [aria-expanded="true"]');
-  expect(css.split(':has(.task-head-marks [aria-expanded="true"])').length - 1).toBe(5);
-  // A two-line head with one act alone has no acts' layer: its ⋮ keeps its
-  // seat and shows on the same trigger.
-  expect(css).toContain(".task-head.is-window.is-two-line .task-head-marks > .task-head-kebab {\n  opacity: 0;");
+  expect(css.split(':has(.task-head-marks [aria-expanded="true"])').length - 1).toBe(4);
+  // Every two-line head seats its ⋮ in the split acts (2026-11-22), so no
+  // rule hides a ⋮ standing loose in the marks.
+  expect(css).not.toContain(".task-head-marks > .task-head-kebab");
   expect(css).toContain(`.task-head${from(5)} .task-head-seats {`);
   expect(css).toContain(`.task-head${from(6)} .task-head-nav {`);
   // The last rung caps the place; the id slot (and its Archive) never goes.
@@ -621,10 +621,11 @@ test("a panel or a pane that asks wears the rail window's two lines, keeping its
   expect(byClass(landing, "task-head-titlerow")).toHaveLength(0);
 
   // One act alone (favourites off: the host passes `star={false}`): the
-  // facts keep a slot each, so the count stays under the pointer.
+  // split holds too (2026-11-22) — the act on row 1, count and time on row 2.
   const noStar = render(head({ ...props, star: false }), 2000);
-  expect(byClass(noStar, "task-head-facts")).toHaveLength(0);
-  expect(byClass(noStar, "task-head-timeslot")).toHaveLength(1);
+  expect(cls(byClass(noStar, "task-head-facts")[0]!)).toContain("is-split");
+  expect(byClass(noStar, "task-head-timeslot")).toHaveLength(0);
+  expect(byClass(noStar, "task-head-rowfacts")).toHaveLength(1);
 
   // THE CRUMB HOLDS ITS WIDTH in a panel (the ladder folds the chips and the
   // seats instead), is cut only on the last rung, and the time never folds.
@@ -949,10 +950,10 @@ test("the stylesheet trades a slot's occupants on hover — the window's in a ra
   // IN A RAIL WINDOW THE ARCHIVE WAITS FOR THE HEAD ITSELF (2026-11-16): the
   // pointer elsewhere on the card (`.is-hot`, not `:hover`) keeps the number.
   expect(css).toContain(
-    ".task-head.task-head.is-window.is-hot:not(:hover) .task-head-slot.task-head-idslot > .task-head-slot-b:not(:has(:focus-visible)) { opacity: 0;",
+    ".task-head.task-head:is(.is-window, .is-two-line).is-hot:not(:hover) .task-head-slot.task-head-idslot > .task-head-slot-b:not(:has(:focus-visible)) { opacity: 0;",
   );
   expect(css).toContain(
-    ".task-head.task-head.task-head.is-window.is-hot:not(:hover) .task-head-slot.task-head-idslot.task-head-idslot:not(:has(:focus-visible)) > .task-head-slot-a { opacity: 1;",
+    ".task-head.task-head.task-head:is(.is-window, .is-two-line).is-hot:not(:hover) .task-head-slot.task-head-idslot.task-head-idslot:not(:has(:focus-visible)) > .task-head-slot-a { opacity: 1;",
   );
   // Where there is no hover, the acts stand.
   expect(css).toContain("@media (hover: none) {");
@@ -962,40 +963,24 @@ test("the stylesheet trades a slot's occupants on hover — the window's in a ra
 
 // ---- the ring is a button (TaskIconPick, 2026-11-15; any task 2026-11-16) ----
 
-test("the status icon opens the icon picker outside a rename — a favourite's face AND any task's plain ring", async () => {
-  const icons = await import("@platform/lib/task-icons-flag");
-  const favs = await import("@platform/lib/favourites-flag");
-  act(() => {
-    icons.publishTaskIcons({ enabled: true });
-    favs.publishTaskFavourites({ enabled: true });
-    favs.publishFavouritesParent({ enabled: true });
-  });
-  try {
-    const fav = render(head({ task: task({ starred: true, icon_slot: 3 } as Partial<Task>) }));
-    const btn = byClass(fav, "task-icon-pick")[0]!;
-    expect(btn.type).toBe("button");
-    expect(btn.props["aria-label"]).toBe("Choose icon");
-    expect(btn.props["aria-expanded"]).toBe(false);
-    // Inside the status seat, and no title input anywhere: this is not a rename.
-    expect(JSON.stringify(byClass(fav, "task-side-peek-status")[0])).toContain("task-icon-pick");
-    expect(flat(fav).some((n) => n.type === "input")).toBe(false);
-    // Not starred, no face (owner, 2026-11-16: the icon is not the star's):
-    // the plain ring is the same button, in the same seat.
-    const ring = render(head());
-    const ringBtn = byClass(ring, "task-icon-pick")[0]!;
-    expect(ringBtn.type).toBe("button");
-    expect(JSON.stringify(byClass(ring, "task-side-peek-status")[0])).toContain("task-icon-pick");
-    expect(JSON.stringify(ringBtn)).not.toContain("schedule-ring--glyph");
-    // A task with no number yet has nothing to stamp a pick on: no button.
-    expect(byClass(render(head({ task: task({ task_id: "" }) })), "task-icon-pick")).toHaveLength(0);
-    // The experiment off: no button on either.
-    act(() => icons.publishTaskIcons({ enabled: false }));
-    expect(byClass(render(head({ task: task({ starred: true, icon_slot: 3 } as Partial<Task>) })), "task-icon-pick")).toHaveLength(0);
-    expect(byClass(render(head()), "task-icon-pick")).toHaveLength(0);
-  } finally {
-    icons.resetTaskIconsFlagForTests();
-    favs.resetTaskFavouritesFlagForTests();
-  }
+test("the status icon opens the icon picker outside a rename — a favourite's face AND any task's plain ring", () => {
+  const fav = render(head({ task: task({ starred: true, icon_slot: 3 } as Partial<Task>) }));
+  const btn = byClass(fav, "task-icon-pick")[0]!;
+  expect(btn.type).toBe("button");
+  expect(btn.props["aria-label"]).toBe("Choose icon");
+  expect(btn.props["aria-expanded"]).toBe(false);
+  // Inside the status seat, and no title input anywhere: this is not a rename.
+  expect(JSON.stringify(byClass(fav, "task-side-peek-status")[0])).toContain("task-icon-pick");
+  expect(flat(fav).some((n) => n.type === "input")).toBe(false);
+  // Not starred, no face (owner, 2026-11-16: the icon is not the star's):
+  // the plain ring is the same button, in the same seat.
+  const ring = render(head());
+  const ringBtn = byClass(ring, "task-icon-pick")[0]!;
+  expect(ringBtn.type).toBe("button");
+  expect(JSON.stringify(byClass(ring, "task-side-peek-status")[0])).toContain("task-icon-pick");
+  expect(JSON.stringify(ringBtn)).not.toContain("schedule-ring--glyph");
+  // A task with no number yet has nothing to stamp a pick on: no button.
+  expect(byClass(render(head({ task: task({ task_id: "" }) })), "task-icon-pick")).toHaveLength(0);
 });
 
 test("no where-tag, no seat for it (a whole folder, a file: the place alone)", () => {
@@ -1003,41 +988,45 @@ test("no where-tag, no seat for it (a whole folder, a file: the place alone)", (
   expect(byClass(r, "task-head-where")).toHaveLength(0);
 });
 
-test("a rail window's facts and acts are two layers of one box; a panel keeps the two slots (2026-11-16)", () => {
+test("a rail window's acts stand on row 1 and its facts close row 2; a panel keeps the two slots (2026-11-22)", () => {
   const props = {
     task: task({ message_count: 6 }),
     open: { href: "/x", label: "Open in Explorer", onOpen: () => {} },
   };
   const win = render(head({ ...props, reveal: "window" }));
-  // One box, two layers: count + time, then star + door. No per-fact slots.
+  // Row 1: one box holding star + door only (split, always standing). No
+  // per-fact slots, no count/time layer.
   expect(byClass(win, "task-head-facts")).toHaveLength(1);
   expect(cls(byClass(win, "task-head-facts")[0]!)).toContain("has-acts");
+  expect(cls(byClass(win, "task-head-facts")[0]!)).toContain("is-split");
   expect(byClass(win, "task-head-countslot")).toHaveLength(0);
   expect(byClass(win, "task-head-timeslot")).toHaveLength(0);
-  const [a, b] = byClass(win, "task-head-facts-layer");
-  expect(cls(a!)).toContain("is-a");
-  expect(JSON.stringify(a)).toContain("task-head-count");
-  expect(JSON.stringify(a)).toContain("task-head-time");
-  expect(cls(b!)).toContain("is-b");
-  expect(JSON.stringify(b)).toContain("task-head-open");
-  // ONE ACT ALONE (favourites off: no star): the count STAYS under the
-  // pointer, so the head keeps one slot per fact — the stayer is one node
-  // that cannot jump between two layers (Bugbot on #2297).
-  const noStar = render(head({ ...props, reveal: "window", star: false }));
-  expect(byClass(noStar, "task-head-facts")).toHaveLength(0);
-  const cs = byClass(noStar, "task-head-countslot")[0]!;
-  expect(JSON.stringify(cs)).toContain("task-head-count");
-  expect(JSON.stringify(cs)).not.toContain("task-star");
-  expect(JSON.stringify(byClass(noStar, "task-head-timeslot")[0])).toContain("task-head-open");
-  expect(byClass(noStar, "task-head-count")).toHaveLength(1);
-  // …and the same with a star but no door.
-  const noDoor = render(head({ task: task({ message_count: 6 }), reveal: "window" }));
-  expect(byClass(noDoor, "task-head-facts")).toHaveLength(0);
-  expect(byClass(noDoor, "task-head-time")).toHaveLength(1);
-  // No acts at all: the facts alone, and they stay under the pointer.
+  const layers = byClass(win, "task-head-facts-layer");
+  expect(layers).toHaveLength(1);
+  expect(cls(layers[0]!)).toContain("is-b");
+  expect(JSON.stringify(layers[0])).toContain("task-head-open");
+  expect(JSON.stringify(byClass(win, "task-head-row")[0])).not.toContain("task-head-count");
+  // Row 2: the count and the time after the title.
+  const facts = byClass(win, "task-head-rowfacts");
+  expect(facts).toHaveLength(1);
+  expect(JSON.stringify(facts[0])).toContain("task-head-count");
+  expect(JSON.stringify(facts[0])).toContain("task-head-time");
+  expect(JSON.stringify(byClass(win, "task-head-titlerow")[0])).toContain("task-head-rowfacts");
+  // ONE ACT ALONE OR NONE: the same split — the act(s) on row 1, the count
+  // and the time on row 2, nothing trading under the pointer.
+  for (const one of [
+    render(head({ ...props, reveal: "window", star: false })),
+    render(head({ task: task({ message_count: 6 }), reveal: "window" })),
+  ]) {
+    expect(byClass(one, "task-head-countslot")).toHaveLength(0);
+    expect(byClass(one, "task-head-timeslot")).toHaveLength(0);
+    expect(cls(byClass(one, "task-head-facts")[0]!)).toContain("is-split");
+    expect(byClass(one, "task-head-rowfacts")).toHaveLength(1);
+    expect(byClass(one, "task-head-count")).toHaveLength(1);
+  }
   const bare = render(head({ task: task({ message_count: 6 }), reveal: "window", star: false }));
-  expect(cls(byClass(bare, "task-head-facts")[0]!)).not.toContain("has-acts");
-  expect(byClass(bare, "task-head-facts-layer")).toHaveLength(1);
+  expect(byClass(bare, "task-head-facts")).toHaveLength(0);
+  expect(JSON.stringify(byClass(bare, "task-head-rowfacts")[0])).toContain("task-head-time");
   // A panel or a pane keeps one slot per fact.
   const pane = render(head(props));
   expect(byClass(pane, "task-head-facts")).toHaveLength(0);

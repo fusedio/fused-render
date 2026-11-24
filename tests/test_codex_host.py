@@ -1455,3 +1455,51 @@ def test_a_cancel_landing_before_the_card_is_written_raises_no_card(
         assert posts == []
     finally:
         host.close()
+
+
+# ------------------------------------------------- skills listed by path (D1504)
+
+def _dev_instructions(agent, host_mod, tmp_path, monkeypatch, in_workbench, own=True, wb=True):
+    def skill(root, d, text):
+        f = root / "skills" / d / "SKILL.md"
+        f.parent.mkdir(parents=True)
+        f.write_text(text)
+        return str(f)
+
+    own_root, wb_root = tmp_path / "own", tmp_path / "wb"
+    paths = {}
+    if own:
+        paths["foo"] = skill(own_root, "foo", "---\nname: foo-skill\ndescription: Does foo things\n---\n")
+    if wb:
+        paths["wbs"] = skill(wb_root, "wbs", "---\nname: wbs\ndescription: workbench thing\n---\n")
+    monkeypatch.setattr(agent, "_in_workbench_root", lambda f: in_workbench)
+    monkeypatch.setattr(agent, "_skill_plugin_dir", lambda: str(own_root) if own else None)
+    monkeypatch.setattr(agent, "_workbench_plugin_dir", lambda: str(wb_root) if wb else None)
+    page = tmp_path / "proj" / "index.html"
+    page.parent.mkdir()
+    page.write_text("<html></html>")
+    run_dir = tmp_path / "runs" / "r1"
+    run_dir.mkdir(parents=True)
+    host = object.__new__(host_mod._Host)
+    host.agent = agent
+    host.req = {"file": str(page), "pane": False}
+    host.run_dir = str(run_dir)
+    host.cwd = str(page.parent)
+    return host._developer_instructions(), paths
+
+
+def test_codex_instructions_list_fused_skills_not_workbench_off_canvas(agent, host_mod, tmp_path, monkeypatch):
+    body, paths = _dev_instructions(agent, host_mod, tmp_path, monkeypatch, False)
+    assert " SKILLS: " in body and paths["foo"] in body
+    assert "Never read or search fused-render's own installed code" in body
+    assert paths["wbs"] not in body
+
+
+def test_codex_instructions_list_workbench_skills_on_a_canvas(agent, host_mod, tmp_path, monkeypatch):
+    body, paths = _dev_instructions(agent, host_mod, tmp_path, monkeypatch, True)
+    assert paths["foo"] in body and paths["wbs"] in body
+
+
+def test_codex_instructions_without_plugin_dirs_have_no_skills_text(agent, host_mod, tmp_path, monkeypatch):
+    body, _ = _dev_instructions(agent, host_mod, tmp_path, monkeypatch, True, own=False, wb=False)
+    assert " SKILLS:" not in body

@@ -8146,7 +8146,144 @@ A user redid a canvas's folders through Claude; the five old folders stayed on s
 - **The appended prompt rides the first prompt.** ACP's `session/new` takes no instructions and the only prompt files Cursor reads live in the user's folder, which fused never writes; the prompt goes ahead of the user's words on each host process's first `session/prompt`, wrapped in `<fused_render_context>`, and is stripped off a replayed prompt before the backfill compares texts.
 - **Rejected.** `cursor-agent -p --output-format stream-json` per turn for sessions (no permission round trip, a respawn per message). Writing `AGENTS.md`/`.cursor/rules` into the user's project. Spawning with `--force` for `auto` (team admins can restrict it, and it cannot be switched live). Offering Cursor on `/api/ai` (no flag limits a one-shot's MCP roster).
 
-## D1499: Away access: the phone listener through a blind SNI relay or Tailscale; pairing stays on the Wi-Fi (2026-11-21, away-access)
+## D1499: A node's framed page is offered the local SQL engine, relayed by the template (2026-11-22, node-sql-engine)
+
+- **What.** SPEC §53.3 NW-7. With the SQL engine installed and the frame not behind the embed proxy, `canvas_widget`'s token message adds `caps: ["sql"]` and `sqlEngine: {name, version}` (also `sql_engine` in `GET /api/canvases/status`), and the template relays the frame's `fused-embed-sql` messages to the `/api/sql/*` routes and answers with `fused-embed-sql-result`. Session scope is the node's environment; the session is created lazily, kept alive, and deleted on `pagehide`.
+- **Why a relay, not CORS.** The template is the only path, as for the AI gateway (D1433, which rejected a CORS-open route): the routes are `X-Fused`-guarded because a custom header forces a preflight, and opening them to the workbench's origin would let any site framed there, or any page that guesses the port, call them directly. The relay accepts messages only from the frame's own window and origin, validates every field, and fixes the scope itself.
+- **What the frame gains.** SQL on the local engine, confined to the engine's `files/` directory (§55.4) and `https://` reads; it spends CPU, memory and disk on this machine, and files it registers stay for the engine's life.
+- **What it does not gain.** No local file path (a file reaches SQL only as bytes, text, or a `udf:` handle the page names), and no direct route access, session ids, or other sessions' temporary tables. Registered files and permanent tables are the engine's, so every session of that environment's engine can read them.
+- **Off through the embed proxy.** That frame's origin is a loopback listener, so there is no distinct framed origin to trust; the offer is made only when the frame loads from the workbench's own origin.
+- **Rejected.** CORS-open `/api/sql/*` for the workbench origin (above). A preference switch (the frame already holds the user's token and the host already relays AI calls to it without one, D1433; the engine's confinement, §55.4, is the boundary, not a switch). One engine session per message, or per frame load (temp tables would not outlive a call). A session id handed to the frame (it would then address the routes itself).
+
+## D1500: A node's framed page is handed the canvas as the sync last read it (2026-11-22, node-canvas-seed)
+
+- **What.** SPEC §53.3 NW-8. The sync's remote probe also stores the service's whole answer for the canvas at `<canvas root>/.sync/<canvas>.canvas.json` (atomic, 0600, outside the clone); `GET /api/canvases/saved` serves it; `canvas_widget`'s token message adds `"canvas"` to `caps` and the template posts `fused-embed-canvas {canvas, json}` once per frame document, and again when the sync sees the saved canvas change (a push this host made, or `saved_seq` of the sync state moving), only when the text differs from what that document was last sent.
+- **Why.** The host already asks the service for this canvas on every sync poll, so the page can start from that answer and draw at once instead of waiting on its own request, then refresh itself.
+- **What the page gains.** Nothing it could not fetch with the token it already holds, so the capability is offered through the embed proxy too.
+- **Staleness.** Bounded by the poll (at most one `PULL_POLL_S` behind the service while the canvas's sync runs); the page is re-handed the document when the sync stores a different one, so the existing sync drives the updates and the template adds no polling of its own. A canvas no sync probes (a reference copy) gets its document from the route itself: with none stored it runs the same probe once (15 s bound, one probe shared by concurrent requests), and a document older than 30 s is refreshed in the background after it is served. With no document and no probe possible (signed out, no CLI), the message carries `null`.
+- **No switch.** The page already holds the token the host hands it, and the host already relays AI calls to it without a preference (D1433).
+- **Rejected.** Sending the local files instead: the local copy can be ahead of or behind the saved canvas. Parsing the document in the host: it is opaque here, stored and relayed as text.
+
+## D1501: A node's framed page can ask the host to run UDFs of its own canvas (2026-11-22, node-udf-relay)
+
+- **What.** SPEC §53.3 NW-9. With the SQL engine offered, `caps` also holds `"udf"`; the frame sends `fused-embed-udf {req, name, params, fresh}` and the template runs that UDF of this node's own canvas with `fused.workbench.udf(...)` and answers `fused-embed-udf-result` with a `udf:<token>` handle, its size, content type, version, whether it was cached and whether it is final.
+- **Why.** The host already runs UDFs for local pages and keeps their results, so the framed page can register a result with the SQL engine by handle instead of carrying the bytes through the message channel.
+- **What the frame gains.** A run of a UDF of its own canvas, which it could already do with the token it holds. Canvas and environment are this node's own; the frame supplies only the UDF's name, its params and whether to skip the saved answer.
+- **Dialogs.** The runtime's own dialogs (batch runs, large results) are shown as for any page; the frame cannot answer them.
+- **Rejected.** A route the frame calls itself: the frame has no route access, and every call goes through the template's checks. Forwarding a confirmation flag from the frame: that would let the frame skip the dialogs.
+
+## D1502: The framed page can run every kind of UDF through the host and read the bytes it was issued (2026-11-23, node-udf-formats)
+
+- **What.** SPEC §53.3 NW-9. `caps` also holds `"udf-read"` with `"udf"`. `fused-embed-udf` gains `format` (`parquet` default, `png`, `json`, `html`) and `tile {x, y, z}`; a tile run carries the tile through the runtime options, the socket message, the run key and the worker to the SDK's `x`, `y`, `z`. New `fused-embed-udf-read {req, handle}` is answered `fused-embed-udf-read-result` with the result's bytes (transferred) and content type, or an error.
+- **Why.** A page that draws rasters, tiles or text results needs the bytes, not only a handle the SQL engine can use. Routing every run through the host keeps one login, one place for the runtime's dialogs and one saved-results store.
+- **What the frame gains.** The bytes of results it was itself issued a handle for in its current document, and tile and format choices for its own UDF runs. Nothing about canvas, environment or confirmation changes.
+- **Rejected.** CORS on the results route: it would open every result to any origin, not only those the frame was issued. Reading by an arbitrary token: a frame could then ask for results of other runs it never started.
+
+## Context meter honours the user's auto-compact window
+
+The meter used to compact at `model window - 3k` whatever the user had
+configured. Claude Code 2.1.328 resolves the window as `min(model window,
+configured)` (`vy`), where `configured` is, in order:
+
+1. the `CLAUDE_CODE_AUTO_COMPACT_WINDOW` env var (also honoured when set in a
+   settings layer's `env` block): `200k` / `1m` shorthand or a plain count;
+   under the 100k minimum (`nH`) it counts as 100k; unusable values are ignored;
+2. the `autoCompactWindow` setting, `"auto"` meaning "no setting". Layers apply
+   user < project < local < flag < managed (`Pdr`/`Hyn`); a layer that sets the
+   top-level value replaces everything below it, including their
+   `modelSettings.<model>.autoCompactWindow` entries; otherwise per-model entries
+   merge, and a model's own entry beats the default;
+3. otherwise the model default (`h4s`, server-side tables; not readable here).
+
+`fused_render/claude_agent/agent.py` `_compact_window(model, cwd)` mirrors 1 and
+2 (cwd = the run's folder, for the project and local layers; env from the
+server process, which is what the CLI is launched with) and
+`_stamp_compact_window` adds it as `compact_window` beside `window` on every
+Claude reading in `_poll` and `_history`; absent when unset or invalid. The page
+takes the `min` with the model window and marks the window `source: "user"`,
+enforced.
+
+Compaction point: `/context` on a 1M model with `autoCompactWindow: 200000`
+reports `maxTokens 200000` and a 33,000 buffer (13k margin + 20k reserve), against
+3k when nobody set a window, so a user window uses a 33k head-room
+(`USER_WINDOW_HEADROOM`) and the ring, warning and popover agree. With a live,
+non-stale breakdown the popover header takes `max_tokens - buffer rows` outright,
+the CLI's own answer, so header and grid cannot disagree whatever the setting.
+
+Auto-compact off (CLI 2.1.328, `dm()`): `DISABLE_COMPACT` or `DISABLE_AUTO_COMPACT`
+(truthy: `1`/`true`/`yes`/`on`, also from a settings `env` block) turns it off;
+otherwise the highest settings layer that sets `autoCompactEnabled` decides
+(default on). The CLI never compacts then, so `_compact_window` returns nothing
+and the meter keeps the non-enforced "x% context used" reading.
+
+Per-model entries (`Hyn` / `vy`): a model's own entry, if present, wins over the
+top-level value; `"auto"` there means the model default (not the top-level
+number), so no number is stamped. An entry with an invalid value is dropped by
+the settings schema (`.catch`), so the top-level number applies. A key that is
+the canonical model name beats its `[1m]`-style spellings whatever the file
+order (`g===k||!hasOwn`), else the first spelling wins. Env names are matched
+case-sensitively.
+
+A configured window at or above the model's own still resolves to source
+`settings`/`env` with `window = min(model, configured)`, and the threshold is
+`window - 20k - 13k` regardless of source, so the user branch (33k head-room,
+enforced) is right for it too.
+
+Not mirrored: the SDK's runtime `ceiling` / `raisedTo` overrides in `vy`, the
+managed `managed-settings.d` drop-ins, the legacy `~/.claude.json`
+`autoCompactEnabled`, and `CLAUDE_CODE_DISABLE_1M_CONTEXT`.
+
+## D1503: Cursor sessions get the skills as paths in the instructions file (2026-11-23, cursor-skills-in-instructions)
+
+- **What.** `_cursor_argv` appends a SKILLS paragraph to `cursor_agent/instructions.md`: one line per `SKILL.md` (name, description, absolute path) of fused-render's own skills, and of the workbench skills only when the target is inside the workbench gate. The model is told to read a skill's file before work its description covers. The skills folders are added to the readable directories the same file names.
+- **Why.** Measured against the real CLI (2026.11.22-e9042b2) with an ACP turn: `cursor-agent acp` ignores `--plugin-dir`, `--add-dir` and a workspace `.cursor/skills`; only `~/.cursor/skills` loads. So Cursor sessions saw none of the skills Claude (`--plugin-dir`) and Copilot (generated plugin dir) get.
+- **What the model gains.** The text of skills it chooses to read, as guidance from fused-render. No new tool, grant or write location.
+- **Rejected.** Writing into `~/.cursor/skills`: global state shared with the user's other Cursor use, which fused does not write. Writing `.cursor/skills` or `AGENTS.md` in the user's folder: ignored by ACP, and fused never writes there.
+
+## D1504: Codex sessions get the skills as paths in the developer instructions (2026-11-23, codex-skills-in-instructions)
+
+- **Why.** codex-cli 0.164 has no option naming an extra skills root; `.agents/skills` would write into the user's folder, and CODEX_HOME holds the credential, so neither is touched. Codex was the one backend left with no fused-render or workbench skills.
+- **What.** `_Host._developer_instructions` appends `_skills_note(target)` (Cursor's note from D1503, now shared) to the `_appended_prompt` text: name, description and SKILL.md path per skill, workbench skills only in a canvas root. No readable-directory text: Codex's sandboxes read the whole filesystem.
+
+## D1507: The skills note says the skills are the whole reference (2026-11-23, agents-skills-are-the-reference)
+
+- **Why.** Cursor and Codex get the skills as SKILL.md paths (D1503, D1504). In a real Cursor app-building run the model read two skills, then spent about two minutes on `find / -name runtime.js` and reading fused-render's installed source (`static/runtime.js`, `server/fs_mutate.py`, `server/routers/ai_runtime.py`) to double-check `fused.ai` and `fused.writeFile`: 20 of its 38 tool calls. Re-running the same prompt with one added sentence, 0 of 16 calls left the folder and the turn took 246 s instead of 308 s (one run each).
+- **What.** `_skills_note` ends with that sentence: the listed SKILL.md files are the complete page-API reference, never read or search fused-render's installed code or outside the working folder, and use the documented call as written when a skill leaves a detail unsaid. Only present when there are skills.
+- **Not changed.** No tool, grant or readable directory; the sentence is guidance, not enforcement.
+
+## D1505: A held Cursor edit announces its file early as a bare content_block_start (2026-11-23, cursor-announce-edits-early)
+
+- **Why.** Measured on a 250-line file write: `tool_call` pending (empty `rawInput`) at +6.8 s, the file named at +7.5 s, then nothing until `in_progress` at +28.5 s. D14 holds an edit's row until `completed` (the diff only exists then), so the chat showed nothing for 20+ seconds.
+- **What.** `cursor_host._announce_tool` emits a `stream_event` `content_block_start` (tool_use, mapped by `_map_tool`) as soon as `_first_path` of the merged call is non-empty, from `_on_tool_call` and `_on_tool_call_update` on the not-raised path, once per id (`announced`, reset per turn with `held`). No `assistant` row and no transcript row: the transcript still gets the call once, complete, from `_raise_tool`, which emits its own `content_block_start` (refreshes the activity entry; the final name may differ, Write vs Edit). `_poll` takes the activity detail from the finalized input when it has one, else the block's own `input` (Claude's start carries `{}`, so unchanged).
+- **Edits only.** A shell call's early `rawInput` is a truncated command, and a shell call is raised at `in_progress` anyway.
+- **`tail_closed` left alone.** It means the transcript's last row is a reply with no `tool_use`. The announce writes no transcript row, so setting it False would make a closed transcript read as open; `_close_message` (which can write a text row) already sets it True.
+- **Other readers checked.** `agent.py` `_poll` is the only Python reader of `content_block_start` (the other hits are the other hosts' emitters and comments). `tools_open` is keyed by id, so the repeat start for the same id is one entry; a `tool_result` removes it. `tool_names` is overwritten by the later start/assistant row. The registry fold (`_update_run_registry`, line ~12113) reads only `assistant` rows. A turn cancelled mid-write leaves the bare start with no `tool_result` and `activity.tool` still set, but `done` is true (probed); a cancelled raised tool already leaves the same, so nothing new.
+
+## D1506: Cursor chats start from a per-folder warm spare (2026-11-23, cursor-warm-spare-per-folder)
+
+- **What.** The composer's `defaults` call starts a spare `cursor_host.py` for the folder (one per cwd, at most two, retired after 5 minutes unclaimed). The spare runs `initialize` and a throwaway `session/new`, then waits; `_start` hands the real chat to a ready spare with the same cwd and argv, else spawns a cold host. `FUSED_CURSOR_PREWARM=0` disables it.
+- **Why.** The first `session/new` in a `cursor-agent acp` process takes 4.1-4.8 s (a later one 1.2 s), so the first message waited about 4.5 s. Cursor reads rules and skills from the process cwd, so the spare must match the chat's cwd.
+- **Cost.** One idle CLI process per recently opened folder for up to 5 minutes, and one throwaway `~/.cursor/acp-sessions/<id>` per spare that fused never reads.
+- **Rejected.** A single global spare: wrong cwd means wrong rules and skills. Warming at app start: spawns CLIs for users who never open Cursor chat.
+
+## D1508: The Cursor warm spare exists only when Cursor is the default agent (2026-11-23, cursor-warm-spare-per-folder)
+
+- **What.** `_cursor_spare_usable` also requires the `default_backend` pref to read as `cursor`, so a spare is started only for users whose default agent is Cursor. A Cursor chat opened while another agent is the default starts cold; an already-warm spare may still be claimed and otherwise retires on its 5-minute TTL.
+- **Why.** The spare costs a CLI process plus a throwaway session, and only users who chose Cursor should pay for it.
+
+## D1509: The vector preview streams every feature (2026-11-24, vector-stream-all-features)
+
+- **What.** `vector_reader.py` has no feature cap and no simplification. `op=meta` returns the layer description and the first chunk; the page asks for `op=chunk` from `next` until it is null and adds each chunk as its own MapLibre source. A chunk is at most 100,000 features (20,000 for the first, so the map paints early) and 1,000,000 coordinates, sent as base64 ragged arrays of lon/lat float64; the page asks for the next chunk before decoding the current one. Attributes are read when needed: `op=row` for hover and click, `op=column` for colour-by over every feature. Features are numbered by one row index across layers (OGR feature counts are forced), so the cursor is one integer.
+- **Why.** The 20,000-feature cap drew the file's first rows. A file ordered by anything spatial showed one region: a 302,466-row AlphaEarth index sorted by UTM zone drew only 141E to 180 in the south, which read as a broken file next to QGIS. The map template's DuckDB tiler has the same first-N shape at 50,000 per tile.
+- **Warm worker.** The folder declares `main = "vector_reader.py"` and the page calls `fused.daemon.run`, falling back to `runPython` as `h3` does. The worker keeps each opened source (Parquet footer, OGR layer counts) per path, mtime and size, plus its last few Parquet row groups and 10,000-row OGR attribute blocks, so a chunk that straddles a row group and a hover next to the last one read nothing again. Measured on that index: a chunk in 130 to 630 ms and a row in 50 to 270 ms, against 1 to 3 s for a fresh subprocess.
+- **Sequential decode.** Each source keeps one geometry reader that continues where the last chunk ended: Parquet row groups, or an OGR layer held open as an Arrow stream, decoded and reprojected in 10,000-row blocks. Rows decoded past the coordinate budget wait on the source for the next chunk, and a request that does not continue reopens at its row. Before, every chunk decoded up to 100,000 rows and dropped what did not fit, and OGR reopened the layer with `skip_features`, which re-parses a GeoJSON and re-skips a CSV. Measured over a full stream: 20,000 polygons of 2,001 coordinates 8.3 s to 1.3 s as GeoParquet and 56 s to 3.6 s as a UTM GeoPackage, 300,000 GeoJSON points 2.6 s to 1.3 s.
+- **Bounds.** Fit uses the extent of what was drawn: every chunk carries its lon/lat bounds, the page merges them and refits once when the stream ends unless the user has moved the map. A GeoParquet footer's `bbox` and `geometry_types` are not trusted for the view: `fused-asset/census/tract_geom_2025/6.parquet` declares Washington DC and `WKB` for tracts in Washington, Oregon and Alaska. Declared geometry types are shown only when they are geometry names, else the kinds drawn.
+- **Small features.** Each chunk source sets `tolerance: 0`. With MapLibre's default, polygons smaller than the simplification tolerance vanish at low zoom, so the 15,507 Maxar footprints in `fused-asset/maxar_open_data` drew nothing at world zoom, where QGIS shows them all.
+- **One source per chunk.** MapLibre's worker indexes each source once. `setData` or `updateData` on a single source re-indexes every feature on every chunk.
+- **Rejected.** `updateData` for colour-by: it re-tiled 302,466 polygons in 12.0 s against 9.9 s for `setData` (headless, same page). A higher cap, which moves the cliff. Sampling or reordering rows, which draws something that is not the file. GeoJSON text from Python, about twice the bytes plus a parse per feature. Properties in every chunk, which dominate the payload.
+- **Cost.** The page and MapLibre's worker hold every feature, so memory grows with the file. Preview thumbnails load the first chunk only.
+
+## D1510: Away access: the phone listener through a blind SNI relay or Tailscale; pairing stays on the Wi-Fi (2026-11-21, away-access)
 
 - **What.** A second switch under Phone access ("Also reachable away from this Wi-Fi", `lan_remote_enabled`, off by default). Paired phones reach the SAME listener (`lan.py`) off the Wi-Fi by a relay (`tunnel/`: the computer dials out, the relay routes the phone's TLS by SNI to it and splices bytes) or the computer's tailnet. Design and threat model: docs/REMOTE_ACCESS.md.
 - **The relay never terminates TLS.** The phone keeps pinning the computer's own certificate (`lan_tls.py`); the relay sees host ids, addresses and sizes, never content. No new crypto on the phone, WebSockets work, and a compromised relay is no worse than a stranger on the Wi-Fi.
@@ -8156,4 +8293,3 @@ A user redid a canvas's folders through Claude; the five old folders stayed on s
 - **Per-phone Away switch** (`remote` on the device record; on by default) and `last_via` in the list.
 - **Rejected.** Cloudflare Tunnel / ngrok (TLS ends at a third party: t3code's model). A Noise channel inside a WebSocket relay (OpenMausBot's model): end to end too, but new crypto, a multiplexer and a native proxy on the phone, for what SNI pass-through gives with the TLS we already pin. Remote pairing.
 - **Not decided.** A Fused-run relay and its `DEFAULT_RELAY`; relay-side admission of paired phones only.
-

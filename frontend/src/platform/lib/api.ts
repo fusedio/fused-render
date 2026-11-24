@@ -1608,45 +1608,18 @@ export interface Prefs {
   // Breakout side chats (`breakout_enabled`, shell/prefs.py; opt-in, off by
   // default). Optional like `queue`: absent reads as off.
   breakout?: { enabled: boolean };
-  // Specialists (`specialists_enabled`, shell/prefs.py; docs/specialists.md).
+  // Experts (`experts_enabled`, shell/prefs.py; docs/experts.md).
   // Experimental, off by default. Optional like `breakout`: absent reads as off.
-  specialists?: { enabled: boolean };
+  experts?: { enabled: boolean };
   // The slow in-canvas screenshot fallback on a Mac
   // (`canvas_shot_slow_fallback_enabled`, shell/prefs.py; off by default).
   // Optional: absent (older server) reads as off.
   canvas_shot?: { slow_fallback: boolean };
-  // The canvas page's collapsed Claude rail shows the hovered chat as a live
-  // floating card (`canvas_rail_peek_enabled`, shell/prefs.py; off by
-  // default). Optional: absent (older server) reads as off. A hover previews
-  // and a click pins — there is no trigger choice any more.
-  canvas_rail_peek?: { enabled: boolean };
-  // Favourite chats (`task_favourites_enabled`, shell/prefs.py; off by
-  // default): the star on the rail card, the rail's favourites section, the
-  // favourite's own card, the rail beside the open pane, the star beside the
-  // id in every task list. Optional: absent (older server) reads as off.
-  task_favourites?: { enabled: boolean };
-  // One shared task header in every task view: the Tasks page side panel, the
-  // rail Tasks card, the New task card, the Cards popup (`task_head_unified_enabled`,
-  // shell/prefs.py; off by default). Optional: absent (older server) reads as off.
-  task_head_unified?: { enabled: boolean };
-  // Free pins on the Claude rail (`rail_free_pins_enabled`, shell/prefs.py; off
-  // by default): a pin is its task's, freezes the window where it stood, and
-  // leaves the rail's column to a second, non-pinned window. Read only with
-  // the unified head on. Optional: absent (older server) reads as off.
-  rail_free_pins?: { enabled: boolean };
-  // A file's other modes as doors on the Claude rail (`rail_mode_doors_enabled`,
-  // shell/prefs.py; off by default): the mode menu's entries, the active one
-  // left out, above Git, each previewing the file that way in a rail card.
-  // Read only with the rail flag on. Optional: absent (older server) reads as off.
-  rail_mode_doors?: { enabled: boolean };
-  // Task icons (`task_icons_enabled`, shell/prefs.py; off by default,
-  // experiment 2026-11-10): a favourite wears one of 299 glyphs in place of
-  // its status ring. Optional: absent (older server) reads as off.
-  task_icons?: { enabled: boolean };
-  // Expert bots (`experts_enabled`, shell/prefs.py; off by default,
-  // docs/experts.md §17). Off hides experts — the server leaves them out of
-  // every bot listing — and deletes nothing. Optional: absent reads as off.
-  experts?: { enabled: boolean };
+  // Rail extras (`rail_extras_enabled`, shell/prefs.py; off by default): a
+  // file's other views as doors above Git, the expandable rail, and free
+  // pinned rail windows (exact place and size, a second window for the rest).
+  // Optional: absent (older server) reads as off.
+  rail_extras?: { enabled: boolean };
   // Stable AI titles: Tasks rows titled only by the stable `title` (`task_summary_titles_enabled`,
   // shell/prefs.py; off by default). Optional: absent reads as off.
   task_summary_titles?: { enabled: boolean };
@@ -2220,40 +2193,16 @@ export function putBreakoutEnabled(enabled: boolean): Promise<Prefs> {
   return putJson<Prefs>("/api/prefs", { breakout_enabled: enabled });
 }
 
-export function putSpecialistsEnabled(enabled: boolean): Promise<Prefs> {
-  return putJson<Prefs>("/api/prefs", { specialists_enabled: enabled });
+export function putExpertsEnabled(enabled: boolean): Promise<Prefs> {
+  return putJson<Prefs>("/api/prefs", { experts_enabled: enabled });
 }
 
 export function putCanvasShotSlowFallbackEnabled(enabled: boolean): Promise<Prefs> {
   return putJson<Prefs>("/api/prefs", { canvas_shot_slow_fallback_enabled: enabled });
 }
 
-export function putCanvasRailPeekEnabled(enabled: boolean): Promise<Prefs> {
-  return putJson<Prefs>("/api/prefs", { canvas_rail_peek_enabled: enabled });
-}
-
-export function putTaskFavouritesEnabled(enabled: boolean): Promise<Prefs> {
-  return putJson<Prefs>("/api/prefs", { task_favourites_enabled: enabled });
-}
-
-export function putTaskHeadUnifiedEnabled(enabled: boolean): Promise<Prefs> {
-  return putJson<Prefs>("/api/prefs", { task_head_unified_enabled: enabled });
-}
-
-export function putRailFreePinsEnabled(enabled: boolean): Promise<Prefs> {
-  return putJson<Prefs>("/api/prefs", { rail_free_pins_enabled: enabled });
-}
-
-export function putRailModeDoorsEnabled(enabled: boolean): Promise<Prefs> {
-  return putJson<Prefs>("/api/prefs", { rail_mode_doors_enabled: enabled });
-}
-
-export function putTaskIconsEnabled(enabled: boolean): Promise<Prefs> {
-  return putJson<Prefs>("/api/prefs", { task_icons_enabled: enabled });
-}
-
-export function putExpertsEnabled(enabled: boolean): Promise<Prefs> {
-  return putJson<Prefs>("/api/prefs", { experts_enabled: enabled });
+export function putRailExtrasEnabled(enabled: boolean): Promise<Prefs> {
+  return putJson<Prefs>("/api/prefs", { rail_extras_enabled: enabled });
 }
 
 /** One PUT per Bots page-wide switch (`Prefs.bots`). */
@@ -2285,6 +2234,8 @@ export function putPinnedTasks(keys: string[]): Promise<Prefs> {
 export interface UiLayoutDoc {
   v: 1;
   sidebar?: { width: number; collapsed: boolean };
+  /** The right rail's width and expanded flag (platform/lib/railstate.ts). */
+  rail?: { width: number; expanded: boolean };
   bookmarksCollapsed?: boolean;
   currentAppsCollapsed?: boolean;
   /** The sidebar's Canvases section fold (the desk's canvas half). */
@@ -2308,6 +2259,10 @@ export interface UiLayoutDoc {
   /** The chat text zoom, 1 = 100 % (platform/lib/chat-zoom.ts): one factor for
    *  every chat, always one of `CHAT_TEXT_SCALES` (ui-layout.ts). */
   chatTextScale?: number;
+  /** The task chat's "seen" mark (apps/claude/ui/chatSeen.ts): session id →
+   *  where the reader last sat at the end of it (`k:d:r`, a log position). Oldest
+   *  first; capped at `CHAT_SEEN_MAX` (ui-layout.ts). */
+  chatSeen?: Record<string, string>;
 }
 
 export function getUiLayout(): Promise<{ exists: boolean; layout: UiLayoutDoc | null }> {
@@ -4057,7 +4012,7 @@ export interface TaskBackgroundJobs {
 export interface Task {
   key: string;
   task_id: string; // TASK-003 — numbered per project, allocated once, never reused
-  // THE TASK'S FACE (`task_icons_enabled`, 2026-11-10): which of the 299
+  // THE TASK'S FACE (task icons, 2026-11-10): which of the 299
   // glyphs in shell/task-icons.ts this task wears — arithmetic on its number
   // server-side (tasks_store.icon_slot); a pick (`setTaskIcon`) stamps
   // another. THE ICON IS NOT THE STAR'S (2026-11-16): a row carries one when
@@ -4757,6 +4712,31 @@ export function forceStart(
   return postJson<ForceResult>("/api/tasks/queue/force", what);
 }
 
+/** What `POST /api/tasks/limit/retry` answers. `note` is the scheduler's
+ *  sentence when the continue could not go this second (a turn still closing,
+ *  the folder held — `queued`), "" when it went. */
+export interface LimitRetryResult {
+  ok: boolean;
+  entry: ScheduledMessage | null;
+  note: string;
+  queued: boolean;
+  /** The booked comeback this retry ran ahead of, "" when none was booked. */
+  comeback: string;
+}
+
+/**
+ * RETRY NOW on a conversation the plan's usage limit paused — the reader
+ * switched accounts, or the window lifted early, and does not want to wait
+ * for the booked comeback. Sends the continue prompt now into the same
+ * session; the comeback stays booked until a reply retires it (server-side),
+ * so a retry that is still limited leaves exactly one comeback behind.
+ * `key` is the task key, which for a conversation is its session id.
+ * Refusals THROW (404 no such task, 409 not paused on the limit).
+ */
+export function retryAfterLimit(key: string): Promise<LimitRetryResult> {
+  return postJson<LimitRetryResult>("/api/tasks/limit/retry", { key });
+}
+
 /** A card decision routed through the queue: the same body the agent's own
  *  `decide` action takes, plus the session and folder the server needs to find
  *  the line. `held: false` carries the ordinary decide result straight through;
@@ -5095,7 +5075,7 @@ export function renameTask(key: string, title: string): Promise<{ ok: boolean; t
   return postJson<{ ok: boolean; title: string }>("/api/tasks/rename", { key, title });
 }
 
-/** THE FACE THE USER PICKED for one task (`task_icons_enabled`): `slot`
+/** THE FACE THE USER PICKED for one task: `slot`
  *  indexes shell/task-icons.ts and is kept server-side, worn starred or not;
  *  null is the picker's Remove — the ring again, starred or not, until a
  *  star gives the icon back (2026-11-16). Answers what the task wears now
@@ -6829,6 +6809,9 @@ export interface RailGitRepo {
    *  move (the rail Git door's dots). Null with no upstream or a detached
    *  HEAD; absent from an older server. */
   upstream?: { ahead: number; behind: number } | null;
+  /** A copy of someone else's app (contrib §17.8): the Git pane routes its
+   *  push / pull, so the rail card offers neither. Absent from an older server. */
+  guarded?: boolean;
   commits: GitCommit[];
 }
 
@@ -6849,6 +6832,31 @@ export function getRailGit(path: string, limit?: number): Promise<RailGit> {
  *  (no remote, unreachable, another check holding the slot, still running). */
 export function postRailGitCheck(path: string, limit?: number): Promise<RailGit & { checked: boolean }> {
   return mutateJson<RailGit & { checked: boolean }>("POST", "/api/git/rail/check", limit === undefined ? { path } : { path, limit });
+}
+
+export type RailGitSyncOp = "push" | "pull";
+
+/** The Git view's own push / pull (templates/git/ops.py), as its answer. */
+export interface RailGitSyncResult {
+  ok: boolean;
+  op?: RailGitSyncOp;
+  detail?: string;
+  reason?: string;
+  message?: string;
+}
+
+/** The rail Git card's Send / Get latest: the pane's op, then the fresh counts.
+ *  A refusal is `result.ok === false` with its sentence, not a thrown error. */
+export function postRailGitSync(
+  path: string,
+  op: RailGitSyncOp,
+  limit?: number,
+): Promise<RailGit & { result: RailGitSyncResult }> {
+  return mutateJson<RailGit & { result: RailGitSyncResult }>(
+    "POST",
+    "/api/git/rail/sync",
+    limit === undefined ? { path, op } : { path, op, limit },
+  );
 }
 
 export function getGitCommits(path: string, limit = 30): Promise<GitCommits> {

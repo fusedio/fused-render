@@ -28,7 +28,7 @@ export interface DoorCardState {
   up: boolean;
   /** Pinned by a press (the door's, or one inside the card). */
   pinned: boolean;
-  /** HELD by its pin (rail-pin-lib; the unified-head switch on): a press
+  /** HELD by its pin (rail-pin-lib): a press
    *  outside, a press into a frame and a page hop leave it up. With `pinned`
    *  and not `held` it is TEMP. Dropped with the card. Never set with the
    *  switch off. */

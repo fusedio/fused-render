@@ -48,8 +48,8 @@ export function activeHandoff(b: Pick<Bot, "handoffs">): Handoff | null {
   return best;
 }
 
-/** An expert or a specialist: no browser, so no Stage, live view, screenshot or logins. */
-export const noBrowser = (b: Pick<Bot, "kind"> | undefined): boolean => b?.kind === "expert" || b?.kind === "specialist";
+/** An expert: no browser, so no Stage, live view, screenshot or logins. */
+export const noBrowser = (b: Pick<Bot, "kind"> | undefined): boolean => b?.kind === "expert";
 
 /** "running · step 3" ("running · step 3/60" with a step cap), "waiting for you", "idle · browser off", … */
 export const statusLabel = (b: Bot): string =>

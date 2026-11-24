@@ -11,14 +11,14 @@
 //     the card stood until the next rail or a reload.
 import { useEffect } from "react";
 import { useAPinned } from "@platform/lib/last-chat";
-import { useRailFreePins } from "./rail-free-pins-flag";
+import { useRailExtras } from "./rail-extras-flag";
 import { registerListHost, useListCards, useListOrphaned } from "./rail-list-host-store";
 import { aPinTask } from "./rail-slots-lib";
 
 export function ListCardHost() {
   useEffect(() => registerListHost(), []);
   const cards = useListCards();
-  const freePins = useRailFreePins();
+  const freePins = useRailExtras();
   const orphaned = useListOrphaned();
   const pinned = aPinTask(useAPinned()) !== null;
   if (!freePins || (orphaned && !pinned)) return null;

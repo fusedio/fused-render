@@ -65,7 +65,7 @@ import {
   windowSize,
 } from "./rail-move-store";
 import { setSnapGuides } from "./card-snap";
-import { useRailFreePins } from "./rail-free-pins-flag";
+import { useRailExtras } from "./rail-extras-flag";
 import { useDoomedWindow } from "./rail-slots-store";
 
 /** WHERE A FLOATING CARD IS DRAWN THIS RENDER: `box` as its chassis placed
@@ -182,9 +182,6 @@ function swallowNextClick(): void {
 
 export function useCardMove(o: {
   win: RailWindow;
-  /** The unified-head switch is on (the pin exists): presses count for the
-   *  stacking. Off, the hook does nothing at all. */
-  on: boolean;
   /** The window is PINNED (held) on this card: its head grabs. */
   movable: boolean;
   /** The card's head (rail-move-lib `RAIL_HEAD_SELECTOR`,
@@ -197,16 +194,16 @@ export function useCardMove(o: {
    *  they overlap"). */
   shown?: string | null;
 }): CardMove {
-  const { win, on, headSelector } = o;
+  const { win, headSelector } = o;
   // FREE PINS (rail-slots-lib): a pinned window is frozen where it stood, so
   // it always floats and nothing docks it but its unpin.
-  const freePins = useRailFreePins() && on;
+  const freePins = useRailExtras();
   const doomed = useDoomedWindow();
-  const shown = on ? (o.shown ?? null) : null;
+  const shown = o.shown ?? null;
   useEffect(() => {
     if (shown !== null) noteFrontWindow(win);
   }, [shown, win]);
-  const movable = on && o.movable;
+  const movable = o.movable;
   // THE PIN THIS CARD IS (rail-move-store `pinEpoch`): the count its window
   // was pinned at when this card took the pin. A later count: it was
   // replaced, and reads the last position and size it had instead of the
@@ -233,7 +230,7 @@ export function useCardMove(o: {
   );
   const otherFloats = useSyncExternalStore(
     subscribeWindowPos,
-    () => on && windowPos(otherWin) !== null,
+    () => windowPos(otherWin) !== null,
     () => false,
   );
   const front = useFrontWindow();
@@ -362,7 +359,7 @@ export function useCardMove(o: {
   // squeezed inside the viewport (rail-move-lib `floatPlacement`) until the
   // room returns.
 
-  const isFront = on && raised({ win, front, anyFloating: floating || otherFloats });
+  const isFront = raised({ win, front, anyFloating: floating || otherFloats });
   return {
     floating,
     pos: floating ? pos : null,
@@ -380,7 +377,7 @@ export function useCardMove(o: {
     onPointerDown,
     onDoubleClick,
     notePress: () => {
-      if (on) noteFrontWindow(win);
+      noteFrontWindow(win);
     },
     setPos: (p) => commitWindowPos(win, p),
     at,

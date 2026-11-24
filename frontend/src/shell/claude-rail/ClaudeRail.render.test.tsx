@@ -1,8 +1,6 @@
 // THE RAIL BESIDE THE OPEN PANE (ClaudeRail `paneOpen`; owner, 2026-11-05),
-// mounted: the panel glyph and the pull seam only while the pane is shut;
-// beside the open pane (favourites on) the rail stands only with something to
-// draw — hidden, and off the favourite card's rail stack, when empty; and a
-// chat the pane already holds is said in the card's body, not mounted twice.
+// mounted: no panel glyph (the nav doors stand there) and the pull seam only
+// while the pane is shut; the rail stands beside the open pane too.
 // Real modules throughout — the flags and the rows are published into their
 // own stores (`mock.module` is process-wide in bun and leaks across files).
 import { installDomShim, installPortalContainer, removePortalContainer } from "@platform/lib/testDomShim";
@@ -14,31 +12,28 @@ import type { RailPlace } from "./claude-rail-lib";
 
 const { ClaudeRail } = await import("./ClaudeRail");
 const { RailPeek } = await import("./RailPeek");
-const { publishTaskFavourites, publishFavouritesParent, resetTaskFavouritesFlagForTests } = await import(
-  "@platform/lib/favourites-flag"
-);
-const { publishCanvasRailPeek, resetCanvasRailPeekFlagForTests } = await import("./rail-peek-flag");
 const { publishTasks, rememberListing, forgetListing, resetListingFeedForTests } = await import("@shell/tasksPulse");
 const { favPeekState, resetFavPeekStoreForTests } = await import("./fav-peek-store");
 const { publishBots, resetBotsPulseForTests } = await import("@platform/lib/botsPulse");
 const { setBotsAvailableForTests, setLauncherAvailableForTests } = await import("@platform/lib/bots-available");
 const { announcePaneSession } = await import("@platform/lib/peek-session");
-const { botOpen, setBotOpen, setFavOpen } = await import("@platform/lib/last-chat");
+const { botOpen, setAPinned, setBotOpen, setFavOpen } = await import("@platform/lib/last-chat");
 const { dropSharedPrefsRead } = await import("@platform/lib/api");
 const { BotPeek, CHAT_LINGER_MS } = await import("./BotPeek");
 const { BotCardHost } = await import("./BotCardHost");
-const { resetBotCardForTests } = await import("./bot-card-store");
+const { botCardIntent, resetBotCardForTests } = await import("./bot-card-store");
 const { railGitCount, railGitOf, resetRailGitStoreForTests } = await import("./rail-git-store");
-const { gitCardRail, gitCardState, registerGitCard, resetGitCardForTests } = await import("./git-peek-store");
+const { gitCardRail, gitCardState, gitCardStore, registerGitCard, resetGitCardForTests } = await import("./git-peek-store");
 const { resetRailGitCacheForTests } = await import("./rail-git");
 const { GitPeek, GIT_FOLLOW_MS } = await import("./GitPeek");
 const { modeCardStore, railModesOf, resetModeCardsForTests } = await import("./mode-peek-store");
-const { publishRailModeDoors, resetRailModeDoorsFlagForTests } = await import("./rail-mode-doors-flag");
+const { publishRailExtras, resetRailExtrasFlagForTests } = await import("./rail-extras-flag");
+const { RAIL_DEFAULT_WIDTH, getRailState, setRailState } = await import("@platform/lib/railstate");
+const { _setUiLayoutForTest } = await import("@platform/lib/ui-layout");
 const { DoorCard } = await import("./DoorCard");
 const { PEEK_OPEN_MS } = await import("./rail-peek-lib");
 const { botsCardState, registerBotsCard, resetBotsCardForTests } = await import("./bots-peek-store");
 const { registerTasksCard, resetTasksCardForTests, tasksCardState } = await import("./tasks-peek-store");
-const { publishTaskHeadUnified, resetTaskHeadUnifiedFlagForTests } = await import("@shell/task-head-flag");
 const { resetFlagsForTests: resetClaudeFlagsForTests } = await import("@apps/claude/feature-flag");
 const { TaskHead: TaskHeadC } = await import("@shell/TaskHead");
 
@@ -142,8 +137,6 @@ beforeEach(() => {
     saved.set(name, name in g ? g[name] : MISSING);
     g[name] = stub;
   }
-  resetTaskFavouritesFlagForTests();
-  resetCanvasRailPeekFlagForTests();
   resetFavPeekStoreForTests();
   resetListingFeedForTests();
   forgetListing();
@@ -161,17 +154,15 @@ afterEach(() => {
   resetListingFeedForTests();
   forgetListing();
   resetFavPeekStoreForTests();
-  resetTaskFavouritesFlagForTests();
-  resetCanvasRailPeekFlagForTests();
   setBotsAvailableForTests(null);
   (globalThis as { fetch: unknown }).fetch = realFetch;
   // The never-settling fetch above pins the shared prefs read (platform/lib/api)
   // for every later suite in the process once a mounted flag has joined it.
   dropSharedPrefsRead();
   resetClaudeFlagsForTests();
-  // …and the unified-head flag keeps a read of its OWN (task-head-flag `read`):
-  // a card mounted here leaves it pending under the same stub.
-  resetTaskHeadUnifiedFlagForTests();
+  // Rail extras: its switch, and the rail collapsed again.
+  resetRailExtrasFlagForTests();
+  setRailState({ width: RAIL_DEFAULT_WIDTH, expanded: false }, false);
   for (const [name, was] of saved) {
     if (was === MISSING) delete g[name];
     else g[name] = was;
@@ -181,31 +172,25 @@ afterEach(() => {
 
 async function mountRail(o: {
   paneOpen: boolean;
-  favourites: boolean;
   chats?: Task[];
   onOpenChat?: (href: string) => void;
   /** The session the page's URL names — beside the open pane, the chat it
    *  shows; null is the pane's home (2026-11-05, `listHidden`). */
   activeSessionId?: string | null;
-  /** The rail flag; on unless said. */
-  peek?: boolean;
   /** The page's git (ClaudeRail `git`). */
   git?: { path: string; onOpenGit?: () => void };
   /** The file's other modes (ClaudeRail `fileModes`). */
   fileModes?: { path: string; modes: string[]; onOpen?: (mode: string) => void };
-  /** The mode doors' own switch (`rail_mode_doors_enabled`); on unless said. */
-  modeDoors?: boolean;
+  /** Rail extras (`rail_extras_enabled`: mode doors, the expandable rail,
+   *  free pins); OFF unless said. */
+  extras?: boolean;
   /** Mount the shell's bot card (BotCardHost) beside the rail, as App does. */
   botHost?: boolean;
   /** The rail's place; the demo folder unless said. */
   place?: RailPlace;
   onSelectNode?: (udfName: string | null) => void;
 }) {
-  // The card's flag and the favourites' pair, as Settings would publish them.
-  publishCanvasRailPeek({ enabled: o.peek ?? true });
-  publishRailModeDoors({ enabled: o.modeDoors ?? true });
-  publishFavouritesParent({ enabled: true });
-  publishTaskFavourites({ enabled: o.favourites });
+  publishRailExtras({ enabled: o.extras ?? false });
   const rows = o.chats ?? [];
   rememberListing(rows);
   publishTasks(rows as unknown as TaskPulseTask[]);
@@ -251,7 +236,7 @@ const byLabel = (r: ReactTestRenderer, label: string): ReactTestInstance[] =>
   r.root.findAll((n) => typeof n.type === "string" && n.props["aria-label"] === label);
 const glyph = (r: ReactTestRenderer) => byLabel(r, "Show the Claude panel").length;
 const seam = (r: ReactTestRenderer) => byLabel(r, "Drag to show the Claude panel").length;
-// THE NAV DOORS (rail flag on, as every mount here; owner, 2026-11-07, order
+// THE NAV DOORS (owner, 2026-11-07, order
 // 2026-11-08): Search (where the app has the launcher panel), Bots, Tasks and
 // the + where the panel glyph stood — always standing; the pinned bots at the
 // foot.
@@ -266,34 +251,30 @@ const navOrder = (r: ReactTestRenderer): string[] => {
 };
 
 describe("ClaudeRail beside the pane", () => {
-  for (const favourites of [false, true]) {
-    test(`pane shut, favourites ${favourites ? "on" : "off"}: Tasks and Bots doors in place of the glyph, seam, standing even empty, registered`, async () => {
-      const r = await mountRail({ paneOpen: false, favourites });
-      expect(glyph(r)).toBe(0);
-      expect(doors(r)).toBe(2);
-      expect(seam(r)).toBe(1);
-      expect(aside(r).props.hidden).toBeUndefined();
-      expect(favPeekState().rail).not.toBeNull();
-    });
-  }
+  test("pane shut: Tasks and Bots doors in place of the glyph, seam, standing even empty, registered", async () => {
+    const r = await mountRail({ paneOpen: false });
+    expect(glyph(r)).toBe(0);
+    expect(doors(r)).toBe(2);
+    expect(seam(r)).toBe(1);
+    expect(aside(r).props.hidden).toBeUndefined();
+    expect(favPeekState().rail).not.toBeNull();
+  });
 
-  for (const favourites of [false, true]) {
-    test(`a server without Bots (Windows), favourites ${favourites ? "on" : "off"}: Tasks stands, no Bots door, no pinned bots (Bugbot, #2175/#2177)`, async () => {
-      setBotsAvailableForTests(false);
-      resetBotsPulseForTests();
-      publishBots([{ id: "b1", status: "idle", seq: 1, pinned: true, name: "Helper" }]);
-      const r = await mountRail({ paneOpen: false, favourites });
-      expect(byLabel(r, "Tasks").length).toBe(1);
-      expect(byLabel(r, "Bots").length).toBe(0);
-      expect(r.root.findAll((n) => n.props?.className === "claude-rail-bots").length).toBe(0);
-      resetBotsPulseForTests();
-    });
-  }
+  test("a server without Bots (Windows): Tasks stands, no Bots door, no pinned bots (Bugbot, #2175/#2177)", async () => {
+    setBotsAvailableForTests(false);
+    resetBotsPulseForTests();
+    publishBots([{ id: "b1", status: "idle", seq: 1, pinned: true, name: "Helper" }]);
+    const r = await mountRail({ paneOpen: false });
+    expect(byLabel(r, "Tasks").length).toBe(1);
+    expect(byLabel(r, "Bots").length).toBe(0);
+    expect(r.root.findAll((n) => n.props?.className === "claude-rail-bots").length).toBe(0);
+    resetBotsPulseForTests();
+  });
 
   test("the nav's order (owner, 2026-11-08): Search, Bots, Tasks, + at the rail's top; the Bots door is not at the foot", async () => {
     setLauncherAvailableForTests(true);
     setBotsAvailableForTests(true);
-    const r = await mountRail({ paneOpen: false, favourites: true });
+    const r = await mountRail({ paneOpen: false });
     expect(navOrder(r)).toEqual(["Search", "Bots", "Tasks", "New task"]);
     // One Bots door in all: the nav's.
     expect(byLabel(r, "Bots").length).toBe(1);
@@ -304,7 +285,7 @@ describe("ClaudeRail beside the pane", () => {
   test("no launcher panel in this process (a plain server): no Search door, the rest stand", async () => {
     setLauncherAvailableForTests(false);
     setBotsAvailableForTests(true);
-    const r = await mountRail({ paneOpen: false, favourites: false });
+    const r = await mountRail({ paneOpen: false });
     expect(navOrder(r)).toEqual(["Bots", "Tasks", "New task"]);
     setLauncherAvailableForTests(null);
   });
@@ -317,7 +298,7 @@ describe("ClaudeRail beside the pane", () => {
       calls.push(`${init?.method ?? "GET"} ${String(input)}`);
       return new Promise<Response>(() => {});
     };
-    const r = await mountRail({ paneOpen: false, favourites: false });
+    const r = await mountRail({ paneOpen: false });
     await act(async () => {
       byLabel(r, "Search")[0]!.props.onClick();
     });
@@ -326,7 +307,7 @@ describe("ClaudeRail beside the pane", () => {
   });
 
   test("pane open, favourites off: no glyph, no seam, the nav doors keep it standing, registered", async () => {
-    const r = await mountRail({ paneOpen: true, favourites: false, chats: [chat("a")] });
+    const r = await mountRail({ paneOpen: true, chats: [chat("a")] });
     expect(glyph(r)).toBe(0);
     expect(seam(r)).toBe(0);
     expect(doors(r)).toBe(2);
@@ -335,7 +316,7 @@ describe("ClaudeRail beside the pane", () => {
   });
 
   test("pane open, favourites on, nothing to draw: the nav doors keep it standing", async () => {
-    const r = await mountRail({ paneOpen: true, favourites: true });
+    const r = await mountRail({ paneOpen: true });
     expect(glyph(r)).toBe(0);
     expect(seam(r)).toBe(0);
     expect(doors(r)).toBe(2);
@@ -344,14 +325,14 @@ describe("ClaudeRail beside the pane", () => {
   });
 
   test("pane open on its HOME, favourites on, a chat here: the list stands as beside any chat (2026-11-06; it stepped aside until then)", async () => {
-    const r = await mountRail({ paneOpen: true, favourites: true, chats: [chat("a")] });
+    const r = await mountRail({ paneOpen: true, chats: [chat("a")] });
     expect(aside(r).props.hidden).toBeUndefined();
     expect(r.root.findAll((n) => n.type === "a" && typeof n.props["data-task-key"] === "string")).toHaveLength(1);
     expect(favPeekState().rail).not.toBeNull();
   });
 
   test("pane open, favourites on, a chat here: standing and registered, still no glyph or seam", async () => {
-    const r = await mountRail({ paneOpen: true, favourites: true, chats: [chat("a")], activeSessionId: chat("a").session_id });
+    const r = await mountRail({ paneOpen: true, chats: [chat("a")], activeSessionId: chat("a").session_id });
     expect(glyph(r)).toBe(0);
     expect(seam(r)).toBe(0);
     expect(aside(r).props.hidden).toBeUndefined();
@@ -390,7 +371,6 @@ describe("ClaudeRail's card beside the pane", () => {
     try {
       const r = await mountRail({
         paneOpen: true,
-        favourites: true,
         chats: [chat("a"), b],
         onOpenChat: (h) => opened.push(h),
         activeSessionId: b.session_id,
@@ -414,7 +394,6 @@ describe("ClaudeRail's card beside the pane", () => {
     const opened: string[] = [];
     const r = await mountRail({
       paneOpen: true,
-      favourites: true,
       chats: [chat("a"), chat("b")],
       onOpenChat: (h) => opened.push(h),
       activeSessionId: chat("b").session_id,
@@ -431,87 +410,33 @@ describe("ClaudeRail's card beside the pane", () => {
   // everywhere"), behind its flag: the card's two-row head becomes the one
   // every task view draws — its own rename row gone, TaskPeekWho's in its place.
   const cls = (n: ReactTestInstance) => String(n.props?.className ?? "").split(" ");
-  test("flag on: the card wears the shared head — the pin, the identity, the ⋮ — and no title row of its own", async () => {
-    resetTaskHeadUnifiedFlagForTests();
-    publishTaskHeadUnified({ enabled: true });
-    try {
-      const r = await mountRail({ paneOpen: true, favourites: true, chats: [chat("a"), chat("b")], activeSessionId: chat("b").session_id });
-      await press(r, "a");
-      const peek = r.root.findByType(RailPeek);
-      expect(peek.findAll((n) => typeof n.type === "string" && cls(n).includes("task-head"))).toHaveLength(1);
-      expect(peek.findAll((n) => cls(n).includes("claude-rail-peek-titlerow"))).toHaveLength(0);
-      expect(peek.findAll((n) => typeof n.type === "string" && cls(n).includes("task-side-peek-who")).length).toBeGreaterThan(0);
-      // With the unified head the rail card has NO × (owner, 2026-11-16: a
-      // click outside closes a temp card, a pinned one is unpinned first):
-      // the pin is the head's first button.
-      expect(peek.findAll((n) => typeof n.type === "string" && n.props["aria-label"] === "Close the preview")).toHaveLength(0);
-      expect(peek.findAll((n) => typeof n.type === "string" && cls(n).includes("rail-pin-btn"))).toHaveLength(1);
-      // The card's OWN star (toggleStar: tells the rail, dismisses on unstar),
-      // not the head's plain TaskStar, as the count slot's other occupant —
-      // and its archive as the id slot's (the a/b slots, 2026-11-15).
-      expect(peek.findAll((n) => typeof n.type === "string" && cls(n).includes("task-star"))).toHaveLength(0);
-      // A rail window seats it in the acts' layer of its facts box (the count
-      // and the time are the other layer; 2026-11-16).
-      const acts = peek.find((n) => typeof n.type === "string" && cls(n).includes("task-head-facts-layer") && cls(n).includes("is-b"));
-      expect(acts.findAll((n) => typeof n.type === "string" && cls(n).includes("claude-rail-peek-star"))).toHaveLength(1);
-      const idSlot = peek.find((n) => typeof n.type === "string" && cls(n).includes("task-head-idslot"));
-      expect(idSlot.findAll((n) => typeof n.type === "string" && cls(n).includes("claude-rail-peek-archive")).length).toBe(1);
-      // The status icon trades with nothing.
-      const ring = peek.find((n) => typeof n.type === "string" && n.props.className === "task-side-peek-status");
-      expect(ring.findAll((n) => typeof n.type === "string" && cls(n).includes("claude-rail-peek-archive")).length).toBe(0);
-      // Keyed per chat, so a half-typed rename cannot follow a swap.
-      expect(peek.findByType(TaskHeadC).props.task.key).toBe(chat("a").key);
-    } finally {
-      resetTaskHeadUnifiedFlagForTests();
-    }
-  });
-
-  test("flag on, favourites off: the archive stands in the id slot — one archive, and no pulse of the card's own", async () => {
-    resetTaskHeadUnifiedFlagForTests();
-    publishTaskHeadUnified({ enabled: true });
-    try {
-      const r = await mountRail({
-        paneOpen: true,
-        favourites: false,
-        chats: [chat("a", { unread: 2 }), chat("b")],
-        activeSessionId: chat("b").session_id,
-      });
-      await press(r, "a");
-      const peek = r.root.findByType(RailPeek);
-      expect(peek.findAll((n) => typeof n.type === "string" && cls(n).includes("task-head"))).toHaveLength(1);
-      const archives = peek.findAll((n) => typeof n.type === "string" && cls(n).includes("claude-rail-peek-archive"));
-      expect(archives).toHaveLength(1);
-      const idSlot = peek.find((n) => typeof n.type === "string" && cls(n).includes("task-head-idslot"));
-      expect(idSlot.findAll((n) => typeof n.type === "string" && cls(n).includes("claude-rail-peek-archive"))).toHaveLength(1);
-      // The pulse's facts are the head's own slots now: no pulse seat, the
-      // time in the time slot, and — favourites off — no star to trade with.
-      expect(peek.findAll((n) => typeof n.type === "string" && cls(n).includes("claude-rail-peek-pulse"))).toHaveLength(0);
-      expect(peek.findAll((n) => typeof n.type === "string" && cls(n).includes("task-head-time")).length).toBe(1);
-      expect(peek.findAll((n) => typeof n.type === "string" && cls(n).includes("claude-rail-peek-star"))).toHaveLength(0);
-      // …and the head's own filing seat stays off: the card's archive is the one.
-      expect(peek.findAll((n) => typeof n.type === "string" && cls(n).includes("task-head-file"))).toHaveLength(0);
-    } finally {
-      resetTaskHeadUnifiedFlagForTests();
-    }
-  });
-
-  test("flag off, favourites off: the archive still rides the pulse, as it always did", async () => {
-    resetTaskHeadUnifiedFlagForTests();
-    const r = await mountRail({ paneOpen: true, favourites: false, chats: [chat("a"), chat("b")], activeSessionId: chat("b").session_id });
+  test("the card wears the shared head — the pin, the identity, the ⋮ — and no title row of its own", async () => {
+    const r = await mountRail({ paneOpen: true, chats: [chat("a"), chat("b")], activeSessionId: chat("b").session_id });
     await press(r, "a");
     const peek = r.root.findByType(RailPeek);
-    expect(peek.findAll((n) => typeof n.type === "string" && cls(n).includes("task-head"))).toHaveLength(0);
-    const pulse = peek.find((n) => typeof n.type === "string" && cls(n).includes("claude-rail-peek-pulse"));
-    expect(pulse.findAll((n) => typeof n.type === "string" && cls(n).includes("claude-rail-peek-archive"))).toHaveLength(1);
-  });
-
-  test("flag off: the card's own two-row head, title row and all", async () => {
-    resetTaskHeadUnifiedFlagForTests();
-    const r = await mountRail({ paneOpen: true, favourites: true, chats: [chat("a"), chat("b")], activeSessionId: chat("b").session_id });
-    await press(r, "a");
-    const peek = r.root.findByType(RailPeek);
-    expect(peek.findAll((n) => typeof n.type === "string" && cls(n).includes("task-head"))).toHaveLength(0);
-    expect(peek.findAll((n) => typeof n.type === "string" && cls(n).includes("claude-rail-peek-titlerow"))).toHaveLength(1);
+    expect(peek.findAll((n) => typeof n.type === "string" && cls(n).includes("task-head"))).toHaveLength(1);
+    expect(peek.findAll((n) => cls(n).includes("claude-rail-peek-titlerow"))).toHaveLength(0);
+    expect(peek.findAll((n) => typeof n.type === "string" && cls(n).includes("task-side-peek-who")).length).toBeGreaterThan(0);
+    // With the unified head the rail card has NO × (owner, 2026-11-16: a
+    // click outside closes a temp card, a pinned one is unpinned first):
+    // the pin is the head's first button.
+    expect(peek.findAll((n) => typeof n.type === "string" && n.props["aria-label"] === "Close the preview")).toHaveLength(0);
+    expect(peek.findAll((n) => typeof n.type === "string" && cls(n).includes("rail-pin-btn"))).toHaveLength(1);
+    // The card's OWN star (toggleStar: tells the rail, dismisses on unstar),
+    // not the head's plain TaskStar, as the count slot's other occupant —
+    // and its archive as the id slot's (the a/b slots, 2026-11-15).
+    expect(peek.findAll((n) => typeof n.type === "string" && cls(n).includes("task-star"))).toHaveLength(0);
+    // A rail window seats it in the acts' layer of its facts box (the count
+    // and the time are the other layer; 2026-11-16).
+    const acts = peek.find((n) => typeof n.type === "string" && cls(n).includes("task-head-facts-layer") && cls(n).includes("is-b"));
+    expect(acts.findAll((n) => typeof n.type === "string" && cls(n).includes("claude-rail-peek-star"))).toHaveLength(1);
+    const idSlot = peek.find((n) => typeof n.type === "string" && cls(n).includes("task-head-idslot"));
+    expect(idSlot.findAll((n) => typeof n.type === "string" && cls(n).includes("claude-rail-peek-archive")).length).toBe(1);
+    // The status icon trades with nothing.
+    const ring = peek.find((n) => typeof n.type === "string" && n.props.className === "task-side-peek-status");
+    expect(ring.findAll((n) => typeof n.type === "string" && cls(n).includes("claude-rail-peek-archive")).length).toBe(0);
+    // Keyed per chat, so a half-typed rename cannot follow a swap.
+    expect(peek.findByType(TaskHeadC).props.task.key).toBe(chat("a").key);
   });
 
 });
@@ -551,54 +476,10 @@ describe("ClaudeRail's bot card (BotPeek; owner, 2026-11-05)", () => {
     });
   };
 
-  test("the pinned card is the shell's (owner, 2026-11-08): the page's rail remounting leaves it up — no close, no reopen — and the × clears the window's mark", async () => {
-    setBotOpen(null);
-    // The shell's host, mounted once (App), apart from the page's rail.
-    let host!: ReactTestRenderer;
-    await act(async () => {
-      host = create(<BotCardHost />, { createNodeMock: () => fakeEl() });
-    });
-    mounted.push(host);
-    const r = await mountRail({ paneOpen: false, favourites: true, botHost: false });
-    await act(async () => {
-      publishBots([BOT]);
-    });
-    await press(r);
-    expect(botOpen()).toBe("b1");
-    const peek = () => host.root.findByType(BotPeek);
-    expect(peek().props.shown?.id).toBe("b1");
-    // Held (favourites on): a press elsewhere on the page does not close it.
-    expect(peek().props.held).toBe(true);
-    // Every `shown` the host renders from here on, to catch a flicker.
-    const seen: (string | null)[] = [];
-    const watch = setInterval(() => seen.push(peek().props.shown?.id ?? null), 0);
-    // The page's view switches: its rail unmounts and a fresh one mounts.
-    act(() => r.unmount());
-    mounted.splice(mounted.indexOf(r), 1);
-    seen.push(peek().props.shown?.id ?? null);
-    const r2 = await mountRail({ paneOpen: false, favourites: true, botHost: false });
-    await act(async () => {
-      await new Promise((res) => setTimeout(res, 10));
-    });
-    clearInterval(watch);
-    seen.push(peek().props.shown?.id ?? null);
-    expect(seen.every((k) => k === "b1")).toBe(true);
-    expect(peek().props.pinned).toBe(true);
-    // The new rail's ring reads it as its own.
-    expect(r2.root.find((n) => n.type === "a" && n.props["data-bot-id"] === "b1").props.className).toContain("is-pinned");
-    const close = host.root.find((n) => n.type === "button" && n.props.className === "claude-rail-peek-btn claude-rail-peek-close");
-    await act(async () => {
-      close.props.onClick();
-      await new Promise((res) => setTimeout(res, 0));
-    });
-    expect(peek().props.shown).toBeNull();
-    expect(botOpen()).toBeNull();
-  });
-
   test("a reload on the Bots page pins the window's open bot again too (CodeRabbit on #2201)", async () => {
     setBotOpen("b1");
     loc.pathname = "/bots/b1";
-    const r = await mountRail({ paneOpen: false, favourites: true });
+    const r = await mountRail({ paneOpen: false });
     await act(async () => {
       publishBots([BOT]);
       await new Promise((res) => setTimeout(res, 0));
@@ -609,7 +490,7 @@ describe("ClaudeRail's bot card (BotPeek; owner, 2026-11-05)", () => {
   });
 
   test("a rail leaving lets go of a bot hover it held, and never of a pinned card (CodeRabbit on #2201)", async () => {
-    const r = await mountRail({ paneOpen: false, favourites: true, botHost: false });
+    const r = await mountRail({ paneOpen: false, botHost: false });
     await act(async () => {
       publishBots([BOT]);
     });
@@ -629,7 +510,7 @@ describe("ClaudeRail's bot card (BotPeek; owner, 2026-11-05)", () => {
 
   test("a reload pins the window's open bot again, once the pulse lists it", async () => {
     setBotOpen("b1");
-    const r = await mountRail({ paneOpen: false, favourites: true });
+    const r = await mountRail({ paneOpen: false });
     await act(async () => {
       publishBots([BOT]);
       await new Promise((res) => setTimeout(res, 0));
@@ -641,10 +522,9 @@ describe("ClaudeRail's bot card (BotPeek; owner, 2026-11-05)", () => {
 
   test("the window's open bot is forgotten where the rail cannot show it: a favourite's card holds window B", async () => {
     setBotOpen("b1");
-    publishTaskFavourites({ enabled: true });
     const fav = { ...chat("f"), starred: true } as Task;
     setFavOpen(fav.key);
-    const r = await mountRail({ paneOpen: false, favourites: true, chats: [fav] });
+    const r = await mountRail({ paneOpen: false, chats: [fav] });
     await act(async () => {
       publishBots([BOT]);
       await new Promise((res) => setTimeout(res, 0));
@@ -655,7 +535,7 @@ describe("ClaudeRail's bot card (BotPeek; owner, 2026-11-05)", () => {
   });
 
   test("a pinned bot's ring opens its card: a dialog's door, and the press shows the card on that bot", async () => {
-    const r = await mountRail({ paneOpen: false, favourites: true });
+    const r = await mountRail({ paneOpen: false });
     await act(async () => {
       publishBots([BOT]);
     });
@@ -674,11 +554,10 @@ describe("ClaudeRail's bot card (BotPeek; owner, 2026-11-05)", () => {
     expect(ring(r).props.className).toContain("is-pinned");
     const chats = () => r.root.findAll((n) => n.type === "div" && n.props.className === "claude-rail-peek-chat is-shown");
     expect(chats()).toHaveLength(1);
-    // The × closes the card; its chat leaves once the fade is done (BotPeek
+    // The card closes; its chat leaves once the fade is done (BotPeek
     // CHAT_LINGER_MS; Bugbot on #2143) — nothing polls for a closed card.
-    const close = r.root.find((n) => n.type === "button" && n.props.className === "claude-rail-peek-btn claude-rail-peek-close");
     await act(async () => {
-      close.props.onClick();
+      botCardIntent().dismiss();
       await new Promise((res) => setTimeout(res, 0));
     });
     expect(r.root.findByType(BotPeek).props.shown).toBeNull();
@@ -691,7 +570,7 @@ describe("ClaudeRail's bot card (BotPeek; owner, 2026-11-05)", () => {
 
   test("on the Bots page the ring is still the card's (2026-11-06): a popup, the card its caption; Open is the door", async () => {
     loc.pathname = "/bots/b1";
-    const r = await mountRail({ paneOpen: false, favourites: true });
+    const r = await mountRail({ paneOpen: false });
     await act(async () => {
       publishBots([BOT]);
     });
@@ -717,14 +596,14 @@ describe("ClaudeRail's Bots door and its card (BotsPeek; owner, 2026-11-09)", ()
     });
 
   test("no card mounted (an embed): the Bots door is the plain link, no popup", async () => {
-    const r = await mountRail({ paneOpen: false, favourites: true });
+    const r = await mountRail({ paneOpen: false });
     expect(door(r, "Bots").props["aria-haspopup"]).toBeUndefined();
     expect(door(r, "Bots").props.href).toBe("/bots");
   });
 
   test("a card mounted: the door is a dialog's; a press pins the card, a second press closes it (the Tasks door's toggle)", async () => {
     const off = registerBotsCard();
-    const r = await mountRail({ paneOpen: false, favourites: true });
+    const r = await mountRail({ paneOpen: false });
     expect(door(r, "Bots").props["aria-haspopup"]).toBe("dialog");
     expect(door(r, "Bots").props["aria-expanded"]).toBe(false);
     await press(r, "Bots");
@@ -738,7 +617,7 @@ describe("ClaudeRail's Bots door and its card (BotsPeek; owner, 2026-11-09)", ()
   test("one window A card at a time: the Tasks door's press puts the Bots card down, and the Bots door's the Tasks card", async () => {
     const offB = registerBotsCard();
     const offT = registerTasksCard();
-    const r = await mountRail({ paneOpen: false, favourites: true });
+    const r = await mountRail({ paneOpen: false });
     await press(r, "Bots");
     expect(botsCardState().up).toBe(true);
     await press(r, "Tasks");
@@ -756,6 +635,8 @@ describe("ClaudeRail's Bots door and its card (BotsPeek; owner, 2026-11-09)", ()
 // the Git door and in its group, one door per mode the page hands, each with
 // its own window A card (mode-peek-store, ModePeek) — the Git door's rules.
 describe("ClaudeRail's mode doors (owner, 2026-11-20)", () => {
+  // Behind Rail extras: on here unless a test says otherwise.
+  const mountDoors = (o: Parameters<typeof mountRail>[0]) => mountRail({ extras: true, ...o });
   const FILE = DIR + "/index.html";
   const REPO = {
     root: DIR,
@@ -770,7 +651,7 @@ describe("ClaudeRail's mode doors (owner, 2026-11-20)", () => {
   let repo: unknown = null;
   const reset = () => {
     resetModeCardsForTests();
-    resetRailModeDoorsFlagForTests();
+    resetRailExtrasFlagForTests();
     resetRailGitCacheForTests();
     resetRailGitStoreForTests();
     resetGitCardForTests();
@@ -804,7 +685,7 @@ describe("ClaudeRail's mode doors (owner, 2026-11-20)", () => {
     });
 
   test("one door per mode, in the page's order, past one hairline; the facts by rail", async () => {
-    const r = await mountRail({ paneOpen: false, favourites: false, fileModes: { path: FILE, modes: ["code", "reader"] } });
+    const r = await mountDoors({ paneOpen: false, fileModes: { path: FILE, modes: ["code", "reader"] } });
     await settle();
     expect(doors(r).map((d) => [d.props["data-rail-mode"], d.props["aria-label"], d.props["data-hint"]])).toEqual([
       ["code", "Code", "Code"],
@@ -821,9 +702,8 @@ describe("ClaudeRail's mode doors (owner, 2026-11-20)", () => {
 
   test("with Git: the mode doors, then the Git door, one hairline for the group", async () => {
     repo = REPO;
-    const r = await mountRail({
+    const r = await mountDoors({
       paneOpen: false,
-      favourites: false,
       git: { path: FILE },
       fileModes: { path: FILE, modes: ["code"] },
     });
@@ -835,11 +715,10 @@ describe("ClaudeRail's mode doors (owner, 2026-11-20)", () => {
     ]);
   });
 
-  test("their own switch off: no door, no hairline, nothing published", async () => {
-    const r = await mountRail({
+  test("Rail extras off: no door, no hairline, nothing published", async () => {
+    const r = await mountDoors({
       paneOpen: false,
-      favourites: false,
-      modeDoors: false,
+      extras: false,
       fileModes: { path: FILE, modes: ["code", "reader"] },
     });
     await settle();
@@ -848,22 +727,18 @@ describe("ClaudeRail's mode doors (owner, 2026-11-20)", () => {
     expect(railModesOf(favPeekState().rail)).toBeNull();
   });
 
-  test("no modes, or the rail flag off: no door, no hairline, nothing published", async () => {
-    const none = await mountRail({ paneOpen: false, favourites: false, fileModes: { path: FILE, modes: [] } });
+  test("no modes: no door, no hairline, nothing published", async () => {
+    const none = await mountDoors({ paneOpen: false, fileModes: { path: FILE, modes: [] } });
     await settle();
     expect(doors(none)).toHaveLength(0);
     expect(items(none)).not.toContain("sidebar-rail-sep is-tight");
     expect(railModesOf(favPeekState().rail)).toBeNull();
-    const off = await mountRail({ paneOpen: false, favourites: false, peek: false, fileModes: { path: FILE, modes: ["code"] } });
-    await settle();
-    expect(doors(off)).toHaveLength(0);
   });
 
   test("no card behind the doors: a press is the page's own switch", async () => {
     const opened: string[] = [];
-    const r = await mountRail({
+    const r = await mountDoors({
       paneOpen: false,
-      favourites: false,
       fileModes: { path: FILE, modes: ["code", "reader"], onOpen: (m) => opened.push(m) },
     });
     await settle();
@@ -876,7 +751,7 @@ describe("ClaudeRail's mode doors (owner, 2026-11-20)", () => {
 
   test("a card behind each: a press pins that mode's, the same door's next press closes it", async () => {
     const offs = [modeCardStore("code").registerCard(), modeCardStore("reader").registerCard()];
-    const r = await mountRail({ paneOpen: false, favourites: false, fileModes: { path: FILE, modes: ["code", "reader"] } });
+    const r = await mountDoors({ paneOpen: false, fileModes: { path: FILE, modes: ["code", "reader"] } });
     await settle();
     press(r, "code");
     expect(modeCardStore("code").state()).toMatchObject({ up: true, pinned: true });
@@ -889,7 +764,7 @@ describe("ClaudeRail's mode doors (owner, 2026-11-20)", () => {
 
   test("another mode's door opens ITS card and puts the first one down (one non-pinned window A card)", async () => {
     const offs = [modeCardStore("code").registerCard(), modeCardStore("reader").registerCard()];
-    const r = await mountRail({ paneOpen: false, favourites: false, fileModes: { path: FILE, modes: ["code", "reader"] } });
+    const r = await mountDoors({ paneOpen: false, fileModes: { path: FILE, modes: ["code", "reader"] } });
     await settle();
     press(r, "code");
     press(r, "reader");
@@ -902,9 +777,8 @@ describe("ClaudeRail's mode doors (owner, 2026-11-20)", () => {
     repo = REPO;
     const offMode = modeCardStore("code").registerCard();
     const offGit = registerGitCard();
-    const r = await mountRail({
+    const r = await mountDoors({
       paneOpen: false,
-      favourites: false,
       git: { path: FILE },
       fileModes: { path: FILE, modes: ["code"] },
     });
@@ -958,6 +832,9 @@ describe("ClaudeRail's Git door (owner, 2026-11-10)", () => {
     resetGitCardForTests();
     resetBotsCardForTests();
     resetTasksCardForTests();
+    // A pinned card's window mark (last-chat `aPinned`) would pin it back on
+    // the next test's rail.
+    setAPinned(null);
   });
   const settle = () =>
     act(async () => {
@@ -978,9 +855,9 @@ describe("ClaudeRail's Git door (owner, 2026-11-10)", () => {
       gitDoor(r)[0]!.props.onClick({ preventDefault() {}, button: 0, detail: 1 });
     });
 
-  test("flag on, no rings: the hairline then the Git door; its words, dots and facts by rail", async () => {
+  test("no rings: the hairline then the Git door; its words, dots and facts by rail", async () => {
     let opened = 0;
-    const r = await mountRail({ paneOpen: false, favourites: false, git: { path: DIR, onOpenGit: () => opened++ } });
+    const r = await mountRail({ paneOpen: false, git: { path: DIR, onOpenGit: () => opened++ } });
     await settle();
     expect(gitGroup(r)).toHaveLength(0);
     expect(items(r).slice(0, 2)).toEqual(["sidebar-rail-sep is-tight", "claude-rail-nav claude-rail-git-door"]);
@@ -1005,7 +882,7 @@ describe("ClaudeRail's Git door (owner, 2026-11-10)", () => {
   });
 
   test("with rings: the hairline and the door stand under the list", async () => {
-    const r = await mountRail({ paneOpen: false, favourites: false, chats: [chat("a")], git: { path: DIR } });
+    const r = await mountRail({ paneOpen: false, chats: [chat("a")], git: { path: DIR } });
     await settle();
     const at = items(r);
     const list = at.indexOf("claude-rail-chats");
@@ -1015,21 +892,21 @@ describe("ClaudeRail's Git door (owner, 2026-11-10)", () => {
 
   test("no repository, or no git on the page: no door, no hairline, nothing published", async () => {
     answer = null;
-    const r = await mountRail({ paneOpen: false, favourites: false, git: { path: DIR } });
+    const r = await mountRail({ paneOpen: false, git: { path: DIR } });
     await settle();
     expect(gitDoor(r)).toHaveLength(0);
     expect(items(r)).not.toContain("sidebar-rail-sep is-tight");
     expect(railGitCount()).toBe(0);
     act(() => r.unmount());
     mounted.splice(mounted.indexOf(r), 1);
-    const bare = await mountRail({ paneOpen: false, favourites: false });
+    const bare = await mountRail({ paneOpen: false });
     await settle();
     expect(gitDoor(bare)).toHaveLength(0);
   });
 
   test("no card to stand: the press opens the page's Git panel; a card mounted: pin, then the second press closes", async () => {
     let opened = 0;
-    const r = await mountRail({ paneOpen: false, favourites: false, git: { path: DIR, onOpenGit: () => opened++ } });
+    const r = await mountRail({ paneOpen: false, git: { path: DIR, onOpenGit: () => opened++ } });
     await settle();
     expect(gitDoor(r)[0]!.props["aria-haspopup"]).toBeUndefined();
     await pressGit(r);
@@ -1053,7 +930,7 @@ describe("ClaudeRail's Git door (owner, 2026-11-10)", () => {
   test("one window A card at a time: Git and Bots put each other down", async () => {
     const offG = registerGitCard();
     const offB = registerBotsCard();
-    const r = await mountRail({ paneOpen: false, favourites: false, git: { path: DIR } });
+    const r = await mountRail({ paneOpen: false, git: { path: DIR } });
     await settle();
     await pressGit(r);
     expect(gitCardState().up).toBe(true);
@@ -1082,14 +959,16 @@ describe("ClaudeRail's Git door (owner, 2026-11-10)", () => {
     act(() => {
       off = registerGitCard();
     });
-    const left = await mountRail({ paneOpen: false, favourites: false, git: { path: `${DIR}/left` } });
-    const right = await mountRail({ paneOpen: false, favourites: false, git: { path: `${DIR}/right` } });
+    const left = await mountRail({ paneOpen: false, git: { path: `${DIR}/left` } });
+    const right = await mountRail({ paneOpen: false, git: { path: `${DIR}/right` } });
     await settle();
     expect(railGitCount()).toBe(2);
     // The top rail is the right one; the press is on the left one's door.
     expect(railGitOf(favPeekState().rail)?.repo.branch).toBe("right");
     await pressGit(left);
-    expect(gitCardState()).toMatchObject({ up: true, pinned: true });
+    // Pinned: the press, then its pin (a press alone is a temp card).
+    act(() => gitCardStore.setHeld(true));
+    expect(gitCardState()).toMatchObject({ up: true, pinned: true, held: true });
     expect(railGitOf(gitCardRail())?.repo.branch).toBe("left");
     // The left rail goes: the pinned card stays, beside the top rail now.
     act(() => left.unmount());
@@ -1113,9 +992,6 @@ describe("ClaudeRail's Git door (owner, 2026-11-10)", () => {
         ? Promise.resolve(new Response(JSON.stringify({ ok: true, repo: REPO }), { status: 200 }))
         : new Promise<Response>(() => {});
     try {
-      publishCanvasRailPeek({ enabled: true });
-      publishFavouritesParent({ enabled: true });
-      publishTaskFavourites({ enabled: false });
       const Hop = ({ at }: { at: string }) => (
         <>
           <ClaudeRail
@@ -1140,7 +1016,9 @@ describe("ClaudeRail's Git door (owner, 2026-11-10)", () => {
       await settle();
       expect(gitCardState().ready).toBe(true);
       await pressGit(r);
-      expect(gitCardState()).toMatchObject({ up: true, pinned: true });
+      // Pinned: the press, then its pin (a press alone is a temp card).
+      act(() => gitCardStore.setHeld(true));
+      expect(gitCardState()).toMatchObject({ up: true, pinned: true, held: true });
       // The hop: rail A unmounts, rail B mounts, one commit.
       act(() => r.update(<Hop at={FILE} />));
       expect(gitDoor(r)).toHaveLength(1);
@@ -1178,9 +1056,6 @@ describe("ClaudeRail's Git door (owner, 2026-11-10)", () => {
           )
         : new Promise<Response>(() => {});
     try {
-      publishCanvasRailPeek({ enabled: true });
-      publishFavouritesParent({ enabled: true });
-      publishTaskFavourites({ enabled: false });
       const rail = (at: string) => (
         <ClaudeRail
           key={at}
@@ -1232,15 +1107,6 @@ describe("ClaudeRail's Git door (owner, 2026-11-10)", () => {
     }
   });
 
-  test("flag off: the rail's Git section as before — three commit seats — and nothing published", async () => {
-    const r = await mountRail({ paneOpen: false, favourites: false, peek: false, git: { path: DIR } });
-    await settle();
-    expect(gitGroup(r)).toHaveLength(1);
-    expect(gitDoor(r)).toHaveLength(0);
-    const commits = gitGroup(r)[0]!.findAll((n) => n.type === "button" && String(n.props.className).includes("claude-rail-git-commit"));
-    expect(commits).toHaveLength(3);
-    expect(railGitCount()).toBe(0);
-  });
 });
 
 describe("ClaudeRail on a canvas with a node selected (owner, 2026-11-10)", () => {
@@ -1255,20 +1121,18 @@ describe("ClaudeRail on a canvas with a node selected (owner, 2026-11-10)", () =
       .map((n) => [n.findAll((c) => typeof c.props?.["data-task-key"] === "string")[0]!.props["data-task-key"], n.props.className]);
   const seps = (r: ReactTestRenderer) => r.root.findAll((n) => n.props?.className === "claude-rail-node-sep").length;
 
-  for (const favourites of [false, true]) {
-    test(`favourites ${favourites ? "on" : "off"}: every canvas chat stays — the node's first, a hairline, the rest faded — and no way-back seat`, async () => {
-      const r = await mountRail({ paneOpen: false, favourites, chats, place: { ...CANVAS, file: "n.py" }, onSelectNode: () => {} });
-      expect(seatKeys(r)).toEqual([
-        ["mine", "claude-rail-seat"],
-        ["other", "claude-rail-seat is-off"],
-      ]);
-      expect(seps(r)).toBe(1);
-      expect(r.root.findAll((n) => typeof n.props?.className === "string" && n.props.className.includes("claude-rail-all")).length).toBe(0);
-    });
-  }
+  test("every canvas chat stays — the node's first, a hairline, the rest faded — and no way-back seat", async () => {
+    const r = await mountRail({ paneOpen: false, chats, place: { ...CANVAS, file: "n.py" }, onSelectNode: () => {} });
+    expect(seatKeys(r)).toEqual([
+      ["mine", "claude-rail-seat"],
+      ["other", "claude-rail-seat is-off"],
+    ]);
+    expect(seps(r)).toBe(1);
+    expect(r.root.findAll((n) => typeof n.props?.className === "string" && n.props.className.includes("claude-rail-all")).length).toBe(0);
+  });
 
   test("no node: the List's order, nothing faded, no hairline", async () => {
-    const r = await mountRail({ paneOpen: false, favourites: true, chats, place: CANVAS, onSelectNode: () => {} });
+    const r = await mountRail({ paneOpen: false, chats, place: CANVAS, onSelectNode: () => {} });
     expect(seatKeys(r)).toEqual([
       ["other", "claude-rail-seat"],
       ["mine", "claude-rail-seat"],
@@ -1277,7 +1141,7 @@ describe("ClaudeRail on a canvas with a node selected (owner, 2026-11-10)", () =
   });
 
   test("a node with no chat of its own: every chat faded, no hairline above them", async () => {
-    const r = await mountRail({ paneOpen: false, favourites: true, chats, place: { ...CANVAS, file: "x.py" }, onSelectNode: () => {} });
+    const r = await mountRail({ paneOpen: false, chats, place: { ...CANVAS, file: "x.py" }, onSelectNode: () => {} });
     expect(seatKeys(r).map(([, c]) => c)).toEqual(["claude-rail-seat is-off", "claude-rail-seat is-off"]);
     expect(seps(r)).toBe(0);
   });
@@ -1296,20 +1160,18 @@ describe("ClaudeRail on an open file (owner, 2026-11-16)", () => {
       .map((n) => [n.findAll((c) => typeof c.props?.["data-task-key"] === "string")[0]!.props["data-task-key"], n.props.className]);
   const seps = (r: ReactTestRenderer) => r.root.findAll((n) => n.props?.className === "claude-rail-node-sep").length;
 
-  for (const favourites of [false, true]) {
-    test(`favourites ${favourites ? "on" : "off"}: the folder's chats stay — the file's first, a hairline, the rest faded`, async () => {
-      const r = await mountRail({ paneOpen: false, favourites, chats, place: { kind: "file", file: FILE, dir: DIR } });
-      expect(seatKeys(r)).toEqual([
-        ["mine", "claude-rail-seat"],
-        ["folder", "claude-rail-seat is-off"],
-        ["other", "claude-rail-seat is-off"],
-      ]);
-      expect(seps(r)).toBe(1);
-    });
-  }
+  test("the folder's chats stay — the file's first, a hairline, the rest faded", async () => {
+    const r = await mountRail({ paneOpen: false, chats, place: { kind: "file", file: FILE, dir: DIR } });
+    expect(seatKeys(r)).toEqual([
+      ["mine", "claude-rail-seat"],
+      ["folder", "claude-rail-seat is-off"],
+      ["other", "claude-rail-seat is-off"],
+    ]);
+    expect(seps(r)).toBe(1);
+  });
 
   test("the folder page itself: the List's order, nothing faded, no hairline", async () => {
-    const r = await mountRail({ paneOpen: false, favourites: true, chats, place: { kind: "folder", dir: DIR } });
+    const r = await mountRail({ paneOpen: false, chats, place: { kind: "folder", dir: DIR } });
     expect(seatKeys(r)).toEqual([
       ["folder", "claude-rail-seat"],
       ["other", "claude-rail-seat"],
@@ -1319,7 +1181,7 @@ describe("ClaudeRail on an open file (owner, 2026-11-16)", () => {
   });
 
   test("a file with no chat of its own: the folder's chats faded, no hairline above them", async () => {
-    const r = await mountRail({ paneOpen: false, favourites: true, chats, place: { kind: "file", file: `${DIR}/x.py`, dir: DIR } });
+    const r = await mountRail({ paneOpen: false, chats, place: { kind: "file", file: `${DIR}/x.py`, dir: DIR } });
     expect(seatKeys(r).map(([, c]) => c)).toEqual(["claude-rail-seat is-off", "claude-rail-seat is-off", "claude-rail-seat is-off"]);
     expect(seps(r)).toBe(0);
   });
@@ -1333,67 +1195,55 @@ describe("ClaudeRail's ring hover: the task's row, not a title tooltip (owner, 2
     return false;
   };
   const row = chat("a", { task_id: "TASK-042", title: "Rename the pane noun", message_count: 7, last_reply: "Done — renamed in three files." });
-  const ROW_ATTRS = ["data-hint-row", "data-hint-count", "data-hint-when", "data-hint-window"];
   // The row's left part, gone since 2026-11-17 ("strip the left part, that
   // is status and task id").
   // …and the window's width, gone since 2026-11-18 ("make it not the same
   // width as the window"): the row is as wide as its words.
   const GONE_ATTRS = ["data-hint-id", "data-hint-width", "data-hint-width-of"];
 
-  test("flag on: a list ring carries the title, count, time and window A's width — no number; the rail names the edge", async () => {
-    resetTaskHeadUnifiedFlagForTests();
-    publishTaskHeadUnified({ enabled: true });
-    try {
-      const r = await mountRail({ paneOpen: false, favourites: false, chats: [row] });
-      const [ring] = ringsOf(r, "a");
-      expect(ring).toBeDefined();
-      // Opted into the row form (platform/lib/hints `renderRowHint`)…
-      expect(ring!.props["data-hint-row"]).toBe("");
-      // …with the title, the count and the time (2026-11-17: "strip the left
-      // part, that is status and task id, keep the time and count as is"):
-      // no number is handed over any more.
-      expect(ring!.props["data-hint-title"]).toBe("Rename the pane noun");
-      expect(ring!.props["data-hint-count"]).toBe("7");
-      expect(String(ring!.props["data-hint-when"]).length).toBeGreaterThan(0);
-      for (const a of GONE_ATTRS) expect(a in ring!.props).toBe(false);
-      // …and the window it opens, the one the scrim dims: A.
-      expect(ring!.props["data-hint-window"]).toBe("a");
-      expect(ring!.props["data-hint-side"]).toBe("left");
-      // The row stands against the rail's own edge, where its windows do.
-      expect(aside(r).props["data-hint-edge"]).toBe("");
-    } finally {
-      resetTaskHeadUnifiedFlagForTests();
-    }
+  test("a list ring carries the title, count, time and window A's width — no number; the rail names the edge", async () => {
+    const r = await mountRail({ paneOpen: false, chats: [row] });
+    const [ring] = ringsOf(r, "a");
+    expect(ring).toBeDefined();
+    // Opted into the row form (platform/lib/hints `renderRowHint`)…
+    expect(ring!.props["data-hint-row"]).toBe("");
+    // …with the title, the count and the time (2026-11-17: "strip the left
+    // part, that is status and task id, keep the time and count as is"):
+    // no number is handed over any more.
+    expect(ring!.props["data-hint-title"]).toBe("Rename the pane noun");
+    expect(ring!.props["data-hint-count"]).toBe("7");
+    expect(String(ring!.props["data-hint-when"]).length).toBeGreaterThan(0);
+    for (const a of GONE_ATTRS) expect(a in ring!.props).toBe(false);
+    // …and the window it opens, the one the scrim dims: A.
+    expect(ring!.props["data-hint-window"]).toBe("a");
+    expect(ring!.props["data-hint-side"]).toBe("left");
+    // The row stands against the rail's own edge, where its windows do.
+    expect(aside(r).props["data-hint-edge"]).toBe("");
   });
 
-  test("flag on: a favourite's ring names window B, the list's ring window A — and neither asks for a width", async () => {
-    resetTaskHeadUnifiedFlagForTests();
-    publishTaskHeadUnified({ enabled: true });
-    try {
-      const fav = { ...row, starred: true } as Task;
-      const r = await mountRail({ paneOpen: false, favourites: true, chats: [fav] });
-      const rings = ringsOf(r, "a");
-      const foot = rings.filter(inFoot);
-      const list = rings.filter((n) => !inFoot(n));
-      expect(foot).toHaveLength(1);
-      expect(foot[0]!.props["data-hint-row"]).toBe("");
-      // It names window B as the one its row dims; the list's rings name A.
-      expect(foot[0]!.props["data-hint-window"]).toBe("b");
-      for (const ring of list) expect(ring.props["data-hint-window"]).toBe("a");
-      for (const ring of [...foot, ...list]) for (const a of GONE_ATTRS) expect(a in ring.props).toBe(false);
-    } finally {
-      resetTaskHeadUnifiedFlagForTests();
-    }
+  test("a favourite's ring names window B, the list's ring window A — and neither asks for a width", async () => {
+    const fav = { ...row, starred: true } as Task;
+    const r = await mountRail({ paneOpen: false, chats: [fav] });
+    const rings = ringsOf(r, "a");
+    const foot = rings.filter(inFoot);
+    const list = rings.filter((n) => !inFoot(n));
+    expect(foot).toHaveLength(1);
+    // The starred chat keeps its list ring too: without it the loop below
+    // would assert nothing.
+    expect(list).toHaveLength(1);
+    expect(foot[0]!.props["data-hint-row"]).toBe("");
+    // It names window B as the one its row dims; the list's rings name A.
+    expect(foot[0]!.props["data-hint-window"]).toBe("b");
+    for (const ring of list) expect(ring.props["data-hint-window"]).toBe("a");
+    for (const ring of [...foot, ...list]) for (const a of GONE_ATTRS) expect(a in ring.props).toBe(false);
   });
 
-  test("flag on: the open favourite's ring says nothing, like window A's open ring; the other favourites keep their row (2026-11-17)", async () => {
-    resetTaskHeadUnifiedFlagForTests();
-    publishTaskHeadUnified({ enabled: true });
+  test("the open favourite's ring says nothing, like window A's open ring; the other favourites keep their row (2026-11-17)", async () => {
     const open = { ...row, starred: true } as Task;
     const other = { ...chat("b", { task_id: "TASK-043", title: "Another favourite" }), starred: true } as Task;
     setFavOpen(open.key);
     try {
-      const r = await mountRail({ paneOpen: false, favourites: true, chats: [open, other] });
+      const r = await mountRail({ paneOpen: false, chats: [open, other] });
       const mine = ringsOf(r, open.key).find(inFoot);
       const theirs = ringsOf(r, other.key).find(inFoot);
       expect(mine).toBeDefined();
@@ -1404,49 +1254,130 @@ describe("ClaudeRail's ring hover: the task's row, not a title tooltip (owner, 2
       expect(theirs!.props["data-hint-row"]).toBe("");
     } finally {
       setFavOpen(null);
-      resetTaskHeadUnifiedFlagForTests();
     }
   });
 
-  test("flag off: the open favourite's ring keeps its title caption", async () => {
-    resetTaskHeadUnifiedFlagForTests();
-    const open = { ...row, starred: true } as Task;
-    setFavOpen(open.key);
-    try {
-      const r = await mountRail({ paneOpen: false, favourites: true, chats: [open] });
-      const [mine] = ringsOf(r, "a").filter(inFoot);
-      expect(mine!.props["data-hint"]).toBe("Rename the pane noun");
-    } finally {
-      setFavOpen(null);
-    }
+  test("a chat with no count prints none — the seat is left out, not zeroed", async () => {
+    const r = await mountRail({ paneOpen: false, chats: [chat("a", { message_count: 0 })] });
+    const [ring] = ringsOf(r, "a");
+    expect(ring!.props["data-hint-row"]).toBe("");
+    expect(ring!.props["data-hint-count"]).toBe("");
   });
 
-  test("flag on: a chat with no count prints none — the seat is left out, not zeroed", async () => {
-    resetTaskHeadUnifiedFlagForTests();
-    publishTaskHeadUnified({ enabled: true });
-    try {
-      const r = await mountRail({ paneOpen: false, favourites: false, chats: [chat("a", { message_count: 0 })] });
-      const [ring] = ringsOf(r, "a");
-      expect(ring!.props["data-hint-row"]).toBe("");
-      expect(ring!.props["data-hint-count"]).toBe("");
-    } finally {
-      resetTaskHeadUnifiedFlagForTests();
-    }
+});
+
+// THE EXPANDABLE RAIL (Rail extras, `rail_extras_enabled`; owner, 2026-11-21): off, the
+// rail of before — no button, no titles; on and collapsed, the button and
+// nothing more; expanded, every seat a row with its title, and the document
+// told the rail's width.
+describe("ClaudeRail: the expandable rail", () => {
+  const BOT = { id: "b1", status: "idle", seq: 1, pinned: true, name: "Helper" };
+  const titles = (r: ReactTestRenderer): string[] =>
+    r.root.findAll((n) => n.props?.className === "claude-rail-title").map((n) => n.children.join(""));
+  const titleIn = (n: ReactTestInstance): string | null => {
+    const t = n.findAll((c) => c.props?.className === "claude-rail-title");
+    return t.length === 1 ? t[0]!.children.join("") : null;
+  };
+  const expanded = (r: ReactTestRenderer) => String(aside(r).props.className).includes("is-expanded");
+  // The document's root, which the test renderer's document lacks: what the
+  // rail says to it (`railUp`).
+  const doc = (globalThis as unknown as { document: Record<string, unknown> }).document;
+  let said: Map<string, string>;
+  let hadRoot = false;
+  let wasRoot: unknown;
+  beforeEach(() => {
+    _setUiLayoutForTest({ v: 1 });
+    setRailState({ width: RAIL_DEFAULT_WIDTH, expanded: false }, false);
+    resetBotsPulseForTests();
+    said = new Map();
+    hadRoot = "documentElement" in doc;
+    wasRoot = doc.documentElement;
+    doc.documentElement = {
+      style: {
+        setProperty: (k: string, v: string) => said.set(k, v),
+        removeProperty: (k: string) => said.delete(k),
+      },
+      classList: { add() {}, remove() {}, toggle() {}, contains: () => false },
+    };
+  });
+  afterEach(() => {
+    resetBotsPulseForTests();
+    if (hadRoot) doc.documentElement = wasRoot;
+    else delete doc.documentElement;
   });
 
-  test("flag off: the ring keeps the old caption — no row attribute at all", async () => {
-    resetTaskHeadUnifiedFlagForTests();
-    publishTaskHeadUnified({ enabled: false });
-    try {
-      const r = await mountRail({ paneOpen: false, favourites: false, chats: [row] });
-      const [ring] = ringsOf(r, "a");
-      expect(ring).toBeDefined();
-      for (const attr of ROW_ATTRS) expect(attr in ring!.props).toBe(false);
-      // The two-line caption's own attributes are still there.
-      expect(ring!.props["data-hint-title"]).toBe("Rename the pane noun");
-      expect(ring!.props["data-hint-side"]).toBe("left");
-    } finally {
-      resetTaskHeadUnifiedFlagForTests();
-    }
+  test("flag off: no button, no titles, no rows — even with the layout saying expanded", async () => {
+    setRailState({ width: 260, expanded: true }, false);
+    const r = await mountRail({ paneOpen: false, chats: [chat("a")] });
+    expect(byLabel(r, "Expand rail").length + byLabel(r, "Collapse rail").length).toBe(0);
+    expect(titles(r)).toEqual([]);
+    expect(expanded(r)).toBe(false);
+    expect(aside(r).props.style).toBeUndefined();
+    expect(said.get("--claude-rail-w")).toBe("48px");
+  });
+
+  test("flag on, collapsed: the button says Expand rail, above the nav doors; no titles, no rows", async () => {
+    const r = await mountRail({ paneOpen: false, chats: [chat("a")], extras: true });
+    const [btn] = byLabel(r, "Expand rail");
+    expect(btn).toBeDefined();
+    expect(btn!.props["aria-expanded"]).toBe(false);
+    expect(btn!.props["data-hint"]).toBe("Expand rail");
+    expect(btn!.props["data-hint-side"]).toBe("left");
+    expect(btn!.props.title).toBeUndefined();
+    expect(navOrder(r)).toEqual(["Bots", "Tasks", "New task"]);
+    expect(titles(r)).toEqual([]);
+    expect(expanded(r)).toBe(false);
+    expect(said.get("--claude-rail-w")).toBe("48px");
+    // The seam is still the pull that opens the pane.
+    expect(seam(r)).toBe(1);
+  });
+
+  test("flag on, beside the open pane: the button stands there too", async () => {
+    const open = await mountRail({ paneOpen: true, chats: [chat("a")], extras: true });
+    expect(byLabel(open, "Expand rail").length).toBe(1);
+  });
+
+  test("flag on, expanded: rows with titles, the button says Collapse rail, the width said to the document", async () => {
+    setRailState({ width: 260, expanded: true }, false);
+    const r = await mountRail({ paneOpen: false, chats: [chat("a")], extras: true, botHost: false });
+    await act(async () => {
+      publishBots([BOT]);
+    });
+    expect(expanded(r)).toBe(true);
+    expect(aside(r).props.style).toEqual({ flexBasis: 260, width: 260 });
+    const [btn] = byLabel(r, "Collapse rail");
+    expect(btn!.props["aria-expanded"]).toBe(true);
+    expect(titleIn(byLabel(r, "Tasks")[0]!)).toBe("Tasks");
+    expect(titleIn(byLabel(r, "New task")[0]!)).toBe("New task");
+    const [ring] = r.root.findAll((n) => n.type === "a" && n.props["data-task-key"] === "a");
+    expect(titleIn(ring!)).toBe("a");
+    const bot = r.root.find((n) => n.type === "a" && n.props["data-bot-id"] === "b1");
+    expect(titleIn(bot)).toBe("Helper");
+    // The accessible names are untouched: the titles are for the eye.
+    for (const t of r.root.findAll((n) => n.props?.className === "claude-rail-title")) expect(t.props["aria-hidden"]).toBe("true");
+    expect(byLabel(r, "Tasks").length).toBe(1);
+    // The dots and the pin mark ride the icon's own box, not the row.
+    const icon = byLabel(r, "Tasks")[0]!.find((n) => n.props?.className === "claude-rail-icon");
+    expect(icon).toBeDefined();
+    expect(said.get("--claude-rail-w")).toBe("260px");
+    // Expanded, the seam is the rail's resize, not the pull.
+    expect(seam(r)).toBe(0);
+    expect(byLabel(r, "Drag to resize the rail").length).toBe(1);
+  });
+
+  test("a press on the button toggles the store, and the document follows", async () => {
+    const r = await mountRail({ paneOpen: false, chats: [chat("a")], extras: true });
+    await act(async () => {
+      byLabel(r, "Expand rail")[0]!.props.onClick();
+    });
+    expect(getRailState().expanded).toBe(true);
+    expect(expanded(r)).toBe(true);
+    expect(said.get("--claude-rail-w")).toBe(`${RAIL_DEFAULT_WIDTH}px`);
+    await act(async () => {
+      byLabel(r, "Collapse rail")[0]!.props.onClick();
+    });
+    expect(getRailState().expanded).toBe(false);
+    expect(said.get("--claude-rail-w")).toBe("48px");
+    expect(titles(r)).toEqual([]);
   });
 });

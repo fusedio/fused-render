@@ -2513,7 +2513,7 @@ describe("the unread mark", () => {
     // held thread), so the ring hollows on the row's own press rather than on the
     // next poll — the same number that used to feed the dot.
     expect(ROW).toMatch(
-      /<StatusIcon\s+status=\{taskColumn\(task\)\}\s+failed=\{ringFailed\(task\)\}\s+label=\{asking \|\| undefined\}\s+unread=\{unread > 0\}\s+count=\{unread\}\s+draftHeld=\{draftRing\(task\) && !heldInPeek\}\s+background=\{liveJobRow\(task\)\}\s+icon=\{task\.icon_slot\}\s+iconPicked=\{task\.icon_picked\}\s*\/>/,
+      /<StatusIcon\s+status=\{taskColumn\(task\)\}\s+failed=\{ringFailed\(task\)\}\s+label=\{asking \|\| undefined\}\s+unread=\{unread > 0\}\s+count=\{unread\}\s+draftHeld=\{draftRing\(task\) && !heldInPeek\}\s+background=\{liveJobRow\(task\)\}\s+icon=\{task\.icon_slot\}\s*\/>/,
     );
     // Nothing trails the title any more: the ring leads the row, the title
     // follows, and the next thing is the live ping.
@@ -3064,7 +3064,7 @@ describe("the board card's status ring", () => {
   });
 
   it("stays UNconditional on a List row and in the Calendar, which have no lane", () => {
-    const from = VIEWS.indexOf('className={"tasks-row"');
+    const from = VIEWS.indexOf('className={"tasks-row tasks-row--ab"');
     const row = VIEWS.slice(from, VIEWS.indexOf("{open && (", from));
     // Not gated on the LANE: a flat row and a day cell have no header above them,
     // so the ring is the only thing that files them at all. The `failed` half is
@@ -3683,8 +3683,8 @@ describe("expanding a task", () => {
 describe("the one-message row's missing chevron", () => {
   /** The task row's markup, head to thread. */
   const ROW = VIEWS.slice(
-    VIEWS.indexOf('className={"tasks-row"'),
-    VIEWS.indexOf("{open && (", VIEWS.indexOf('className={"tasks-row"')),
+    VIEWS.indexOf('className={"tasks-row tasks-row--ab"'),
+    VIEWS.indexOf("{open && (", VIEWS.indexOf('className={"tasks-row tasks-row--ab"')),
   );
 
   it("puts the glyph behind the predicate and the gutter in front of it", () => {
@@ -4311,13 +4311,13 @@ describe("a message row's click", () => {
 
 describe("the archive action", () => {
   it("sits in the List row's hover-revealed group, conditional on the intent", () => {
-    // Drawn once (`fileButton`, the row's own) and seated by `ab` (the a/b row,
-    // below): the row's JSX names the button, its definition carries the rest.
+    // Drawn once (`fileButton`, the row's own) and seated over the id (the a/b
+    // row, below): the row's JSX names the button, its definition carries the rest.
     const at = NODE.indexOf("const fileButton = file && (");
     const row = NODE.slice(at, NODE.indexOf("\n  );", at));
     // Only when the filing can be changed at all — a mid-run row grows nothing.
     expect(at).toBeGreaterThan(-1);
-    expect(ROW).toContain("{!ab && fileButton}");
+    expect(ROW).toContain("{fileButton}");
     // The button is `FileAct`, the one every view's id slot draws (2026-11-16).
     expect(row).toContain("<FileAct file={file}");
     // The same class group Run now / Edit / Cancel wear, which is what makes it
@@ -4344,24 +4344,21 @@ describe("the archive action", () => {
     // similar to the list item view in tasks page").
     expect((VIEWS.match(/const file = filingIntent\(task\);/g) ?? []).length).toBe(2);
     expect(VIEWS).not.toContain("chatVariant ? null : filingIntent(task)");
-    // The row's button is drawn once (`fileButton`) and seated by `ab`.
+    // The row's button is drawn once (`fileButton`) and seated over the id.
     const fileButton = NODE.slice(
       NODE.indexOf("const fileButton = file && ("),
       NODE.indexOf("const pageDoor = "),
     );
     // One button per view, branching on the direction rather than two buttons
     // that could both render (or both not). The a/b card's id slot asks
-    // `file ?` — it replaces the strip's (`file && !ab`), never joins it.
+    // `file ?`, and its hover strip draws no second one.
     expect((fileButton.match(/(?<![\w.])file && \(/g) ?? []).length).toBe(1);
-    expect((CARD.match(/(?<![\w.])file && !ab && \(/g) ?? []).length).toBe(1);
+    expect((CARD.match(/(?<![\w.])file && !ab && \(/g) ?? []).length).toBe(0);
     expect((CARD.match(/<FileAct\b/g) ?? []).length).toBe(1);
     // The direction is a class SUFFIX and a glyph choice, so neither view can
-    // draw one direction's skin over the other's action — in the shared button
-    // and in the legacy card strip's own.
-    for (const src of [FILE_ACT, CARD]) {
-      expect(src).toContain('tasks-act--" + file.kind');
-      expect(src).toContain("ICON_ARCHIVE : ICON_UNARCHIVE");
-    }
+    // draw one direction's skin over the other's action.
+    expect(FILE_ACT).toContain('tasks-act--" + file.kind');
+    expect(FILE_ACT).toContain("ICON_ARCHIVE : ICON_UNARCHIVE");
     // And the old, wrong version of this button stays gone: its move named a
     // lane (Archive → In Progress), and nothing here names one.
     expect(filingIntent(task({ status: "archived" }))!.lane).toBe(null);
@@ -4398,7 +4395,7 @@ describe("the archive action", () => {
     // shared flag exists to prevent.
     expect(NODE).toMatch(/const fileButton = file && \(\s*<FileAct/);
     expect(FILE_ACT).toContain('<button type="button" {...common} disabled={disabled}>');
-    expect(CARD).toMatch(/\{file && !ab && \(\s*<button/);
+    expect(CARD).not.toMatch(/\{file && !ab && \(\s*<button/);
     // Its neighbours are all still gated, each by its own guard rather than by a
     // group's, and their order survives whichever of them are rendered.
     for (const guarded of ["seen", "run", "chat"]) {
@@ -4478,10 +4475,11 @@ describe("the archive action", () => {
     // strip now asks) because, like Archive, it is NOT behind SHOW_ROW_ACTIONS:
     // with that flag down it would otherwise be the Board's only way to start a
     // waiting message other than dragging a card out of a lane that is rolled
-    // up whenever it is empty.
+    // up whenever it is empty. Retry now (usage limit) joined on 2026-11-23 on
+    // the same grounds.
     expect(card).toContain(
-      "{((peekOn && page) || (file && !ab) || folderMissing || (hasDraft(task) && !heldInPeek)\n"
-      + "        || canForceStart(task) || jobs || (SHOW_ROW_ACTIONS && run)) && (",
+      "{((peekOn && page) || folderMissing || (hasDraft(task) && !heldInPeek)\n"
+      + "        || canForceStart(task) || canRetryLimit(task) || jobs || (SHOW_ROW_ACTIONS && run)) && (",
     );
     expect(card).toContain('className="tasks-card-acts"');
     expect(TASKS_CSS).toMatch(/\.tasks-card-acts\s*\{[^}]*position: absolute/);
@@ -4498,84 +4496,6 @@ describe("the archive action", () => {
     );
     expect(TASKS_CSS).not.toMatch(
       /\.tasks-card-act,\n\.prefs-section \.tasks-card-act \{[^}]*pointer-events: auto/,
-    );
-  });
-
-  it("swaps with the status ring on a List row, in the ring's own box", () => {
-    // The button used to sit out by the folder chip, at the row's busiest end.
-    // It is in the MARK SLOT now: ring at rest, Archive under the pointer, same
-    // place. Both occupants are inside one wrapper, which is the only way the two
-    // can be held to one box.
-    const from = VIEWS.indexOf('<span className="tasks-rowmark">');
-    expect(from).toBeGreaterThan(-1);
-    const slot = VIEWS.slice(from, VIEWS.indexOf("</span>", from));
-    expect(slot).toContain("<StatusIcon");
-    // (`fileButton` is the button below, drawn once; the a/b row seats it over
-    // the id instead.)
-    expect(slot).toContain("{!ab && fileButton}");
-    // It is drawn BEFORE the row's id chip — i.e. at the leading edge, where the
-    // ring is — and there is exactly one filing button on a row, whichever
-    // direction it is.
-    expect(from).toBeLessThan(VIEWS.indexOf("<IdChip id={task.task_id}"));
-    expect((NODE.match(/(?<![\w.])file && \(/g) ?? []).length).toBe(1);
-
-    // NOTHING MOVES when they swap, and that is a claim about the CSS: the slot is
-    // exactly the rail's width and the button is out of flow inside it, so the
-    // rail, the thread's indent under it and the caret's box beside it cannot
-    // shift by a pixel whichever occupant is showing.
-    const mark = block(TASKS_CSS, ".tasks-rowmark");
-    expect(mark).toContain("width: var(--tasks-rail-w)");
-    expect(mark).toContain("flex: 0 0 var(--tasks-rail-w)");
-    expect(mark).toContain("position: relative");
-    // No z-index on the SLOT: the row's stretched link has to keep painting over
-    // the ring's box, exactly as it did when the ring was the flex child.
-    expect(mark).not.toContain("z-index");
-    // Keyed on `.tasks-act` and NOT on one direction's class: the geometry is a
-    // fact about the slot and its single occupant, so an archived row's Unarchive
-    // lands in exactly the same 22px the archive button does.
-    const button = block(TASKS_CSS, ".tasks-rowmark .tasks-act");
-    expect(button).toContain("position: absolute");
-    expect(button).toContain("transform: translate(-50%, -50%)");
-
-    // The handover itself: the ring fades on the same triggers that reveal the
-    // button, and stops collecting presses while it is invisible.
-    const fade = block(
-      TASKS_CSS,
-      ".tasks-row:hover .tasks-rowmark .schedule-ring",
-    );
-    expect(fade).toContain("opacity: 0");
-    expect(fade).toContain("pointer-events: none");
-    // Keyboard reachability is why there is a second arm — a tab onto the button
-    // reveals it, and the ring in front of it must get out of the way (the same rule
-    // the strip has always obeyed). It asks for THAT BUTTON's `:focus-visible`, not
-    // the row's `:focus-within`, or a chevron click would fade the ring of a row
-    // nobody is pointing at any more.
-    expect(TASKS_CSS).toContain(
-      ".tasks-row .tasks-rowmark:has(.tasks-act:focus-visible) .schedule-ring",
-    );
-    expect(TASKS_CSS).toContain(".tasks-act:focus-visible");
-    // A row whose filing cannot be changed keeps its ring under the pointer: a
-    // blank slot where the row's status was is worse than no swap at all. Keyed on
-    // `.tasks-act`, or the archived row would keep its ring painted over the
-    // Unarchive button standing in the same box.
-    expect(TASKS_CSS).toContain(":not(:has(.tasks-act)) .schedule-ring");
-    expect(TASKS_CSS).not.toContain(":not(:has(.tasks-act--archive))");
-
-    // AND THE INVISIBLE BUTTON CANNOT TAKE A PRESS (bugbot, 2026-08-18, HIGH).
-    // `opacity: 0` alone left a live control at `z-index: 2` sitting over the
-    // ring and the row's stretched link, so a click on the row's most-aimed-at
-    // mark hit a button nobody could see and did nothing — a dead click, which
-    // design-principles §0 forbids outright. The events come back with the ink
-    // and not a moment before.
-    const rest = block(TASKS_CSS, ".tasks-act");
-    expect(rest).toContain("pointer-events: none");
-    const reveal = block(TASKS_CSS, ".tasks-row:hover .tasks-act");
-    expect(reveal).toContain("opacity: 1");
-    expect(reveal).toContain("pointer-events: auto");
-    // The keyboard arm is in the SAME rule, so a tabbed-to button is graspable
-    // too rather than visible-but-inert.
-    expect(TASKS_CSS).toMatch(
-      /\.tasks-act:focus-visible \{\n\s*opacity: 1;\n\s*pointer-events: auto;/,
     );
   });
 
@@ -4620,17 +4540,13 @@ describe("the archive action", () => {
     // the claim; `block` throws on a selector list it cannot find.)
   });
 
-  // ---- the a/b row (Akshil, 2026-11-15), behind `task_head_unified_enabled` ----
-  // One row component; the seats that differ ask `ab` (useTaskHeadUnified), and
-  // the stylesheet's half is scoped to `.tasks-row--ab`, so the switch off is the
-  // legacy row above, pixel for pixel.
+  // ---- the a/b row (Akshil, 2026-11-15) ---------------------------------------
+  // The stylesheet's half is scoped to `.tasks-row--ab`, which every row wears.
 
-  it("a/b: rides the unified task head's switch, as a modifier on the row", () => {
-    expect(NODE).toContain("const ab = useTaskHeadUnified();");
-    expect(ROW).toContain('(ab ? " tasks-row--ab" : "")');
-    // EVERY a/b rule is scoped to the modifier — none of them can reach a legacy
-    // row. (The seats' classes are only ever drawn with it on, but a rule keyed
-    // on the bare row was how the legacy star picked up the a/b reveal.)
+  it("a/b: the row always wears the modifier", () => {
+    expect(ROW).toContain('className={"tasks-row tasks-row--ab"');
+    // EVERY a/b rule is scoped to the modifier. (A rule keyed on the bare row
+    // was how the legacy star picked up the a/b reveal.)
     const live = TASKS_CSS.replace(/\/\*[\s\S]*?\*\//g, "");
     for (const r of rules(live)) {
       for (const sel of r.selectors) {
@@ -4643,18 +4559,17 @@ describe("the archive action", () => {
   });
 
   it("a/b: swaps Archive with the id, in the id's own box", () => {
-    // The same button, drawn once (`fileButton`) and seated by `ab`: the mark
-    // slot holds it only on the legacy row, the id slot only on the a/b row.
+    // The same button, drawn once (`fileButton`): the id slot holds it, the
+    // mark slot never does.
     const from = ROW.indexOf('<span className="tasks-idslot">');
     expect(from).toBeGreaterThan(-1);
     const slot = ROW.slice(from, ROW.indexOf("</span>", from));
     expect(slot).toContain("<IdChip id={task.task_id}");
     expect(slot).toContain("{fileButton}");
-    expect(ROW.slice(ROW.lastIndexOf("{ab && (", from), from)).not.toContain("}");
     const markAt = ROW.indexOf('<span className="tasks-rowmark">');
     const mark = ROW.slice(markAt, ROW.indexOf("</span>", markAt));
-    expect(mark).toContain("{!ab && fileButton}");
-    expect((ROW.match(/\{fileButton\}|fileButton\}/g) ?? []).length).toBe(2);
+    expect(mark).not.toContain("fileButton");
+    expect((ROW.match(/\{fileButton\}|fileButton\}/g) ?? []).length).toBe(1);
 
     // NOTHING MOVES when they swap: the button is out of flow over the number.
     const box = block(TASKS_CSS, ".tasks-row--ab .tasks-idslot");
@@ -4689,24 +4604,20 @@ describe("the archive action", () => {
     ).toContain("opacity: 1");
   });
 
-  it("a/b: folder, then id — and the star and Open leave their legacy seats", () => {
-    // Legacy: star, id, PR, folder. A/b: folder, then the id slot, then PR.
-    const legacy = ROW.slice(ROW.indexOf("{!ab && (\n"), ROW.indexOf("{showProject && ("));
-    expect(legacy).toContain("<TaskStar task={task} />");
-    expect(legacy).toContain('<IdChip id={task.task_id} kind="task" />');
+  it("a/b: folder, then id — and the star and Open in their b seats", () => {
+    // Folder, then the id slot, then PR.
     const folder = ROW.indexOf("<IdentityChip");
     expect(folder).toBeLessThan(ROW.indexOf('<span className="tasks-idslot">'));
     expect(ROW.indexOf('<span className="tasks-idslot">')).toBeLessThan(ROW.indexOf('className={"tasks-title"'));
-    // The page door is one helper (`pageDoor`) seated by `ab`: the strip's on
-    // the legacy row, over the time on the a/b row — never both.
+    // The page door is one helper (`pageDoor`), seated over the time — never
+    // in the strip.
     expect(NODE).toContain("const pageDoor = (to: string) => (");
     expect((VIEWS.match(/className="tasks-act tasks-act--page"/g) ?? []).length).toBe(1);
-    expect(ROW).toContain("!ab && pageDoor(page)");
     expect(ROW).toContain("{pageDoor(page)}");
     const strip = ROW.slice(ROW.indexOf('className="tasks-acts"'), ROW.indexOf('className="tasks-row-msgs"'));
-    expect(strip).toContain("!ab && pageDoor(page)");
-    // The hint names the time only on the a/b row.
-    expect(NODE).toContain("!ab || task.provisional || !when.title");
+    expect(strip).not.toContain("pageDoor(page)");
+    // The hint names the time it stands over.
+    expect(NODE).toContain("task.provisional || !when.title");
   });
 
   it("a/b: puts the star over the count and the door over the time, each in a seat of no width", () => {
@@ -4718,13 +4629,11 @@ describe("the archive action", () => {
     expect(count).toBeLessThan(fav);
     expect(fav).toBeLessThan(time);
     expect(time).toBeLessThan(door);
-    // Both seats are drawn only on the a/b row, and are off the fit ladder's sums.
-    expect(ROW.slice(ROW.lastIndexOf("{ab && (", fav), fav)).toContain("<span");
+    // Both seats are off the fit ladder's sums.
     expect(ROW).toContain('className="tasks-bseat tasks-bseat--fav" data-fit-skip=""');
     expect(ROW).toContain('className="tasks-bseat tasks-bseat--door" data-fit-skip=""');
-    // One star per row whichever way the switch is: the legacy one by the id,
-    // the a/b one in its seat.
-    expect((ROW.match(/<TaskStar task=\{task\} \/>/g) ?? []).length).toBe(2);
+    // One star per row, in its seat.
+    expect((ROW.match(/<TaskStar task=\{task\} \/>/g) ?? []).length).toBe(1);
 
     // THE CSS: a zero-width seat, the control hung off its right edge.
     const seatBox = block(TASKS_CSS, ".tasks-row--ab > .tasks-bseat");
@@ -4876,13 +4785,12 @@ describe("the archive action", () => {
 
   it("a/b: makes the favourite's status icon the icon picker's button, above the row link", () => {
     // Akshil, 2026-11-15: "click on status icon, when it is fav … change icon".
-    // RingSeat wraps the ring in TaskIconPick only on the a/b row; TaskIconPick
-    // draws its button only for a task wearing a face.
+    // RingSeat wraps the ring in TaskIconPick; TaskIconPick draws its button
+    // only on a numbered task with the experiment on.
     const markAt = ROW.indexOf('<span className="tasks-rowmark">');
     const mark = ROW.slice(markAt, ROW.indexOf("</span>", markAt));
-    expect(mark).toMatch(/<RingSeat pick=\{ab\} task=\{task\}[^>]*>\s*<StatusIcon/);
+    expect(mark).toMatch(/<RingSeat task=\{task\}[^>]*>\s*<StatusIcon/);
     const seat = VIEWS.slice(VIEWS.indexOf("function RingSeat("), VIEWS.indexOf("function TaskNode("));
-    expect(seat).toContain("if (!pick) return <>{children}</>;");
     expect(seat).toContain("<TaskIconPick task={task}");
     const lift = block(TASKS_CSS, ".tasks-row--ab > .tasks-rowmark .task-icon-pick");
     expect(lift).toContain("z-index: 2");
@@ -4937,12 +4845,10 @@ describe("the archive action", () => {
     expect(zone).toContain("--tasks-archive-reach-l: 0px");
   });
 
-  it("leaves the board card's archive exactly where it was", () => {
-    // The swap is the LIST's, and only the List's. A card's ring is not in a rail
-    // and its head has an empty right end the strip was measured against
-    // (`--tasks-card-head-h`), so moving the button there would be a change with
-    // nothing behind it.
-    expect(CARD).toContain('"tasks-act tasks-card-act tasks-act--" + file.kind');
+  it("seats the board card's archive over its id, never in its ring", () => {
+    // The a/b card (2026-11-16): the List row's id slot, not its ring's.
+    expect(CARD).toContain('<span className="tasks-idslot">');
+    expect(CARD).not.toContain('"tasks-act tasks-card-act tasks-act--" + file.kind');
     expect(CARD).not.toContain("tasks-rowmark");
     expect(TASKS_CSS).toMatch(/\.tasks-card-acts\s*\{[^}]*position: absolute/);
   });
@@ -5011,7 +4917,7 @@ describe("the delete affordance", () => {
     expect(ROW.slice(at, ROW.indexOf("{ICON_TRASH}", at))).toContain("e.stopPropagation();");
   });
 
-  it("is a door only on a card whose folder is gone, first in the strip, left of Archive", () => {
+  it("is a door only on a card whose folder is gone, first in the strip", () => {
     const CARDS_SRC = readFileSync(join(SHELL, "TaskCards.tsx"), "utf8");
     const head = CARDS_SRC.slice(CARDS_SRC.indexOf("<header"), CARDS_SRC.indexOf("</header>"));
     // TWO danger doors now, and the Delete one is the SECOND: the discard
@@ -5024,12 +4930,9 @@ describe("the delete affordance", () => {
     // GATED on `gone` (Akshil, 2026-09-07): a task that still opens is archived.
     expect(head.slice(del, at)).toContain("{gone && (");
     // (On the a/b tile Archive is the id slot's, not a door: 2026-11-16.)
-    expect(head).toContain(
-      "{((filing && !ab) || explorer || gone || jobs || (ab && hasDraft(task) && !heldInPeek)) && (",
-    );
-    // Trash, then Archive, then the folder (Akshil: "left-side of the archive button").
-    expect(head.indexOf("ICON_TRASH")).toBeLessThan(head.indexOf("ICON_ARCHIVE"));
-    expect(head.indexOf("ICON_ARCHIVE")).toBeLessThan(head.indexOf("ICON_FOLDER"));
+    expect(head).toContain("{(explorer || gone || jobs || (hasDraft(task) && !heldInPeek)) && (");
+    // Trash, then the folder (Archive is the id slot's).
+    expect(head.indexOf("ICON_TRASH")).toBeLessThan(head.indexOf("ICON_FOLDER"));
     // …and the discard is the strip's first member, the same seat it takes on
     // the List row and the Board card.
     expect(head.indexOf("Discard draft")).toBeLessThan(del);
@@ -5054,10 +4957,10 @@ describe("the delete affordance", () => {
     expect(acts).toContain('title={blocked ? ERASE_BLOCKED_HINT : "Delete task forever"}');
   });
 
-  it("is in the Board card's hover strip, left of Archive, only when the folder is gone", () => {
+  it("is in the Board card's hover strip, only when the folder is gone", () => {
     const VIEWS_SRC = readFileSync(join(SHELL, "ScheduleTaskViews.tsx"), "utf8");
     const start = VIEWS_SRC.indexOf('<span className="tasks-card-acts">');
-    const strip = VIEWS_SRC.slice(start, VIEWS_SRC.indexOf("</span>", VIEWS_SRC.indexOf("ICON_UNARCHIVE", start)));
+    const strip = VIEWS_SRC.slice(start, VIEWS_SRC.indexOf("</span>\n      )}", start));
     // TWO trashes in this strip since 2026-09-15 — Discard on a draft card,
     // Delete forever on a card whose folder is gone — and they are one button
     // under two conditions that cannot both be true (each stands down for the
@@ -5068,11 +4971,12 @@ describe("the delete affordance", () => {
     );
     expect(at).toBeGreaterThan(0);
     expect(strip.slice(0, at)).toContain("{folderMissing && (");
-    expect(strip.indexOf("ICON_TRASH")).toBeLessThan(strip.indexOf("ICON_ARCHIVE"));
+    // Archive is the id slot's on the a/b card: not in this strip.
+    expect(strip).not.toContain("ICON_ARCHIVE");
     // The strip is drawn for a gone folder even with nothing to file.
     expect(VIEWS_SRC).toContain(
-      "{((peekOn && page) || (file && !ab) || folderMissing || (hasDraft(task) && !heldInPeek)\n"
-      + "        || canForceStart(task) || jobs || (SHOW_ROW_ACTIONS && run)) && (",
+      "{((peekOn && page) || folderMissing || (hasDraft(task) && !heldInPeek)\n"
+      + "        || canForceStart(task) || canRetryLimit(task) || jobs || (SHOW_ROW_ACTIONS && run)) && (",
     );
     // And the foot is back to the sentence alone — no trash before it there.
     const foot = VIEWS_SRC.slice(
@@ -5175,12 +5079,12 @@ const ACTIVATE = (() => {
 })();
 /** The List's task row, which ends where the thread it can open begins. */
 const ROW = (() => {
-  const from = VIEWS.indexOf('className={"tasks-row"');
+  const from = VIEWS.indexOf('className={"tasks-row tasks-row--ab"');
   return VIEWS.slice(from, VIEWS.indexOf("{open && (", from));
 })();
 /** The expanded thread — one message row per message — which is where ROW stops. */
 const THREAD = VIEWS.slice(
-  VIEWS.indexOf("{open && (", VIEWS.indexOf('className={"tasks-row"')),
+  VIEWS.indexOf("{open && (", VIEWS.indexOf('className={"tasks-row tasks-row--ab"')),
   VIEWS.indexOf("export function TaskBoard("),
 );
 
@@ -5224,7 +5128,7 @@ describe("the Draft chip", () => {
     expect(VIEWS).toContain("const ICON_PENCIL = icon(");
   });
 
-  it("sits at the RIGHT of a List row; the folder chip sits LEFT, after the id", () => {
+  it("sits at the RIGHT of a List row; the folder chip sits LEFT, before the id", () => {
     const chip = ROW.indexOf("<DraftChip");
     const folder = ROW.indexOf("<IdentityChip");
     const id = ROW.indexOf("<IdChip id={task.task_id}");
@@ -5233,10 +5137,10 @@ describe("the Draft chip", () => {
     // …and no longer beside the id, which is where it lived for a round.
     expect(chip).toBeGreaterThan(id);
     expect(ROW.indexOf('className="tasks-grow"')).toBeLessThan(chip);
-    // The folder chip moved to the row's left end (Akshil, 2026-09-15): after
-    // the id, before the title — where the row says what it IS.
-    expect(folder).toBeGreaterThan(id);
-    expect(folder).toBeLessThan(title);
+    // The folder chip moved to the row's left end (Akshil, 2026-09-15), and
+    // the a/b row (2026-11-15) puts it first: folder, id, title.
+    expect(folder).toBeLessThan(id);
+    expect(id).toBeLessThan(title);
   });
 
   it("sits in the same seat on a Board card — the foot, before the folder", () => {
@@ -6637,11 +6541,12 @@ describe("opening a thread, from either view", () => {
     expect(actsAt).toBeGreaterThan(clickAt);
     // The card's button closes before the strip opens.
     expect(CARD.lastIndexOf("</button>", actsAt)).toBeGreaterThan(clickAt);
-    // And the strip's own buttons ask for the run and the filing, nothing else.
+    // And the strip's own buttons ask for the run, nothing else — the filing
+    // is the id slot's on the a/b card.
     const acts = CARD.slice(actsAt);
     expect(acts).not.toContain("onOpen");
     expect(acts).toContain("void runNow(run)");
-    expect(acts).toContain("void refile(file)");
+    expect(acts).not.toContain("void refile(file)");
   });
 
   it("is the row ITSELF now, and a real link at that", () => {
@@ -9687,18 +9592,17 @@ describe("the Cards view's frame", () => {
       ".task-cards-scroll:has(> .task-cards-more) > .task-cards {\n  grid-auto-rows: max(260px, calc((100cqh - 12px * 2 - 36px) / 2));\n}",
     );
     expect(block(CARDS_CSS, ".task-cards-more")).toContain("height: 36px");
-    // The doors: Archive (or Unarchive) then the folder, icons only, absolutely
-    // placed over the title's right end — the head's height and the title's
-    // width never move — shown on hover and on keyboard focus, and taking no
-    // clicks while hidden.
+    // The doors: the folder, icons only, absolutely placed over the title's
+    // right end — the head's height and the title's width never move — shown
+    // on hover and on keyboard focus, and taking no clicks while hidden.
+    // Archive is the id slot's on the a/b tile (2026-11-16), not a door.
     const head = CARDS.slice(CARDS.indexOf("<header"), CARDS.indexOf("</header>"));
     expect(head.indexOf('className="task-card-title"')).toBeLessThan(head.indexOf("task-card-doors"));
-    expect(head).toContain('{filing.kind === "archive" ? ICON_ARCHIVE : ICON_UNARCHIVE}');
+    expect(head).not.toContain('{filing.kind === "archive" ? ICON_ARCHIVE : ICON_UNARCHIVE}');
     // The folder GLYPH is what a reader with the side peek off still gets; with
     // it on the door says "Open →" in words, like the List row's and the peek
     // header's (design.md, Polish batch 4).
     expect(head).toContain("{peekOn ? OPEN_DOOR_LABEL : ICON_FOLDER}");
-    expect(head.indexOf("ICON_ARCHIVE")).toBeLessThan(head.indexOf("ICON_FOLDER"));
     expect(head).toContain("href={explorer}");
     expect(head).toContain("if (opensElsewhere(e)) return;");
     expect(block(CARDS_CSS, ".task-card-head")).toContain("position: relative");
@@ -9964,10 +9868,10 @@ describe("the Cards view's frame", () => {
     // marked in all four views).
     // …and the card the reader last opened, which is the OTHER thing that may
     // ride this class list (design.md §8: the head's hover wash became a mark
-    // on the one card that was actually pressed). …and the a/b switch's
-    // modifier (2026-11-16), which only scopes the id slot's stylesheet.
+    // on the one card that was actually pressed). …and the a/b modifier
+    // (2026-11-16), which only scopes the id slot's stylesheet.
     expect(CARDS).toContain(
-      'className={"task-card task-card--door" + (ab ? " task-card--ab" : "") + (peeked ? ` ${PEEK_OPEN_CLASS}` : "")\n'
+      'className={"task-card task-card--door task-card--ab" + (peeked ? ` ${PEEK_OPEN_CLASS}` : "")\n'
         + '        + (selected ? " is-selected" : "")}',
     );
     // …but only a press on the card's own DOM: a click bubbled up the React
@@ -10820,8 +10724,8 @@ describe("the file mark after a task's title", () => {
 describe("the schedule mark on a List row", () => {
   const AHEAD = Math.floor(NOW / 1000) + 3600;
   const ROW = VIEWS.slice(
-    VIEWS.indexOf('className={"tasks-row"'),
-    VIEWS.indexOf("{open && (", VIEWS.indexOf('className={"tasks-row"')),
+    VIEWS.indexOf('className={"tasks-row tasks-row--ab"'),
+    VIEWS.indexOf("{open && (", VIEWS.indexOf('className={"tasks-row tasks-row--ab"')),
   );
 
   // Third answer in a day (Akshil, 2026-09-11). A clock after the title, then
@@ -11050,7 +10954,7 @@ describe("the identity a dispatched row keeps", () => {
 
 describe("what a waiting row does NOT grow", () => {
   const ROW_SRC = (() => {
-    const from = VIEWS.indexOf('className={"tasks-row"');
+    const from = VIEWS.indexOf('className={"tasks-row tasks-row--ab"');
     return VIEWS.slice(from, VIEWS.indexOf("{open && (", from));
   })();
 

@@ -32,23 +32,21 @@ export type MenuItem = { a: MenuAction; label: string; icon: ReactNode; danger?:
 /** openMenu's rows, in order, the same wherever the menu opens (a row's right-click or the preview header's ☰, which
  *  alone leads with "Open live view"). Skills… and Routines… open Settings on that section. */
 export function menuItems(b: Bot, opts: { live?: boolean } = {}): MenuItem[] {
-  // A specialist is not a bot of the bots backend: only what its own routes do.
-  if (b.specialist) return [{ a: "settings", label: "Settings…", icon: MI.settings }, { a: "export", label: "Export transcript", icon: MI.export },
+  // An expert is not a bot of the bots backend: only what its own routes do.
+  if (b.expert) return [{ a: "settings", label: "Settings…", icon: MI.settings }, { a: "export", label: "Export transcript", icon: MI.export },
     "hr", { a: "delete", label: "Delete…", icon: MI.delete, danger: true }];
-  const { live } = opts, out: MenuItem[] = [], ea = b.kind === "super", expert = b.kind === "expert";
-  // An expert has no browser: no live view, and no clone (the backend refuses one).
-  if (live && !expert) out.push({ a: "live", label: "Open live view", icon: MI.live }, "hr");
+  const { live } = opts, out: MenuItem[] = [], ea = b.kind === "super";
+  if (live) out.push({ a: "live", label: "Open live view", icon: MI.live }, "hr");
   out.push({ a: "settings", label: "Settings…", icon: MI.settings });
   // There is one Super Bot per Mac: no clone (the backend refuses it).
-  // An expert has Skills (its reference files, edited by you) but no Routines.
   out.push({ a: "skills", label: "Skills…", icon: MI.skills });
-  if (!expert) out.push({ a: "routines", label: "Routines…", icon: MI.routines });
+  out.push({ a: "routines", label: "Routines…", icon: MI.routines });
   // Export bot… writes the `.fusedbot` package (dialogs/ExportBot.tsx); Super Bot is one per Mac and never travels
-  // (the backend refuses it). An expert travels in the same package: its instructions, skills and, if ticked, memory.
-  if (!ea) out.push({ a: "exportFile", label: expert ? "Export expert…" : "Export bot…", icon: MI.package });
+  // (the backend refuses it).
+  if (!ea) out.push({ a: "exportFile", label: "Export bot…", icon: MI.package });
   out.push({ a: "export", label: "Export transcript", icon: MI.export });
   // Clone shares the source's logins (one browser); the second row is the old behaviour, a copy of them.
-  if (!ea && !expert) out.push({ a: "clone", label: "Clone", icon: MI.clone }, { a: "cloneCopy", label: "Clone with a copy of its logins", icon: MI.clone });
+  if (!ea) out.push({ a: "clone", label: "Clone", icon: MI.clone }, { a: "cloneCopy", label: "Clone with a copy of its logins", icon: MI.clone });
   out.push("hr",
     { a: "pin", label: b.pinned ? "Unpin" : "Pin to top", icon: b.pinned ? MI.unpin : MI.pin },
     { a: "hide", label: b.hidden ? "Unhide" : "Hide", icon: b.hidden ? MI.unhide : MI.hide },

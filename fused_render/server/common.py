@@ -318,6 +318,18 @@ async def unhandled_exception(request, exc):
 
 _LOG_SKIP_PREFIXES = ("/static/", "/template-assets/", "/template-shared/")
 
+
+def _log_path(path: str) -> str:
+    """`path` as it may be logged: the local SQL engine's file and table
+    names (`/api/sql/session/<s>/file/<name>`, `.../arrow/<table>`) are
+    content, not routing, and never reach the log (SPEC §55)."""
+    if path.startswith("/api/sql/session/"):
+        for marker in ("/file/", "/arrow/"):
+            head, sep, _ = path.partition(marker)
+            if sep:
+                return head + marker + "…"
+    return path
+
 # The one exemption from no-cache below: Vite's build output under
 # shell-dist/assets/ is content-hashed (`[name]-[hash].js|css|png`, the
 # rollup default vite.config.js keeps; base `/static/shell-dist/`), so a
@@ -333,10 +345,11 @@ _LOG_SKIP_PREFIXES = ("/static/", "/template-assets/", "/template-shared/")
 _IMMUTABLE_PREFIX = "/static/shell-dist/assets/"
 _VERSIONED_PREFIXES = ("/static/runtime.js", "/template-assets/", "/template-shared/")
 # Marketplace asset bytes (routers/marketplace.py) are cached per catalog
-# commit server-side and answered with their own `max-age=3600`, which this
+# commit server-side and answered with their own `max-age=3600` (and the saved
+# canvas, `no-store`, which the browser must never keep), which this
 # middleware keeps instead of overwriting with no-cache — the browse grid
 # re-requests every preview on each visit otherwise.
-_OWN_CACHE_PREFIX = "/api/marketplace/asset/"
+_OWN_CACHE_PREFIX = ("/api/marketplace/asset/", "/api/canvases/saved")
 
 def _net_begin(net, scope, path, headers):
     # Bookkeeping must never fail a request.
@@ -412,7 +425,7 @@ class NoCacheAndLog:
                 dur = (time.monotonic() - start) * 1000
                 st["server_ms"] = dur
                 if logged:
-                    logger.info("%s %s -> %s (%.0f ms)", method, path, status, dur)
+                    logger.info("%s %s -> %s (%.0f ms)", method, _log_path(path), status, dur)
                 headers = MutableHeaders(scope=message)
                 if call is not None:
                     shell_calls.finish(

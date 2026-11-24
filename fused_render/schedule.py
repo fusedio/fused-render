@@ -2669,6 +2669,7 @@ def _claim(entry_id: str, now: datetime, session_id: str = "") -> dict | None:
     ("resume this one"), and a row that resumed a conversation without recording
     which one would read afterwards as a fresh send. `session_learned` goes with
     it, because the system worked this id out from a run — nobody chose it."""
+    stale = None
     with _store_lock():
         entries = _read()
         for entry in entries:
@@ -2676,6 +2677,15 @@ def _claim(entry_id: str, now: datetime, session_id: str = "") -> dict | None:
                 continue
             if entry.get("state") != PENDING:
                 return None
+            if is_comeback(entry) and _comeback_stale(entry):
+                # THE CONVERSATION WENT ON WITHOUT IT — a reply landed after
+                # the comeback was booked (another account, the terminal, a
+                # Retry now). "Continue where it stopped" fired into a chat
+                # that is not stopped redoes work, so it is called off instead.
+                entry["state"] = CANCELLED
+                _write(entries)
+                stale = dict(entry)
+                break
             entry["state"] = SENDING
             entry["fired"] = now.isoformat()
             if session_id and not str(entry.get("session_id") or ""):
@@ -2687,6 +2697,10 @@ def _claim(entry_id: str, now: datetime, session_id: str = "") -> dict | None:
         else:
             return None
     _sync_wake()
+    if stale is not None:
+        _queue_forget(stale)
+        _notify(_entry_keys(stale))
+        return None
     return claimed
 
 
@@ -5156,6 +5170,167 @@ def resend(entry_id: str, now: datetime | None = None) -> dict:
     # it to the user would report a problem they do not have.
     note = str(outcome.get("reason") or "") if entry.get("state") == PENDING else ""
     return {"ok": True, "found": True, "entry": entry, "reason": note}
+
+
+# ------------------------------------------------- the usage-limit comeback
+#
+# When a chat turn dies on the plan's usage limit the chat books ONE scheduled
+# message on that session, due when the window reopens (`protocol/quota.ts`
+# CONTINUE_TITLE / CONTINUE_PROMPT, `run-controller.scheduleComeback`). These
+# are the same two constants, restated: they are a wire fact between the chat
+# that books the entry and this module, which keeps it single, retires it once
+# the conversation has moved on, and runs it early on "Retry now".
+COMEBACK_TITLE = "Continue after usage limit"
+COMEBACK_PROMPT = ("Your usage limit has reset. Continue the task you were "
+                   "working on where it stopped. Do not repeat steps that "
+                   "were already completed.")
+
+
+def is_comeback(entry: dict | None) -> bool:
+    """Is this entry the chat's usage-limit comeback? Its title is the mark."""
+    return bool(entry) and str(entry.get("title") or "").strip() == COMEBACK_TITLE
+
+
+def _comeback_session(entry: dict) -> str:
+    return str(entry.get("session_id") or entry.get("claude_session_id") or "")
+
+
+def pending_comebacks(session_id: str,
+                      entries: list[dict] | None = None) -> list[dict]:
+    """Every PENDING comeback booked on this session, soonest first."""
+    if not session_id:
+        return []
+    if entries is None:
+        with _lock:
+            entries = _read()
+    found = [dict(e) for e in entries
+             if e.get("state") == PENDING and is_comeback(e)
+             and _comeback_session(e) == session_id]
+    found.sort(key=lambda e: str(e.get("due") or ""))
+    return found
+
+
+def supersede_comebacks(entry: dict) -> list[str]:
+    """ONE COMEBACK PER CONVERSATION: cancel every other pending comeback on the
+    session `entry` (a comeback just booked) belongs to, and return their ids.
+
+    A retry that hits the limit again books a fresh one, a second window open on
+    the same chat books its own, a reload books again — and each of them is the
+    same promise ("continue when the window reopens"). Kept side by side they
+    would each fire the continue prompt into one conversation. The newest wins:
+    it carries the newest reset time the CLI reported."""
+    if not is_comeback(entry):
+        return []
+    session = _comeback_session(entry)
+    keep = str(entry.get("id") or "")
+    gone = []
+    for other in pending_comebacks(session):
+        other_id = str(other.get("id") or "")
+        if other_id and other_id != keep and cancel(other_id) is not None:
+            gone.append(other_id)
+    if gone:
+        _notify(_entry_keys(entry))
+    return gone
+
+
+def _comeback_stale(entry: dict) -> bool:
+    """Has the conversation this comeback would continue ALREADY gone on — a
+    finished reply in its transcript newer than the moment the comeback was
+    booked? False whenever the transcript cannot say."""
+    session = _comeback_session(entry)
+    if not session:
+        return False
+    try:
+        booked = parse_due(str(entry.get("created") or "")).timestamp()
+    except ValueError:
+        return False
+    try:
+        from fused_render import session_liveness
+
+        last = session_liveness.session_last_turn(session)
+    except Exception:  # noqa: BLE001 — no evidence is "not stale"
+        logger.debug("could not read the transcript for %s", session,
+                     exc_info=True)
+        return False
+    return bool(last) and last.get("state") == "ok" \
+        and float(last.get("at") or 0.0) > booked
+
+
+def retry_after_limit(session_id: str, target: str = "", backend: str = "",
+                      now: datetime | None = None) -> dict:
+    """RETRY NOW on a conversation the plan's usage limit stopped:
+    `{"ok", "found", "entry", "reason", "comeback", "queued"}`.
+
+    The reader switched accounts (or the window reopened early) and does not
+    want to wait for the booked comeback. So the continue prompt goes NOW, as a
+    NEW one-off on the same session — `resend`'s shape, sent through `run_now`
+    and its claim like every other send.
+
+    THE BOOKED COMEBACK IS LEFT WHERE IT IS, and that is what keeps this safe in
+    both outcomes. Still limited: the retry dies on the limit too and the
+    comeback is still due at the reset — the chat's own re-booking, if it
+    makes one, supersedes it (`supersede_comebacks`), so there is never more
+    than one. Not limited: the retry is answered, and a reply newer than the
+    comeback's booking retires it (`_comeback_stale` at claim time, and the
+    tasks listing's sweep the moment the reply is seen).
+
+    With no comeback booked (cancelled, or the chat never got to post it) the
+    caller names the `target` and `backend` the conversation runs in, and the
+    prompt is the comeback's own."""
+    now = now or _now()
+    with _lock:
+        entries = _read()
+    booked = pending_comebacks(session_id, entries)
+    lead = booked[0] if booked else None
+    # A SECOND PRESS IS NOT A SECOND RETRY. One already in flight on this
+    # session is the answer; one still waiting (the conversation was closing
+    # its turn) is run again rather than joined by another.
+    if session_id and session_id in _busy_sessions(entries):
+        return {"ok": True, "found": True, "entry": None,
+                "comeback": str((lead or {}).get("id") or ""), "queued": False,
+                "reason": "already retrying — the continue is running now"}
+    waiting = next((dict(e) for e in entries
+                    if e.get("state") == PENDING and "retry_of" in e
+                    and _comeback_session(e) == session_id), None)
+    if waiting is not None:
+        outcome = run_now(str(waiting.get("id") or ""), now)
+        with _lock:
+            stored = next((e for e in _read()
+                           if e.get("id") == waiting.get("id")), waiting)
+        still = stored.get("state") == PENDING
+        return {"ok": True, "found": True, "entry": stored,
+                "comeback": str((lead or {}).get("id") or ""),
+                "queued": bool(outcome.get("queued")) and still,
+                "reason": str(outcome.get("reason") or "") if still else ""}
+    permission_mode = ""
+    message = COMEBACK_PROMPT
+    if lead is not None:
+        target = str(lead.get("target") or "") or target
+        message = str(lead.get("message") or "") or COMEBACK_PROMPT
+        permission_mode = str(lead.get("permission_mode") or "")
+        backend = _entry_backend(lead)
+    if not session_id or not target:
+        return {"ok": False, "found": False, "entry": None, "comeback": "",
+                "queued": False,
+                "reason": "nothing to retry — this conversation is not paused "
+                          "on the usage limit"}
+    # `origin="chat"`: the reader pressed for this from their own chat, so it
+    # is not a calendar message — no composer lock, no "your scheduled
+    # message is running" note over a turn they just asked for.
+    fresh = create(target, message, now, session_id=session_id,
+                   permission_mode=permission_mode, session_learned=True,
+                   origin="chat", backend=backend)
+    _update(fresh["id"], retry_of=str((lead or {}).get("id") or ""))
+    outcome = run_now(fresh["id"], now)
+    with _lock:
+        stored = next((e for e in _read()
+                       if str(e.get("id") or "") == fresh["id"]), None)
+    entry = stored or fresh
+    still = entry.get("state") == PENDING
+    return {"ok": True, "found": True, "entry": entry,
+            "comeback": str((lead or {}).get("id") or ""),
+            "queued": bool(outcome.get("queued")) and still,
+            "reason": str(outcome.get("reason") or "") if still else ""}
 
 
 def _loop() -> None:

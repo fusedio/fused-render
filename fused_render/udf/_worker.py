@@ -13,7 +13,9 @@ may reach stdout, so whatever the SDK prints is sent to stderr.
 
   {"op": "run", "id", "source", "collection", "params",
    "format": "auto" | "view" | "html" | "png" | "json" | "parquet",
-   "cache": bool, "confirmed": bool, "out": "<path>"}
+   "cache": bool, "confirmed": bool, "out": "<path>",
+   "tile": {"x", "y", "z"} (optional: a tile run),
+   "loaded": "<id of a code op>" (optional: run the UDF that op loaded)}
       -> {"id", "event": "started", "kind", "code_sha256"}
       -> {"id", "event": "done", "ok": true, "content_type", "size",
           "stdout", "stderr", "fused_cached", "seconds", "code_sha256"}
@@ -21,6 +23,10 @@ may reach stdout, so whatever the SDK prints is sent to stderr.
       or {"id", "event": "done", "ok": false, "error", "line", "stdout",
           "stderr"}
       or {"id", "event": "needs_confirmation", "kind"}   nothing ran
+  {"op": "code", "id", "source", "collection"}
+      -> {"id", "event": "code", "ok": true, "code_sha256"} | {..., "ok": false, "error"}
+         (the loaded UDF is kept under `id` for one run to take: the run
+         then is of exactly the code that was hashed)
   {"op": "schema", "id", "source", "collection"}
       -> {"id", "event": "schema", "ok": true, "schema"} | {..., "ok": false, "error"}
   {"op": "cancel", "id"}   the run's next poll stops it (`_cancel_callback`)
@@ -61,6 +67,10 @@ if _env_name:
 
 _SEND_LOCK = threading.Lock()
 _cancelled: set[str] = set()
+# UDFs loaded by a code op, waiting for their run (taken once). A load whose
+# run never comes (it joined another page's run) is dropped, oldest first.
+_loaded: dict[str, object] = {}
+_LOADED_MAX = 256
 
 
 def send(obj: dict) -> None:
@@ -105,7 +115,9 @@ async def run(req: dict) -> None:
     fmt = req.get("format") if req.get("format") in SDK_FORMATS else "auto"
     sdk_kw = {"_format": SDK_FORMATS[fmt]} if SDK_FORMATS[fmt] else {}
     try:
-        udf = await asyncio.to_thread(_load, req["source"], req.get("collection"))
+        udf = _loaded.pop(str(req.get("loaded")), None)
+        if udf is None:
+            udf = await asyncio.to_thread(_load, req["source"], req.get("collection"))
     except Exception as exc:  # noqa: BLE001 — a file that is no UDF is an answer
         send({"id": rid, "event": "done", "ok": False,
               "error": f"could not load this as a UDF: {exc}", "line": None,
@@ -120,18 +132,21 @@ async def run(req: dict) -> None:
     send({"id": rid, "event": "started", "kind": kind, "code_sha256": code_sha})
     params = req.get("params") if isinstance(req.get("params"), dict) else {}
     cache = req.get("cache") is not False
+    tile = req.get("tile")
+    # A tile run: the SDK takes the coordinates as `x`, `y`, `z`.
+    tile_kw = {k: tile[k] for k in ("x", "y", "z")} if isinstance(tile, dict) else {}
     try:
         if kind == canvas_node_exec.NONE:
             result = await fused.run_async(
                 udf, engine="remote", _return_response=True,
                 cache=cache, parameters=params,
-                _cancel_callback=lambda: rid in _cancelled, **sdk_kw)
+                _cancel_callback=lambda: rid in _cancelled, **tile_kw, **sdk_kw)
         else:
             # A batch job is waited for by the sync call; on a thread, so the
             # worker's other runs go on.
             result = await asyncio.to_thread(
                 lambda: fused.run(udf, engine="remote", _return_response=True,
-                                  cache=cache, parameters=params, **sdk_kw))
+                                  cache=cache, parameters=params, **tile_kw, **sdk_kw))
     except Exception as exc:  # noqa: BLE001 — the SDK raises some run errors
         if rid in _cancelled:
             send({"id": rid, "event": "done", "ok": False, "error": "cancelled",
@@ -151,13 +166,30 @@ async def run(req: dict) -> None:
             # may answer it from its cache; under cache=False ("fresh") it
             # evaluates the UDF again.
             png = await fused.run_async(udf, engine="remote", _return_response=True,
-                                        cache=cache, parameters=params, _format="png")
+                                        cache=cache, parameters=params, _format="png",
+                                        **tile_kw)
             done = answer(rid, png, "png", req["out"], code_sha)
         send(done)
     except Exception as exc:  # noqa: BLE001 — writing the body failed
         send({"id": rid, "event": "done", "ok": False,
               "error": f"could not keep the result: {exc}", "line": None,
               "stdout": "", "stderr": ""})
+
+
+async def code(req: dict) -> None:
+    rid = str(req.get("id"))
+    try:
+        udf = await asyncio.to_thread(_load, req["source"], req.get("collection"))
+    except Exception as exc:  # noqa: BLE001 — a name that is no UDF is an answer
+        send({"id": rid, "event": "code", "ok": False,
+              "error": f"could not load this as a UDF: {exc}"})
+        return
+    while len(_loaded) >= _LOADED_MAX:
+        _loaded.pop(next(iter(_loaded)))
+    _loaded[rid] = udf
+    text = getattr(udf, "code", None) or ""
+    send({"id": rid, "event": "code", "ok": True,
+          "code_sha256": hashlib.sha256(text.encode("utf-8")).hexdigest()})
 
 
 def _schema(source: str, collection: str | None) -> dict:
@@ -205,7 +237,7 @@ async def main() -> None:
         if op == "cancel":
             _cancelled.add(str(req.get("id")))
             continue
-        handler = {"run": run, "schema": schema}.get(op)
+        handler = {"run": run, "schema": schema, "code": code}.get(op)
         if handler is None:
             continue
         task = asyncio.create_task(handler(req))

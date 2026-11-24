@@ -106,6 +106,17 @@ out({ saved: await run.saved, ref: workbench.udf("canvas_1/hello", { env: "prod"
     assert got["ref"] == {"canvas": "canvas_1", "name": "hello", "env": "prod"}
 
 
+def test_a_tile_option_rides_the_run_message_and_no_tile_sends_none():
+    got = run_js("""
+globalThis.__server = () => [{ type: "done", result: R() }];
+await workbench.udf({ file: "/a.py" }).run({}, { format: "png", tile: { x: 1, y: 2, z: 3 } });
+await workbench.udf({ file: "/a.py" }).run();
+out({ tiled: globalThis.__sent[0], plain: globalThis.__sent[1] });
+""")
+    assert got["tiled"]["tile"] == {"x": 1, "y": 2, "z": 3} and got["tiled"]["format"] == "png"
+    assert "tile" not in got["plain"]
+
+
 def test_a_batch_udf_is_asked_about_and_runs_on_yes():
     got = run_js("""
 globalThis.__server = (m) => m.confirmed

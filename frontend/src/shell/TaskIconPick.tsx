@@ -1,4 +1,4 @@
-// THE ICON AS A BUTTON (`task_icons_enabled`). A task's status ring — or
+// THE ICON AS A BUTTON (task icons; always on since 2026-11-23). A task's status ring — or
 // the face it wears in its place — opens the sidebar's own picker
 // (platform/ui/IconPicker) over the task icon set — filter, shuffle, Recent,
 // and Remove, which takes the face away and gives the ring back. The pick is
@@ -15,11 +15,10 @@
 // the ring of any task opens the picker, a pick is worn starred or not, and
 // Remove gives the ring back — offered only while a face is drawn
 // (task-icons `taskFaceShown`, StatusIcon's own rule). A favourite can so
-// wear the ring; a new star gives its icon back (server-side). With the
-// experiment off, or on a task with no number yet (nothing to stamp the
-// pick on — the server refuses it with a 409, swallowed below), the children
-// render as they are: nothing to press, no extra box. The favourites switch
-// is not asked: a picked face is the user's own, not the star's.
+// wear the ring; a new star gives its icon back (server-side). On a task with
+// no number yet (nothing to stamp the pick on — the server refuses it with a
+// 409, swallowed below), the children render as they are: nothing to press,
+// no extra box.
 //
 // THE PICKER OUTLIVES A RENAME: its filter box takes the keyboard, the
 // title input's blur SAVES the rename and ends the edit — the open picker
@@ -37,8 +36,6 @@ import { useCallback, useEffect, useId, useRef, useState, type ReactNode } from 
 import { createPortal } from "react-dom";
 import { setTaskIcon, type HttpError, type Task } from "@platform/lib/api";
 import { notify } from "@platform/lib/notifications";
-import { useTaskFavourites } from "@platform/lib/favourites-flag";
-import { useTaskIcons } from "@platform/lib/task-icons-flag";
 import IconPicker, { type IconPickerSet } from "@platform/ui/IconPicker";
 import { TASK_ICON_NAMES, TASK_ICON_SPRITE, taskFaceShown } from "./task-icons";
 import { pokeTasks } from "./tasksPulse";
@@ -64,7 +61,7 @@ export function TaskIconPick({
   onOpenChange,
   children,
 }: {
-  task: Pick<Task, "key" | "task_id" | "icon_slot" | "icon_picked">;
+  task: Pick<Task, "key" | "task_id" | "icon_slot">;
   /** True while the title input stands (the press must not blur it). */
   editing?: boolean;
   /** The older gate: a button only during a rename (flag-off heads). */
@@ -82,8 +79,6 @@ export function TaskIconPick({
   onOpenChange?: (open: boolean) => void;
   children: ReactNode;
 }) {
-  const iconsOn = useTaskIcons();
-  const favsOn = useTaskFavourites();
   // Where the picker opened, AND FOR WHICH TASK: a head that swaps to another
   // chat under an open picker (the rail card's next ring, the side peek's
   // next row) must not hand the next pick to the newcomer.
@@ -132,12 +127,12 @@ export function TaskIconPick({
     onOpenChange?.(true);
     return () => onOpenChange?.(false);
   }, [open, onOpenChange]);
-  // A button on any NUMBERED task, the experiment on (2026-11-16).
-  const has = iconsOn && !!task.task_id;
+  // A button on any NUMBERED task (2026-11-16).
+  const has = !!task.task_id;
   // …and Remove only while a face is drawn (StatusIcon's own rule): a ring
   // has nothing to remove.
-  const worn = taskFaceShown(task.icon_slot, task.icon_picked, iconsOn, favsOn);
-  // THE BUTTON WENT AWAY UNDER AN OPEN PICKER (the experiment switched off):
+  const worn = taskFaceShown(task.icon_slot);
+  // THE BUTTON WENT AWAY UNDER AN OPEN PICKER (the task lost its number):
   // the picker goes with it for good — left set, `anchor` kept the host's
   // Archive seat hidden and brought the picker back, unasked, the moment the
   // button returned (Bugbot, PR #2253). The same for a picker left behind by

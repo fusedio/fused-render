@@ -183,6 +183,12 @@ def _xdg_open(target: str, activation_token: str | None = None) -> None:
     # teardown) cannot take down a browser it exec'd. A launch token is handed
     # to the browser through the environment xdg-open passes on, so the
     # compositor lets the browser window take focus.
+    # Under WSL xdg-open ends in `explorer.exe <url>`, which shows the Documents folder for an address with a
+    # query (_wsl.py): a web address goes to the Windows default browser directly. Paths still take xdg-open.
+    from fused_render import _wsl
+
+    if _wsl.is_wsl() and not os.environ.get("BROWSER") and _wsl.open_url(target):
+        return
     env = None
     if activation_token:
         env = {**os.environ, "XDG_ACTIVATION_TOKEN": activation_token,

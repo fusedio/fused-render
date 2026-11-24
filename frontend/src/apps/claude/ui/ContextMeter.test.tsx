@@ -211,6 +211,29 @@ test("with the CLI's breakdown: a row per category, deferred dim apart, tones on
   expect(view.findAllByProps({ children: "(all context in use)" })).toHaveLength(0);
 });
 
+test("the header reads the window the CLI's own grid is drawn on, setting or not", () => {
+  // `autoCompactWindow: 200000` on a 1M model: /context says maxTokens 200,000
+  // with a 33,000 buffer, so the header is 75,013/167,000, not /997,000.
+  const capped: ContextBreakdown = {
+    ...BREAKDOWN,
+    categories: BREAKDOWN.categories.map((c) =>
+      c.id === "compact_buffer" ? { ...c, tokens: 33_000 } : c,
+    ),
+    max_tokens: 200_000,
+  };
+  const header = (u: ContextUsage) =>
+    render(<ContextReportView usage={u} model="claude-opus-5-5" breakdown={capped} />)
+      .root.findAllByProps({ className: "c-ctxpop-dim" })
+      .map((n) => [n.props.children].flat().join(""))
+      .find((t) => t.includes("before"));
+  const base = { cache_read_input_tokens: 75_013, model: "claude-opus-5-5", window: 1_000_000 };
+  expect(header(usage({ ...base, compact_window: 200_000 }))).toBe(
+    "75,013/167,000 tokens before auto-compact (45%)",
+  );
+  // The page not knowing the setting (older agent.py) still follows the CLI.
+  expect(header(usage(base))).toBe("75,013/167,000 tokens before auto-compact (45%)");
+});
+
 test("a row with a detail list is a collapsed button that opens an indented list", () => {
   const view = render(
     <ContextReportView

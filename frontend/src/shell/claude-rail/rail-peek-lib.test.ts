@@ -808,7 +808,6 @@ describe("railOnChipLeave (a favourite's chat leaving by the rail card's where-c
   it("a live favourite: let go first, then open its card in this window — before the hop", () => {
     const calls: string[] = [];
     const leave = railOnChipLeave(
-      () => true,
       (k) => k === "f",
       (k) => calls.push("letGo:" + k),
       (k, kbd) => calls.push(`open:${k}:${kbd}`),
@@ -818,11 +817,10 @@ describe("railOnChipLeave (a favourite's chat leaving by the rail card's where-c
     expect(calls).toEqual(["letGo:f", "open:f:false", "letGo:f", "open:f:true"]);
   });
 
-  it("a list chat, or favourites off: nothing — the chip just goes", () => {
+  it("a list chat: nothing — the chip just goes", () => {
     const calls: string[] = [];
     const sink = (k: string) => calls.push(k);
-    railOnChipLeave(() => true, (k) => k === "f", sink, sink)("a");
-    railOnChipLeave(() => false, () => true, sink, sink)("f");
+    railOnChipLeave((k) => k === "f", sink, sink)("a");
     expect(calls).toEqual([]);
   });
 });

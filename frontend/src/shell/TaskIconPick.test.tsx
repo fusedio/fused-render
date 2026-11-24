@@ -1,7 +1,6 @@
 // THE ICON IS NOT THE STAR'S (owner, 2026-11-16): the ring of ANY numbered
-// task opens the icon picker, a face picked by hand is drawn with the
-// favourites switch off too, one that came with the star is not, and the
-// picker's reset button reads "Remove" and stands only while a face is drawn.
+// task opens the icon picker, and the picker's reset button reads "Remove"
+// and stands only while a face is drawn.
 import { installDomShim, installPortalContainer, removePortalContainer } from "@platform/lib/testDomShim";
 installDomShim();
 import { afterEach, expect, test } from "bun:test";
@@ -9,8 +8,6 @@ import { createElement, type ReactElement } from "react";
 import { act, create, type ReactTestInstance, type ReactTestRenderer } from "react-test-renderer";
 import type { Task } from "@platform/lib/api";
 
-const icons = await import("@platform/lib/task-icons-flag");
-const favs = await import("@platform/lib/favourites-flag");
 const { TaskIconPick } = await import("./TaskIconPick");
 const { StatusIcon } = await import("./ScheduleTaskViews");
 const { taskFaceShown } = await import("./task-icons");
@@ -19,17 +16,7 @@ const IconPicker = (await import("@platform/ui/IconPicker")).default;
 const mounted: ReactTestRenderer[] = [];
 afterEach(() => {
   for (const r of mounted.splice(0)) act(() => r.unmount());
-  icons.resetTaskIconsFlagForTests();
-  favs.resetTaskFavouritesFlagForTests();
 });
-
-function switches(iconsOn: boolean, favsOn: boolean) {
-  act(() => {
-    icons.publishTaskIcons({ enabled: iconsOn });
-    favs.publishTaskFavourites({ enabled: favsOn });
-    favs.publishFavouritesParent({ enabled: favsOn });
-  });
-}
 
 // A node stand-in rich enough for the picker's own effects (focus, the
 // filter box lookup, its on-screen placement).
@@ -54,7 +41,7 @@ function render(el: ReactElement): ReactTestRenderer {
 }
 
 const task = (over: Partial<Task> = {}) =>
-  ({ key: "sess-1", task_id: "TASK-042", icon_slot: null, icon_picked: false, ...over }) as Task;
+  ({ key: "sess-1", task_id: "TASK-042", icon_slot: null, ...over }) as Task;
 
 const ring = () => createElement("span", { className: "ring" });
 const pick = (t: Task) => createElement(TaskIconPick, { task: t, children: ring() });
@@ -63,20 +50,14 @@ function pickButtons(r: ReactTestRenderer): ReactTestInstance[] {
   return r.root.findAll((n) => n.type === "button" && n.props.className === "task-icon-pick");
 }
 
-test("the ring of any numbered task is the picker's button — with the experiment on, favourites switch or not", () => {
-  for (const favsOn of [true, false]) {
-    switches(true, favsOn);
-    // A plain ring (never given a face, not starred).
-    expect(pickButtons(render(pick(task())))).toHaveLength(1);
-    // A face, picked or starred.
-    expect(
-      pickButtons(render(pick(task({ icon_slot: 3, icon_picked: true })))),
-    ).toHaveLength(1);
-  }
+test("the ring of any numbered task is the picker's button", () => {
+  // A plain ring (never given a face, not starred).
+  expect(pickButtons(render(pick(task())))).toHaveLength(1);
+  // A face, picked or starred.
+  expect(pickButtons(render(pick(task({ icon_slot: 3 }))))).toHaveLength(1);
 });
 
 test("the button keeps the ring's status as its description", () => {
-  switches(true, true);
   const r = render(
     createElement(TaskIconPick, {
       task: task(),
@@ -92,33 +73,22 @@ test("the button keeps the ring's status as its description", () => {
   expect(face.findAll((n) => n.type === "span" && /^Done/.test(String(n.props["aria-label"] ?? "")))).toHaveLength(1);
 });
 
-test("no button with the experiment off, or on a task with no number yet", () => {
-  switches(false, true);
-  const off = render(pick(task({ icon_slot: 3, icon_picked: true })));
-  expect(pickButtons(off)).toHaveLength(0);
-  expect(off.root.findAll((n) => n.props.className === "ring")).toHaveLength(1);
-  switches(true, true);
-  expect(pickButtons(render(pick(task({ task_id: "" }))))).toHaveLength(0);
+test("no button on a task with no number yet: the ring as it is", () => {
+  const none = render(pick(task({ task_id: "", icon_slot: 3 })));
+  expect(pickButtons(none)).toHaveLength(0);
+  expect(none.root.findAll((n) => n.props.className === "ring")).toHaveLength(1);
 });
 
-test("a face is drawn when picked by hand, or when it came with the star and favourites are on", () => {
-  // slot, picked, iconsOn, favsOn
-  expect(taskFaceShown(3, true, true, false)).toBe(true);
-  expect(taskFaceShown(3, false, true, false)).toBe(false);
-  expect(taskFaceShown(3, false, true, true)).toBe(true);
-  expect(taskFaceShown(3, true, false, true)).toBe(false);
-  expect(taskFaceShown(null, true, true, true)).toBe(false);
-  expect(taskFaceShown(999, true, true, true)).toBe(false);
+test("a face is drawn for a known slot", () => {
+  expect(taskFaceShown(3)).toBe(true);
+  expect(taskFaceShown(null)).toBe(false);
+  expect(taskFaceShown(999)).toBe(false);
 });
 
-test("StatusIcon draws a picked face with the favourites switch off, and the ring for a star's", () => {
-  switches(true, false);
+test("StatusIcon draws the face for a slot, and the ring for none", () => {
   const glyphOf = (r: ReactTestRenderer) => r.root.findAll((n) => n.type === "svg").length;
-  expect(glyphOf(render(createElement(StatusIcon, { status: "done", icon: 3, iconPicked: true })))).toBe(1);
-  expect(glyphOf(render(createElement(StatusIcon, { status: "done", icon: 3, iconPicked: false })))).toBe(0);
-  switches(true, true);
   expect(glyphOf(render(createElement(StatusIcon, { status: "done", icon: 3 })))).toBe(1);
-  expect(glyphOf(render(createElement(StatusIcon, { status: "done", icon: null, iconPicked: true })))).toBe(0);
+  expect(glyphOf(render(createElement(StatusIcon, { status: "done", icon: null })))).toBe(0);
 });
 
 test("the picker's reset button is a host's to give: shown with `onRemove`, absent without", () => {
@@ -166,7 +136,6 @@ test("pressed, the button opens the picker — with Remove only while a face is 
 });
 
 function pressedPickers() {
-  switches(true, true);
   const removeOf = (t: Task) => {
     const r = render(pick(t));
     const btn = pickButtons(r)[0]!;
@@ -204,11 +173,5 @@ function pressedPickers() {
   // A plain ring has nothing to remove.
   expect(removeOf(task())).toBeUndefined();
   // A face — picked, or the star's — can be removed.
-  expect(typeof removeOf(task({ icon_slot: 3, icon_picked: true }))).toBe("function");
-  expect(typeof removeOf(task({ icon_slot: 3, icon_picked: false }))).toBe("function");
-  // The favourites switch off: the star's face is not drawn, so no Remove;
-  // a picked one still is.
-  switches(true, false);
-  expect(removeOf(task({ icon_slot: 3, icon_picked: false }))).toBeUndefined();
-  expect(typeof removeOf(task({ icon_slot: 3, icon_picked: true }))).toBe("function");
+  expect(typeof removeOf(task({ icon_slot: 3 }))).toBe("function");
 }

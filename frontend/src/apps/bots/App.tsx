@@ -116,7 +116,7 @@ export function Bots() {
   useEffect(() => startStore(), []);
   // While this page polls /api/bots, the sidebar's Bots entry takes its rows instead of polling /api/bots/pulse itself.
   useBotsFeeder();
-  // The builds feed reads /api/bots/builds: not where the server runs no bots (Windows, the specialists-only page).
+  // The builds feed reads /api/bots/builds: not where the server runs no bots (Windows, the experts-only page).
   useEffect(() => {
     let live = true, stop = () => {};
     void readBotsMissing().then((off) => { if (live && !off) stop = startBuilds(); });

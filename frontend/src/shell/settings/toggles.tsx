@@ -9,13 +9,7 @@ import {
   putAppSharingEnabled,
   putCanvasesEmbedProxy,
   putCanvasesEnabled,
-  putCanvasRailPeekEnabled,
-  putTaskFavouritesEnabled,
-  putTaskHeadUnifiedEnabled,
-  putRailFreePinsEnabled,
-  putRailModeDoorsEnabled,
-  putTaskIconsEnabled,
-  putExpertsEnabled,
+  putRailExtrasEnabled,
   putGitAutoSyncEnabled,
   putLivePreviewsEnabled,
   putMonitorEnabled,
@@ -24,7 +18,7 @@ import {
   putTaskNotifyTerminalSessionsEnabled,
   putChatRecapEnabled,
   putBreakoutEnabled,
-  putSpecialistsEnabled,
+  putExpertsEnabled,
   putTaskSummaryTitlesEnabled,
   putClaudeDefaultPermission,
   putClaudeStrictMcpEnabled,
@@ -32,16 +26,11 @@ import {
 } from "@platform/lib/api";
 import { publishContribFlags } from "@platform/lib/contrib-flags";
 import { publishCanvasesEnabled } from "@apps/canvases/feature-flag";
-import { publishTaskHeadUnified } from "../task-head-flag";
-import { publishRailFreePins } from "../claude-rail/rail-free-pins-flag";
-import { publishRailModeDoors } from "../claude-rail/rail-mode-doors-flag";
-import { publishCanvasRailPeek } from "@shell/claude-rail/rail-peek-flag";
-import { publishFavouritesParent, publishTaskFavourites } from "@platform/lib/favourites-flag";
-import { publishTaskIcons } from "@platform/lib/task-icons-flag";
+import { publishRailExtras } from "../claude-rail/rail-extras-flag";
 import { publishAppSharingEnabled } from "@platform/lib/share-app-flag";
 import { publishLivePreviewsEnabled } from "@platform/lib/live-previews-flag";
 import { publishMonitorEnabled } from "@platform/lib/monitor-flag";
-import { publishSpecialistsEnabled } from "@platform/lib/specialists-flag";
+import { publishExpertsEnabled } from "@platform/lib/experts-flag";
 import {
   publishDefaultPermission,
   publishProjectQueueEnabled,
@@ -89,15 +78,15 @@ export function BreakoutControl({ prefs, onChange }: PrefControlProps) {
   );
 }
 
-// Specialists (docs/specialists.md): their Bots rows, the task tools and the
+// Experts (docs/experts.md): their Bots rows, the task tools and the
 // breakout's "With". Published so an open page shows or drops them at once.
-export function SpecialistsControl({ prefs, onChange }: PrefControlProps) {
+export function ExpertsControl({ prefs, onChange }: PrefControlProps) {
   return (
     <PrefToggleRow
-      id="specialists"
-      checked={prefs.specialists?.enabled === true}
-      put={putSpecialistsEnabled}
-      after={(next) => publishSpecialistsEnabled(next.specialists?.enabled === true)}
+      id="experts"
+      checked={prefs.experts?.enabled === true}
+      put={putExpertsEnabled}
+      after={(next) => publishExpertsEnabled(next.experts?.enabled === true)}
       onChange={onChange}
     />
   );
@@ -292,115 +281,16 @@ export function CanvasesEmbedProxyControl({ prefs, onChange }: PrefControlProps)
   );
 }
 
-// Published (rail-peek-flag.ts), so a page with a rail in THIS tab follows the
-// switch at once. Another tab's shell holds its first answer until it reloads
-// — the same deal every published flag here offers.
-export function CanvasRailPeekControl({ prefs, onChange }: PrefControlProps) {
-  const on = prefs.canvas_rail_peek?.enabled === true;
+// RAIL EXTRAS (owner, 2026-11-23): one switch for the rail's mode doors, the
+// expandable rail and free pins.
+export function RailExtrasControl({ prefs, onChange }: PrefControlProps) {
+  const on = prefs.rail_extras?.enabled === true;
   return (
     <PrefToggleRow
-      id="canvases-rail-peek"
+      id="rail-extras"
       checked={on}
-      put={putCanvasRailPeekEnabled}
-      // …and to the favourites flag, which is on only under this one.
-      after={(next) => {
-        publishCanvasRailPeek(next.canvas_rail_peek);
-        publishFavouritesParent(next.canvas_rail_peek);
-      }}
-      onChange={onChange}
-    />
-  );
-}
-
-// Published (favourites-flag.ts), like the rail preview above. A CHILD of that
-// preview: the star lives on its card, so with the preview off every reader
-// treats favourites as off whatever this says — the row reads inert then
-// (greyed, switch disabled, the call-log children's idiom in advanced.tsx),
-// still shown so the stored answer stays visible.
-export function TaskFavouritesControl({ prefs, onChange }: PrefControlProps) {
-  const on = prefs.task_favourites?.enabled === true;
-  return (
-    <PrefToggleRow
-      id="tasks-favourites"
-      checked={on}
-      put={putTaskFavouritesEnabled}
-      after={(next) => publishTaskFavourites(next.task_favourites)}
-      onChange={onChange}
-    />
-  );
-}
-
-export function TaskHeadUnifiedControl({ prefs, onChange }: PrefControlProps) {
-  const on = prefs.task_head_unified?.enabled === true;
-  return (
-    <PrefToggleRow
-      id="tasks-unified-head"
-      checked={on}
-      put={putTaskHeadUnifiedEnabled}
-      after={(next) => publishTaskHeadUnified(next.task_head_unified)}
-      onChange={onChange}
-    />
-  );
-}
-
-// FREE PINS ON THE RAIL (owner, 2026-11-18): a child of the unified header —
-// the pin icon is drawn only with it on, so with it off the row reads inert
-// (the favourites row's idiom above), the stored answer still shown.
-export function RailFreePinsControl({ prefs, onChange }: PrefControlProps) {
-  const on = prefs.rail_free_pins?.enabled === true;
-  return (
-    <PrefToggleRow
-      id="rail-free-pins"
-      checked={on}
-      put={putRailFreePinsEnabled}
-      after={(next) => publishRailFreePins(next.rail_free_pins)}
-      onChange={onChange}
-    />
-  );
-}
-
-// A FILE'S OTHER MODES AS DOORS ON THE RAIL (owner, 2026-11-20): a child of
-// the rail preview — the doors are the rail's nav doors'.
-export function RailModeDoorsControl({ prefs, onChange }: PrefControlProps) {
-  const on = prefs.rail_mode_doors?.enabled === true;
-  return (
-    <PrefToggleRow
-      id="rail-mode-doors"
-      checked={on}
-      put={putRailModeDoorsEnabled}
-      after={(next) => publishRailModeDoors(next.rail_mode_doors)}
-      onChange={onChange}
-    />
-  );
-}
-
-// TASK ICONS (owner, 2026-11-10, experiment): a FAVOURITE wears one of 299
-// glyphs in place of its status ring (2026-11-11: only a starred task); the
-// icon pressed while a title is being edited opens a picker. Off, the ring
-// is drawn as before.
-export function TaskIconsControl({ prefs, onChange }: PrefControlProps) {
-  const on = prefs.task_icons?.enabled === true;
-  return (
-    <PrefToggleRow
-      id="tasks-icons"
-      checked={on}
-      put={putTaskIconsEnabled}
-      after={(next) => publishTaskIcons(next.task_icons)}
-      onChange={onChange}
-    />
-  );
-}
-
-// EXPERTS (docs/experts.md §17): no publish — the server leaves experts out
-// of every bot listing while this is off, so the Bots page and the sidebar
-// follow on their next poll. Off hides them; nothing is deleted.
-export function ExpertsControl({ prefs, onChange }: PrefControlProps) {
-  const on = prefs.experts?.enabled === true;
-  return (
-    <PrefToggleRow
-      id="experts"
-      checked={on}
-      put={putExpertsEnabled}
+      put={putRailExtrasEnabled}
+      after={(next) => publishRailExtras(next.rail_extras)}
       onChange={onChange}
     />
   );

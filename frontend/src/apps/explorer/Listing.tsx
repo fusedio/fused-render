@@ -122,7 +122,6 @@ import {
 import { SideToggleButton, startSideReopenPull } from "@apps/explorer/SideChrome";
 import { modeTitle } from "@platform/lib/mode-name";
 import { ClaudeRail, RAIL_W, paneHomeHref } from "@shell/claude-rail/ClaudeRail";
-import { useTaskFavourites } from "@platform/lib/favourites-flag";
 import { useAppActionRows } from "@apps/explorer/EntryActionsMenu";
 import { canonFsPath, isRemoteLocation } from "@platform/lib/path-url";
 import { McpDialog } from "@apps/explorer/McpDialog";
@@ -1097,10 +1096,6 @@ export default function Listing({
   // rings would be a lie). A folder with no Claude companion keeps the search
   // row's Show button.
   const railHere = paneSides.includes("claude");
-  // THE RAIL BESIDE THE OPEN PANE (ClaudeRail `paneOpen`; owner,
-  // 2026-11-05): with favourites on it stands whether the pane is open (on
-  // any companion) or shut; off, only while it is shut, as before.
-  const railAlways = useTaskFavourites();
   const openClaudeSide = () => setSide({ open: true, mode: "claude" });
   // The rail's Git section opens the git companion where this folder has one.
   const railGitDoor = paneSides.includes("git") ? () => setSide({ open: true, mode: "git" }, "git") : undefined;
@@ -2368,7 +2363,7 @@ export default function Listing({
             </div>
           </>
         )}
-        {pane.on && (!sideState.open || railAlways) && railHere && (
+        {pane.on && railHere && (
           // THE PANE SHUT, Claude a ready companion (`railHere`): the Claude
           // rail takes the split's edge
           // (shell/claude-rail — the canvas page's rail, the same on every

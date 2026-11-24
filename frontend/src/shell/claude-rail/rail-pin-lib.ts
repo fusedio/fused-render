@@ -1,6 +1,5 @@
 // RAIL CARDS: HOVER / TEMP PIN / PIN (owner, 2026-11-16; design.md "Rail
-// cards"). Behind the unified-head switch (`task_head_unified_enabled`,
-// shell/task-head-flag): off, every card keeps the rules it had.
+// cards").
 //
 // Every card off the rail — window A (a task ring, a draft ring, the +, Tasks,
 // Bots, Git) and window B (a favourite's ring, a bot's ring) — is in one of
@@ -170,6 +169,17 @@ export function inRailView(el: PressTarget | null): boolean {
   if (!el) return false;
   for (const s of RAIL_VIEW_SELECTORS) if (el.closest(s)) return true;
   return false;
+}
+
+/** A FULL MODAL (not the + popover): a chat's file preview and the like,
+ *  portaled to the body over the whole view. A frame inside one is that
+ *  modal's content — focus moving into it is not a press into the page's
+ *  workbench frame, so it closes no temp card. */
+export const FULL_MODAL_SELECTOR = ".modal-overlay:not(.modal-popover)";
+
+/** Is this element inside a full modal (`FULL_MODAL_SELECTOR`)? */
+export function inFullModal(el: Partial<PressTarget> | null): boolean {
+  return typeof el?.closest === "function" && !!el.closest(FULL_MODAL_SELECTOR);
 }
 
 /** A PRESS THAT STARTED IN ANY RAIL WINDOW'S REACT TREE — its portaled menus

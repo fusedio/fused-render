@@ -15,7 +15,7 @@ VECTOR_PY = projectenv.interpreter_for(VECTOR_DIR)
 def _venv_ready() -> bool:
     if not os.path.exists(VECTOR_PY):
         return False
-    r = subprocess.run([VECTOR_PY, "-c", "import geopandas, pyogrio, pyarrow"],
+    r = subprocess.run([VECTOR_PY, "-c", "import geopandas, pyogrio, pyarrow, truststore"],
                        capture_output=True, timeout=120, check=False)
     return r.returncode == 0
 
@@ -24,24 +24,92 @@ pytestmark = pytest.mark.skipif(not _venv_ready(),
                                 reason="the vector template venv is not built here")
 
 _WRITE = r"""
-import sys, geopandas as gpd, pyogrio, shapely
+import json, sys, geopandas as gpd, pyarrow.parquet as pq, pyogrio, shapely
 d = sys.argv[1]
 geoms = [shapely.Point(10 + i % 60 * 0.01, 50 + i // 60 * 0.01).buffer(0.004) for i in range(3000)]
 gdf = gpd.GeoDataFrame({"id": range(3000), "name": [f"n{i % 13}" for i in range(3000)]},
                        geometry=geoms, crs=4326)
 gdf.to_crs(32632).to_file(f"{d}/t.shp")
 gdf.to_parquet(f"{d}/t.parquet", row_group_size=250)
+t = pq.read_table(f"{d}/t.parquet")
+with pq.ParquetWriter(f"{d}/footer.parquet", t.schema.remove_metadata()) as w:
+    w.write_table(t, row_group_size=250)
+    w.add_key_value_metadata({"geo": t.schema.metadata[b"geo"]})
 gdf.drop(columns="geometry").assign(h3_index=1).to_parquet(f"{d}/h3.parquet")
 pyogrio.write_dataframe(gdf.drop(columns="geometry").head(5), f"{d}/m.gpkg", layer="meta")
 gdf.head(1000).to_file(f"{d}/m.gpkg", layer="roads", mode="a")
+gdf.head(1000).to_crs(32632).to_file(f"{d}/two.gpkg", layer="roads")
+gpd.GeoDataFrame({"id": range(500)}, geometry=gpd.points_from_xy(range(0, 500000, 1000), range(500)),
+                 crs=3857).to_file(f"{d}/two.gpkg", layer="pts", mode="a")
 gdf.head(600).to_file(f"{d}/six.geojson")
+gpd.GeoDataFrame({"k": range(6)}, crs=4326, geometry=[
+    shapely.Point(1, 1), shapely.box(0, 0, 1, 1), shapely.MultiPolygon([shapely.box(2, 2, 3, 3)]),
+    shapely.GeometryCollection([shapely.Point(4, 4), shapely.LineString([(4, 4), (5, 5)])]), None,
+    shapely.MultiLineString([[(0, 0), (1, 0)], [(0, 1), (1, 1)]])]).to_file(f"{d}/mixed.geojson")
+gdf.to_parquet(f"{d}/arrow.parquet", row_group_size=250, geometry_encoding="geoarrow")
+geo = json.loads(t.schema.metadata[b"geo"])
+geo["columns"]["geometry"].update(geometry_types=["WKB"], bbox=[-77.1, 38.8, -76.9, 39.0])
+pq.write_table(t.replace_schema_metadata({**t.schema.metadata, b"geo": json.dumps(geo)}), f"{d}/lying.parquet")
+tag = gpd.GeoDataFrame({"_layer": ["x", "y"]}, geometry=gpd.points_from_xy([0, 1], [0, 1]), crs=4326)
+tag.to_file(f"{d}/tag.geojson")
+tag.to_file(f"{d}/tag.gpkg", layer="a")
+tag.to_file(f"{d}/tag.gpkg", layer="b", mode="a")
 """
 
-_READ = r"""
+_MAIN = r"""
 import json, sys
 sys.path.insert(0, sys.argv[1])
 import vector_reader
-print(json.dumps([vector_reader.main(f, max_features=600) for f in sys.argv[2:]]))
+print(json.dumps([vector_reader.main(**call) for call in json.loads(sys.argv[2])]))
+"""
+
+_STREAM = r"""
+import base64, json, sys
+import geopandas as gpd, numpy as np, pyogrio, shapely
+sys.path.insert(0, sys.argv[1])
+import vector_reader
+vector_reader.CHUNK_COORDS = int(sys.argv[2])
+decoded, reads = [], []
+from_wkb, open_arrow, read_dataframe = shapely.from_wkb, pyogrio.open_arrow, pyogrio.read_dataframe
+shapely.from_wkb = lambda g, *a, **k: decoded.append(len(g)) or from_wkb(g, *a, **k)
+pyogrio.open_arrow = lambda *a, **k: reads.append(k.get("layer")) or open_arrow(*a, **k)
+pyogrio.read_dataframe = lambda *a, **k: reads.append(k.get("layer")) or read_dataframe(*a, **k)
+
+
+def decode(part):
+    ids = np.frombuffer(base64.b64decode(part["ids"]), "<u4")
+    if part["kind"] == "geojson":
+        return ids, shapely.from_geojson(part["geoms"])
+    coords = np.frombuffer(base64.b64decode(part["coords"]), "<f8").reshape(-1, 2)
+    offsets = tuple(np.frombuffer(base64.b64decode(o), "<i4").astype("int64") for o in part["offsets"])
+    return ids, shapely.from_ragged_array(shapely.GeometryType[part["kind"].upper()], coords, offsets)
+
+
+def truth(path):
+    frames = ([gpd.read_parquet(path)] if path.endswith(".parquet") else
+              [gpd.read_file(path, layer=n) for n, kind in pyogrio.list_layers(path) if kind])
+    return np.concatenate([f.geometry.to_crs(4326).to_numpy() for f in frames])
+
+
+def drawn(chunks, local):
+    ids, geoms = map(np.concatenate, zip(*[decode(p) for c in chunks for p in c["parts"]]))
+    return sorted(ids.tolist()), bool(shapely.equals(geoms, truth(local)[ids]).all())
+
+
+out = []
+for path, local in zip(sys.argv[3::2], sys.argv[4::2]):
+    del decoded[:], reads[:]
+    meta = vector_reader.main(path, chunk=700)
+    chunks = [meta["first"]]
+    while chunks[-1]["next"] is not None:
+        chunks.append(vector_reader.main(path, op="chunk", start=chunks[-1]["next"], chunk=700))
+    work, last = {"decoded": sum(decoded), "reads": len(reads)}, meta["count"] - 3
+    ids, same = drawn(chunks, local)
+    tail, tail_same = drawn([vector_reader.main(path, op="chunk", start=last)], local)
+    out.append({"count": meta["count"], "chunks": len(chunks), "drawn": ids, "same": same, **work,
+                "tail": tail_same and tail == [i for i in ids if i >= last],
+                "kinds": sorted({p["kind"] for c in chunks for p in c["parts"]})})
+print(json.dumps(out))
 """
 
 
@@ -57,10 +125,18 @@ def _serve(bucket, files, *names):  # noqa: F811
         bucket.objects[f"/v/{name}"] = (files / name).read_bytes()
 
 
-def _read(*paths):
-    out = subprocess.run([VECTOR_PY, "-I", "-c", _READ, VECTOR_DIR, *map(str, paths)],
+def _run(script, *args):
+    out = subprocess.run([VECTOR_PY, "-I", "-c", script, VECTOR_DIR, *map(str, args)],
                          check=True, timeout=300, capture_output=True, text=True).stdout
     return json.loads(out)
+
+
+def _main(*calls):
+    return _run(_MAIN, json.dumps(calls, default=str))
+
+
+def _read(*paths):
+    return _main(*({"file": p, "chunk": 600} for p in paths))
 
 
 def test_a_streamed_shapefile_reads_its_sidecars_like_the_local_one(files, bucket):  # noqa: F811
@@ -70,21 +146,29 @@ def test_a_streamed_shapefile_reads_its_sidecars_like_the_local_one(files, bucke
     local, remote = _read(files / "t.shp", bucket.url("v/t.shp"))
     assert "error" not in local and remote == local
     assert local["crs"]["epsg"] == 32632 and [s["name"] for s in local["schema"]] == ["id", "name"]
-    assert local["count"] == 3000 and local["shown"] == 600
+    assert (local["count"], local["first"]["next"]) == (3000, 600)
     assert local["file_size"] == sum((files / n).stat().st_size for n in sidecars)
 
 
-def test_geoparquet_streams_only_the_row_groups_it_shows(files, bucket):  # noqa: F811
+def test_a_geoparquet_chunk_streams_only_the_row_groups_it_draws(files, bucket):  # noqa: F811
     _serve(bucket, files, "t.parquet", "h3.parquet")
     local, remote, h3 = _read(files / "t.parquet", bucket.url("v/t.parquet"),
                               bucket.url("v/h3.parquet"))
     assert "error" not in local and remote == local
-    assert (local["count"], local["shown"], local["crs"]["epsg"]) == (3000, 600, 4326)
+    assert (local["count"], local["first"]["next"], local["crs"]["epsg"]) == (3000, 600, 4326)
     size = len(bucket.objects["/v/t.parquet"])
     ranges = [rng for path, rng, _ in bucket.log if path == "/v/t.parquet"]
     assert ranges and all(r and r.startswith("bytes=") for r in ranges)
     assert bucket.sent["/v/t.parquet"] < size / 2
     assert "H3 mode" in h3["error"]
+
+
+def test_geoparquet_with_geo_only_in_the_footer_streams_like_one_with_it_in_the_schema(files, bucket):  # noqa: F811
+    _serve(bucket, files, "footer.parquet")
+    local, remote = _read(files / "footer.parquet", bucket.url("v/footer.parquet"))
+    assert "error" not in local and remote == local
+    assert (local["count"], local["first"]["next"], local["crs"]["epsg"]) == (3000, 600, 4326)
+    assert bucket.sent["/v/footer.parquet"] < len(bucket.objects["/v/footer.parquet"]) / 2
 
 
 def test_a_vrt_is_refused_and_odd_parquet_columns_still_render(tmp_path):
@@ -104,7 +188,8 @@ def test_a_vrt_is_refused_and_odd_parquet_columns_still_render(tmp_path):
     pq.write_table(pa.table({"width3": [1]}), tmp_path / "plain.parquet")
     evil, odd, plain = _read(tmp_path / "evil.geojson", tmp_path / "odd.parquet", tmp_path / "plain.parquet")
     assert "SECRET" not in json.dumps(evil) and "not recognized" in evil["error"]
-    assert odd["count"] == 1 and odd["table"][0]["tags"] == "[1 2]" and odd["table"][0]["geometry"] == "attr"
+    assert odd["table"] == [{"tags": "[1, 2]", "at": "1970-01-01 00:00:00+00:00", "geometry": "attr"}]
+    assert (odd["count"], len(odd["first"]["parts"])) == (1, 1)
     assert "H3" not in plain["error"]
 
 
@@ -116,8 +201,65 @@ def test_https_streams_on_an_interpreter_without_ca_files(monkeypatch):
     assert "error" not in out and out["count"] == 1
 
 
-def test_counts_skip_nonspatial_tables_and_an_exact_cap_is_not_truncated(files):
+def test_counts_skip_nonspatial_tables_and_a_chunk_that_reaches_the_end_ends_the_stream(files):
     gpkg, six = _read(files / "m.gpkg", files / "six.geojson")
-    assert gpkg["layers"] == ["roads"]
-    assert (gpkg["count"], gpkg["shown"], gpkg["truncated"]) == (1000, 600, True) and "_layer" not in gpkg["table"][0]
-    assert (six["count"], six["shown"], six["truncated"]) == (600, 600, False)
+    assert gpkg["layers"] == ["roads"] and "_layer" not in gpkg["table"][0]
+    assert (gpkg["count"], gpkg["first"]["next"], six["count"], six["first"]["next"]) == (1000, 600, 600, None)
+
+
+def test_geoarrow_encoded_geoparquet_maps_like_wkb_and_still_streams(files, bucket):  # noqa: F811
+    _serve(bucket, files, "arrow.parquet")
+    wkb, local, remote = _read(files / "t.parquet", files / "arrow.parquet", bucket.url("v/arrow.parquet"))
+    assert "error" not in local and remote == local
+    assert {**local, "file_size": 0} == {**wkb, "file_size": 0}
+    assert bucket.sent["/v/arrow.parquet"] < len(bucket.objects["/v/arrow.parquet"]) / 2
+
+
+def test_every_feature_streams_once_in_lon_lat_across_chunks_layers_and_crs(files, bucket):  # noqa: F811
+    _serve(bucket, files, "t.parquet")
+    args = [f for n in ("t.parquet", "t.shp", "two.gpkg", "mixed.geojson") for f in (files / n,) * 2]
+    parquet, shp, two, mixed, remote = _run(_STREAM, 20_000, *args, bucket.url("v/t.parquet"), files / "t.parquet")
+    for out in (parquet, shp, two):
+        assert out["same"] and out["drawn"] == list(range(out["count"])) and out["chunks"] > out["count"] / 700
+    for out in (parquet, shp, two, mixed):
+        assert out["decoded"] == out["count"] and out["tail"]
+    assert (shp["reads"], two["reads"], mixed["reads"]) == (1, 2, 1)
+    assert (parquet["count"], two["count"]) == (3000, 1500) and remote == parquet
+    assert two["kinds"] == ["Point", "Polygon"]
+    assert mixed["same"] and mixed["drawn"] == [0, 1, 2, 3, 5]
+    assert mixed["kinds"] == ["MultiLineString", "MultiPolygon", "Point", "geojson"]
+
+
+def test_a_feature_over_the_coordinate_budget_is_still_sent_alone(files):
+    (one,) = _run(_STREAM, 1, files / "six.geojson", files / "six.geojson")
+    assert one["same"] and one["chunks"] == len(one["drawn"]) == 600
+    assert (one["decoded"], one["reads"]) == (600, 1)
+
+
+def test_attributes_are_read_by_the_id_the_map_drew(files):
+    t, two = files / "t.parquet", files / "two.gpkg"
+    assert _main({"file": t, "op": "row", "start": 1234}, {"file": t, "op": "column", "column": "name"},
+                 {"file": t, "op": "column", "column": "missing"}, {"file": two, "op": "row", "start": 1003},
+                 {"file": two, "op": "column", "column": "_layer"}, {"file": two, "op": "column", "column": "id"}) == [
+        {"props": {"id": 1234, "name": "n12"}}, {"values": [f"n{i % 13}" for i in range(3000)]},
+        {"values": [None] * 3000}, {"props": {"_layer": "pts", "id": 3}},
+        {"values": ["roads"] * 1000 + ["pts"] * 500}, {"values": [*range(1000), *range(500)]}]
+
+
+def test_a_real_layer_field_keeps_its_values_next_to_the_layer_name(files):
+    one, two = files / "tag.geojson", files / "tag.gpkg"
+    meta1, col1, row1, meta2, row2, names, col2 = _main(
+        {"file": one}, {"file": one, "op": "column", "column": "_layer"}, {"file": one, "op": "row", "start": 1},
+        {"file": two}, {"file": two, "op": "row", "start": 3}, {"file": two, "op": "column", "column": "__layer"},
+        {"file": two, "op": "column", "column": "_layer"})
+    assert [s["name"] for s in meta1["schema"]] == ["_layer"] and (col1, row1) == (
+        {"values": ["x", "y"]}, {"props": {"_layer": "y"}})
+    assert [s["name"] for s in meta2["schema"]] == ["__layer", "_layer"]
+    assert (row2, names, col2) == ({"props": {"__layer": "b", "_layer": "y"}}, {"values": ["a", "a", "b", "b"]},
+                                   {"values": ["x", "y", "x", "y"]})
+
+
+def test_a_wrong_footer_bbox_or_geometry_type_does_not_steer_the_view(files):
+    (meta,) = _read(files / "lying.parquet")
+    assert meta["geometry_types"] == ["Polygon"] and "bounds4326" not in meta
+    assert meta["first"]["bounds"] == pytest.approx([9.996, 49.996, 10.594, 50.094], abs=1e-6)

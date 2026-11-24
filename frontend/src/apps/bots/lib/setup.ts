@@ -1,11 +1,30 @@
 // The empty hero's setup lines (components/SetupLines.tsx), from GET /api/bots/setup.
-import type { SetupReply } from "./api";
+import type { BotEvent, ChromeInstallPlan, SetupReply } from "./api";
+
+/** The start of bots/browser.find_chrome's error (tests/test_bots_chrome_candidates.py holds the same words). */
+export const NO_BROWSER = "No Chrome, Chromium, Edge or Brave browser found";
+
+/** The thread ends on "no browser found": the task could not start, and the Install button belongs right there. */
+export function endsOnNoBrowser(evs: Pick<BotEvent, "role" | "text">[]): boolean {
+  const last = evs[evs.length - 1];
+  return !!last && last.role === "error" && (last.text || "").includes(NO_BROWSER);
+}
+
+/** The plan when the Install button can do the job (Chrome missing, inside WSL with apt), else null. */
+export function chromeInstallPlan(s: SetupReply | null): ChromeInstallPlan | null {
+  const c = s?.chrome;
+  return c && c.found === false && c.install?.available ? c.install : null;
+}
 
 /** One sentence per missing piece; none while unknown (null reply, or `found: null` = could not tell). */
 export function setupIssues(s: SetupReply | null): string[] {
   if (!s) return [];
   const out: string[] = [];
-  if (s.chrome?.found === false) out.push("Chrome not found: bots drive Google Chrome, so install it first.");
+  if (s.chrome?.found === false) {
+    out.push(s.chrome.wsl
+      ? "Chrome not found inside WSL: bots launch their own browser on the Linux side, so install Google Chrome there (the one on Windows does not count)."
+      : "Chrome not found: bots drive Google Chrome, so install it first.");
+  }
   if (s.claude?.found === false) out.push("Claude Code not set up: bots think with it.");
   else if (s.claude?.found && s.claude.signed_in === false) out.push("Claude Code not set up: sign in to it first.");
   const o = ownerLine(s);

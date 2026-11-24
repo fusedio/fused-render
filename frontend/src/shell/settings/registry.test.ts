@@ -5,7 +5,6 @@ import {
   NAV_SECTIONS,
   SETTINGS,
   navSections,
-  parentOff,
   searchableSettings,
   resolveGroup,
   sectionsOf,
@@ -91,24 +90,28 @@ describe("the registry", () => {
 describe("visibility", () => {
   test("child rows are hidden until their parent is on", () => {
     const ids = (prefs: Partial<Prefs>) => visibleSettings(ctx({}, prefs)).map((e) => e.id as string);
-    const children = ["tasks-favourites", "tasks-icons", "rail-mode-doors", "rail-free-pins", "call-params", "call-retention"];
+    const children = ["call-params", "call-retention"];
     for (const c of children) expect(ids({})).not.toContain(c);
-    const on = ids({
-      canvas_rail_peek: { enabled: true },
-      task_favourites: { enabled: true },
-      task_head_unified: { enabled: true },
-      calls: { effective_enabled: true },
-    } as unknown as Partial<Prefs>);
+    const on = ids({ calls: { effective_enabled: true } } as unknown as Partial<Prefs>);
     for (const c of children) expect(on).toContain(c);
-    // …but search still finds them, and says which switch they wait on.
+    // …but search still finds them.
     const pool = searchableSettings(ctx());
-    expect(searchSettings(pool, "favourite chats").map((e) => e.id)).toContain("tasks-favourites");
     expect(searchSettings(pool, "retention").map((e) => e.id)).toEqual(["call-retention"]);
-    const fav = pool.find((e) => e.id === "tasks-favourites")!;
-    expect(parentOff(fav, ctx().prefs)).toBe("Preview chats from the collapsed Claude rail");
-    expect(parentOff(fav, ctx({}, { canvas_rail_peek: { enabled: true } } as unknown as Partial<Prefs>).prefs)).toBeNull();
-    // Task icons need favourites too, not just the rail preview.
-    expect(ids({ canvas_rail_peek: { enabled: true } } as unknown as Partial<Prefs>)).not.toContain("tasks-icons");
+  });
+
+  test("the rail's own switches are top-level rows: the rail, favourites and the shared header are always on", () => {
+    const ids = visibleSettings(ctx({}, { canvases: { enabled: false } } as Partial<Prefs>)).map((s) => s.id as string);
+    for (const gone of ["canvases-rail-peek", "tasks-favourites", "tasks-unified-head"]) expect(ids).not.toContain(gone);
+  });
+
+  test("Rail extras is one top-level switch in place of three, and task icons are always on", () => {
+    const all = SETTINGS.map((s) => s.id as string);
+    for (const gone of ["tasks-icons", "rail-mode-doors", "rail-expand", "rail-free-pins"]) expect(all).not.toContain(gone);
+    const row = SETTINGS.find((s) => s.id === "rail-extras")!;
+    expect(row.label).toBe("Rail extras");
+    expect("child" in row).toBe(false);
+    expect("parent" in row).toBe(false);
+    expect(visibleSettings(ctx()).map((s) => s.id as string)).toContain("rail-extras");
   });
 
   test("the nav has no Claude Code section; it is the Claude Code page", () => {
@@ -140,13 +143,6 @@ describe("visibility", () => {
     expect(visibleSettings(ctx()).map((s) => s.id)).not.toContain("canvases-embed-proxy");
     expect(ids(false)).not.toContain("canvases-embed-proxy");
     expect(ids(true)).toContain("canvases-embed-proxy");
-  });
-
-  test("the rail preview switch stands on its own: Canvases off, no Fused sign-in, still there", () => {
-    // The rail stands on the app page and in the explorer too (2026-11-01).
-    const ids = visibleSettings(ctx({}, { canvases: { enabled: false } } as Partial<Prefs>)).map((s) => s.id);
-    expect(ids).toContain("canvases-rail-peek");
-    expect(ids).toContain("tasks-unified-head");
   });
 
   test("the default-agent picker appears only with two or more agents on", () => {
@@ -188,13 +184,13 @@ describe("visibility", () => {
     expect(visibleSettings(on).map((s) => s.id)).toContain("chromium-windows");
   });
 
-  test("Experimental flags: the chat and rail flags, then everything else", () => {
+  test("Experimental flags: one card, Rail extras first", () => {
     const on = ctx({}, { chromium_windows: { available: true, enabled: false } } as unknown as Partial<Prefs>);
     const secs = sectionsOf(visibleSettings(on), "features");
-    expect(secs.map((s) => s.section)).toEqual(["Chats & rail", "Other"]);
-    expect(secs[1].entries.map((e) => e.id)).toEqual(["canvases", "experts", "specialists", "chromium-windows"]);
+    expect(secs.map((s) => s.section)).toEqual(["Other"]);
+    expect(secs[0].entries.map((e) => e.id)).toEqual(["rail-extras", "canvases", "experts", "chromium-windows"]);
     // Without the capability the Chromium row is simply missing.
-    expect(sectionsOf(visibleSettings(ctx()), "features").map((s) => s.section)).toEqual(["Chats & rail", "Other"]);
+    expect(sectionsOf(visibleSettings(ctx()), "features").map((s) => s.section)).toEqual(["Other"]);
   });
 });
 

@@ -24,8 +24,6 @@
 // accordion, the thread rows, the id chips, the unread dot) is in
 // styles/tasks.css.
 import { BulkBar, GroupCheck, RowCheck, useBulkArchive, type BulkSelect } from "@shell/TaskBulk";
-import { useTaskFavourites } from "@platform/lib/favourites-flag";
-import { useTaskIcons } from "@platform/lib/task-icons-flag";
 import { taskFaceShown, taskIconHref } from "./task-icons";
 import { useArchiveConfirm } from "@shell/archive-confirm";
 import { selectableTask } from "@shell/task-selection";
@@ -50,11 +48,13 @@ import {
   markTaskMessageRead,
   markWholeTaskRead,
   resendScheduledMessage,
+  retryAfterLimit,
   runScheduledNow,
   scheduleMessage,
   archiveTask,
   unarchiveTask,
 } from "@platform/lib/api";
+import { isUsageLimited, LIMIT_RETRY_HINT, LIMIT_RETRY_LABEL } from "@platform/lib/usage-limit";
 import { notify } from "@platform/lib/notifications";
 import { useNow } from "@platform/lib/clock";
 import { EraseTaskModal } from "./EraseTaskModal";
@@ -199,7 +199,6 @@ import { runAgent } from "@apps/claude/protocol/agent";
 // module it takes the views from.
 import { useRowFit } from "./row-fit";
 import { TaskIconPick } from "./TaskIconPick";
-import { useTaskHeadUnified } from "./task-head-flag";
 import {
   PEEK_OPEN_CLASS,
   peekItemProps,
@@ -776,7 +775,6 @@ export function StatusIcon({
   draftHeld,
   background,
   icon,
-  iconPicked,
   quiet,
 }: {
   status: BoardColumn;
@@ -785,16 +783,13 @@ export function StatusIcon({
    *  seat), and the browser's `title` would say the same word again a second
    *  later. The accessible name stays. */
   quiet?: boolean;
-  /** THE TASK'S FACE (`task_icons_enabled`, 2026-11-10): the task's
+  /** THE TASK'S FACE (task icons, 2026-11-10): the task's
    *  `icon_slot` — null on a task that wears the ring (never given one and
    *  not starred, or its icon removed; 2026-11-16). With the experiment on, the ring becomes that glyph —
    *  same box, same hue, every mark (unread dot, draft dot, "!") in its
    *  top-right corner (schedule.css `.schedule-ring--glyph`). Omitted on a container (a lane header, the
    *  queue chip) and the ring is drawn as always. */
   icon?: number | null;
-  /** The task's `icon_picked`: the face was given BY HAND, so it is drawn
-   *  with the favourites switch off too (task-icons `taskFaceShown`). */
-  iconPicked?: boolean;
   failed?: boolean;
   label?: string;
   /** Fill the centre — there is something in here nobody has looked at. */
@@ -833,15 +828,9 @@ export function StatusIcon({
   // the one a person can still do something about.
   const marks = [draftHeld ? "unsent draft" : null, said]
     .filter(Boolean).join(", ");
-  // The glyph, when the experiment is on and the listing sent this task a
-  // face (picked by hand, or starred and not removed — 2026-11-16). One that
-  // came with the STAR needs the favourites switch too: switched off there
-  // is no star to press, so no mark of one either. One PICKED by hand is the
-  // user's own and stays. Read live here, not server-side, where a cached
-  // listing would outlast the flip.
-  const iconsOn = useTaskIcons();
-  const favsOn = useTaskFavourites();
-  const glyph = taskFaceShown(icon, iconPicked, iconsOn, favsOn) ? taskIconHref(icon) : null;
+  // The glyph, when the listing sent this task a face (picked by hand, or
+  // starred and not removed — 2026-11-16).
+  const glyph = taskFaceShown(icon) ? taskIconHref(icon) : null;
   return (
     <span
       className={
@@ -2027,6 +2016,22 @@ interface RunOutcome {
  *  the right thing to show. */
 async function performForceStart(task: Task): Promise<void> {
   await forceStart({ key: task.key });
+}
+
+/** RETRY NOW on a row the plan's usage limit paused — the continue prompt goes
+ *  now instead of at the reset (`POST /api/tasks/limit/retry`; the booked
+ *  comeback stays until a reply retires it). Returns the server's note when
+ *  the continue could not go this second, "" when it went. Refusals THROW,
+ *  like performForceStart, so each caller puts them in its own note line. */
+async function performLimitRetry(task: Task): Promise<string> {
+  const res = await retryAfterLimit(task.key);
+  return res.note || "";
+}
+
+/** Whether a row offers Retry now: paused on the usage limit, with a
+ *  conversation to continue (a `pending:` row has none). */
+function canRetryLimit(task: Task): boolean {
+  return isUsageLimited(task) && !!task.session_id;
 }
 
 /**
@@ -3438,19 +3443,16 @@ function FoldedNode({
 
 /** THE A/B ROW'S RING (TaskNode, `ab`): the icon picker's button
  *  (TaskIconPick) — on ANY numbered task, ring or face, icons experiment on
- *  (2026-11-16: the icon is not the star's); on the legacy row, the bare
- *  ring. The Board card, the Cards wall and the Detailed view seat their
+ *  (2026-11-16: the icon is not the star's). The Board card, the Cards wall and the Detailed view seat their
  *  rings here too (owner, 2026-11-16: "click to change icon in status ring"
  *  on every view); `nested` for the Board card, which is itself a
  *  `<button>` (TaskStar's `nested`, for the same reason). */
-export function RingSeat({ pick, task, onDone, nested = false, children }: {
-  pick: boolean;
+export function RingSeat({ task, onDone, nested = false, children }: {
   task: Task;
   onDone?: () => void;
   nested?: boolean;
   children: React.ReactNode;
 }) {
-  if (!pick) return <>{children}</>;
   return (
     <TaskIconPick task={task} nested={nested} {...(onDone ? { onDone } : {})}>
       {children}
@@ -3846,12 +3848,9 @@ function TaskNode({
    *  while the flag is down, while `messageState` derives its own from "pending
    *  and past due", which is true in either build (🔴 review 2026-09-12). */
   const queueOn = useProjectQueueEnabled();
-  /** THE A/B ROW (Akshil, 2026-11-15) rides the unified task head's switch
-   *  (`task_head_unified_enabled`, task-head-flag.ts): folder before the id,
-   *  Archive over the id, the star over the count, the page door over the
-   *  time. Off, this row is the one it was before — every seat below that
-   *  differs asks this, and `tasks-row--ab` scopes the stylesheet's half. */
-  const ab = useTaskHeadUnified();
+  /* THE A/B ROW (Akshil, 2026-11-15): folder before the id, Archive over the
+     id, the star over the count, the page door over the time.
+     `tasks-row--ab` scopes the stylesheet's half. */
   // The `Draft` chip — this task's unsent composer text, or the row's own
   // unfinished form. tasks-lib.draftTag owns both cases and the tooltip.
   // Hidden while the side peek holds this row's draft (tasks-lib.draftHeldByPeek).
@@ -3954,9 +3953,7 @@ function TaskNode({
       );
       // The a/b row's strip has no door (it is over the time): its first
       // button, if any, is where the fade begins. No button, no fade.
-      const door = row.querySelector<HTMLElement>(
-        ab ? ".tasks-acts .tasks-act" : ".tasks-acts .tasks-act--page",
-      );
+      const door = row.querySelector<HTMLElement>(".tasks-acts .tasks-act");
       let under = false;
       if (marks.length && door) {
         const fadeLeft = door.getBoundingClientRect().left - STRIP_FADE_PX;
@@ -3966,7 +3963,7 @@ function TaskNode({
       }
       setMarksUnderStrip((cur) => (cur === under ? cur : under));
     });
-  }, [ab]);
+  }, []);
 
   const runNow = async (intent: TaskRunIntent) => {
     setActing(true);
@@ -4019,6 +4016,23 @@ function TaskNode({
       setNote((e as Error).message);
     } finally {
       setActing(false);
+      onReload?.();
+    }
+  };
+  // Retry now on a usage-limited row: same shape as `force`, the note line
+  // carries whatever the server said when the continue did not simply go.
+  const [retrying, setRetrying] = useState(false);
+  const retryLimit = async () => {
+    setActing(true);
+    setRetrying(true);
+    setNote("");
+    try {
+      setNote(await performLimitRetry(task));
+    } catch (e) {
+      setNote((e as Error).message);
+    } finally {
+      setActing(false);
+      setRetrying(false);
       onReload?.();
     }
   };
@@ -4427,8 +4441,7 @@ function TaskNode({
      with nothing to file, which is the difference that matters:
      hidden-until-hover is for a live control, not for a dead one.
 
-     Drawn once and seated by `ab`: in the mark slot on the legacy row, over
-     the id on the a/b row. The button itself is `FileAct`, the one every
+     Seated over the id. The button itself is `FileAct`, the one every
      view's id slot draws (2026-11-16). */
   const fileButton = file && (
     <FileAct file={file} disabled={acting} onPress={() => void refile(file)} />
@@ -4439,16 +4452,15 @@ function TaskNode({
      unchanged, which is exactly where the row used to go. Hover-revealed like
      every other row action (`.tasks-act`, above the stretched link at
      `z-index: 2`, so its press is its own), and a real link with a real href
-     so ⌘-click and middle-click open a tab. Seated by `ab`: the strip's last
-     button on the legacy row, over the time on the a/b row — where its hint
-     also carries the time it stands over. */
+     so ⌘-click and middle-click open a tab. Seated over the time — where its
+     hint also carries the time it stands over. */
   const pageDoor = (to: string) => (
     <a
       className="tasks-act tasks-act--page"
       href={to}
       aria-label={`Open ${shortTaskId(task.task_id)} in ${opensCanvas(task) ? "Canvas" : "Explorer"}`}
       data-hint={
-        !ab || task.provisional || !when.title
+        task.provisional || !when.title
           ? pageDoorLabel(task)
           : `${pageDoorLabel(task)} · ${when.title}`
       }
@@ -4468,7 +4480,7 @@ function TaskNode({
     <div className="tasks-node" ref={nodeRef}>
       {archiveAsk.node}
       <div
-        className={"tasks-row" + (ab ? " tasks-row--ab" : "") + (open ? " is-open" : "")
+        className={"tasks-row tasks-row--ab" + (open ? " is-open" : "")
           + (selected ? " is-selected" : "") + (pressable ? "" : " is-inert")
           + (peeked ? ` ${PEEK_OPEN_CLASS}` : "")
           + (refiled ? " is-refiled" : "")}
@@ -4654,11 +4666,10 @@ function TaskNode({
             glyph is a button — `TaskIconPick` wraps it on any numbered task
             with the icons experiment on (2026-11-16: any task can be given an
             icon, not only a favourite) and the press opens the icon picker.
-            With the experiment off, on the legacy row, or on a task with no
-            number yet, the slot holds no control and the press falls through
+            With the experiment off, or on a task with no number yet, the slot holds no control and the press falls through
             to the link as before. */}
         <span className="tasks-rowmark">
-          <RingSeat pick={ab} task={task} {...(onReload ? { onDone: onReload } : {})}>
+          <RingSeat task={task} {...(onReload ? { onDone: onReload } : {})}>
             <StatusIcon
               status={taskColumn(task)}
               failed={ringFailed(task)}
@@ -4668,10 +4679,8 @@ function TaskNode({
               draftHeld={draftRing(task) && !heldInPeek}
               background={liveJobRow(task)}
               icon={task.icon_slot}
-              iconPicked={task.icon_picked}
             />
           </RingSeat>
-          {!ab && fileButton}
         </span>
         {/* IN EVERY LIST, INCLUDING THE CHAT PANE'S (Akshil, 2026-09-14). It
             was taken off the borrowed row for a round, on the argument that a
@@ -4681,23 +4690,9 @@ function TaskNode({
             or carried to the Tasks page. The title is the element that gives
             way, which is what it is for. */}
         <TaskAgentMark backend={task.backend} />
-        {/* THE FAVOURITE STAR, left of the id (owner, 2026-11-05: "star
-            everywhere", "left of the id") — always shown, one skin. The a/b
-            row seats it over the count instead (`.tasks-bseat--fav` below).
-
-            THE FOLDER CHIP SITS AFTER THE ID, before the title (Akshil,
-            2026-09-15): the row's left end is where it says what it IS — the id,
-            then the folder it belongs to, then the words. It lived at the right
-            end among the tags until then; DraftChip stays there alone. Same
-            component, same press, same shield — only the slot moved. The a/b
-            row puts the folder first: status, folder, id, title. */}
-        {!ab && (
-          <>
-            <TaskStar task={task} />
-            <IdChip id={task.task_id} kind="task" />
-            {prRef && <PrNumChip prRef={prRef} />}
-          </>
-        )}
+        {/* THE FAVOURITE STAR sits over the count (`.tasks-bseat--fav`
+            below). The a/b row puts the folder first: status, folder, id,
+            title. */}
         {showProject && (
           <IdentityChip
             name={basename(task.project)}
@@ -4719,15 +4714,11 @@ function TaskNode({
             slot's technique, one seat to the right. The button is out of flow
             over the number, so no pixel of the row moves. No button (a run in
             flight) means the number stays under the pointer. */}
-        {ab && (
-          <>
-            <span className="tasks-idslot">
-              <IdChip id={task.task_id} kind="task" />
-              {fileButton}
-            </span>
-            {prRef && <PrNumChip prRef={prRef} />}
-          </>
-        )}
+        <span className="tasks-idslot">
+          <IdChip id={task.task_id} kind="task" />
+          {fileButton}
+        </span>
+        {prRef && <PrNumChip prRef={prRef} />}
         {/* Beside the id, the same component in the same place as on the card
             (design-principles §1): a tag that moved between the two views would
             be two different marks to learn. */}
@@ -5045,6 +5036,26 @@ function TaskNode({
             {FORCE_START_LABEL}
           </button>
         )}
+        {/* RETRY NOW, on a row the usage limit paused ("Usage limit · resumes
+            4:00 AM") — the same seat and register as Force start, and like it
+            not behind SHOW_ROW_ACTIONS: switching accounts makes the wait
+            pointless, and this is the press that says so. */}
+        {canRetryLimit(task) && (
+          <button
+            type="button"
+            className="tasks-act tasks-act--skip"
+            title={LIMIT_RETRY_HINT}
+            aria-label={`${LIMIT_RETRY_LABEL} for ${task.task_id}`}
+            data-testid="task-limit-retry"
+            disabled={acting}
+            onClick={(e) => {
+              e.stopPropagation();
+              void retryLimit();
+            }}
+          >
+            {retrying ? "Retrying\u2026" : LIMIT_RETRY_LABEL}
+          </button>
+        )}
         {SHOW_ROW_ACTIONS && seen && (
           <button
             type="button"
@@ -5096,10 +5107,7 @@ function TaskNode({
             the card — so a door there would be a promise nothing can keep.
             `page` is null on a row whose folder is gone for the same reason
             (the toast already says so). The a/b row seats it over the TIME
-            instead (see the end of the row). */}
-        {SHOW_PAGE_DOOR && peekOn && page && !openDraft && (
-          !ab && pageDoor(page)
-        )}
+            (see the end of the row). */}
         {/* ON THE PEEKED ROW IT IS THE OTHER HALF OF THE SAME GESTURE
             (.claude-design/task-side-peek/design.md): the conversation this
             button opens is already open beside the row, so pressing it again
@@ -5329,11 +5337,9 @@ function TaskNode({
             keeps both off the ladder's measurement (row-fit.ts `rowNeed`).
             Empty when the task has nothing to star (TaskStar's own rule), and
             the count then stays put. */}
-        {ab && (
-          <span className="tasks-bseat tasks-bseat--fav" data-fit-skip="">
-            <TaskStar task={task} />
-          </span>
-        )}
+        <span className="tasks-bseat tasks-bseat--fav" data-fit-skip="">
+          <TaskStar task={task} />
+        </span>
         {/* ALWAYS drawn (2026-08-18). It used to be `{when && …}` and taskWhen
             returned null on a task whose three-message window is empty — a session
             holding only a `/clear` — which left the last cell of that row blank
@@ -5376,11 +5382,9 @@ function TaskNode({
             is the arrow alone. Such a row as has no door (a draft, a gone
             folder) keeps its time under the pointer. */}
         {SHOW_PAGE_DOOR && peekOn && page && !openDraft && (
-          ab && (
-            <span className="tasks-bseat tasks-bseat--door" data-fit-skip="">
-              {pageDoor(page)}
-            </span>
-          )
+          <span className="tasks-bseat tasks-bseat--door" data-fit-skip="">
+            {pageDoor(page)}
+          </span>
         )}
       </div>
 
@@ -6183,6 +6187,16 @@ export function TaskBoard({
     }
     onReload();
   };
+  const retryLimit = async (task: Task) => {
+    setNote(null);
+    try {
+      const said = await performLimitRetry(task);
+      if (said) setNote(said);
+    } catch (e) {
+      setNote((e as Error).message);
+    }
+    onReload();
+  };
 
   const refile = async (task: Task, intent: FilingIntent) => {
     if (intent.kind === "archive") {
@@ -6500,6 +6514,7 @@ export function TaskBoard({
                     onFile={(intent) => refile(task, intent)}
                     onRun={(intent) => runNow(task, intent)}
                     onForceStart={() => force(task)}
+                    onRetryLimit={() => retryLimit(task)}
                     onErased={onReload}
                     onOpen={(intent) => openCard(task, intent)}
                     {...(onOpenDraft ? { onOpenDraft } : {})}
@@ -6554,6 +6569,7 @@ function TaskCard({
   onFile,
   onRun,
   onForceStart,
+  onRetryLimit,
   onOpen,
   onOpenDraft,
   onErased,
@@ -6604,6 +6620,9 @@ function TaskCard({
    * may be reachable. The drag onto In Progress presses the same verb. The
    * board owns the call, so its refusal lands in the one note. */
   onForceStart: () => Promise<void>;
+  /** Retry now on a card the usage limit paused (`canRetryLimit`). The board
+   *  owns the call, so its refusal lands in the one note, like Force start. */
+  onRetryLimit: () => Promise<void>;
   /** Open the conversation, marking the thread read on the way. The board owns
    * it because the board owns the read set — and it is only ever called with a
    * non-null intent, so this card cannot navigate to nowhere. */
@@ -6665,11 +6684,9 @@ function TaskCard({
   // List did not draw is exactly the divergence the old SHOW_UNARCHIVE was.
   const file = filingIntent(task);
   // THE A/B CARD (owner, 2026-11-16: "in card view we are missing the archive
-  // button thing on task id, and click to change icon in status ring"), on the
-  // List row's switch (`task_head_unified_enabled`): Archive leaves the hover
-  // strip for the id slot in the head, and the ring — where this card draws
-  // one — is the icon picker's button. Off, the card below is today's.
-  const ab = useTaskHeadUnified();
+  // button thing on task id, and click to change icon in status ring"):
+  // Archive leaves the hover strip for the id slot in the head, and the ring —
+  // where this card draws one — is the icon picker's button.
   // Run now / Re-run, which the List row and the calendar popover both already
   // offer and this card did not. The SAME function decides it here as there
   // (tasks-lib.taskRunIntent, which asks runNowIntent — the very function
@@ -6724,6 +6741,8 @@ function TaskCard({
   /** …and what a waiting card is waiting on — the List row's sentence. */
   const asking = attentionCaption(task);
   const [busy, setBusy] = useState(false);
+  /** Retry now is the press in flight — its button says so. */
+  const [retrying, setRetrying] = useState(false);
   // The Board's own copy of the List row's erase confirm; see the foot.
   const [erasing, setErasing] = useState(false);
   // …and of its discard, for the same reason: one press, not two.
@@ -6749,7 +6768,7 @@ function TaskCard({
     // one. The action is a SIBLING pinned over the card's head — where the head
     // has spare room to its right on every card — rather than a nested control
     // the browser would refuse to parse.
-    <div className={"tasks-card-wrap" + (ab ? " tasks-card-wrap--ab" : "") + (isDragging ? " is-dragging" : "")}
+    <div className={"tasks-card-wrap tasks-card-wrap--ab" + (isDragging ? " is-dragging" : "")}
       data-checked={bulk?.selection.has(task.key) ? "1" : undefined}>
       {bulk && <RowCheck select={bulk} task={task} />}
       <button
@@ -6868,7 +6887,7 @@ function TaskCard({
               <button>. Only where this card draws a ring at all (the rule
               above): a card whose ring would repeat its lane still draws none. */}
           {(waiting || jobs || failedOffLane) && (
-            <RingSeat pick={ab} task={task} nested>
+            <RingSeat task={task} nested>
               {waiting
                 ? <StatusIcon status="needs_attention" label={asking || undefined} />
                 /* THE THIRD CARD WHOSE RING SAYS WHAT ITS LANE DOES NOT: a finished
@@ -6891,22 +6910,18 @@ function TaskCard({
               own Archive stands down below: one filing button per card. No
               button where the filing cannot change (a run in flight): the
               number stays. */}
-          {ab ? (
-            <span className="tasks-idslot">
-              <IdChip id={task.task_id} kind="task" />
-              {file ? (
-                <FileAct
-                  file={file}
-                  nested
-                  disabled={busy}
-                  label={`${file.label} ${shortTaskId(task.task_id)}`}
-                  onPress={() => void refile(file)}
-                />
-              ) : null}
-            </span>
-          ) : (
+          <span className="tasks-idslot">
             <IdChip id={task.task_id} kind="task" />
-          )}
+            {file ? (
+              <FileAct
+                file={file}
+                nested
+                disabled={busy}
+                label={`${file.label} ${shortTaskId(task.task_id)}`}
+                onPress={() => void refile(file)}
+              />
+            ) : null}
+          </span>
           {/* The draft chip left this head with the List row's (Akshil,
               2026-09-11) and for the same reason — it is a tag now, and the
               tags sit together at the card's other end. It is in the foot,
@@ -7084,8 +7099,8 @@ function TaskCard({
           ON THE A/B CARD ARCHIVE IS NOT HERE (2026-11-16): it stands over the
           id in the head (`.tasks-idslot` above), the List row's seat, and a
           second copy here would be two filing buttons on one card. */}
-      {((peekOn && page) || (file && !ab) || folderMissing || (hasDraft(task) && !heldInPeek)
-        || canForceStart(task) || jobs || (SHOW_ROW_ACTIONS && run)) && (
+      {((peekOn && page) || folderMissing || (hasDraft(task) && !heldInPeek)
+        || canForceStart(task) || canRetryLimit(task) || jobs || (SHOW_ROW_ACTIONS && run)) && (
         <span className="tasks-card-acts">
           {/* DISCARD, the List row's own act in the card's hover strip — same
               glyph, same class, same caption, same silence at rest (design.md,
@@ -7166,6 +7181,28 @@ function TaskCard({
               {FORCE_START_LABEL}
             </button>
           )}
+          {/* RETRY NOW, the List row's own press on a card the usage limit
+              paused — same seat and register as Force start. */}
+          {canRetryLimit(task) && (
+            <button
+              type="button"
+              className="tasks-act tasks-card-act tasks-act--skip"
+              title={LIMIT_RETRY_HINT}
+              aria-label={`${LIMIT_RETRY_LABEL} ${shortTaskId(task.task_id)}`}
+              data-testid="task-limit-retry"
+              disabled={busy}
+              onClick={() => {
+                setBusy(true);
+                setRetrying(true);
+                void onRetryLimit().finally(() => {
+                  setBusy(false);
+                  setRetrying(false);
+                });
+              }}
+            >
+              {retrying ? "Retrying\u2026" : LIMIT_RETRY_LABEL}
+            </button>
+          )}
           {/* The List row's quick door, in the card's own hover strip — same
               act, same glyph, same caption (design.md, Round 3). A SIBLING of
               the card rather than a child, because the card IS a button; that
@@ -7196,18 +7233,6 @@ function TaskCard({
               onClick={() => void runNow(run)}
             >
               {run.rerun ? ICON_RERUN : ICON_PLAY}
-            </button>
-          )}
-          {file && !ab && (
-            <button
-              type="button"
-              className={"tasks-act tasks-card-act tasks-act--" + file.kind}
-              data-hint={file.title}
-              aria-label={`${file.label} ${shortTaskId(task.task_id)}`}
-              disabled={busy}
-              onClick={() => void refile(file)}
-            >
-              {file.kind === "archive" ? ICON_ARCHIVE : ICON_UNARCHIVE}
             </button>
           )}
         </span>

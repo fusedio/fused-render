@@ -622,3 +622,67 @@ test("THE BANNER DESCRIBES THE ENTRY, NOT THE TASK — a pending blocker inside 
   );
   expect(ring.props.className).toBe("sb-ring sb-ring--upcoming");
 });
+
+// --- Retry now on the usage-limit comeback ------------------------------------
+// Akshil, 2026-11-23: "add retry / force start when I have a message queued
+// because I hit my session limit — I can switch Claude accounts and then the
+// wait is gone". Rendered straight from props: the press itself is the chat's.
+
+const comebackEntry: Entry = {
+  id: "c1",
+  state: "pending",
+  session_id: "s1",
+  due: "2099-01-01T09:00:00Z",
+  title: "Continue after usage limit",
+};
+
+function renderBlock(props: Record<string, unknown>) {
+  let tree: ReactTestRenderer;
+  act(() => {
+    tree = create(
+      createElement(SchedBlock, {
+        blockers: [comebackEntry],
+        rec: null,
+        armed: false,
+        refused: false,
+        stopping: false,
+        onStop: () => {},
+        ...props,
+      } as Parameters<typeof SchedBlock>[0]),
+    );
+  });
+  mounted.push(tree!);
+  return tree!;
+}
+
+const buttons = (tree: ReactTestRenderer) =>
+  tree.root.findAll((n) => n.type === "button", { deep: true });
+
+test("the comeback banner offers Retry now beside its own escape, and the press is the chat's", () => {
+  let pressed = 0;
+  const tree = renderBlock({ onRetry: () => pressed++ });
+  const all = buttons(tree);
+  expect(all.map((b) => b.children.join(""))).toEqual(["Retry now", "Don't resume automatically"]);
+  act(() => (all[0]!.props.onClick as () => void)());
+  expect(pressed).toBe(1);
+});
+
+test("Retry now is dead while its request is out, and its note says why it did not go", () => {
+  const tree = renderBlock({
+    onRetry: () => {},
+    retrying: true,
+    retryNote: "the conversation this message continues has a turn running right now",
+  });
+  expect(buttons(tree)[0]!.props.disabled).toBe(true);
+  expect(texts(tree, "sb-note")).toEqual([
+    "the conversation this message continues has a turn running right now",
+  ]);
+});
+
+test("a calendar message's banner never grows Retry now", () => {
+  const tree = renderBlock({
+    blockers: [{ id: "e1", state: "pending", session_id: "s1", due: "2099-01-01T09:00:00Z", message: "tidy" }],
+    onRetry: () => {},
+  });
+  expect(buttons(tree).map((b) => b.children.join(""))).toEqual(["Cancel this message"]);
+});

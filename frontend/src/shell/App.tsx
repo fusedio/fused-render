@@ -31,6 +31,7 @@ import {
   navHintIsDir,
   navigateUrl,
 } from "@platform/lib/router";
+import { installVerdict, useStatIsDir } from "./install-view-lib";
 import { useRecentsTracking } from "@apps/explorer/lib/recents";
 import { setSideTab } from "@apps/explorer/lib/side-tab-store";
 // The route parser, not the barrel: api.ts is already in the main bundle (the
@@ -120,7 +121,7 @@ import {
   isAiModelsPath,
 } from "@apps/ai_models/routes";
 import { isBotsPath } from "@apps/bots/routes";
-import { useSpecialistsFlagKnown } from "@platform/lib/specialists-flag";
+import { useExpertsFlagKnown } from "@platform/lib/experts-flag";
 
 // The boot-time "send a fresh install to the wizard" decision is made once
 // per page load (App's render below), not on every re-render — a user who
@@ -482,9 +483,10 @@ function StatView({
 // a frozen snapshot, and not when the URL asks for another mode by name
 // (`?_mode=claude`): the mode switcher's other views stay reachable.
 // Never an app's own `.fused/` metadata FOLDER (app_fused_dir.py): a bare
-// `.fused` basename has no stem, so it is not an app file, and a navigation
-// that already knows it is opening a directory (navHintIsDir) is not one
-// either — both fall through to StatView's listing.
+// `.fused` basename has no stem, so it is not an app file. A directory named
+// `x.fused` is not one either: a navigation that knows it is opening a
+// directory (navHintIsDir) says so, and when that hint is absent App stats the
+// path (useStatIsDir) — both fall through to StatView's listing.
 function isFusedInstallView(fsPath: string): boolean {
   if (IS_PREVIEW || IS_SNAPSHOT || !/.\.fused$/i.test(basename(fsPath))) return false;
   if (navHintIsDir() === true) return false;
@@ -724,13 +726,13 @@ export default function App({ config }: { config: Config }) {
     history.replaceState(null, "", "/home");
   }
   // The server runs no bots on Windows, but the Bots page still opens there for
-  // the specialists (task sessions, not bots: docs/specialists.md; the page
+  // the experts (task sessions, not bots: docs/experts.md; the page
   // leaves its `/api/bots*` parts out, apps/bots `useBotsMissing`). So a
-  // bookmarked /bots URL goes Home only once the specialists flag is KNOWN off
+  // bookmarked /bots URL goes Home only once the experts flag is KNOWN off
   // — not on the first render, before the prefs read has answered.
   const botsOn = botsAvailable(config);
-  const specialistsKnown = useSpecialistsFlagKnown();
-  const botsPageOn = botsOn || specialistsKnown !== false;
+  const expertsKnown = useExpertsFlagKnown();
+  const botsPageOn = botsOn || expertsKnown !== false;
   const terminalOn = terminalAvailable(config);
   if (!botsPageOn && isBotsPath(location.pathname)) {
     history.replaceState(null, "", "/home");
@@ -880,8 +882,15 @@ export default function App({ config }: { config: Config }) {
   // Not behind the Marketplace flag: the install page is the one `.fused`
   // view there is (see isFusedInstallView); the flag gates the store's entry
   // points only.
-  const fusedFile = localFsPath && isFusedInstallView(localFsPath) ? localFsPath : null;
-  const botFile = localFsPath && isBotFileInstallView(localFsPath) ? localFsPath : null;
+  const fusedNamed = localFsPath && isFusedInstallView(localFsPath) ? localFsPath : null;
+  const botNamed = localFsPath && isBotFileInstallView(localFsPath) ? localFsPath : null;
+  const installVerdictNow = installVerdict(
+    navHintIsDir(),
+    useStatIsDir(localFsPath, !!(fusedNamed || botNamed)),
+  );
+  const installPending = !!(fusedNamed || botNamed) && installVerdictNow === "pending";
+  const fusedFile = installVerdictNow === "install" ? fusedNamed : null;
+  const botFile = installVerdictNow === "install" ? botNamed : null;
   // A resolved fsPath mounts StatView below, which owns the title itself.
   useDocumentTitle(
     isPanel
@@ -1227,6 +1236,8 @@ export default function App({ config }: { config: Config }) {
         home={config.home}
       />
     );
+  } else if (installPending) {
+    main = <RouteFallback />;
   } else if (fusedFile) {
     main = <FusedFileView key={epoch + ":" + fusedFile} fsPath={fusedFile} />;
   } else if (botFile) {

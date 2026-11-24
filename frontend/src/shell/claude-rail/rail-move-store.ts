@@ -11,8 +11,8 @@ import { useEffect, useLayoutEffect, useRef, useSyncExternalStore } from "react"
 import { setWindowPosMark, subscribeWindowPosMark, windowPosMark } from "@platform/lib/last-chat";
 import { clampPos, serialisePos, viewportOf, type Pos, type RailWindow, type Size } from "./rail-move-lib";
 import type { Box } from "./rail-peek-lib";
-import { railFreePinsNow, subscribeRailFreePins } from "./rail-free-pins-flag";
-import { parsePinMark, pushedPins, pushedPos, serialisePinBox, type PinAt, type PinMark } from "./rail-slots-lib";
+import { railExtrasNow, subscribeRailExtras } from "./rail-extras-flag";
+import { parsePinMark, pushedPins, pushedPos, serialisePinBox, type PinAt, type PinMark, type PushedPos } from "./rail-slots-lib";
 
 const live: Record<RailWindow, Pos | null> = { a: null, b: null };
 let front: RailWindow | null = null;
@@ -46,7 +46,7 @@ let pushVersion = 0;
 /** The last answer, so a re-read with nothing changed hands back the same
  *  objects. BOTH pins are solved together (rail-slots-lib `pushedPins`): a pin
  *  the push moved is in the other's way too. */
-let solved: { key: string; marks: [PinMark | null, PinMark | null]; out: Record<RailWindow, Pos | null> } | null = null;
+let solved: { key: string; marks: [PinMark | null, PinMark | null]; out: Record<RailWindow, PushedPos | null> } | null = null;
 
 /** A pin as the solver reads it: its home, and the size it is drawn at — its
  *  frozen one, else its card's live box. None known: it cannot be told what
@@ -67,7 +67,7 @@ function pinAt(win: RailWindow): PinAt | null {
   return { pos, size: { width, height } };
 }
 
-function pushedFor(win: RailWindow, mark: PinMark): Pos {
+function pushedFor(win: RailWindow, mark: PinMark): PushedPos {
   const a = pinAt("a");
   const b = pinAt("b");
   const sig = (p: PinAt | null) => (p ? `${p.pos.left},${p.pos.top},${p.size.width}x${p.size.height}` : "-");
@@ -90,11 +90,11 @@ function pushedFor(win: RailWindow, mark: PinMark): Pos {
 /** Where window `win` floats now — the drag on now, else the stored mark
  *  (drawn clear of a non-pin standing over it, free pins on) — or null while
  *  it is docked. */
-export function windowPos(win: RailWindow): Pos | null {
+export function windowPos(win: RailWindow): PushedPos | null {
   if (live[win]) return live[win];
   const mark = stored(win);
   if (!mark) return null;
-  if (!railFreePinsNow() || pushers.size === 0) return mark.pos;
+  if (!railExtrasNow() || pushers.size === 0) return mark.pos;
   return pushedFor(win, mark);
 }
 
@@ -102,8 +102,21 @@ export function windowPos(win: RailWindow): Pos | null {
  *  STOOD"), or null: free pins off, the window docked, or a mark from before
  *  the switch — the chassis then draws the size it always drew. */
 export function windowSize(win: RailWindow): Size | null {
-  return railFreePinsNow() ? (stored(win)?.size ?? null) : null;
+  const size = frozenSize(win);
+  // A PIN PUSHED UP AND CUT SHORT (rail-slots-lib `pushedPos` "UP FIRST") is
+  // drawn at the cut height; its mark keeps its own. Not under its own drag.
+  if (!size || live[win] || pushers.size === 0) return size;
+  const mark = stored(win);
+  const cut = mark ? pushedFor(win, mark).height : undefined;
+  if (cut === undefined || cut === size.height) return size;
+  if (cutSize[win]?.width !== size.width || cutSize[win]?.height !== cut) cutSize[win] = { width: size.width, height: cut };
+  return cutSize[win];
 }
+/** The size a pin's mark holds — what a move or a freeze writes back. */
+function frozenSize(win: RailWindow): Size | null {
+  return railExtrasNow() ? (stored(win)?.size ?? null) : null;
+}
+const cutSize: Record<RailWindow, Size | null> = { a: null, b: null };
 
 /** The drag's frame (useCardMove): live, not stored. */
 export function setLiveWindowPos(win: RailWindow, pos: Pos | null): void {
@@ -118,7 +131,7 @@ export function setLiveWindowPos(win: RailWindow, pos: Pos | null): void {
 export function commitWindowPos(win: RailWindow, pos: Pos | null): void {
   live[win] = null;
   // A free pin's frozen size rides on in the mark through a move.
-  const size = pos ? windowSize(win) : null;
+  const size = pos ? frozenSize(win) : null;
   setWindowPosMark(win, pos && size ? serialisePinBox({ ...pos, ...size }) : serialisePos(pos));
   notify();
 }
@@ -171,10 +184,19 @@ export function freezeFromDock(win: RailWindow): boolean {
   const pushed = pinAt(other);
   if (pushed) {
     const mine = [...pushers.values()].filter((p) => p.win === win).map((p) => p.box);
-    const drawn = pushedPos(pushed.pos, pushed.size, mine);
-    if (drawn !== pushed.pos) {
-      const kept = stored(other)?.size ?? null;
-      setWindowPosMark(other, kept ? serialisePinBox({ ...drawn, ...kept }) : serialisePos(drawn));
+    // What is frozen is what is DRAWN — the joint answer, every non-pin and
+    // the other pin counted (`pushedFor`) — and only if this card is one of
+    // the things pushing it: this card's docks alone could give an up/cut
+    // box the reader never saw (a step up the other non-pin blocks).
+    const mark = stored(other);
+    if (mark && pushedPos(pushed.pos, pushed.size, mine) !== pushed.pos) {
+      const drawn = pushedFor(other, mark);
+      if (drawn !== mark.pos) {
+        // Its cut height too: the picture stays as it is drawn.
+        const kept = mark.size ?? null;
+        const at = { left: drawn.left, top: drawn.top };
+        setWindowPosMark(other, kept ? serialisePinBox({ ...at, width: kept.width, height: drawn.height ?? kept.height }) : serialisePos(at));
+      }
     }
   }
   // THE CARD BEING PINNED STOPS PUSHING, NOW (owner, 2026-11-18: "when i click
@@ -238,7 +260,7 @@ export function publishWindowBox(win: RailWindow, owner: string, box: Box | null
   // changes where the pin is drawn, and its readers must hear of it
   // (CodeRabbit on #2349: it stayed covered until something else moved).
   // The same publication again says nothing.
-  if (!railFreePinsNow() || pushers.size === 0) return;
+  if (!railExtrasNow() || pushers.size === 0) return;
   const size = (e: { box: Box; pin: boolean } | undefined) => (e && e.pin ? `${e.box.width}x${e.box.height}` : "");
   if (size(was) === size(box ? { box, pin } : undefined)) return;
   const mark = stored(win);
@@ -258,7 +280,7 @@ export function windowBox(win: RailWindow): Box | null {
  *  ("guides between the two pinned windows"), a docked one (a non-pin) with
  *  the other section's non-pin, the card it shares the rail's column with. */
 export function magnetBox(other: RailWindow, floating: boolean): Box | null {
-  if (!railFreePinsNow()) return windowBox(other);
+  if (!railExtrasNow()) return windowBox(other);
   return floating ? pinBox(other) : dockBox(other);
 }
 
@@ -336,7 +358,7 @@ export function usePusher(win: RailWindow, box: Box | null): void {
 
 // The switch going on or off re-reads every position: a pin is pushed, and
 // its frozen size read, only with free pins on.
-subscribeRailFreePins(notify);
+subscribeRailExtras(notify);
 
 /** Test seam. */
 export function resetRailMoveForTests(): void {

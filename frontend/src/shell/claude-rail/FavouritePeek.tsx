@@ -103,10 +103,9 @@ import {
   useFavOpen,
   useFavPinned,
 } from "@platform/lib/last-chat";
-import { useTaskHeadUnified } from "@shell/task-head-flag";
 import { setBotOpen, useAPinned } from "@platform/lib/last-chat";
 import { aPinTask } from "./rail-slots-lib";
-import { useRailFreePins } from "./rail-free-pins-flag";
+import { useRailExtras } from "./rail-extras-flag";
 import { freezeFromDock } from "./rail-move-store";
 import { otherSlot, registerPinFocus, setFreeSlot, setPinTitle, useFreeSlot, type Slot } from "./rail-slots-store";
 import { PIN_B_ID, usePinHasBox } from "./use-pin-box";
@@ -128,8 +127,6 @@ import {
   useFavPeekState,
   withdrawFavFocusOn,
 } from "./fav-peek-store";
-import { useCanvasRailPeek } from "./rail-peek-flag";
-import { useTaskFavourites } from "@platform/lib/favourites-flag";
 import { ownPlace, type RailPlace, type RailRow } from "./claude-rail-lib";
 import { hopDropsOpen, reloadDropsOpen, viewPress } from "./rail-pin-lib";
 import {
@@ -178,35 +175,28 @@ const FAV_COMPOSER_WAIT_MS = 2500;
  *  OF A CHAT WINDOW"): mounted only with free pins on — off, the one card
  *  below is all there is, as it always was. */
 export function FavouritePeekSlotY() {
-  return useRailFreePins() ? <FavouritePeek slot="y" /> : null;
+  return useRailExtras() ? <FavouritePeek slot="y" /> : null;
 }
 
 export function FavouritePeek({ slot = "x" }: { slot?: Slot } = {}) {
-  const peekOn = useCanvasRailPeek();
-  const favsOn = useTaskFavourites();
-  const on = peekOn && favsOn;
-  const rows = useTasksPulseRows(on);
+  const rows = useTasksPulseRows();
   const [listing, setListing] = useState<Task[] | null>(() => readListing());
   useEffect(() => {
-    // Off, no feed: this stands in every shell, and the listing's long-poll
-    // is not a cost a reader who never starred anything should pay.
-    if (!on) return;
     setListing(readListing());
     return subscribeListing((ev) => {
       if (!ev.failed) setListing(ev.rows);
     });
-  }, [on]);
+  }, []);
   const { rail, page, pendingFocus } = useFavPeekState();
-  // HOVER / TEMP / PIN (rail-pin-lib; the unified-head switch on): the open
-  // card is TEMP until its pin (or a double-click on its ring) pins it — this
-  // window's pin mark (last-chat `favPinned`) naming the open key.
-  const pinModel = useTaskHeadUnified();
+  // HOVER / TEMP / PIN (rail-pin-lib): the open card is TEMP until its pin
+  // (or a double-click on its ring) pins it — this window's pin mark
+  // (last-chat `favPinned`) naming the open key.
   const openKey = useFavOpen();
   const pinnedKey = useFavPinned();
   // FREE PINS (rail-slots-lib): the favourite's window is two slots — its
   // non-pin and its pin (below) — so the pin's key and the open key are two
   // different chats.
-  const freePins = useRailFreePins();
+  const freePins = useRailExtras();
   // ONE OF TWO SLOTS, BY ROLE (rail-slots-store): the FREE slot is this card
   // as it always was — the open key, the hover, every rule below; the other
   // shows the PINNED favourite (`favPinned`) and nothing else, and none of
@@ -219,8 +209,8 @@ export function FavouritePeek({ slot = "x" }: { slot?: Slot } = {}) {
   // A pin mark on a key no longer open (closed, or another favourite took
   // the window: a swap is temp, the pin is per card) goes.
   useEffect(() => {
-    if (pinModel && !freePins && pinnedKey !== null && pinnedKey !== openKey) setFavPinned(null);
-  }, [pinModel, freePins, pinnedKey, openKey]);
+    if (!freePins && pinnedKey !== null && pinnedKey !== openKey) setFavPinned(null);
+  }, [freePins, pinnedKey, openKey]);
   // …and never one chat in both (a hand-over or a restore that opened a
   // pinned key): the pinned window has it — this section's, or section A's
   // (a starred chat pinned off the list).
@@ -230,15 +220,15 @@ export function FavouritePeek({ slot = "x" }: { slot?: Slot } = {}) {
   }, [freePins, isFree, openKey, pinnedKey, aPinKey]);
   // A RELOAD BRINGS BACK ONLY A PINNED CARD (design.md row 19): an open key
   // the storage kept from before this document loaded, with no pin on it, is
-  // closed — once, as the switch's answer lands.
+  // closed — once.
   useEffect(() => {
-    if (!pinModel || reloadChecked) return;
+    if (reloadChecked) return;
     reloadChecked = true;
     const key = favOpen();
     if (key && reloadDropsOpen({ openKey: key, pinnedKey: favPinned(), openedAt: favOpenedAtMs(key), loadedAt: LOADED_AT })) {
       clearFavOpen(key);
     }
-  }, [pinModel]);
+  }, []);
   // No room beside this rail (RailPeek `onNoRoom`): hidden until the window
   // or the rail changes shape, or another rail stands.
   const [noRoom, setNoRoom] = useState(false);
@@ -264,7 +254,7 @@ export function FavouritePeek({ slot = "x" }: { slot?: Slot } = {}) {
   // THIS WINDOW'S OPEN FAVOURITE (header), checked against the pulse's
   // stars — closed (the key cleared) once an unstar, an erase or an archive
   // reaches the pulse (fav-peek-store `useFavOpenRow`).
-  const openRow = useFavOpenRow(on && isFree, rows);
+  const openRow = useFavOpenRow(isFree, rows);
   const open = isFree ? openRow : null;
   // THE PINNED FAVOURITE (the pin role): its row off the pulse; gone once the
   // pulse no longer counts it a FAVOURITE AS THE RAIL DOES (rail-peek-lib
@@ -276,17 +266,17 @@ export function FavouritePeek({ slot = "x" }: { slot?: Slot } = {}) {
   const pinRow = useMemo(() => (pinRole && pinnedKey ? (rows.find((t) => t.key === pinnedKey) ?? null) : null), [pinRole, pinnedKey, rows]);
   const pinGone = pinRole && pinnedKey !== null && !!pinRow && (pinRow.status === "archived" || !favLike(pinRow));
   useEffect(() => {
-    if (!pinRole || !pinnedKey || !on || !tasksPulseLoaded()) return;
+    if (!pinRole || !pinnedKey || !tasksPulseLoaded()) return;
     const live = readTasksRows().find((t) => t.key === pinnedKey);
     if ((!live || live.status === "archived" || !favLike(live)) && favPinned() === pinnedKey) setFavPinned(null);
-  }, [pinRole, pinnedKey, on, rows]);
+  }, [pinRole, pinnedKey, rows]);
   // …or, with none open, the one a hover wants (header): a live favourite
   // only — and not while a bot's card holds the window (header).
   const hoverKey = useFavHoverKey();
   const botUp = useBotCard() !== null;
   const hoverRow = useMemo(
-    () => (on && isFree && !open && !botUp ? favHoverRow(hoverKey, null, rows) : null),
-    [on, isFree, open, botUp, hoverKey, rows],
+    () => (isFree && !open && !botUp ? favHoverRow(hoverKey, null, rows) : null),
+    [isFree, open, botUp, hoverKey, rows],
   );
   const hovering = isFree && !open && !!hoverRow;
   const shownRow = pinRole ? (pinGone ? null : pinRow) : (open ?? hoverRow);
@@ -295,10 +285,10 @@ export function FavouritePeek({ slot = "x" }: { slot?: Slot } = {}) {
     return { pulse: shownRow, row: listing?.find((t) => t.key === shownRow.key) ?? null };
   }, [shownRow, listing]);
   // A hover never outlives its cause: the open key taking over (a press),
-  // the feature going off, or another rail standing.
+  // or another rail standing.
   useEffect(() => {
-    if (open || !on) dismissFavHover();
-  }, [open, on]);
+    if (open) dismissFavHover();
+  }, [open]);
   // A card that opens is the window moving on: a restore left by an earlier
   // door is forgotten (header). The door itself sets it AFTER closing.
   useEffect(() => {
@@ -310,8 +300,8 @@ export function FavouritePeek({ slot = "x" }: { slot?: Slot } = {}) {
   // A hover on a key the pulse no longer holds (unstarred, gone): forgotten.
   const hoverLive = useMemo(() => new Set(rows.filter((r) => favLike(r)).map((r) => r.key)), [rows]);
   useEffect(() => {
-    if (on) favHoverIntent().prune(hoverLive);
-  }, [on, hoverLive]);
+    favHoverIntent().prune(hoverLive);
+  }, [hoverLive]);
   // THE CARD STANDS WHATEVER THE PANE SHOWS (owner, 2026-11-05: "we can
   // have the same task open as the expanded view and as a window B pin
   // view"): a favourite's chat in the pane is no reason for its card not
@@ -319,8 +309,8 @@ export function FavouritePeek({ slot = "x" }: { slot?: Slot } = {}) {
   // instead) is gone.
   // A pinned window floats: it needs no rail to stand beside, only a box
   // (use-pin-box).
-  const placed = usePinHasBox("b", pinRole && on && !!seat, rail);
-  const shown = on && seat && (pinRole ? placed : rail && !noRoom) ? seat : null;
+  const placed = usePinHasBox("b", pinRole && !!seat, rail);
+  const shown = seat && (pinRole ? placed : rail && !noRoom) ? seat : null;
   const kept = useMemo(() => (seat ? [seat] : []), [seat]);
 
   // FOCUS NEVER FALLS TO THE BODY (header). Whether the keyboard was last
@@ -551,9 +541,9 @@ export function FavouritePeek({ slot = "x" }: { slot?: Slot } = {}) {
   useEffect(() => {
     const was = hopSeen.current;
     hopSeen.current = { path, key: openKey };
-    if (!pinModel || !isFree) return;
+    if (!isFree) return;
     if (openKey && hopDropsOpen({ was, now: { path, key: openKey }, pinnedKey: favPinned() })) clearFavOpen(openKey);
-  }, [path, openKey, pinModel, isFree]);
+  }, [path, openKey, isFree]);
   // Only an OPEN card makes the rail's own card give way (`avoid`); a hover
   // overlaps it and publishes nothing.
   // …and the pinned window none at all: it floats, and its silence must not
@@ -599,7 +589,7 @@ export function FavouritePeek({ slot = "x" }: { slot?: Slot } = {}) {
     setPinTitle("b", "fav-" + slot, pinTitleText);
     return () => setPinTitle("b", "fav-" + slot, null);
   }, [pinRole, slot, pinTitleText]);
-  if (!on || !seat || !place || (pinRole && !placed)) return null;
+  if (!seat || !place || (pinRole && !placed)) return null;
   return (
     <RailPeek
       ref={peekRef}
@@ -631,9 +621,7 @@ export function FavouritePeek({ slot = "x" }: { slot?: Slot } = {}) {
       held={!hovering}
       onHeld={noop}
       pinned={false}
-      pinCtl={
-        pinModel ? { pinned: pinRole || (!freePins && !hovering && !!open && pinnedKey === open.key), onToggle: togglePin } : null
-      }
+      pinCtl={{ pinned: pinRole || (!freePins && !hovering && !!open && pinnedKey === open.key), onToggle: togglePin }}
     />
   );
 }

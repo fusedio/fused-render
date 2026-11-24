@@ -25,11 +25,9 @@
 // card and open that panel. No room beside the rail: the door's press opens
 // the panel directly (DoorCard `onNoRoomPress`).
 import { useCallback, useEffect, useState } from "react";
-import { X } from "lucide-react";
 import { GitPanelBody } from "@shell/GitPanelBody";
 import { DoorCard } from "./DoorCard";
 import { RailPinButton } from "./RailPin";
-import { useTaskHeadUnified } from "@shell/task-head-flag";
 import { useFavPeekState } from "./fav-peek-store";
 import { gitCardStore, useGitCard, useGitCardRail } from "./git-peek-store";
 
@@ -60,13 +58,12 @@ export function GitPeek() {
   // closed, for `GIT_FOLLOW_MS` — set during the render, so the chassis never
   // sees one render disabled (its close runs on that). A preview is not held.
   // …with the pin (rail-pin-lib `hopKeeps`), only a HELD card follows.
-  const pinModel = useTaskHeadUnified();
-  const { pinned, held } = useGitCard();
+  const { held } = useGitCard();
   const [was, setWas] = useState(maybe);
   const [holding, setHolding] = useState(false);
   if (was !== maybe) {
     setWas(maybe);
-    setHolding(!maybe && (pinModel ? held : pinned));
+    setHolding(!maybe && held);
   }
   useEffect(() => {
     if (!holding) return;
@@ -96,13 +93,8 @@ export function GitPeek() {
           <>
             <div className="claude-rail-peek-head">
               <div className="claude-rail-peek-row">
-                {/* With the pin: no ×, the pin in its seat (and the keyboard's landing). */}
-                {!api.pin && (
-                  <button ref={api.closeRef} type="button" className="claude-rail-peek-btn claude-rail-peek-close" aria-label="Close Git" data-hint="Close" onClick={api.close}>
-                    <X size={14} aria-hidden="true" />
-                  </button>
-                )}
-                {api.pin && <RailPinButton variant="legacy" btnRef={api.closeRef} pinned={api.pin.pinned} onToggle={api.pin.onToggle} />}
+                {/* No ×: the pin in its seat (and the keyboard's landing). */}
+                <RailPinButton variant="legacy" btnRef={api.closeRef} pinned={api.pin.pinned} onToggle={api.pin.onToggle} />
                 <span className="claude-rail-tasks-title">
                   Git
                 </span>

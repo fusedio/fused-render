@@ -2194,6 +2194,26 @@
 .chat-root .runbtn {
   right: 60px;
 }
+/* A reply's code fence is `white-space: pre` and scrolls SIDEWAYS (the
+   `.assistant pre` rule below), and an absolute pill inside a scroller rides
+   along with its content: scrolled to a long command's end, "run" and "copy"
+   landed on top of the code mid-block. The anchor span sticks to the left of
+   the scrollport instead (Chrome keeps it inside the pre's padding), which also
+   makes it the pills' containing block — so the offsets are the usual 6px from
+   the pre's edge minus that padding (10px 12px). Chip and card `pre`s are
+   pre-wrap, never scroll sideways, and keep their own anchors above. */
+.chat-root .assistant pre:not(.toolchip pre, .perm pre) > .copywrap {
+  position: sticky;
+  left: 0;
+}
+.chat-root .assistant pre:not(.toolchip pre, .perm pre) > .copywrap > .copybtn {
+  top: -4px;
+  right: -6px;
+}
+.chat-root .assistant pre:not(.toolchip pre, .perm pre) > .copywrap > .runbtn {
+  top: -4px;
+  right: 48px;
+}
 .chat-root pre:hover .copybtn,
 .chat-root .copybtn:focus-visible,
 .chat-root pre:hover .runbtn,
@@ -2925,7 +2945,7 @@
   max-width: max(40%, min(82%, calc(100% - 108px)));
 }
 
-/* A specialist's `show` card (ui/ViewCard.tsx): one row in the shape of the
+/* An expert's `show` card (ui/ViewCard.tsx): one row in the shape of the
    Bots thread's app card. Collapsed it holds no frame; Open raises the overlay. */
 .chat-root .c-viewcard {
   display: flex;
@@ -2983,4 +3003,123 @@
 .chat-root .c-viewcard-open:hover {
   border-color: var(--c-accent);
   color: var(--c-accent);
+}
+
+/* ── the jump button (the bots `#tobottom`, ui/JumpButton.tsx) ─────────── */
+/* A zero-height box after the log, sticky to the port's bottom edge: it floats
+   over the transcript wherever the reader is, with no positioned wrapper around
+   the scrollport (whose scroll rules read it as THE scroller). */
+.chat-root .chat-jump {
+  position: sticky;
+  bottom: 0;
+  height: 0;
+  z-index: 5;
+  pointer-events: none;
+}
+.chat-root .chat-jump-btn {
+  position: absolute;
+  bottom: 12px;
+  left: 50%;
+  translate: -50% 0;
+  display: none;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  width: 29px;
+  height: 29px;
+  padding: 0;
+  border: 0;
+  border-radius: 999px;
+  background: var(--c-card-bg);
+  color: var(--c-fg);
+  box-shadow: 0 0 0 1px var(--c-border), 0 4px 14px var(--c-shadow);
+  cursor: pointer;
+  pointer-events: auto;
+  animation: chat-jump-in 0.18s cubic-bezier(0.22, 1, 0.36, 1);
+}
+.chat-root .chat-jump-btn.is-shown {
+  display: inline-flex;
+}
+.chat-root .chat-jump-btn:hover {
+  background: var(--c-surface-2);
+}
+.chat-root .chat-jump-btn svg {
+  width: 14px;
+  height: 14px;
+}
+/* Unread below you: the arrow grows into an accent "N new messages" pill. */
+.chat-root .chat-jump-btn.is-new {
+  width: auto;
+  padding: 0 12px;
+  gap: 8px;
+  background: var(--c-accent);
+  color: var(--c-on-accent);
+  box-shadow: 0 4px 14px var(--c-shadow);
+  font-size: calc(12px * var(--c-zoom, 1));
+  white-space: nowrap;
+}
+.chat-root .chat-jump-btn.is-new:hover {
+  background: color-mix(in srgb, var(--c-accent) 88%, #000);
+}
+.chat-root .chat-jump-btn.is-new svg {
+  width: 16px;
+  height: 16px;
+}
+/* ↑ (Akshil 2026-11-21): the same box before the log, sticky to the port's
+   top edge, so it sits just under the head. */
+.chat-root .chat-jump.is-top {
+  top: 0;
+  bottom: auto;
+}
+.chat-root .chat-jump.is-top .chat-jump-btn {
+  top: 12px;
+  bottom: auto;
+  animation-name: chat-jump-in-top;
+}
+.chat-root .chat-jump-btn:focus-visible {
+  outline: 2px solid var(--c-accent);
+  outline-offset: 2px;
+}
+@keyframes chat-jump-in {
+  from {
+    opacity: 0;
+    transform: translateY(6px);
+  }
+}
+@keyframes chat-jump-in-top {
+  from {
+    opacity: 0;
+    transform: translateY(-6px);
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .chat-root .chat-jump-btn {
+    animation: none;
+  }
+}
+
+/* ── the NEW rule (the bots thread's `.new`, in the chat's own accent) ──── */
+/* Above the message of yours that the first unseen reply answers (or the
+   reply, when it came on its own); placed on open, kept until you leave. */
+.chat-root .chat-newrule {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  width: 100%;
+  margin: -6px 0 14px;
+  padding: 4px 0;
+  color: var(--c-accent-text);
+  font-size: calc(10px * var(--c-zoom, 1));
+  font-weight: 400;
+  line-height: 1;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+.chat-root .chat-newrule::before,
+.chat-root .chat-newrule::after {
+  content: "";
+  flex: 1;
+  height: 1px;
+  background: var(--c-accent-text);
+  opacity: 0.55;
 }

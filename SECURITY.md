@@ -115,6 +115,27 @@ Treat these the same as any other tool that fetches pinned third-party
 binaries on demand: review the source before relying on it in a sensitive
 environment.
 
+## Local SQL engine for framed canvas pages
+
+A canvas node's framed workbench page can run SQL on the local DuckDB engine
+whenever the engine is installed; there is no switch (D1499). It does so only
+through the node template, which accepts messages from that frame alone,
+validates them, and calls the loopback routes itself; the page has no route
+access of its own. The engine is confined to its own files directory and to
+`https://` reads (SPEC §55.4): no other local path is readable or writable.
+What stays open: outbound `https://` reads to any host (and wherever such a
+host redirects, including an `http://` address, §55.4), files the page
+registers (kept for the engine's life, visible to every session), and the CPU,
+memory and disk the queries use. The frame is also handed the saved canvas the
+sync last read (it can hold parameters and tokens; the stored copy is readable
+by the user only), which it could fetch itself with the token it already holds.
+The framed page can also ask the host to run UDFs of its own canvas (never of
+another canvas or environment) and gets a result handle back; the runtime's
+own confirmation dialogs still appear, and the frame cannot answer them. It
+can pick the result's format and a tile for those runs, and can read back the
+bytes of results it was handed a handle for in its current document (by that
+handle only, through the host; the results route allows no other origin).
+
 ## Hosted deploy via the `fused` CLI
 
 Publishing a page to a hosted URL is a manual, terminal-only workflow: export

@@ -603,7 +603,7 @@ button.tasks-caret,
   opacity: 1;
 }
 /* …AND NEVER A FREE PIN (`.is-free-pin`, useCardMove; behind
-   `rail_free_pins_enabled`; Akshil, 2026-11-18: "do this only for non pin
+   `rail_extras_enabled`; Akshil, 2026-11-18: "do this only for non pin
    windows because that is the one going to be replace"): with free pins the
    click opens the section's NON-PIN window, so that is the one the row dims —
    a pinned window, whichever section's, stays lit. `!important`: the rules
@@ -1754,9 +1754,8 @@ button.tasks-caret,
 }
 
 /* -- The a/b row (Akshil, 2026-11-15; `tasks-row--ab`) -------------------------
-   BEHIND `task_head_unified_enabled` (task-head-flag.ts): the row wears
-   `tasks-row--ab` while the switch is on, and every rule in this section is
-   scoped to it — off, the row above is the row, pixel for pixel.
+   The row always wears `tasks-row--ab`, and every rule in this section is
+   scoped to it.
 
    THREE SLOTS, EACH ONE BOX WITH TWO OCCUPANTS: the a item at rest, the b item
    while the row is pointed at.

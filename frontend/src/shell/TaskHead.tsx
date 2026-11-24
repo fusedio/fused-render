@@ -400,7 +400,9 @@ export function TaskHead({
   const [hot, setHot] = useState(false);
   useEffect(() => {
     // (A test's stand-in node has no tree to walk and no events to hear.)
-    if (!isWindow) return;
+    // A two-line panel (the expanded sidebar) takes the same trigger: the
+    // pointer anywhere on the pane shows its star and its door.
+    if (!isWindow && !twoLine) return;
     if (!headEl || typeof headEl.closest !== "function" || typeof headEl.addEventListener !== "function") return;
     // The host's `data-task-window`, or the nearest box that holds MORE than
     // the head — a wrapper that is only the head's own line (the rail card's
@@ -459,7 +461,7 @@ export function TaskHead({
       win.removeEventListener("focusout", focusOff);
       setHot(false);
     };
-  }, [headEl, isWindow]);
+  }, [headEl, isWindow, twoLine]);
   // THE TITLE MOVES ROWS HERE, which remounts it: a rename half-typed when
   // the ladder crosses the stack rung loses its draft (an accepted edge case).
   // ONLY A RAIL WINDOW STACKS ON ITS OWN (Akshil, 2026-11-16: "2nd line thing
@@ -674,14 +676,37 @@ export function TaskHead({
   const hasActs = !!(starEl || openLink);
   const clustered = (isWindow || twoLine) && !!who && (!hasActs || (!!starEl && !!openLink));
   // THE ⋮ IS ONE OF THE ACTS in a rail window's two-line head (Akshil,
-  // 2026-11-17): seated in the acts' layer where there is one, so it shows
-  // and hides with the star and the door and the facts keep the row's end at
-  // rest. A head with one act alone has no such layer: its ⋮ keeps its seat
-  // after the slots and hides there (task-head.css `.is-window.is-two-line
-  // .task-head-marks > .task-head-kebab`). A PANEL OR A PANE in two lines
-  // keeps its ⋮ standing at the row's end, as on its one row.
+  // 2026-11-17), seated after the star and the door (`actsBox`). A PANEL OR
+  // A PANE in two lines keeps its ⋮ standing at the row's end, as on its one
+  // row.
   const kebabEl = kebabNode ? <span className="task-head-kebab">{kebabNode}</span> : null;
-  const kebabInActs = isWindow && twoLine && clustered && hasActs && !!kebabEl;
+  // A RAIL WINDOW'S ACTS AND FACTS TAKE A ROW EACH (Akshil, 2026-11-22: "move
+  // the message count and time to the 2nd row and always show fav and open
+  // button on right on 1st row … msg count and time will be shown in right
+  // side of 2nd row"). Row 1 ends in star · Open · ⋮, standing at rest too;
+  // row 2 ends in count · time after the title. Nothing trades any more, so
+  // nothing slides — with one act or none as well. Every two-line head: the
+  // rail's windows, and the side panel and the Tasks page panel that wear
+  // the same two lines (Akshil, 2026-11-22: "these look good").
+  const splitRows = twoLine && !!who;
+  const kebabInActs = splitRows && !!kebabEl;
+  const rowFacts =
+    splitRows && (countFact || whenFact) ? (
+      <span className="task-head-rowfacts">
+        {countEl("task-head-fact")}
+        {timeEl("task-head-fact")}
+      </span>
+    ) : null;
+  const actsBox =
+    splitRows && (hasActs || kebabEl) ? (
+      <span className="task-head-facts has-acts is-split">
+        <span className="task-head-facts-layer is-b">
+          {starEl}
+          {openLink}
+          {kebabEl}
+        </span>
+      </span>
+    ) : null;
   const factsCluster =
     clustered && (countFact || whenFact || hasActs) ? (
       <span className={"task-head-facts" + (hasActs ? " has-acts" : "")}>
@@ -695,7 +720,6 @@ export function TaskHead({
           <span className="task-head-facts-layer is-b">
             {starEl}
             {openLink}
-            {kebabInActs ? kebabEl : null}
           </span>
         ) : null}
       </span>
@@ -849,7 +873,9 @@ export function TaskHead({
             </span>
           ) : null}
           {where && !twoLine ? <span className="task-head-where">{where}</span> : null}
-          {clustered ? (
+          {splitRows ? (
+            actsBox
+          ) : clustered ? (
             factsCluster
           ) : (
             <>
@@ -860,11 +886,12 @@ export function TaskHead({
           {kebabInActs ? null : kebabEl}
         </div>
       </div>
-      {stackedNow && (identity || line || status || statusRef) ? (
+      {stackedNow && (identity || line || status || statusRef || rowFacts) ? (
         <div className="task-head-titlerow">
           {twoLine ? marks : null}
           {identity}
           {trail}
+          {rowFacts}
         </div>
       ) : null}
     </div>

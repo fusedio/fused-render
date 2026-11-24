@@ -462,86 +462,18 @@ const ENTRIES = [
   },
 
   // ── Experimental flags ─────────────────────────────────────────────────────────────
-  // THE CLAUDE RAIL'S PREVIEW (shell/claude-rail): one rail on every page
-  // with a Claude panel — the canvas page, the app page, the explorer's file
-  // and folder views (2026-11-01) — so the switch is its own row, not a
-  // child of Canvases, and needs no Fused sign-in. The pref keeps its
-  // `canvas_rail_peek` name on the wire.
+  // RAIL EXTRAS (shell/claude-rail/rail-extras-flag; owner, 2026-11-23): one
+  // switch for three rail features — a file's other views as doors above Git,
+  // the expandable rail, and free (exact place and size) pinned windows. With
+  // the rail's other switches gone it is no section of its own (a section of
+  // one row is never drawn): the flags are one untitled card.
   {
-    id: "canvases-rail-peek",
+    id: "rail-extras",
     group: "features",
-    section: "Chats & rail",
-    label: "Preview chats from the collapsed Claude rail",
-    description: "With the Claude panel hidden, hovering a chat on the rail at the right edge previews it as a floating card. Click to keep it open and type; drag its left corners to resize. Escape, × or clicking elsewhere closes it.",
-    keywords: "rail hover click preview peek card chat collapsed claude panel popover canvas app explorer",
-  },
-  // FAVOURITE CHATS (owner, 2026-11-03): the star on that preview card, so
-  // a child of it — nothing to star without the card. Hidden while the
-  // preview is off (2026-11-20, like every child row): the stored answer
-  // is kept and shows again with its parent.
-  {
-    id: "tasks-favourites",
-    group: "features",
-    section: "Chats & rail",
-    label: "Favourite chats",
-    description: "Star a chat to keep it in a Favourites section at the foot of the rail, with its own small card at the bottom right. With favourites on, the rail stays on every app page, explorer view and canvas, even with the Claude panel hidden.",
-    keywords: "favourite favorite star pin keep chat rail card bottom always panel",
-    child: true,
-    parent: { id: "canvases-rail-peek", on: (prefs) => prefs.canvas_rail_peek?.enabled === true },
-  },
-  // TASK ICONS (owner, 2026-11-10): a face per FAVOURITE, in place of the
-  // ring (2026-11-11: only a starred task wears one).
-  {
-    id: "tasks-icons",
-    group: "features",
-    section: "Chats & rail",
-    label: "Task icons",
-    description: "A favourite shows its own small picture — an animal, a food, a thing — instead of the status ring, on the rail, the Tasks list and the task header. Click it while editing the title to pick another.",
-    keywords: "icon glyph picture emoji animal face ring task rail avatar favourite favorite star",
-    child: true,
-    // Only a starred chat wears one, so it needs Favourite chats (and that,
-    // the rail preview) on.
-    parent: {
-      id: "tasks-favourites",
-      on: (prefs) => prefs.canvas_rail_peek?.enabled === true && prefs.task_favourites?.enabled === true,
-    },
-  },
-  // A FILE'S OTHER MODES AS DOORS ON THE RAIL (shell/claude-rail
-  // rail-mode-doors-flag; owner, 2026-11-20): the rail's doors, so a child of
-  // the rail preview.
-  {
-    id: "rail-mode-doors",
-    group: "features",
-    section: "Chats & rail",
-    label: "File views on the rail",
-    description: "On a file, its other views (Code, Reader and so on) show as icons on the rail above Git. Hover one to preview the file that way in a floating card; click to keep it open, Open switches the page to that view.",
-    keywords: "mode view preview code reader rail door icon file template switch hover card git",
-    child: true,
-    parent: { id: "canvases-rail-peek", on: (prefs) => prefs.canvas_rail_peek?.enabled === true },
-  },
-  // ONE HEADER FOR EVERY TASK VIEW (shell/TaskHead, task-head-flag). After the
-  // rail preview's two children, not between them: a row set there read as
-  // the parent of "Favourite chats".
-  {
-    id: "tasks-unified-head",
-    group: "features",
-    section: "Chats & rail",
-    label: "Unified task header",
-    description: "The same header on the Tasks page panel, the chat panes, the rail cards and the New task card.",
-    keywords: "task header unified head close back prev next status star open kebab card panel rail",
-  },
-  // FREE PINS ON THE RAIL (shell/claude-rail/rail-free-pins-flag): a child of
-  // the unified header — the pin icon only exists with it on, so the row is
-  // hidden until it is.
-  {
-    id: "rail-free-pins",
-    group: "features",
-    section: "Chats & rail",
-    label: "Free rail pins",
-    description: "A pinned rail window keeps its exact place and size. Other chats open in a second window beside the rail, so up to four can stand at once: pinned and unpinned, for the list and for favourites.",
-    keywords: "pin pinned window rail float overlap move resize four windows push task favourite bot",
-    child: true,
-    parent: { id: "tasks-unified-head", on: (prefs) => prefs.task_head_unified?.enabled === true },
+    section: "Other",
+    label: "Rail extras",
+    description: "Three rail additions: a file's other views (Code, Reader and so on) show as icons above Git, hover to preview, click to keep open; a button at the rail's top left widens it into a list with titles, and its inner edge drags to resize; a pinned rail window keeps its exact place and size while other chats open in a second window, up to four at once.",
+    keywords: "rail extras mode view preview code reader door icon file git expand widen wide width resize titles drag pin pinned window float move four windows",
   },
   {
     id: "canvases",
@@ -564,28 +496,16 @@ const ENTRIES = [
     // Only means something while Canvases is offered at all.
     available: ({ prefs }) => prefs.canvases?.enabled === true,
   },
-  // EXPERTS (docs/experts.md §17; owner, 2026-11-19): off by default. Off
-  // hides every expert bot and stops what runs for them; their memory stays
-  // on disk and is there again when this is turned back on.
+  // EXPERTS (docs/experts.md): a kind of bot on the Bots page, and
+  // the task tools and the breakout's "With". Off by default; off, nothing of
+  // it exists.
   {
     id: "experts",
     group: "features",
     section: "Other",
-    label: "Expert bots",
-    description: "Bots that each keep one memory file about one subject — Canvas Reference and Data Expert ship with the app — and that your Claude, Codex and Copilot tasks can consult. Off hides them and stops their learning; their memory is kept.",
-    keywords: "expert experts memory canvas reference data expert bot learn ask",
-  },
-  // SPECIALISTS (docs/specialists.md): a kind of bot on the Bots page, and
-  // the task tools and the breakout's "With". Off by default; off, nothing of
-  // it exists. Beside Expert bots, under Other: the two solve the same
-  // problem two ways.
-  {
-    id: "specialists",
-    group: "features",
-    section: "Other",
-    label: "Specialists",
+    label: "Experts",
     description: "A kind of bot on the Bots page that knows one subject and keeps its own memory and skills. Tasks get its guidance, send it notes, and can open a breakout with it. Once a day it updates its memory from what they did.",
-    keywords: "specialist bot memory skills breakout notes update learn",
+    keywords: "expert bot memory skills breakout notes update learn",
   },
   {
     id: "monitor",

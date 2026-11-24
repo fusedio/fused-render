@@ -7,7 +7,7 @@ hour), and WebKit's six connections per host are shared by every window of
 the app (the reason `/api/run/ws` exists). Sockets do not count toward them.
 
 Socket protocol (text frames, JSON):
-  page -> {op: "run", id, ref, params?, format?, cache?, confirmed?}
+  page -> {op: "run", id, ref, params?, format?, cache?, confirmed?, tile?}
           {op: "schema", id, ref}
           {op: "cancel", id}
   server -> the frames service.run / service.schema send, each with the

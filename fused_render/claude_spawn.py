@@ -90,7 +90,7 @@ def spawn_helper(target: str, prompt: str, permission_mode: str,
                  session_id: str = "", model: str = "", effort: str = "",
                  extra_read_dirs: list[str] | None = None,
                  backend: str = "", bot: str = "",
-                 isolate_mcp: bool = False, specialist: str = "") -> dict:
+                 isolate_mcp: bool = False, expert: str = "") -> dict:
     """Start a session in-process; return `agent._start`'s result dict.
 
     `backend` ("claude" | "copilot" | "") is which agent hosts the session
@@ -110,8 +110,8 @@ def spawn_helper(target: str, prompt: str, permission_mode: str,
     servers or connectors) whatever the Preferences default says. Forwarded
     ONLY when true, so a fake `_start` without the kwarg keeps working.
 
-    `specialist` is a specialist start key (`"<id>:update"`, the daily
-    update; docs/specialists.md), forwarded only when set, likewise.
+    `expert` is an expert start key (`"<id>:update"`, the daily
+    update; docs/experts.md), forwarded only when set, likewise.
 
     `session_id` rides through because a scheduled message may target an
     EXISTING conversation ("" is a fresh one, which is all the apps API ever
@@ -134,7 +134,7 @@ def spawn_helper(target: str, prompt: str, permission_mode: str,
                                    extra_read_dirs=list(extra_read_dirs or []) or None,
                                    backend=backend or "", bot=bot or "",
                                    **({"isolate_mcp": True} if isolate_mcp else {}),
-                                   **({"specialist": specialist} if specialist else {}))
+                                   **({"expert": expert} if expert else {}))
     except FileNotFoundError as exc:
         if "claude CLI not found" in str(exc):
             return {"error":

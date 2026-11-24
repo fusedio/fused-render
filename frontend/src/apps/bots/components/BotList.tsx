@@ -45,7 +45,7 @@ export interface RowProps {
 }
 
 export function Row({ b, S, onContextMenu, sel: selProp, onOpen }: RowProps) {
-  const evs = S.events[b.id] || EMPTY, spec = b.specialist, sel = selProp ?? b.id === S.sel;
+  const evs = S.events[b.id] || EMPTY, spec = b.expert, sel = selProp ?? b.id === S.sel;
   const n = spec ? Number(spec.new) : unreadCount(b);
   const msg = spec ? previewLine(spec.last?.text || spec.about) : lastBotMsg(evs), ts = spec ? spec.last?.at || 0 : lastTs(evs), glyph = routineGlyph(b), note = b.status === "idle" ? routineNote(b) : null;
   // Super Bot with a hand-off in flight (docs §11): that outranks its last message, which is "I asked <Bot>…" anyway.
@@ -64,11 +64,10 @@ export function Row({ b, S, onContextMenu, sel: selProp, onOpen }: RowProps) {
         {needsYou(b) ? <span className="dot needsyou" title="Needs you in the browser" />
           : <span className={`dot ${b.status}${n ? " unread" : ""}`} />}</span>
       <div className="name">
-        {/* The name alone truncates (.nm); the pin and the badges never shrink, so EXPERT is never clipped to "EXP…". */}
+        {/* The name alone truncates (.nm); the pin and the badges never shrink, so a badge is never clipped. */}
         {b.pinned ? <span className="pin">📌</span> : null}<span className="nm">{b.name}</span>
         {b.kind === "super" ? <span className="super" title="Super Bot: Claude Code's own tools on this Mac">SUPER</span> : null}
-        {b.kind === "expert" ? <span className="expert" title={b.expert?.ask_me_about ? `Expert: ${b.expert.ask_me_about}` : "Expert: keeps a memory, answers tasks"}>EXPERT</span> : null}
-        {spec ? <span className="specialist" title={`Specialist: ${spec.about}`}>SPECIALIST</span> : null}
+        {spec ? <span className="expert" title={`Expert: ${spec.about}`}>EXPERT</span> : null}
         {glyph ? <span className={`rt ${glyph.warn ? "warn" : ""}`} title={glyph.title}>{MI.routines}</span> : null}
       </div>
       <div className="meta">
@@ -136,8 +135,8 @@ export function BotList({ onAddBot, onOpenUsage, onOpenBrowsers, onOpenBuilds, o
   const { shown, hidden, query } = listRows(S, q);
 
   const u = S.usage, chip = S.buildsChip;
-  // No bots on this server (Windows): the list is the specialists alone, so the bots' own doors — the usage meter,
-  // Browsers, Builds, Apps, all `/api/bots*` — are left out, and + makes a specialist (Dialogs).
+  // No bots on this server (Windows): the list is the experts alone, so the bots' own doors — the usage meter,
+  // Browsers, Builds, Apps, all `/api/bots*` — are left out, and + makes an expert (Dialogs).
   const botsOff = useBotsMissing();
   return (
     <section className="bots">
@@ -151,7 +150,7 @@ export function BotList({ onAddBot, onOpenUsage, onOpenBrowsers, onOpenBuilds, o
         {isLanHost() || botsOff ? null : <button id="browsers" className="ptog" title="Browsers · the logins your bots share" onClick={onOpenBrowsers}>
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="9" /><path d="M3 12h18M12 3c2.5 2.6 3.8 5.6 3.8 9s-1.3 6.4-3.8 9c-2.5-2.6-3.8-5.6-3.8-9S9.5 5.6 12 3Z" /></svg>
         </button>}
-        <button id="add" title={botsOff ? "New specialist" : "New bot"} onClick={onAddBot}>
+        <button id="add" title={botsOff ? "New expert" : "New bot"} onClick={onAddBot}>
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" aria-hidden="true"><path d="M12 5v14M5 12h14" /></svg>
         </button>
         <button id="lcol" className="ptog" title="Collapse or expand the bot list" onClick={toggleLeft}>
@@ -167,7 +166,7 @@ export function BotList({ onAddBot, onOpenUsage, onOpenBrowsers, onOpenBuilds, o
       <div className="listwrap">
       <div className="botlist" id="botlist" ref={listRef} onScroll={syncBar}>
         {!S.bots.length ? (botsOff
-          ? <div className="empty">No specialists yet.<br />Add one with + and teach it a subject.</div>
+          ? <div className="empty">No experts yet.<br />Add one with + and teach it a subject.</div>
           : <div className="empty">No bots yet.<br />Add one and give it a task.</div>) : (<>
           {shown.map((b) => <Row key={b.id} b={b} S={S} onContextMenu={onContextMenu} />)}
           {!shown.length && query ? <div className="empty">No bot matches.</div> : null}
@@ -178,6 +177,8 @@ export function BotList({ onAddBot, onOpenUsage, onOpenBrowsers, onOpenBuilds, o
       <div className="railbar" ref={barRef} aria-hidden="true" />
       </div>
       <footer className="botfoot">
+        {/* Why + only makes an expert here: said once, where the bots' own doors would stand. */}
+        {botsOff ? <p className="botsoff">Bots do not run on Windows yet, only experts. To use bots, run Fused Render inside WSL.</p> : null}
         {/* Builds and Apps are the Mac's pages (a tasks iframe, /api/bot-apps); the LAN door 404s them (lan.py). */}
         {isLanHost() || botsOff ? null : <>
         <button id="builds" className={`ptog${chip.live ? " live" : ""}${chip.warn ? " warn" : ""}${chip.fresh ? " fresh" : ""}`} title={chip.title}

@@ -1032,49 +1032,8 @@ test("only starred rows on the pane: Recent lists them, no Favourites heading", 
   expect(JSON.stringify(r.toJSON())).not.toContain("Favourites");
 });
 
-test("FAVOURITES ON: a Recent row wears the star left of its id — filled when starred", async () => {
-  const { publishTaskFavourites, publishFavouritesParent } = await import(
-    "@platform/lib/favourites-flag"
-  );
-  act(() => {
-    publishTaskFavourites({ enabled: true });
-    publishFavouritesParent({ enabled: true });
-  });
-  try {
-    const r = mount(
-      <Lists file="/repo/x.py" recent={[chat("s1"), chat("fav1", { starred: true })]} artifacts={[]} onOpen={() => {}} />,
-    );
-    const stars = r.root.findAll((n) => n.type === "button" && n.props["data-task-star"] !== undefined);
-    // LEFT of the id: in each row's head the star precedes the id chip.
-    for (const s of stars) {
-      let at: typeof s = s;
-      while (at.parent && at.parent.children.length < 2) at = at.parent;
-      const kids = at.parent!.children.filter((c) => typeof c !== "string") as typeof stars;
-      const idAt = kids.findIndex((c) => (c as typeof s).findAll((n) => String(n.props.className ?? "").includes("tasks-id")).length > 0);
-      expect(idAt).toBeGreaterThan(kids.indexOf(at));
-    }
-    expect(stars.map((n) => [n.props["data-task-star"], n.props["aria-pressed"]])).toEqual([
-      ["s1", false],
-      ["fav1", true],
-    ]);
-  } finally {
-    // Off by publish, not by reset: a reset drops the cached prefs read, and
-    // the next row's star would GET /api/prefs inside a later test's fetch log.
-    act(() => publishTaskFavourites({ enabled: false }));
-  }
-});
-
 test("A/B ROW: a Recent row wears the star in its count slot — filled when starred", async () => {
-  const { publishTaskHeadUnified } = await import("@shell/task-head-flag");
-  const { publishTaskFavourites, publishFavouritesParent } = await import(
-    "@platform/lib/favourites-flag"
-  );
-  act(() => {
-    publishTaskFavourites({ enabled: true });
-    publishFavouritesParent({ enabled: true });
-    publishTaskHeadUnified({ enabled: true });
-  });
-  try {
+  {
     const r = mount(
       <Lists file="/repo/x.py" recent={[chat("s1"), chat("fav1", { starred: true })]} artifacts={[]} onOpen={() => {}} />,
     );
@@ -1099,62 +1058,35 @@ test("A/B ROW: a Recent row wears the star in its count slot — filled when sta
       ["s1", false],
       ["fav1", true],
     ]);
-  } finally {
-    // Off by publish, not by reset: a reset drops the cached prefs read, and
-    // the next row's star would GET /api/prefs inside a later test's fetch log.
-    act(() => {
-      publishTaskFavourites({ enabled: false });
-      publishTaskHeadUnified({ enabled: false });
-    });
   }
 });
 
-test("A/B ROW, ICONS ON: every numbered row's status icon is the icon picker's button, ring or face", async () => {
-  const { publishTaskHeadUnified } = await import("@shell/task-head-flag");
+test("A/B ROW: every numbered row's status icon is the icon picker's button, ring or face", async () => {
   // Akshil, 2026-11-15: "click on status icon, when it is fav … change icon";
   // 2026-11-16: the icon is not the star's — the plain ring of any task opens
   // the picker too. A row with no number yet has nothing to stamp a pick on.
-  const { publishTaskFavourites, publishFavouritesParent } = await import(
-    "@platform/lib/favourites-flag"
+  const r = mount(
+    <Lists
+      file="/repo/x.py"
+      recent={[chat("s1"), chat("fav1", { starred: true, icon_slot: 3 }), chat("s3", { task_id: "" })]}
+      artifacts={[]}
+      onOpen={() => {}}
+    />,
   );
-  const { publishTaskIcons } = await import("@platform/lib/task-icons-flag");
-  act(() => {
-    publishTaskFavourites({ enabled: true });
-    publishFavouritesParent({ enabled: true });
-    publishTaskIcons({ enabled: true });
-    publishTaskHeadUnified({ enabled: true });
-  });
-  try {
-    const r = mount(
-      <Lists
-        file="/repo/x.py"
-        recent={[chat("s1"), chat("fav1", { starred: true, icon_slot: 3 }), chat("s3", { task_id: "" })]}
-        artifacts={[]}
-        onOpen={() => {}}
-      />,
-    );
-    const rows = all(r.toJSON() as Json, "tasks-row");
-    expect(rows.length).toBe(3);
-    const picks = rows.map((row) => all(all(row, "tasks-rowmark")[0], "task-icon-pick"));
-    expect(picks[0].length).toBe(1);
-    expect(picks[1].length).toBe(1);
-    expect(picks[2].length).toBe(0);
-    for (const pick of picks.slice(0, 2)) {
-      expect((pick[0].props as { "aria-label"?: string })["aria-label"]).toBe("Choose icon");
-    }
-    // The ring is drawn inside the button on s1, the glyph on fav1.
-    expect(JSON.stringify(picks[0][0])).not.toContain("schedule-ring--glyph");
-    expect(JSON.stringify(picks[1][0])).toContain("schedule-ring--glyph");
-    // The ring's slot holds no filing button on either: Archive is the id's.
-    for (const row of rows) expect(all(all(row, "tasks-rowmark")[0], "tasks-act").length).toBe(0);
-  } finally {
-    // Off by publish, not by reset (the star test's own note).
-    act(() => {
-      publishTaskIcons({ enabled: false });
-      publishTaskFavourites({ enabled: false });
-      publishTaskHeadUnified({ enabled: false });
-    });
+  const rows = all(r.toJSON() as Json, "tasks-row");
+  expect(rows.length).toBe(3);
+  const picks = rows.map((row) => all(all(row, "tasks-rowmark")[0], "task-icon-pick"));
+  expect(picks[0].length).toBe(1);
+  expect(picks[1].length).toBe(1);
+  expect(picks[2].length).toBe(0);
+  for (const pick of picks.slice(0, 2)) {
+    expect((pick[0].props as { "aria-label"?: string })["aria-label"]).toBe("Choose icon");
   }
+  // The ring is drawn inside the button on s1, the glyph on fav1.
+  expect(JSON.stringify(picks[0][0])).not.toContain("schedule-ring--glyph");
+  expect(JSON.stringify(picks[1][0])).toContain("schedule-ring--glyph");
+  // The ring's slot holds no filing button on either: Archive is the id's.
+  for (const row of rows) expect(all(all(row, "tasks-rowmark")[0], "tasks-act").length).toBe(0);
 });
 
 test("a Recent press moves the list's last mark, never the rail favourites' own", async () => {
@@ -1604,40 +1536,8 @@ test("every host draws the Upcoming lane; no host can filter it out", () => {
   }
 });
 
-test("a Recent chats row offers Archive on hover, like the Tasks page row (Akshil, 2026-09-21)", () => {
-  // Rendered, not read out of the source: the button must be IN the borrowed
-  // row's mark slot, wearing the same class the Tasks page reveals on hover.
-  const r = mount(
-    <Lists
-      file="/repo/x.py"
-      recent={[
-        chat("s1", { status: "done" }),
-        chat("s2", { status: "archived" }),
-        chat("s3", { status: "in_progress" }),
-      ]}
-      artifacts={[]}
-      onOpen={() => {}}
-    />,
-  );
-  const json = r.toJSON() as Json;
-  const rows = all(json, "tasks-row");
-  expect(rows.length).toBe(3);
-  const kinds = rows.map((row) => {
-    const act = all(row, "tasks-act")[0];
-    return act ? String((act.props as { className?: string }).className) : "";
-  });
-  expect(kinds[0]).toContain("tasks-act--archive");
-  expect(kinds[1]).toContain("tasks-act--unarchive");
-  // A run in flight is the one row with nothing to file.
-  expect(kinds[2]).toBe("");
-  // Inside the ring's slot, so no pixel of the row moves when it appears.
-  expect(all(all(rows[0], "tasks-rowmark")[0], "tasks-act").length).toBe(1);
-});
-
 test("A/B ROW: a Recent chats row's Archive stands over the id, not the ring", async () => {
-  const { publishTaskHeadUnified } = await import("@shell/task-head-flag");
-  act(() => publishTaskHeadUnified({ enabled: true }));
-  try {
+  {
     // The a/b row (Akshil, 2026-11-15): the same button, in the id's slot.
     const r = mount(
       <Lists
@@ -1669,31 +1569,5 @@ test("A/B ROW: a Recent chats row's Archive stands over the id, not the ring", a
     for (const row of rows) {
       expect(String((row.props as { className?: string }).className)).toContain("tasks-row--ab");
     }
-  } finally {
-    act(() => publishTaskHeadUnified({ enabled: false }));
-  }
-});
-
-test("FLAG OFF: the row is the legacy row — no a/b modifier, no id slot, no b seats", () => {
-  // `task_head_unified_enabled` off (its default): the a/b row's seats are not
-  // drawn at all, so nothing the a/b stylesheet scopes can reach this row.
-  const r = mount(
-    <Lists
-      file="/repo/x.py"
-      recent={[chat("s1", { status: "done" }), chat("s2", { status: "archived" })]}
-      artifacts={[]}
-      onOpen={() => {}}
-    />,
-  );
-  const json = r.toJSON() as Json;
-  const rows = all(json, "tasks-row");
-  expect(rows.length).toBe(2);
-  for (const row of rows) {
-    expect(String((row.props as { className?: string }).className)).not.toContain("tasks-row--ab");
-    expect(all(row, "tasks-rowmark")[0]).toBeDefined();
-    expect(all(all(row, "tasks-rowmark")[0], "tasks-act").length).toBe(1);
-    expect(all(row, "tasks-idslot").length).toBe(0);
-    expect(all(row, "tasks-bseat").length).toBe(0);
-    expect(all(row, "task-icon-pick").length).toBe(0);
   }
 });

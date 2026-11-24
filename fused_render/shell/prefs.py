@@ -497,21 +497,21 @@ def chat_recap_enabled() -> bool:
     return read_prefs().get("chat_recap_enabled") is not False
 
 
-def specialists_enabled() -> bool:
-    """Whether Specialists are on (default off — experimental). Env `FUSED_RENDER_SPECIALISTS` "1"/"0" wins
+def experts_enabled() -> bool:
+    """Whether Experts are on (default off — experimental). Env `FUSED_RENDER_EXPERTS` "1"/"0" wins
     both ways; else only a stored `true` is on. Off, no Bots rows, no routes, no task tools, no timers."""
-    env = os.environ.get("FUSED_RENDER_SPECIALISTS")
+    env = os.environ.get("FUSED_RENDER_EXPERTS")
     if env in ("1", "0"):
         return env == "1"
-    return read_prefs().get("specialists_enabled") is True
+    return read_prefs().get("experts_enabled") is True
 
 
 def breakout_enabled() -> bool:
     """Whether Breakout (research-only side chats seeded from selected messages)
     is available (default off — opt-in beta). Off, no Breakout buttons render
     and the agent refuses `breakout` starts. Only a stored `true` is on, or
-    Specialists on (a specialist's breakout is the plain one)."""
-    return specialists_enabled() or read_prefs().get("breakout_enabled") is True
+    Experts on (an expert's breakout is the plain one)."""
+    return experts_enabled() or read_prefs().get("breakout_enabled") is True
 
 
 def canvas_shot_slow_fallback_enabled() -> bool:
@@ -526,78 +526,19 @@ def canvas_shot_slow_fallback_enabled() -> bool:
     return read_prefs().get("canvas_shot_slow_fallback_enabled") is True
 
 
-def canvas_rail_peek_enabled() -> bool:
-    """Whether the canvas page's collapsed Claude rail shows a chat under the
-    pointer as a floating, live card (hover one of the rail's status rings →
-    the chat itself, scrollable and typeable, beside the rail) instead of the
-    one-line caption alone. Default off. Same idiom as
-    `canvas_shot_slow_fallback_enabled`: only a stored `true` is on.
+def rail_extras_enabled() -> bool:
+    """Whether the Claude rail's extras are on (owner, 2026-11-23: one switch
+    for three): a file page's other views (the mode menu's entries, the
+    active one left out) as doors above Git, each previewing the file that
+    way in a rail card; the expandable rail (a button at its top left widens
+    it to icon + title, its inner edge drags its width); and FREE PINS — a
+    pinned rail window keeps its exact place and size and the rail's column
+    goes to a second, non-pinned window (up to four windows). Default off.
+    Same idiom as `canvas_shot_slow_fallback_enabled`: only a stored `true`
+    is on. The three switches it replaced (file views on the rail, the
+    expandable rail, free rail pins) are ignored if still on disk.
     """
-    return read_prefs().get("canvas_rail_peek_enabled") is True
-
-
-def task_favourites_enabled() -> bool:
-    """Whether chats can be FAVOURITED (owner, 2026-11-03): the star on the
-    rail's preview card, the favourites section at the rail's foot, the
-    favourite's own card beside it, the pane's Favourites block. Default off.
-    Same idiom as `canvas_rail_peek_enabled`: only a stored `true` is on.
-    The favourites themselves (`tasks_store.FAVOURITES_FILE`) are kept
-    either way; the switch only shows or hides them.
-    """
-    return read_prefs().get("task_favourites_enabled") is True
-
-
-def task_head_unified_enabled() -> bool:
-    """Whether every task view (the Tasks page side panel, the rail Tasks
-    card, the New task card, the Cards popup) draws ONE shared task header
-    instead of its own. Default off. Same idiom as `canvas_rail_peek_enabled`:
-    only a stored `true` is on.
-    """
-    return read_prefs().get("task_head_unified_enabled") is True
-
-
-def rail_free_pins_enabled() -> bool:
-    """Whether the Claude rail's pinned windows are FREE PINS: a pin belongs
-    to its task, freezes the window's box where it stood, never moves or
-    resizes on its own, and leaves the rail's column to a second, non-pinned
-    window (up to four windows: one pin and one non-pin per section). Only
-    read with `task_head_unified_enabled` on (the pin itself). Default off.
-    Same idiom as `canvas_rail_peek_enabled`: only a stored `true` is on.
-    """
-    return read_prefs().get("rail_free_pins_enabled") is True
-
-
-def rail_mode_doors_enabled() -> bool:
-    """Whether a file page's Claude rail shows the file's other modes (the
-    top-right mode menu's entries, the active one left out) as doors above
-    Git, each previewing the file in that mode in a rail card. Only read with
-    `canvas_rail_peek_enabled` on (the rail's doors). Default off. Same idiom
-    as `canvas_rail_peek_enabled`: only a stored `true` is on.
-    """
-    return read_prefs().get("rail_mode_doors_enabled") is True
-
-
-def task_icons_enabled() -> bool:
-    """Whether a task can wear a GLYPH in place of its status ring (owner,
-    2026-11-10, experiment): one of 299 line drawings, chosen from the
-    task's number (`tasks_store.icon_slot`) or picked — pressing the ring or
-    icon opens a picker. A favourite wears one unless it was removed, any
-    other task once one is picked (2026-11-16, `tasks_store.worn_icons`).
-    Default off; only a stored `true` is on. The listing sends `icon_slot`
-    either way — the switch only changes what the shell draws.
-    """
-    return read_prefs().get("task_icons_enabled") is True
-
-
-def experts_enabled() -> bool:
-    """Whether EXPERTS are offered (docs/experts.md §17; experiment, owner
-    2026-11-19): expert bots in the Bots page and the sidebar, the expert
-    tools in task sessions, the task-learn timer, the shipped-expert seed and
-    expert package imports. Default off; only a stored `true` is on. Off
-    HIDES experts and never deletes one: their folders and memory stay on
-    disk, and turning this on again brings them back as they were.
-    """
-    return read_prefs().get("experts_enabled") is True
+    return read_prefs().get("rail_extras_enabled") is True
 
 
 def task_summary_titles_enabled() -> bool:
@@ -1326,30 +1267,14 @@ def _prefs_response() -> dict:
         "chat_recap": {"enabled": chat_recap_enabled()},
         # Breakout side chats (opt-in beta, `breakout_enabled`).
         "breakout": {"enabled": breakout_enabled()},
-        # Specialists (experimental, `specialists_enabled`; env can force it).
-        "specialists": {"enabled": specialists_enabled()},
+        # Experts (experimental, `experts_enabled`; env can force it).
+        "experts": {"enabled": experts_enabled()},
         # The slow in-canvas screenshot fallback on a Mac
         # (`canvas_shot_slow_fallback_enabled`; off by default).
         "canvas_shot": {"slow_fallback": canvas_shot_slow_fallback_enabled()},
-        # The collapsed Claude rail's hover preview card on the canvas page
-        # (`canvas_rail_peek_enabled`; off by default). A hover previews, a
-        # click pins; there is no trigger choice (the old
-        # `canvas_rail_peek_trigger` key is ignored if still on disk).
-        "canvas_rail_peek": {"enabled": canvas_rail_peek_enabled()},
-        # Favourite chats (`task_favourites_enabled`; off by default).
-        "task_favourites": {"enabled": task_favourites_enabled()},
-        # One shared task header in every task view (`task_head_unified_enabled`;
-        # off by default).
-        "task_head_unified": {"enabled": task_head_unified_enabled()},
-        # Free pins on the Claude rail (`rail_free_pins_enabled`; off by default).
-        "rail_free_pins": {"enabled": rail_free_pins_enabled()},
-        # A file's other modes as doors on the rail (`rail_mode_doors_enabled`;
-        # off by default).
-        "rail_mode_doors": {"enabled": rail_mode_doors_enabled()},
-        # Task icons in place of the status ring (`task_icons_enabled`; off).
-        "task_icons": {"enabled": task_icons_enabled()},
-        # Expert bots (`experts_enabled`; off — hidden, never deleted).
-        "experts": {"enabled": experts_enabled()},
+        # The rail's extras — mode doors, the expandable rail, free pins
+        # (`rail_extras_enabled`; off by default).
+        "rail_extras": {"enabled": rail_extras_enabled()},
         # Stable AI Tasks titles (`task_summary_titles_enabled`).
         "task_summary_titles": {"enabled": task_summary_titles_enabled()},
         # Lean Claude sessions (`claude_strict_mcp_enabled`, default off).
@@ -1552,19 +1477,19 @@ def _forced_by(env_name: str, override) -> str | None:
     return os.environ.get(env_name) if override is not None else None
 
 
-def _specialists_switched() -> None:
-    """On (the env can hold it on whatever was stored): seed the shipped specialists and start the daily update;
+def _experts_switched() -> None:
+    """On (the env can hold it on whatever was stored): seed the shipped experts and start the daily update;
     off: stop it. Best-effort: never fails the preference write."""
     try:
-        if specialists_enabled():
-            from fused_render.specialists import scheduler, seed
+        if experts_enabled():
+            from fused_render.experts import scheduler, seed
 
             seed.seed()
             scheduler.start()
-        elif "fused_render.specialists.scheduler" in sys.modules:
-            sys.modules["fused_render.specialists.scheduler"].stop()
+        elif "fused_render.experts.scheduler" in sys.modules:
+            sys.modules["fused_render.experts.scheduler"].stop()
     except Exception:  # noqa: BLE001
-        logger.exception("specialists: switching on/off failed")
+        logger.exception("experts: switching on/off failed")
 
 
 @router.get("/api/prefs")
@@ -1705,12 +1630,12 @@ def put_prefs(body: dict = Body(...), x_fused: str | None = Header(default=None)
                                     status_code=400)
             prefs["breakout_enabled"] = value
             changed = True
-        if "specialists_enabled" in body:
-            value = body.get("specialists_enabled")
+        if "experts_enabled" in body:
+            value = body.get("experts_enabled")
             if not isinstance(value, bool):
-                return JSONResponse({"error": "'specialists_enabled' must be a boolean"},
+                return JSONResponse({"error": "'experts_enabled' must be a boolean"},
                                     status_code=400)
-            prefs["specialists_enabled"] = value
+            prefs["experts_enabled"] = value
             changed = True
         if "canvas_shot_slow_fallback_enabled" in body:
             value = body.get("canvas_shot_slow_fallback_enabled")
@@ -1719,54 +1644,12 @@ def put_prefs(body: dict = Body(...), x_fused: str | None = Header(default=None)
                                     status_code=400)
             prefs["canvas_shot_slow_fallback_enabled"] = value
             changed = True
-        if "canvas_rail_peek_enabled" in body:
-            value = body.get("canvas_rail_peek_enabled")
+        if "rail_extras_enabled" in body:
+            value = body.get("rail_extras_enabled")
             if not isinstance(value, bool):
-                return JSONResponse({"error": "'canvas_rail_peek_enabled' must be a boolean"},
+                return JSONResponse({"error": "'rail_extras_enabled' must be a boolean"},
                                     status_code=400)
-            prefs["canvas_rail_peek_enabled"] = value
-            changed = True
-        if "task_favourites_enabled" in body:
-            value = body.get("task_favourites_enabled")
-            if not isinstance(value, bool):
-                return JSONResponse({"error": "'task_favourites_enabled' must be a boolean"},
-                                    status_code=400)
-            prefs["task_favourites_enabled"] = value
-            changed = True
-        if "task_head_unified_enabled" in body:
-            value = body.get("task_head_unified_enabled")
-            if not isinstance(value, bool):
-                return JSONResponse({"error": "'task_head_unified_enabled' must be a boolean"},
-                                    status_code=400)
-            prefs["task_head_unified_enabled"] = value
-            changed = True
-        if "rail_free_pins_enabled" in body:
-            value = body.get("rail_free_pins_enabled")
-            if not isinstance(value, bool):
-                return JSONResponse({"error": "'rail_free_pins_enabled' must be a boolean"},
-                                    status_code=400)
-            prefs["rail_free_pins_enabled"] = value
-            changed = True
-        if "rail_mode_doors_enabled" in body:
-            value = body.get("rail_mode_doors_enabled")
-            if not isinstance(value, bool):
-                return JSONResponse({"error": "'rail_mode_doors_enabled' must be a boolean"},
-                                    status_code=400)
-            prefs["rail_mode_doors_enabled"] = value
-            changed = True
-        if "task_icons_enabled" in body:
-            value = body.get("task_icons_enabled")
-            if not isinstance(value, bool):
-                return JSONResponse({"error": "'task_icons_enabled' must be a boolean"},
-                                    status_code=400)
-            prefs["task_icons_enabled"] = value
-            changed = True
-        if "experts_enabled" in body:
-            value = body.get("experts_enabled")
-            if not isinstance(value, bool):
-                return JSONResponse({"error": "'experts_enabled' must be a boolean"},
-                                    status_code=400)
-            prefs["experts_enabled"] = value
+            prefs["rail_extras_enabled"] = value
             changed = True
         if "task_summary_titles_enabled" in body:
             value = body.get("task_summary_titles_enabled")
@@ -2101,13 +1984,9 @@ def put_prefs(body: dict = Body(...), x_fused: str | None = Header(default=None)
                           "'native_windows_enabled', 'chromium_windows_enabled', "
                           "'task_notify_terminal_sessions', "
                           "'project_queue_enabled', "
-                          "'chat_recap_enabled', 'breakout_enabled', 'specialists_enabled', "
+                          "'chat_recap_enabled', 'breakout_enabled', 'experts_enabled', "
                           "'canvas_shot_slow_fallback_enabled', "
-                          "'canvas_rail_peek_enabled', 'task_favourites_enabled', "
-                          "'task_head_unified_enabled', "
-                          "'rail_free_pins_enabled', "
-                          "'rail_mode_doors_enabled', "
-                          "'task_icons_enabled', 'experts_enabled', "
+                          "'rail_extras_enabled', "
                           "'task_summary_titles_enabled', "
                           "'claude_strict_mcp_enabled', 'claude_default_permission', "
                           "'bots_autostage', 'bots_sounds', 'bots_clear_enabled', "
@@ -2127,11 +2006,11 @@ def put_prefs(body: dict = Body(...), x_fused: str | None = Header(default=None)
                 status_code=400,
             )
         _store(prefs)
-    if isinstance(body.get("specialists_enabled"), bool):
+    if isinstance(body.get("experts_enabled"), bool):
         # AFTER the write, like `lan_enabled`.
-        _specialists_switched()
+        _experts_switched()
     elif body.get("canvases_enabled") is True:
-        _specialists_switched()  # the shipped specialists wait for Canvases too (specialists/seed.py)
+        _experts_switched()  # the shipped experts wait for Canvases too (experts/seed.py)
     if body.get("canvases_embed_proxy") is False:
         # AFTER the write, like `lan_enabled`: stop the listener now rather
         # than at the next status read. Turning it ON is left to status,

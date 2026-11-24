@@ -2776,7 +2776,7 @@ def test_a_failed_verdict_outvotes_liveness_the_same_way(client, projects_dir):
     idling in In Progress for the rest of the window."""
     _write_transcript(projects_dir, "sess-a", "/p", [
         _user("go", _near_now(-30), uuid="u1"),
-        _assistant("it broke", _near_now(-5)),
+        _api_error("API Error: Can't reach the API server", _near_now(-5)),
     ])
     _seed_schedule([_entry("e1", "go", _near_now(-30), state=schedule.SENT,
                            fired=_near_now(-30), turn="failed",
@@ -2784,6 +2784,24 @@ def test_a_failed_verdict_outvotes_liveness_the_same_way(client, projects_dir):
     task = _by_key(client)["sess-a"]
     assert task["status"] == "blocked"
     assert task["live"] is False
+
+
+def test_a_failed_verdict_over_an_answered_turn_reads_done(client, projects_dir):
+    """"Even when my task is done it shows blocked" (Akshil, 2026-11-23). The
+    watcher said `failed`, but the transcript the chat draws ends on an ANSWER
+    and no error row — nothing on screen says why it would be blocked, so it is
+    not."""
+    _write_transcript(projects_dir, "sess-a", "/p", [
+        _user("go", _near_now(-30), uuid="u1"),
+        _assistant("all done", _near_now(-5)),
+    ])
+    _seed_schedule([_entry("e1", "go", _near_now(-30), state=schedule.SENT,
+                           fired=_near_now(-30), turn="failed",
+                           claude_session_id="sess-a")])
+    task = _by_key(client)["sess-a"]
+    assert task["status"] == "done"
+    assert task["failed"] is False
+    assert task["blocked_reason"] == ""
 
 
 def test_a_new_turn_after_the_resolved_run_still_reads_as_running(

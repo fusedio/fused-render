@@ -2,7 +2,7 @@
 // Every call goes through request(): one place counts calls in flight, reports a call still pending after STALL_MS
 // (the store shows it in the banner) and logs anything slower than SLOW_MS. The store installs those hooks
 // (apiHooks) at load, so this module imports nothing from it.
-import type { Specialist } from "@platform/lib/specialists";
+import type { Expert } from "@platform/lib/experts";
 
 // ------------------------------------------------------------------ wire types (§2) ----
 /** `note`: a muted harness line in the thread ("Already ran …", "Still waiting for Approve / Deny on …"); not a bubble, not reactable. */
@@ -198,14 +198,11 @@ export interface Bot {
   /** Folders on this Mac the bot may READ (`ls` / `find` / `readfile`; Settings › Permissions › Folders it may read).
    *  Plain absolute paths, the user's own: the bot never writes there and only the dialog edits the list. */
   folders?: string[];
-  /** "super": the one bot per Mac with Claude Code's own tools (docs §5 "Super Bot"); "expert": no browser, one
-   *  memory file it keeps itself, tapped by task sessions (docs/experts.md); "specialist": a row the page makes from
-   *  /api/specialists (docs/specialists.md), not a bot the bots backend knows; absent for an ordinary bot. */
-  kind?: "bot" | "super" | "expert" | "specialist";
-  /** Expert only: its settings (experts.store.manifest). */
-  expert?: ExpertManifest | null;
-  /** Specialist only: its row (state/store.ts specialistBots). */
-  specialist?: Specialist;
+  /** "super": the one bot per Mac with Claude Code's own tools (docs §5 "Super Bot"); "expert": a row the page
+   *  makes from /api/experts (docs/experts.md), not a bot the bots backend knows; absent for an ordinary bot. */
+  kind?: "bot" | "super" | "expert";
+  /** Expert only: its row (state/store.ts expertBots). */
+  expert?: Expert;
   /** Super Bot's permission posture: ask before writes / edits / shell, or unattended (Claude's own judgement). */
   super_access?: "ask" | "full";
   face?: Face | null;
@@ -266,41 +263,6 @@ export interface Bot {
   viewport?: [number, number];
   /** Events past the page's cursor for this bot (merged into the store, then dropped). */
   events: BotEvent[];
-}
-
-// ------------------------------------------------------------------ experts (docs/experts.md) ----
-/** bot.meta["expert"] (experts.store.manifest): the one-line description expert_list shows, and the shipped key ("" if none). */
-export interface ExpertManifest { ask_me_about?: string; shipped?: string }
-/** A session that changed memory.md (the change log), as GET …/memory lists it: newest first, at most 20. */
-export interface ExpertChange { id: string; kind: ExpertSessionKind | (string & {}); started: number; trigger?: ExpertTrigger | null }
-/** GET /api/experts/<id>/memory: memory.md as it stands, where it is, its size against the compaction limit, whether
- *  it was edited by hand since the last session wrote it, and the sessions that changed it. */
-export interface ExpertMemory {
-  text: string; path: string; lines: number; bytes: number; limit_lines: number; limit_bytes: number;
-  edited_by_hand?: boolean; writing?: boolean; changes?: ExpertChange[];
-}
-/** GET / POST /api/experts/<id>/instructions: what the expert is told (instructions.md, the default text when there
- *  is none, then a legacy Settings extra), where the file is, the most characters a save takes, whether the text
- *  ends with that legacy extra, the shipped key ("" if none) and whether the file is still a shipped version (the
- *  app replaces it when the shipped one changes; false once it was edited). */
-export interface ExpertInstructions { text: string; path: string; limit: number; legacy?: boolean; shipped?: string; follows_shipped?: boolean }
-/** "chat": a row only for a main-thread chat turn that changed memory (no transcript). */
-export type ExpertSessionKind = "chat" | "ask" | "task-learn" | "dream";
-/** What started a session, by kind: chat {message}; ask {asker, question, session_id?}; task-learn {session_id,
- *  run_id?, target, backend, from_size, to_size}; dream (memory compaction) {lines, bytes}. Every key optional here. */
-export interface ExpertTrigger {
-  message?: string; asker?: string; question?: string; session_id?: string; run_id?: string; target?: string; backend?: string;
-  from_size?: number; to_size?: number; lines?: number; bytes?: number; [k: string]: unknown;
-}
-export type ExpertSessionStatus = "running" | "done" | "error" | "interrupted";
-/** One line of a side session's transcript. */
-export interface ExpertTurn { role: "prompt" | "expert" | "tool" | "refused" | (string & {}); text: string }
-/** One side session (`.fused/expert/sessions/<id>.json`). The list leaves `transcript` out; `memory_diff` is the
- *  unified diff of memory.md before / after ("" when it changed nothing). Times are unix seconds. */
-export interface ExpertSession {
-  id: string; kind: ExpertSessionKind | (string & {}); started: number; ended: number | null;
-  status: ExpertSessionStatus | (string & {}); trigger?: ExpertTrigger | null;
-  transcript?: ExpertTurn[]; memory_diff?: string; answer?: string; error?: string; cost_usd?: number;
 }
 
 export interface UsageBotRow { id: string; name: string; today: number; week: number; models: Record<string, number>; errors: number; last: number; live: boolean }
@@ -403,12 +365,20 @@ export interface PackageWriteBody { memory: boolean; apps: string[]; file_name?:
 /** GET /api/bots/setup. `chrome.found` null = could not tell; `claude` is fused-render's cached Claude Code health
  *  snapshot (never a spawn), read loosely: only `found` and `signed_in` are looked at. */
 export interface SetupReply {
-  chrome: { found: boolean | null; path: string | null };
+  /** `install` (only when not found): whether the Install button can work here, see ChromeInstallPlan. */
+  chrome: { found: boolean | null; path: string | null; wsl?: boolean; install?: ChromeInstallPlan };
   claude: { found?: boolean | null; signed_in?: boolean | null; version?: string | null; [k: string]: unknown };
   /** Who runs the bots on this machine (one owner process, bots/registry.py): `this` = the server this page
    *  talks to; else that app forwards here from the named one. `known` false = an older app holds the lock
    *  and wrote no record. null = no process runs them. Absent from an older server. */
   owner?: BotsOwner | null;
+}
+/** bots/chrome_install.plan(): `available` only inside WSL with apt on x86-64; else `reason` says why not.
+ *  `command` is the line to paste into a WSL terminal instead. */
+export interface ChromeInstallPlan { available: boolean; reason: string; command: string }
+/** GET/POST /api/bots/setup/chrome: the one install's record. `output` is apt's own last lines. */
+export interface ChromeInstallStatus {
+  state: "idle" | "running" | "done" | "error"; detail: string; output: string; error: string | null;
 }
 export interface BotsOwner {
   this: boolean; known: boolean; stalled: boolean;
@@ -494,8 +464,6 @@ export interface SettingsBody {
   allow_rules_remove?: AllowRule[];
   /** The whole list of folders the bot may read (the dialog is its only writer). */
   folders?: string[];
-  /** Expert only: the one-line description task sessions see in expert_list. */
-  ask_me_about?: string;
   /** "" or the bot's own id = a browser of its own; another bot's `browser_id` = share its logins. Refused while a task runs. */
   browser_id?: string;
 }
@@ -580,6 +548,10 @@ export const api = {
   starterUpdate: (key: string) => post<StarterInstallReply>(`/api/bot-apps/starters/${encodeURIComponent(key)}/update`, {}, "starter_update"),
   /** GET /api/bots/setup: is there a Chrome to drive and a Claude Code to think with (the empty hero's setup lines). */
   setup: () => get<SetupReply>(`${B}/setup`, "setup"),
+  /** POST /api/bots/setup/chrome: install Google Chrome inside WSL (apt, as root through wsl.exe). 409 with the
+   *  reason when it cannot run here or one is already running. Poll chromeInstallStatus for its progress. */
+  chromeInstall: () => post<ChromeInstallStatus>(`${B}/setup/chrome`, {}, "setup/chrome"),
+  chromeInstallStatus: () => get<ChromeInstallStatus>(`${B}/setup/chrome`, "setup/chrome"),
   /** POST /api/bots/workspace/take: ask the server holding the workspace claim to yield and claim it here (the
    *  banner's Override after a "workspace_busy" 409). 409 again, with the reason, when it could not. */
   workspaceTake: () => post<{ taken: boolean; error: string }>(`${B}/workspace/take`, {}, "workspace/take"),
@@ -587,42 +559,31 @@ export const api = {
   starterStatus: () => get<{ ok: true; ready: Record<string, boolean | null>; why: Record<string, string> }>("/api/bot-apps/starters/status", "starter_status"),
 };
 
-const xid = (id: string) => `/api/experts/${encodeURIComponent(id)}`;
-/** /api/experts/<id>/… (experts/routes.py). An expert's id is its bot id. */
-export const expertApi = {
-  memory: (id: string) => get<ExpertMemory>(`${xid(id)}/memory`, "expert memory"),
-  sessions: (id: string) => get<{ sessions: ExpertSession[] }>(`${xid(id)}/sessions`, "expert sessions"),
-  session: (id: string, sid: string) => get<ExpertSession>(`${xid(id)}/sessions/${encodeURIComponent(sid)}`, "expert session"),
-  instructions: (id: string) => get<ExpertInstructions>(`${xid(id)}/instructions`, "expert instructions"),
-  /** Writes instructions.md whole. Refused (400, a sentence) when empty or over the limit: nothing is cut. */
-  saveInstructions: (id: string, text: string) => post<ExpertInstructions>(`${xid(id)}/instructions`, { text }, "expert instructions"),
-};
-
-const sid = (id: string) => `/api/specialists/${encodeURIComponent(id)}`;
-export interface SpecialistBody { name: string; about: string; folder: string; face: Face | null }
+const sid = (id: string) => `/api/experts/${encodeURIComponent(id)}`;
+export interface ExpertBody { name: string; about: string; folder: string; face: Face | null }
 /** An inbox file: a note's text, or a conversation's pointer; `kind` and `title` from its first line. */
-export interface SpecialistEntry { name: string; text: string; at: number; kind: "note" | "task" | "breakout" | "chat"; title: string }
+export interface ExpertEntry { name: string; text: string; at: number; kind: "note" | "task" | "breakout" | "chat"; title: string }
 /** A commit of its history: a learning run ("Update"; `read` entries) or a change to memory or skills. */
-export interface SpecialistChange { sha: string; at: number; label: string; read: number; changed: boolean }
-export interface SpecialistChat { session_id: string | null; folded: { session_id: string; at: number }[] }
-/** /api/specialists/<id>/… (fused_render/specialists/routes.py). */
-export const specialistApi = {
-  create: (body: SpecialistBody) => post<Specialist>("/api/specialists", body, "new specialist"),
-  patch: (id: string, body: SpecialistBody) => request<Specialist>("PATCH", sid(id), body, "specialist settings"),
-  remove: (id: string) => request<Ok>("DELETE", sid(id), undefined, "delete specialist"),
-  chat: (id: string) => get<SpecialistChat>(`${sid(id)}/chat`, "specialist chat"),
-  clear: (id: string) => post<SpecialistChat>(`${sid(id)}/chat/clear`, {}, "specialist clear"),
+export interface ExpertChange { sha: string; at: number; label: string; read: number; changed: boolean }
+export interface ExpertChat { session_id: string | null; folded: { session_id: string; at: number }[] }
+/** /api/experts/<id>/… (fused_render/experts/routes.py). */
+export const expertApi = {
+  create: (body: ExpertBody) => post<Expert>("/api/experts", body, "new expert"),
+  patch: (id: string, body: ExpertBody) => request<Expert>("PATCH", sid(id), body, "expert settings"),
+  remove: (id: string) => request<Ok>("DELETE", sid(id), undefined, "delete expert"),
+  chat: (id: string) => get<ExpertChat>(`${sid(id)}/chat`, "expert chat"),
+  clear: (id: string) => post<ExpertChat>(`${sid(id)}/chat/clear`, {}, "expert clear"),
   /** Its main chat as Markdown (the task chat's export). */
   exportChat: (id: string) => get<{ name: string; text: string }>(`${sid(id)}/chat/export`, "export"),
-  seen: (id: string) => post<Ok>(`${sid(id)}/seen`, {}, "specialist seen"),
-  memory: (id: string) => get<{ text: string }>(`${sid(id)}/memory`, "specialist memory"),
-  skills: (id: string) => get<{ skills: { name: string; description: string; text: string }[] }>(`${sid(id)}/skills`, "specialist skills"),
-  notes: (id: string) => get<{ notes: SpecialistEntry[] }>(`${sid(id)}/notes`, "specialist notes"),
+  seen: (id: string) => post<Ok>(`${sid(id)}/seen`, {}, "expert seen"),
+  memory: (id: string) => get<{ text: string }>(`${sid(id)}/memory`, "expert memory"),
+  skills: (id: string) => get<{ skills: { name: string; description: string; text: string }[] }>(`${sid(id)}/skills`, "expert skills"),
+  notes: (id: string) => get<{ notes: ExpertEntry[] }>(`${sid(id)}/notes`, "expert notes"),
   deleteNote: (id: string, name: string) => request<Ok>("DELETE", `${sid(id)}/notes/${encodeURIComponent(name)}`, undefined, "delete note"),
-  changes: (id: string) => get<{ changes: SpecialistChange[] }>(`${sid(id)}/changes`, "specialist changes"),
+  changes: (id: string) => get<{ changes: ExpertChange[] }>(`${sid(id)}/changes`, "expert changes"),
   /** `reply` and `read` for a learning run only. */
   diff: (id: string, sha: string) => get<{ diff: string; reply?: string; read?: { kind: string; title: string }[] }>(
-    `${sid(id)}/changes/${encodeURIComponent(sha)}`, "specialist diff"),
+    `${sid(id)}/changes/${encodeURIComponent(sha)}`, "expert diff"),
   /** Learn now. `started` false: nothing was waiting. */
   update: (id: string) => post<{ started: boolean }>(`${sid(id)}/update`, {}, "learn now"),
 };

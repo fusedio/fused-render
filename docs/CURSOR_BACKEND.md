@@ -139,7 +139,7 @@ agent.py:      _HOST_FILES["cursor"] = cursor_host.py; _SELF_MINTED_ID_BACKENDS 
   switches are the same request. `caps.live_model_switch = True`. No effort:
   the thinking level is a per-model PARAMETER (`configOptions` category
   `thought_level`) that Cursor defaults; `efforts = ()`.
-- **D8** System prompt: `_cursor_argv` writes `<run_dir>/cursor_agent/instructions.md` (not `cursor/`: that is the poll's byte-offset file)
+- **D8** System prompt: `_cursor_argv` writes `<run_dir>/cursor_agent/instructions.md` (not `cursor/`: that is the poll's byte-offset file) Skills ride in the same file, listed by SKILL.md path (`_skills_note`): `cursor-agent acp` ignores `--plugin-dir`, `--add-dir` and a workspace `.cursor/skills`, and only loads `~/.cursor/skills`, which fused does not write (measured on CLI 2026.11.22-e9042b2 with a real ACP turn). The note ends by telling the model the listed SKILL.md files are the complete page-API reference and that it must not read fused-render's installed code or search outside the folder: in a measured app-building run Cursor spent 20 of 38 tool calls on `find / -name runtime.js` and reading the app bundle, and with the sentence 0 of 16 calls left the folder (246 s vs 308 s, one run each), see D1507.
   = `_appended_prompt(file, pane, "cursor")` with `mcp__fused_render__<tool>`
   spelled `<tool>`, plus the readable directories (D9). The host sends it as a
   leading text block, wrapped in `<fused_render_context>…</fused_render_context>`,
@@ -264,6 +264,38 @@ source: `available_commands_update` (after `session/new`/`load`),
 `agent_message_chunk`, `agent_thought_chunk`, `tool_call`, `tool_call_update`,
 `current_mode_update`, `session_info_update {title}` (auto-naming), `plan`.
 No `user_message_chunk` echo on a live prompt; no `usage_update`.
+
+## Warm spare (per folder)
+
+A Cursor chat's first message used to wait about 4.5 s. Measured against the
+real CLI: `initialize` takes 0.25 s, the first `session/new` in a process
+4.1-4.8 s, and a later `session/new` in the same process 1.2 s. Only a
+completed `session/new` warms the process. Cursor loads rules and skills from
+the PROCESS cwd, so a warmed process can only serve a chat with that cwd.
+
+- **Trigger.** The composer's `defaults` call resolves the backend; when it is
+  `cursor` (and the session has no live host) `_prewarm_cursor(file)` runs.
+  It never raises and never changes what `defaults` answers.
+  A spare is started only when Cursor is the default agent (the
+  `default_backend` pref), so a user whose default is another agent pays
+  nothing for it; a Cursor chat opened while another agent is the default
+  starts cold.
+- **Spare.** The server starts at most one spare per cwd (keyed by realpath):
+  `cursor_host.py` in spare mode. It spawns the CLI, runs `initialize` and a
+  throwaway `session/new`, writes `<runs parent>/spares/<id>/ready`, then waits
+  on stdin for the real request.
+- **Claim.** `_start` hands the chat to a ready spare whose cwd and argv match
+  (the request is written to the spare's stdin); otherwise, or if the pipe is
+  broken, it spawns a cold host as before. A spare is claimed at most once.
+- **Limits.** At most 2 spares (the oldest is retired for a third); an
+  unclaimed spare is retired after 5 minutes. Retiring means closing its
+  stdin: the host kills its CLI and exits. A spare whose CLI dies or whose
+  warm-up fails exits without `ready`. Nothing is started when the backend is
+  off, the binary is missing/broken, or the cached health says signed out.
+- **Opt-out.** `FUSED_CURSOR_PREWARM=0` (also `false`/`off`/`no`).
+- **Leftover.** The throwaway session leaves one
+  `~/.cursor/acp-sessions/<id>/meta.json`; fused never reads it. Updates for
+  the throwaway session id are dropped by the host.
 
 ## 4–8
 

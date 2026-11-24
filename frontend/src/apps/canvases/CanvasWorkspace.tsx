@@ -30,7 +30,7 @@
 //            (owner call: the right pane follows the canvas)
 //   parent → { type: "fused-embed-select", udfName }  (restore ?node= on
 //            load; null from the sidebar's close button, so both sides agree)
-//   parent → { type: "fused-embed-pushed", push_seq }  after a push, for the
+//   parent → { type: "fused-embed-pushed", push_seq, changed }  after a push, for the
 //            workbench's save chip ("Published"); it triggers no reload.
 //   iframe → { type: "fused-embed-open-code", udfName, backendId? }  LEGACY:
 //            a workbench on the body channel (`caps: ["body"]`) toggles its
@@ -217,7 +217,7 @@ import { addCurrentApp } from "@platform/lib/api";
 import { CURRENT_APPS_CHANGED_EVENT } from "@platform/lib/tasksChanged";
 import { ChatMount, ShotViewer, type CanvasShot, type CanvasShotAnswer, type CanvasShotBy, type CanvasShotWhat, type Viewable } from "@apps/claude";
 import { statPath } from "@platform/lib/api";
-import { EMBED_PREFIX, NAV_EVENT, VIEW_PREFIX, confirmLeave, embedUrlForFsPath, navigateUrl, viewUrlForFsPath } from "@platform/lib/router";
+import { EMBED_PREFIX, NAV_EVENT, VIEW_PREFIX, confirmLeave, embedUrlForFsPath, navigateUrl, spaLinkProps, viewUrlForFsPath } from "@platform/lib/router";
 import { ErrorBanner } from "@platform/ui/ErrorBanner";
 import {
   CanvasOwnedError,
@@ -263,7 +263,6 @@ import { SyncFramePoster, SyncStrip } from "./SyncStrip";
 import { ClaudeRail, paneHomeHref, railInset } from "@shell/claude-rail/ClaudeRail";
 import { CHAT_PARAMS, placeRoot } from "@shell/claude-rail/claude-rail-lib";
 import { railPullAt } from "./rail-pull";
-import { useTaskFavourites } from "@platform/lib/favourites-flag";
 import {
   healWanted,
   mergeLogEvents,
@@ -682,10 +681,6 @@ export default function CanvasWorkspace({
   // workbench's edge chips, or `side=off` on the URL. Hiding it leaves the selection alone: the canvas goes on
   // selecting, and the pane opens on whatever node is selected by then.
   const [sideOpen, setSideOpen] = useState<boolean>(() => sideOpenFromUrl());
-  // THE RAIL BESIDE THE OPEN PANE (ClaudeRail `paneOpen`; owner,
-  // 2026-11-05): with favourites on the rail stands whether the pane is open
-  // or shut; off, only while it is shut, as before.
-  const railAlways = useTaskFavourites();
   // Bumped when the node pane must REBOOT on a session for the node already
   // shown (a Recent row's hop onto the selected node, below): the frame's src
   // is otherwise frozen per node and tab (`nodeBootSrc`).
@@ -2909,20 +2904,24 @@ export default function CanvasWorkspace({
   }, [sideOpen]);
 
   // After every push, tell the workbench's save chip it is published. This
-  // is informational only — the frame never reloads or re-fetches on it (the
+  // names the UDFs it changed; the frame never reloads or re-fetches on it (the
   // delta leg above is how disk changes reach it).
   const lastPushSeqRef = useRef<number | null>(null);
+  const pushSeqsRef = useRef(new Map<string, number>());
   useEffect(() => {
-    const seq = sync?.legs.disk_to_server.push_seq ?? null;
-    if (seq === null) return;
-    const prev = lastPushSeqRef.current;
-    lastPushSeqRef.current = seq;
-    if (prev === null || seq <= prev) return;
+    if (!sync?.watcher_epoch) return;
+    const { push_seq: seq, push_changed_at: at = {} } = sync.legs.disk_to_server;
+    const seqs = pushSeqsRef.current;
+    const prev = seqs.get(sync.watcher_epoch) ?? (seqs.size ? 0 : seq);
+    lastPushSeqRef.current = Math.max(prev, seq);
+    seqs.set(sync.watcher_epoch, lastPushSeqRef.current);
+    if (seq <= prev) return;
     const frame = frameRef.current;
     const origin = baseOriginRef.current;
     if (!frame?.contentWindow || !origin) return;
-    frame.contentWindow.postMessage({ type: "fused-embed-pushed", push_seq: seq }, origin);
-  }, [sync?.legs.disk_to_server.push_seq]);
+    const changed = Object.keys(at).filter((n) => at[n] > prev && at[n] <= seq);
+    frame.contentWindow.postMessage({ type: "fused-embed-pushed", push_seq: seq, changed }, origin);
+  }, [sync?.legs.disk_to_server.push_seq, sync?.watcher_epoch]);
 
   // Self-heal: a state saying no watcher runs here (a server restart, a
   // stop) re-arms it through sync/start — which answers `owned` instead if
@@ -3376,6 +3375,7 @@ export default function CanvasWorkspace({
         // Back to the environment this canvas lives in, not the default.
         onBack={() => navigateUrl(catalogPath(env))}
         workbenchUrl={workbenchUrl}
+        explorerLink={dir ? spaLinkProps(dir, { isDir: true }) : null}
         pushErrors={
           pushError
             ? { count: pushErrorCount, open: pushDetailOpen, onToggle: () => setPushDetailOpen((o) => !o) }
@@ -3717,11 +3717,11 @@ export default function CanvasWorkspace({
         </div>
           </div>
         )}
-        {(!sideOpen || railAlways) && (
+        {(
           // The pane shut: the rail takes its edge (ClaudeRail.tsx) — the way
           // back in, plus Claude's state on this canvas, which is what the
-          // pane was showing. With favourites on it stands past the OPEN pane
-          // too, at the row's right edge (`paneOpen`).
+          // pane was showing. It stands past the OPEN pane too, at the row's
+          // right edge (`paneOpen`).
           <ClaudeRail
             paneOpen={sideOpen}
             place={railPlace}

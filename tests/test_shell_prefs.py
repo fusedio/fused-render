@@ -1700,109 +1700,60 @@ def test_canvas_shot_slow_fallback_defaults_off_toggles_and_rejects_junk(tmp_pat
     assert prefs_mod.canvas_shot_slow_fallback_enabled() is False
 
 
-def test_task_favourites_defaults_off_toggles_and_rejects_junk(tmp_path, monkeypatch):
-    """Favourite chats (the star on the rail card, the favourites section,
-    the favourite's card, the pane's block): same opt-in idiom."""
+def test_rail_extras_defaults_off_toggles_and_rejects_junk(tmp_path, monkeypatch):
+    """The rail's extras (mode doors, the expandable rail, free pins): one
+    switch, same opt-in idiom — only a stored `true` is on."""
     client, home = _client(tmp_path, monkeypatch)
-    assert client.get("/api/prefs").json()["task_favourites"] == {"enabled": False}
-    body = client.put("/api/prefs", json={"task_favourites_enabled": True},
+    assert client.get("/api/prefs").json()["rail_extras"] == {"enabled": False}
+    body = client.put("/api/prefs", json={"rail_extras_enabled": True},
                       headers=FUSED).json()
-    assert body["task_favourites"]["enabled"] is True
+    assert body["rail_extras"]["enabled"] is True
     stored = json.loads((home / "prefs.json").read_text(encoding="utf-8"))
-    assert stored["task_favourites_enabled"] is True
-    assert prefs_mod.task_favourites_enabled() is True
-    bad = client.put("/api/prefs", json={"task_favourites_enabled": "yes"},
+    assert stored["rail_extras_enabled"] is True
+    assert prefs_mod.rail_extras_enabled() is True
+    bad = client.put("/api/prefs", json={"rail_extras_enabled": "yes"},
                      headers=FUSED)
     assert bad.status_code == 400
-    assert "task_favourites_enabled" in bad.json()["error"]
-    (home / "prefs.json").write_text(json.dumps({"task_favourites_enabled": 1}),
+    assert "rail_extras_enabled" in bad.json()["error"]
+    (home / "prefs.json").write_text(json.dumps({"rail_extras_enabled": 1}),
                                      encoding="utf-8")
-    assert prefs_mod.task_favourites_enabled() is False
+    assert prefs_mod.rail_extras_enabled() is False
 
 
-def test_task_head_unified_defaults_off_toggles_and_rejects_junk(tmp_path, monkeypatch):
-    """The unified task header flag: same opt-in idiom."""
+def test_retired_rail_extras_and_task_icons_switches_are_ignored(tmp_path, monkeypatch):
+    """Task icons are always on, and the three rail switches folded into
+    `rail_extras_enabled` (no migration): their old keys left in prefs.json
+    are ignored — even `true` does not turn Rail extras on — the payload no
+    longer names them, and a PUT of one alone names nothing known."""
     client, home = _client(tmp_path, monkeypatch)
-    assert client.get("/api/prefs").json()["task_head_unified"] == {"enabled": False}
-    body = client.put("/api/prefs", json={"task_head_unified_enabled": True},
-                      headers=FUSED).json()
-    assert body["task_head_unified"]["enabled"] is True
-    stored = json.loads((home / "prefs.json").read_text(encoding="utf-8"))
-    assert stored["task_head_unified_enabled"] is True
-    assert prefs_mod.task_head_unified_enabled() is True
-    bad = client.put("/api/prefs", json={"task_head_unified_enabled": "yes"},
-                     headers=FUSED)
-    assert bad.status_code == 400
-    assert "task_head_unified_enabled" in bad.json()["error"]
-    (home / "prefs.json").write_text(json.dumps({"task_head_unified_enabled": 1}),
-                                     encoding="utf-8")
-    assert prefs_mod.task_head_unified_enabled() is False
+    retired = {"rail_mode_doors_enabled": True, "rail_expand_enabled": True,
+               "rail_free_pins_enabled": True, "task_icons_enabled": False}
+    home.mkdir(parents=True, exist_ok=True)
+    (home / "prefs.json").write_text(json.dumps(retired), encoding="utf-8")
+    got = client.get("/api/prefs")
+    assert got.status_code == 200
+    for name in ("rail_mode_doors", "rail_expand", "rail_free_pins", "task_icons"):
+        assert name not in got.json()
+    assert got.json()["rail_extras"] == {"enabled": False}
+    for key in retired:
+        assert client.put("/api/prefs", json={key: True}, headers=FUSED).status_code == 400
 
 
-def test_rail_free_pins_defaults_off_toggles_and_rejects_junk(tmp_path, monkeypatch):
-    """The rail's free-pins flag: same opt-in idiom."""
+def test_retired_rail_and_task_head_switches_are_ignored(tmp_path, monkeypatch):
+    """The rail preview card, favourite chats and the unified task header are
+    always on now: their old keys left in prefs.json are ignored, the payload
+    no longer names them, and a PUT of one alone names nothing known."""
     client, home = _client(tmp_path, monkeypatch)
-    assert client.get("/api/prefs").json()["rail_free_pins"] == {"enabled": False}
-    body = client.put("/api/prefs", json={"rail_free_pins_enabled": True},
-                      headers=FUSED).json()
-    assert body["rail_free_pins"]["enabled"] is True
-    stored = json.loads((home / "prefs.json").read_text(encoding="utf-8"))
-    assert stored["rail_free_pins_enabled"] is True
-    assert prefs_mod.rail_free_pins_enabled() is True
-    bad = client.put("/api/prefs", json={"rail_free_pins_enabled": "yes"},
-                     headers=FUSED)
-    assert bad.status_code == 400
-    assert "rail_free_pins_enabled" in bad.json()["error"]
-    (home / "prefs.json").write_text(json.dumps({"rail_free_pins_enabled": 1}),
-                                     encoding="utf-8")
-    assert prefs_mod.rail_free_pins_enabled() is False
-
-
-def test_rail_mode_doors_defaults_off_toggles_and_rejects_junk(tmp_path, monkeypatch):
-    """The rail's mode-doors flag: same opt-in idiom."""
-    client, home = _client(tmp_path, monkeypatch)
-    assert client.get("/api/prefs").json()["rail_mode_doors"] == {"enabled": False}
-    body = client.put("/api/prefs", json={"rail_mode_doors_enabled": True},
-                      headers=FUSED).json()
-    assert body["rail_mode_doors"]["enabled"] is True
-    stored = json.loads((home / "prefs.json").read_text(encoding="utf-8"))
-    assert stored["rail_mode_doors_enabled"] is True
-    assert prefs_mod.rail_mode_doors_enabled() is True
-    bad = client.put("/api/prefs", json={"rail_mode_doors_enabled": "yes"},
-                     headers=FUSED)
-    assert bad.status_code == 400
-    assert "rail_mode_doors_enabled" in bad.json()["error"]
-    (home / "prefs.json").write_text(json.dumps({"rail_mode_doors_enabled": 1}),
-                                     encoding="utf-8")
-    assert prefs_mod.rail_mode_doors_enabled() is False
-
-
-def test_canvas_rail_peek_defaults_off_toggles_and_rejects_junk(tmp_path, monkeypatch):
-    """The collapsed Claude rail's hover preview card (Settings › Canvases):
-    same opt-in idiom — only a stored `true` is on, the PUT takes booleans."""
-    client, home = _client(tmp_path, monkeypatch)
-    # The payload is the switch alone: the trigger choice of 2026-10-31 is
-    # gone (a hover previews, a click pins).
-    assert client.get("/api/prefs").json()["canvas_rail_peek"] == {"enabled": False}
-    body = client.put("/api/prefs", json={"canvas_rail_peek_enabled": True},
-                      headers=FUSED).json()
-    assert body["canvas_rail_peek"]["enabled"] is True
-    stored = json.loads((home / "prefs.json").read_text(encoding="utf-8"))
-    assert stored["canvas_rail_peek_enabled"] is True
-    assert prefs_mod.canvas_rail_peek_enabled() is True
-    bad = client.put("/api/prefs", json={"canvas_rail_peek_enabled": "yes"},
-                     headers=FUSED)
-    assert bad.status_code == 400
-    assert "canvas_rail_peek_enabled" in bad.json()["error"]
-    (home / "prefs.json").write_text(json.dumps({"canvas_rail_peek_enabled": 1}),
-                                     encoding="utf-8")
-    assert prefs_mod.canvas_rail_peek_enabled() is False
-    # The retired trigger key: ignored on disk, refused in a PUT.
-    (home / "prefs.json").write_text(json.dumps({"canvas_rail_peek_trigger": "hover"}),
-                                     encoding="utf-8")
-    assert client.get("/api/prefs").json()["canvas_rail_peek"] == {"enabled": False}
-    assert client.put("/api/prefs", json={"canvas_rail_peek_trigger": "hover"},
-                      headers=FUSED).status_code == 400
+    retired = {"canvas_rail_peek_enabled": False, "canvas_rail_peek_trigger": "hover",
+               "task_favourites_enabled": True, "task_head_unified_enabled": "junk"}
+    home.mkdir(parents=True, exist_ok=True)
+    (home / "prefs.json").write_text(json.dumps(retired), encoding="utf-8")
+    got = client.get("/api/prefs")
+    assert got.status_code == 200
+    for name in ("canvas_rail_peek", "task_favourites", "task_head_unified"):
+        assert name not in got.json()
+    for key in retired:
+        assert client.put("/api/prefs", json={key: True}, headers=FUSED).status_code == 400
 
 
 def test_task_summary_titles_defaults_off_toggles_and_rejects_junk(tmp_path, monkeypatch):

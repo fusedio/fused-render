@@ -37,9 +37,7 @@ router = APIRouter()
 
 # One owner per machine (registry module docstring): every request under these prefixes is answered by the
 # process that holds the bots and forwarded there by every other one (`forward_middleware`).
-# `/api/experts` (experts/routes.py) builds Bots (registry.get / all, which require the owner) and runs ask sessions
-# against the owner's Bot objects, so it is owned and forwarded exactly like `/api/bots`.
-OWNED_PREFIXES = ("/api/bots", "/api/bot-apps", "/api/experts")
+OWNED_PREFIXES = ("/api/bots", "/api/bot-apps")
 FORWARD_TIMEOUT_S = 120.0  # a tool call or an app send may wait on the model; the page's own timeouts are shorter
 _SKIP_REQUEST_HEADERS = {"host", "content-length", "connection", "transfer-encoding"}
 _SKIP_RESPONSE_HEADERS = {"content-length", "connection", "transfer-encoding", "content-encoding"}
@@ -137,21 +135,6 @@ ATTACH_MAX = 8 * 1024 * 1024
 APP_IMPORT_MAX = 64 * 1024 * 1024
 IDLE_SHOT_TIMEOUT_S = 3
 RECOVER_EVERY_S = 3  # the stuck-Google-popup probe during a take-over (routes._status_bot)
-
-
-def _experts_on() -> bool:
-    """The Experts experimental flag (experts.enabled; docs/experts.md §17). Read once per request."""
-    from fused_render import experts
-    return experts.enabled()
-
-
-def _hidden_expert(b, experts_on: bool) -> bool:
-    """An expert while the Experts flag is off: left out of every listing (the page, the sidebar's pulse, the app
-    roster), never deleted — its folder and memory stay on disk and it is listed again once the flag is on."""
-    return not experts_on and _botmod().is_expert(b.meta)
-
-
-EXPERTS_OFF = "Experts are turned off. Turn them on in Settings > Experimental flags."
 
 
 def _bot(bid):
@@ -327,11 +310,8 @@ def bots_status(cursors: str = Query(default=""), shot_for: str = Query(default=
         cur = {}
     quick = _truthy(fast)
     out = []
-    experts_on = _experts_on()
     for b in registry.all():
         try:
-            if _hidden_expert(b, experts_on):
-                continue
             out.append(_status_bot(b, shot_for, quick, cur))
         except Exception:  # noqa: BLE001 — one broken bot must not blank the list
             continue
@@ -350,11 +330,8 @@ def bots_pulse():
     carries. No side effects: `_status_bot`'s idle-sleep and popup checks belong to the page's poll, not to a
     sidebar that asks every 30 s from every window. Hidden bots are listed with their flag; the client drops them."""
     out = []
-    experts_on = _experts_on()
     for b in registry.all():
         try:
-            if _hidden_expert(b, experts_on):
-                continue
             m = b.meta
             # `seq` as the page's own row would carry it: `events_since` lifts the counter over lines another process
             # appended (an iMessage reply via botsend.py), and with no page open nothing else does — which is exactly
@@ -392,20 +369,13 @@ def bots_create(body: dict = Body(...), x_fused: str | None = Header(default=Non
     kind = body.get("kind") or "bot"
     if kind not in bm.KINDS:
         raise ValueError(f"kind must be one of {', '.join(bm.KINDS)}")
-    if kind == "expert" and not _experts_on():
-        raise ValueError(EXPERTS_OFF)
     browser = body.get("browser_id") or ""
     if not isinstance(browser, str):
         raise ValueError("browser_id must be a browser id")
-    expert = body.get("expert") if kind == "expert" else None
-    if expert is not None and not isinstance(expert, dict):
-        raise ValueError("expert must be a manifest object")
-    if kind == "expert":
-        browser, preset = "", ""  # an expert has no browser and takes no preset
-    terminal = None if kind == "expert" else _check_terminal(bm, body, kind == "super")  # before the bot exists: a 400 leaves nothing behind
+    terminal = _check_terminal(bm, body, kind == "super")  # before the bot exists: a 400 leaves nothing behind
     registry.require_workspace()  # its greeting thread may start a preset's setup task (bot.greet)
     b = registry.create(body.get("name") or "", body.get("model") or "", body.get("effort") or "", body.get("instructions") or "",
-                        preset=preset, kind=kind, browser=browser, **({"expert": expert} if kind == "expert" else {}))
+                        preset=preset, kind=kind, browser=browser)
     if body.get("approval") in ("ask", "auto"):
         b.meta["approval"] = body["approval"]
     if body.get("build_access") in bm.BUILD_MODES:
@@ -418,12 +388,12 @@ def bots_create(body: dict = Body(...), x_fused: str | None = Header(default=Non
         b.meta["connections"] = _apptools().clean_connections(body["connections"])
     if isinstance(body.get("allow_rules"), list):
         b.meta["allow_rules"] = _tools().clean_allow_rules(body["allow_rules"])
-    if body.get("engine") in bm.ENGINES and not bm.is_super(b.meta) and not bm.is_expert(b.meta):
+    if body.get("engine") in bm.ENGINES and not bm.is_super(b.meta):
         b.meta["engine"] = body["engine"]
     if bm.is_super(b.meta) and body.get("super_access") in bm.SUPER_ACCESS:
         b.meta["super_access"] = body["super_access"]
     b.save()
-    if body.get("encrypt") and not bm.is_expert(b.meta):
+    if body.get("encrypt"):
         b.set_encrypt(True)
     return {"ok": True, "id": b.id}
 
@@ -446,7 +416,7 @@ def _check_terminal(bm, body, is_super_bot):
 def bots_browsers():
     """Every browser (set of logins) a bot uses, with the bots on it (docs §5)."""
     from fused_render.bots import browsers
-    return {"ok": True, "browsers": browsers.listing([b for b in registry.all() if not _botmod().is_expert(b.meta)])}
+    return {"ok": True, "browsers": browsers.listing(registry.all())}
 
 
 @router.post("/api/bots/browsers/{bid}")
@@ -506,19 +476,25 @@ def bots_presets():
 
 
 def _chrome_snapshot() -> dict:
-    """`{found, path}`: the first browser from the bots' own candidate list
-    (browser.CHROME_CANDIDATES) that exists on this machine — the list
-    `find_chrome` walks when a bot starts, so this and the bot cannot disagree.
+    """`{found, path}`: the first browser from the bots' own candidate walk
+    (browser.found_chrome) that exists on this machine — the walk
+    `find_chrome` runs when a bot starts, so this and the bot cannot disagree.
+    Walked on every read, so a browser installed since the last one shows up.
     FusedBot's `onboarding.chrome_snapshot()`; `found: null` = the probe failed."""
     try:
-        from fused_render.bots.browser import CHROME_CANDIDATES
+        from fused_render.bots.browser import found_chrome, is_wsl
 
-        for p in CHROME_CANDIDATES:
-            if p and os.path.exists(p):
-                return {"found": True, "path": p}
+        p = found_chrome()
+        if p:
+            return {"found": True, "path": p}
+        # `wsl`: the page then says to install the browser on the Linux side (the one on Windows does not count).
+        # `install`: whether the page's Install button can do that here (chrome_install.plan), and the command
+        # to paste when it cannot.
+        from fused_render.bots import chrome_install
+
+        return {"found": False, "path": None, "wsl": is_wsl(), "install": chrome_install.plan()}
     except Exception:  # noqa: BLE001
         return {"found": None, "path": None}
-    return {"found": False, "path": None}
 
 
 def _claude_snapshot() -> dict:
@@ -546,6 +522,32 @@ def bots_setup():
     true here; a forwarder overwrites it with its own view (forward_middleware);
     null when no process does."""
     return {"chrome": _chrome_snapshot(), "claude": _claude_snapshot(), "owner": registry.owner_info()}
+
+
+@router.get("/api/bots/setup/chrome")
+@_handled
+def bots_chrome_install_status():
+    """The Chrome install's record (chrome_install.status): `{state, detail, output, error}`. A read."""
+    from fused_render.bots import chrome_install
+
+    return chrome_install.status()
+
+
+@router.post("/api/bots/setup/chrome")
+@_handled
+def bots_chrome_install(x_fused: str | None = Header(default=None)):
+    """Install Google Chrome inside WSL (chrome_install.py: Google's .deb through apt, as root via wsl.exe).
+    Returns the opening record; the page polls the GET. 409 with the reason when it cannot run here or one
+    is already running. Guarded: this downloads a package and installs it as root."""
+    guard = _require_fused(x_fused)
+    if guard is not None:
+        return guard
+    from fused_render.bots import chrome_install
+
+    try:
+        return chrome_install.start()
+    except chrome_install.InstallError as e:
+        return _error(str(e), 409)
 
 
 @router.post("/api/bots/workspace/take")
@@ -689,8 +691,6 @@ def bot_send(bid: str, body: dict = Body(...), x_fused: str | None = Header(defa
     if not text:
         raise ValueError("empty message")
     answers = body.get("answers")  # a relayed card's button (docs §11): the seq the click meant, else None
-    if _hidden_expert(_bot(bid), _experts_on()):
-        raise ValueError(EXPERTS_OFF)  # a page or phone still showing the expert from before the flag went off
     registry.require_workspace()
     try:
         _bot(bid).send(text, reply_to=body.get("reply_to"), forever=bool(body.get("forever")),
@@ -713,8 +713,7 @@ def bot_package_plan(bid: str):
     """What exporting this bot as a `.fusedbot` would carry (package.plan): the export dialog's whole model."""
     from fused_render.bots.bot import is_super
     try:
-        meta = _store().read_meta(bid)
-        if is_super(meta):  # before the plan: no scan of a bot that can never be exported
+        if is_super(_store().read_meta(bid)):  # before the plan: no scan of a bot that can never be exported
             raise ValueError("Super Bot cannot be exported: it is this machine's own assistant")
     except (FileNotFoundError, LookupError):
         raise ValueError(f"no such bot {bid}")
@@ -753,23 +752,6 @@ _CONTROL = {"pause": "pause", "resume": "resume", "stop": "stop", "takeover": "t
 _WS_OPS = frozenset({"takeover", "giveback", "popout", "wake", "clear"})
 
 
-# The browser's own ops: refused for an expert (docs/experts.md §5) with a sentence, before anything touches Chrome.
-_BROWSER_OPS = {"takeover": "taking over the browser", "giveback": "handing the browser back",
-                "popout": "opening the browser as a window", "dock": "docking the browser", "wake": "waking the browser",
-                "goto": "opening a page", "nav": "browser navigation", "tab": "browser tabs",
-                "viewport": "the browser's viewport", "profile": "importing a Chrome profile"}
-
-
-def _is_expert_bot(bid) -> bool:
-    return _botmod().is_expert(_bot(bid).meta)  # an unknown bot raises "no such bot" (404) as before
-
-
-def _refuse_expert(bid, op) -> None:
-    """The browser helpers are also called directly (the phone's door): the same refusal, as a 400."""
-    if _is_expert_bot(bid):
-        raise ValueError(f"This bot is an expert and has no browser, so {_BROWSER_OPS[op]} does not apply.")
-
-
 @router.post("/api/bots/{bid}/{op}")
 @_handled
 def bot_control(bid: str, op: str, body: dict = Body(default=None), x_fused: str | None = Header(default=None),
@@ -788,8 +770,6 @@ def bot_control(bid: str, op: str, body: dict = Body(default=None), x_fused: str
             # Super Bot's first task starts from here, but the page calls `open` on every landing and asks again
             # while setup is "pending": without the workspace claim it waits quietly instead of a 409 per click.
             return {"ok": True, "setup": "pending"}
-    if op in _BROWSER_OPS and _is_expert_bot(bid):
-        return _error(f"This bot is an expert and has no browser, so {_BROWSER_OPS[op]} does not apply.", 400)
     if op in _WS_OPS:
         _ws(bid)
     if op in _CONTROL:
@@ -805,7 +785,6 @@ def bot_control(bid: str, op: str, body: dict = Body(default=None), x_fused: str
 
 
 def _goto(bid, body):
-    _refuse_expert(bid, "goto")
     url = (body.get("url") or "").strip()
     if not url:
         raise ValueError("no url")
@@ -816,7 +795,6 @@ def _goto(bid, body):
 
 
 def _nav(bid, body):
-    _refuse_expert(bid, "nav")
     op = body.get("op")
     if op not in ("back", "forward", "reload"):
         raise ValueError("op must be back|forward|reload")
@@ -825,7 +803,6 @@ def _nav(bid, body):
 
 
 def _tab(bid, body):
-    _refuse_expert(bid, "tab")
     b = _ws(bid)
     tab, index = body.get("tab"), body.get("index")
     if tab == "new":
@@ -921,19 +898,8 @@ def _settings(bid, body):
     # Validate before any key lands on the live meta: a ValueError past this line would leave half the dialog's
     # edits in memory for the next save() to persist.
     folders = bm.clean_folders(body["folders"]) if isinstance(body.get("folders"), list) else None  # ValueError -> 400
-    if bm.is_expert(b.meta):
-        # No browser, no engine choice of the bots kind (an expert always runs on the agent engine),
-        # no terminal: the dialog may still send these keys; they are ignored. Nor `memory`: the bot memory file
-        # (`.fused/memory.md`) is not an expert's memory, and our code never writes the expert's memory.md. Nor
-        # `instructions`: an expert's are its instructions.md (POST /api/experts/{id}/instructions), and a stale
-        # dialog sending its old box back must not plant the extra again.
-        body = {k: v for k, v in body.items() if k not in ("engine", "browser_id", "encrypt", "terminal", "memory", "instructions")}
     terminal = _check_terminal(bm, body, bm.is_super(b.meta))
     b.meta["name"] = name or b.meta.get("name")
-    if bm.is_expert(b.meta) and isinstance(body.get("ask_me_about"), str):
-        # The one-line description `expert_list` shows task sessions (docs/experts.md).
-        b.meta["expert"] = {**(b.meta.get("expert") if isinstance(b.meta.get("expert"), dict) else {}),
-                            "ask_me_about": " ".join(body["ask_me_about"].split())[:240]}
     if body.get("instructions") is not None:
         b.meta["instructions"] = str(body["instructions"]).strip()
     if body.get("approval") in ("ask", "auto"):
@@ -1048,24 +1014,20 @@ def _skills(bid, body):
     b = _ws(bid)
     op = body.get("op") or ""
     if op == "save":
-        # The form's save is refused, never cut or redirected: skill_save keeps the first `cap` characters and
+        # The form's save is refused, never cut or redirected: skill_save keeps the first SKILL_BODY_CAP characters and
         # writes over a file of the same derived name, which is right for the model's own `learn` and wrong for a
         # person's text (a long reference lost its end; "Add" with an existing title replaced that file).
-        expert = _botmod().is_expert(b.meta)
-        cap = b.EXPERT_SKILL_BODY_CAP if expert else b.SKILL_BODY_CAP
+        cap = b.SKILL_BODY_CAP
         text, rid = (body.get("text") or "").strip(), body.get("rid") or None
         if len(text) > cap:
             raise ValueError(f"This text is {len(text)} characters; a skill holds at most {cap}. Shorten it or split it in two.")
         if not rid and os.path.exists(os.path.join(b.skills_dir, b.skill_slug(" ".join((body.get("name") or "").split())[:80] or "Untitled playbook") + ".md")):
             raise ValueError("A skill with this title already exists. Edit that one, or use another title.")
         b.skill_save(body.get("name"), body.get("trigger") if body.get("trigger") is not None else body.get("url"),
-                     text, name=rid, cap=cap)
+                     text, name=rid)
     elif op == "delete":
         b.skill_delete(body.get("rid") or "")
     elif op == "learn":
-        if _botmod().is_expert(b.meta):
-            # An expert's skills are static (docs/experts.md): what it learns goes to memory.md.
-            raise ValueError("An expert's skills are static; what it learns goes to its memory. Edit a skill here.")
         b.learn_from_last()
     else:
         raise ValueError("op must be save|delete|learn")
@@ -1104,7 +1066,6 @@ def _tool(bid, body):
 
 def _viewport(bid, body):
     """The live view's stage size: the bot's Chrome window follows it (stored for the next launch when asleep)."""
-    _refuse_expert(bid, "viewport")
     try:
         w, h = int(body.get("w")), int(body.get("h"))
     except (TypeError, ValueError):
@@ -1166,7 +1127,7 @@ def _app_bot(b):
     m = b.meta
     row = {k: m.get(k) for k in _APP_FIELDS}
     row["id"] = b.id
-    row["kind"] = "super" if bm.is_super(m) else "expert" if bm.is_expert(m) else "bot"
+    row["kind"] = "super" if bm.is_super(m) else "bot"
     row["description"] = " ".join(str(m.get("instructions") or "").split())[:_APP_DESC]
     a = bm.activity(b.id, m, b)  # the one reading of "busy" / "blocked", shared with Super Bot's BOTS NOW block
     row["status"] = "idle" if a["status"] == "ended" else a["status"]  # a word that outlived its thread is idle to an app
@@ -1180,10 +1141,9 @@ def _app_bot(b):
 @_handled
 def bots_roster():
     out = []
-    experts_on = _experts_on()
     for b in registry.all():
         try:
-            if not b.deleted and not _hidden_expert(b, experts_on):
+            if not b.deleted:
                 out.append(_app_bot(b))
         except Exception:  # noqa: BLE001 — one broken bot must not blank the roster
             continue
@@ -1236,8 +1196,6 @@ def _app_send(bid, body, x_fused_page=None):
     files = body.get("files") if isinstance(body.get("files"), list) else []
     if not text and not files:
         raise ValueError("empty message")
-    if _hidden_expert(b, _experts_on()):
-        raise ValueError(EXPERTS_OFF)
     from fused_render.bots.channels import base as chan  # lazy, like the rest of the bot layer (module docstring)
     addr = _own_addr(key, body["addr"]) if body.get("addr") else None
     via = chan.via(chan.APP_KIND, addr) if addr else chan.app_via(key, time.strftime("%Y%m%d-%H%M%S") + "-" + os.urandom(3).hex())

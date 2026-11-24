@@ -11,7 +11,13 @@
 // counts. `repo` is null where the path is in no repository (a canvas clone,
 // a plain folder): the section is not drawn.
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { getRailGit, postRailGitCheck, type RailGitRepo } from "@platform/lib/api";
+import {
+  getRailGit,
+  postRailGitCheck,
+  postRailGitSync,
+  type RailGitRepo,
+  type RailGitSyncOp,
+} from "@platform/lib/api";
 import { useTasksPulseRows } from "@shell/tasksPulse";
 
 /** How long after the pulse moves the rail re-reads: a commit lands a moment
@@ -31,6 +37,14 @@ export interface RailGit {
   /** The last check reached the remote (null until one has run). */
   checked: boolean | null;
   check: () => void;
+  /** The push / pull in flight (the card's Send / Get latest), or null. */
+  syncing: RailGitSyncOp | null;
+  /** The last push / pull's refusal or failure, in the Git view's words.
+   *  Cleared by the next check, sync, path, or a read whose counts moved. */
+  syncNote: string | null;
+  /** The last push / pull's success, in the Git view's words (announced). */
+  syncDone: string | null;
+  sync: (op: RailGitSyncOp) => void;
   reload: () => void;
 }
 
@@ -83,10 +97,22 @@ export function resetRailGitCacheForTests(): void {
   answers.clear();
 }
 
+/** What a sync note was said against: the branch and its upstream counts. */
+function countsKey(r: RailGitRepo | null | undefined): string {
+  if (!r) return "";
+  return `${r.branch ?? ""}|${r.upstream?.ahead ?? ""}|${r.upstream?.behind ?? ""}`;
+}
+
 export function useRailGit(path: string | null): RailGit {
   const [repo, setRepo] = useState<RailGitRepo | null | undefined>(() => cachedRailGit(path));
   const [checking, setChecking] = useState(false);
   const [checked, setChecked] = useState<boolean | null>(null);
+  const [syncing, setSyncing] = useState<RailGitSyncOp | null>(null);
+  const [syncNote, setSyncNote] = useState<string | null>(null);
+  const [syncDone, setSyncDone] = useState<string | null>(null);
+  // The counts a sync's note was said against: a later read whose counts
+  // differ (the user fixed it in a terminal) takes the stale note away.
+  const noteKey = useRef<string | null>(null);
   const alive = useRef(true);
   useEffect(() => {
     alive.current = true;
@@ -107,13 +133,22 @@ export function useRailGit(path: string | null): RailGit {
   const checkToken = useRef(0);
   const pathRef = useRef(path);
   pathRef.current = path;
+  const repoRef = useRef(repo);
+  repoRef.current = repo;
   const reload = useCallback(() => {
     if (!path || checkingRef.current) return;
     const mine = ++seq.current;
     getRailGit(path, RAIL_GIT_COMMITS).then(
       (r) => {
         remember(path, r.repo);
-        if (alive.current && mine === seq.current && !checkingRef.current) setRepo(r.repo);
+        if (alive.current && mine === seq.current && !checkingRef.current) {
+          setRepo(r.repo);
+          if (noteKey.current !== null && noteKey.current !== countsKey(r.repo)) {
+            noteKey.current = null;
+            setSyncNote(null);
+            setSyncDone(null);
+          }
+        }
       },
       () => {
         /* a failed read keeps what is on screen */
@@ -127,6 +162,10 @@ export function useRailGit(path: string | null): RailGit {
     checkingRef.current = false;
     setChecking(false);
     setChecked(null);
+    setSyncing(null);
+    setSyncNote(null);
+    setSyncDone(null);
+    noteKey.current = null;
     // THE LAST REPOSITORY STAYS DRAWN while the new path's read is out
     // (owner, 2026-11-10: the explorer's folder → file hop in one repository
     // flickered the Git door, its hairline and its card): the answer swaps
@@ -173,6 +212,9 @@ export function useRailGit(path: string | null): RailGit {
     if (!path || checkingRef.current) return;
     checkingRef.current = true;
     setChecking(true);
+    setSyncNote(null);
+    setSyncDone(null);
+    noteKey.current = null;
     ++seq.current;
     const asked = path;
     const token = ++checkToken.current;
@@ -195,5 +237,48 @@ export function useRailGit(path: string | null): RailGit {
       },
     );
   }, [path]);
-  return { repo, checking, checked, check, reload };
+  // THE CARD'S SEND / GET LATEST: the Git view's own op (ops.py), then the
+  // fresh counts. A write, so it holds the same seat a check does — no reload
+  // overwrites its answer, and a check and a sync never run together.
+  const sync = useCallback(
+    (op: RailGitSyncOp) => {
+      if (!path || checkingRef.current) return;
+      checkingRef.current = true;
+      setSyncing(op);
+      setSyncNote(null);
+      setSyncDone(null);
+      noteKey.current = null;
+      ++seq.current;
+      const asked = path;
+      const token = ++checkToken.current;
+      const mine = () => alive.current && token === checkToken.current && pathRef.current === asked;
+      postRailGitSync(path, op, RAIL_GIT_COMMITS).then(
+        (r) => {
+          remember(asked, r.repo);
+          if (!mine()) return;
+          checkingRef.current = false;
+          setSyncing(null);
+          setRepo(r.repo);
+          if (r.result.ok) {
+            setSyncDone(r.result.detail || (op === "push" ? "Sent." : "Got the latest."));
+          } else {
+            setSyncNote(r.result.message || "git did not finish.");
+            noteKey.current = countsKey(r.repo);
+          }
+        },
+        () => {
+          if (!mine()) return;
+          checkingRef.current = false;
+          setSyncing(null);
+          // The answer was lost, not necessarily the op: the push may have
+          // landed. Re-read, so the counts say what really happened.
+          setSyncNote(op === "push" ? "The push did not finish." : "The pull did not finish.");
+          noteKey.current = countsKey(repoRef.current);
+          reload();
+        },
+      );
+    },
+    [path, reload],
+  );
+  return { repo, checking, checked, check, syncing, syncNote, syncDone, sync, reload };
 }

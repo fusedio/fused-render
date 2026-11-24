@@ -30,11 +30,10 @@
 // when the focus moves on into a frame that is not ours (no second blur
 // comes for that).
 import { useCallback, useEffect, useLayoutEffect, useRef, useState, type MutableRefObject } from "react";
-import { X } from "lucide-react";
 import { DoorCard } from "./DoorCard";
 import { RailPinButton } from "./RailPin";
-import { useTaskHeadUnified } from "@shell/task-head-flag";
 import { useFavPeekState } from "./fav-peek-store";
+import { inFullModal } from "./rail-pin-lib";
 import { flushThenOpen, modeCardStore, useModeCardRail, useModeCards, useRailModes, useRailWithMode } from "./mode-peek-store";
 
 /** How long a PINNED card waits, its mode's door gone, for the next rail's
@@ -136,14 +135,13 @@ function ModeCard({ mode }: { mode: string }) {
   // A PINNED CARD FOLLOWS A HOP: the moment no rail has its door it is held,
   // not closed, for `MODE_FOLLOW_MS` — set during the render (GitPeek). A
   // preview is not held.
-  const pinModel = useTaskHeadUnified();
   const card = store.useCard();
   const { pinned, held, up } = card;
   const [was, setWas] = useState(maybe);
   const [holding, setHolding] = useState(false);
   if (was !== maybe) {
     setWas(maybe);
-    setHolding(!maybe && (pinModel ? held : pinned));
+    setHolding(!maybe && held);
   }
   useEffect(() => {
     if (!holding) return;
@@ -191,9 +189,9 @@ function ModeCard({ mode }: { mode: string }) {
     };
   }, [up, store]);
   // …AND A TEMP CARD GOES WHEN THE FOCUS MOVES INTO ANOTHER FRAME (header).
-  const temp = up && pinned && !(pinModel && held);
+  const temp = up && pinned && !held;
   useEffect(() => {
-    if (!temp || !pinModel) return;
+    if (!temp) return;
     let inOurs = document.activeElement === frameRef.current;
     const t = window.setInterval(() => {
       const a = document.activeElement;
@@ -201,14 +199,14 @@ function ModeCard({ mode }: { mode: string }) {
         inOurs = true;
         return;
       }
-      if (inOurs && a instanceof HTMLIFrameElement && !document.getElementById(store.id)?.contains(a)) {
+      if (inOurs && a instanceof HTMLIFrameElement && !inFullModal(a) && !document.getElementById(store.id)?.contains(a)) {
         store.close();
         return;
       }
       if (!(a instanceof HTMLIFrameElement)) inOurs = false;
     }, 200);
     return () => window.clearInterval(t);
-  }, [temp, pinModel, store]);
+  }, [temp, store]);
 
   const onOpen = facts?.onOpen;
   const noRoom = useCallback(() => onOpen?.(mode), [onOpen, mode]);
@@ -249,20 +247,8 @@ function ModeCard({ mode }: { mode: string }) {
           <>
             <div className="claude-rail-peek-head">
               <div className="claude-rail-peek-row">
-                {/* With the pin: no ×, the pin in its seat (and the keyboard's landing). */}
-                {!api.pin && (
-                  <button
-                    ref={api.closeRef}
-                    type="button"
-                    className="claude-rail-peek-btn claude-rail-peek-close"
-                    aria-label={"Close " + title}
-                    data-hint="Close"
-                    onClick={api.close}
-                  >
-                    <X size={14} aria-hidden="true" />
-                  </button>
-                )}
-                {api.pin && <RailPinButton variant="legacy" btnRef={api.closeRef} pinned={api.pin.pinned} onToggle={api.pin.onToggle} />}
+                {/* No ×: the pin in its seat (and the keyboard's landing). */}
+                <RailPinButton variant="legacy" btnRef={api.closeRef} pinned={api.pin.pinned} onToggle={api.pin.onToggle} />
                 <span className="claude-rail-tasks-title claude-rail-mode-title">
                   {door && (
                     <span className="claude-rail-mode-icon" aria-hidden="true">

@@ -23,6 +23,8 @@ import { GateCard } from "@platform/ui/GateCard";
 import { ApprovalCard } from "./ApprovalCard";
 import { HandBackRow, HandoverNote } from "./HandoverCard";
 import { SetupLines } from "./SetupLines";
+import { ChromeInstall } from "./ChromeInstall";
+import { endsOnNoBrowser } from "../lib/setup";
 
 const EMPTY: BotEvent[] = [];
 const NO_SEQS: ReadonlySet<number> = new Set();
@@ -346,8 +348,7 @@ function body({ e, botId, botName, botKind, reaction, live, chosen, appsRoot, on
         ? `<span class="via" title="${esc(`Sent by the app ${(e.via!.addr || "").split(":")[0] || "?"} through fused.bots`)}">from ${esc((e.via!.addr || "").split(":")[0] || "an app")}</span>`
         : `<span class="via" title="${esc(`Received over ${chanLabel(k)} from ${e.via!.addr || "?"}`)}">via ${esc(chanLabel(k))}</span>`
     : "";
-  // The seeded Super Bot's greeting (registry.seed_super, source "seed") carries the door to Settings > Phone; an
-  // expert's greeting (also "seed") never does.
+  // The seeded Super Bot's greeting (registry.seed_super, source "seed") carries the door to Settings > Phone.
   const seedBtn = offersPhone(e, botKind)
     ? '<div class="opts"><button class="opt seed" data-dialog="phone">Connect your phone</button></div>' : "";
   const html = (actable ? actsHtml(e.seq) + `<time class="when">${esc(fmtTime(e.ts))}</time>` : "")
@@ -808,6 +809,8 @@ export function Thread({ b, threadRef, searchQ, onSearchCount, onReact, onReply,
       );
     });
     if (b.control && hoSeq == null) content.push(<HandoverNote key="handover" b={b} />);
+    // The task could not start for want of a browser: inside WSL the fix is a button, right under the error.
+    if (endsOnNoBrowser(evs)) content.push(<ChromeInstall key="chromeinstall" after="Send your message again." />);
   }
 
   return (

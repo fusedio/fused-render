@@ -320,19 +320,11 @@ export function taskIconName(slot: number | null | undefined): string | null {
 // in dev) — the same resolution the favicon uses (platform/lib/hooks.ts).
 export const TASK_ICON_SPRITE = `${import.meta.env.BASE_URL}task-icons.svg`;
 
-/** WHETHER A FACE IS DRAWN in place of the ring (2026-11-16): the
- *  experiment on, a slot, and — the icon not being the star's — either the
- *  user picked it by hand (`picked`, shown with the favourites switch off
- *  too) or it came with the star and the favourites switch is on (a star
- *  nobody can see or press leaves no mark either). The one rule StatusIcon
- *  draws by and TaskIconPick offers Remove by. */
-export function taskFaceShown(
-  slot: number | null | undefined,
-  picked: boolean | undefined,
-  iconsOn: boolean,
-  favsOn: boolean,
-): boolean {
-  return iconsOn && (favsOn || !!picked) && taskIconName(slot) !== null;
+/** WHETHER A FACE IS DRAWN in place of the ring (2026-11-16): a slot the
+ *  set knows. The one rule StatusIcon draws by and TaskIconPick offers
+ *  Remove by. */
+export function taskFaceShown(slot: number | null | undefined): boolean {
+  return taskIconName(slot) !== null;
 }
 
 /** `<use href>` target for a slot, or null. */

@@ -43,6 +43,7 @@ import {
 } from "../sched/waiting";
 import type { WaitingRowData } from "../sched/waiting";
 import { useDismissOnWindow } from "./useDismissOnWindow";
+import { LIMIT_RETRY_HINT, LIMIT_RETRY_LABEL } from "@platform/lib/usage-limit";
 
 /** The separator the line is written with — `queued · after TASK-038 · delete`.
  *  A span rather than part of a string so each piece can be its own element (one
@@ -73,6 +74,11 @@ export interface WaitingRowProps {
    *  on the second press. Absent means the row offers no such action, which is
    *  every ordinary message. */
   onStopRepeat?(): void;
+  /** RETRY NOW, on the usage-limit comeback's row only (`row.comeback`): send
+   *  it now instead of at the reset. Absent = no such verb. */
+  onRetry?(): void;
+  /** A retry is in flight — the verb is dead for its duration. */
+  retrying?: boolean;
 }
 
 export function WaitingRow({
@@ -82,6 +88,8 @@ export function WaitingRow({
   deleting,
   onDelete,
   onStopRepeat,
+  onRetry,
+  retrying,
 }: WaitingRowProps) {
   const behind = queueAfter(facts);
   const href = queueAheadHref(facts);
@@ -187,6 +195,24 @@ export function WaitingRow({
                 </span>
               )}
             </span>
+          </>
+        ) : null}
+        {/* RETRY NOW, BEFORE DELETE, on the usage-limit comeback: the reset it
+            waits for is the old account's — after a switch the reader wants it
+            now (Akshil, 2026-11-23). Same register as `delete`: a lower-case
+            verb in the sentence. */}
+        {canAct && row.comeback && onRetry ? (
+          <>
+            <Dot />
+            <button
+              type="button"
+              className="c-waiting-del c-waiting-retry"
+              disabled={deleting || retrying}
+              title={LIMIT_RETRY_HINT}
+              onClick={onRetry}
+            >
+              {LIMIT_RETRY_LABEL.toLowerCase()}
+            </button>
           </>
         ) : null}
         {/* TAKE IT BACK. One press and no arming: this drops ONE message, whose

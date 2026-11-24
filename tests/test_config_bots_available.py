@@ -34,7 +34,7 @@ def test_onboarding_still_walks_chrome_candidates_elsewhere(monkeypatch):
     from fused_render.shell import onboarding
 
     monkeypatch.setattr(_platform, "IS_WINDOWS", False)
-    monkeypatch.setattr(browser, "CHROME_CANDIDATES", [])
+    monkeypatch.setattr(browser, "chrome_candidates", lambda: [])
     stages = {}
     onboarding._observe(stages)
     assert stages["chrome"]["status"] == "pending"

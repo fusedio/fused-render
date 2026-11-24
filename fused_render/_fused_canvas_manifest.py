@@ -16,9 +16,14 @@ A server with the revision spine (2026-11-11) also sends the collection's
 null-filled — so the manager feature-detects with ``"revision" in
 manifest``: present, a move is a revision change and nothing else.
 
+When the host sets ``FUSED_RENDER_CANVAS_DOC_OUT`` the collection's full answer
+is also written there as JSON text, atomically (a failure to do so is ignored:
+the manifest below is unaffected). The stdout contract does not change.
+
 FUSED_ENV is honored the same way the CLI does it (fused._env), so the
 manifest comes from the same environment the pull/push CLI calls target.
 """
+
 import json
 import os
 import sys
@@ -35,10 +40,20 @@ raise_request_timeout()
 
 from fused._global_api import get_api
 
+from fused_render import _canvas_saved
+
 
 def main() -> None:
     name = sys.argv[1]
     collection = get_api().get_collection_by_name(name)
+    out_path = os.environ.get(_canvas_saved.OUT_ENV)
+    if out_path:
+        try:
+            # `get_collection_by_name` returns the service's `response.json()`
+            # unchanged, so this is the service's answer, re-serialised.
+            _canvas_saved.write(out_path, json.dumps(collection))
+        except Exception:  # noqa: BLE001 — capture never breaks the probe
+            pass
     udfs = {}
     for udf in collection.get("udfs") or []:
         if not isinstance(udf, dict):

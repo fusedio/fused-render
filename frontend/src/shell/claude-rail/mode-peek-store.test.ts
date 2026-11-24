@@ -25,7 +25,6 @@ import {
   type RailModes,
 } from "./mode-peek-store";
 import { aPinWord, readAPin } from "./rail-pin-lib";
-import { publishTaskHeadUnified, resetTaskHeadUnifiedFlagForTests } from "@shell/task-head-flag";
 
 class Clock implements Timers {
   now = 0;
@@ -65,7 +64,6 @@ beforeEach(() => {
   clock = new Clock();
   resetModeCardsForTests(clock);
   setAPinned(null);
-  resetTaskHeadUnifiedFlagForTests();
 });
 
 describe("modeKey", () => {
@@ -179,8 +177,7 @@ describe("the rail that opened a card", () => {
     expect(modeCardRail("reader")).toBe(other);
   });
 
-  it("with the pin, only a held card outlives its rail", () => {
-    publishTaskHeadUnified({ enabled: true });
+  it("only a held card outlives its rail", () => {
     const rail = el();
     const code = modeCardStore("code");
     setModeCardRail("code", rail);
