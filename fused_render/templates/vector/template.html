@@ -253,7 +253,7 @@ async function styleReady(){
   map.resize();
 }
 
-let data = null, source = '', chunks = [], colors = null, hover = null, loaded = 0, streaming = false;
+let data = null, source = '', chunks = [], colors = null, hover = null, loaded = 0, streaming = false, stopped = '', moved = false;
 const attrs = new Map();
 const isKind = list => ['match', ['geometry-type'], list, true, false];
 const POLY = isKind(['Polygon', 'MultiPolygon']), DOTS = isKind(['Point', 'MultiPoint']);
@@ -283,18 +283,19 @@ function features(p){
 
 // ---------------- styling ----------------
 function colorExpr(col, values){
-  const present = values.filter(v => v !== null && v !== undefined);
-  if (!present.length) return '#5c9dff';
+  const present = values.filter(v => v !== null && v !== undefined), get = ['get', col];
+  const known = expr => ['case', ['==', get, null], '#6b7178', expr];
+  if (!present.length) return '#6b7178';
   if (present.every(v => typeof v === 'number')){
     const lo = present.reduce((a, b) => Math.min(a, b)), hi = present.reduce((a, b) => Math.max(a, b));
-    if (hi > lo) return ['interpolate', ['linear'], ['to-number', ['get', col], lo],
+    if (hi > lo) return known(['interpolate', ['linear'], ['to-number', get, lo],
       lo, '#440154', lo + (hi-lo)*0.25, '#3b528b', lo + (hi-lo)*0.5, '#21918c',
-      lo + (hi-lo)*0.75, '#5ec962', hi, '#fde725'];
+      lo + (hi-lo)*0.75, '#5ec962', hi, '#fde725']);
   }
   const counts = new Map();
   for (const v of present) counts.set(String(v), (counts.get(String(v)) || 0) + 1);
   const top = [...counts].sort((a, b) => b[1] - a[1]).slice(0, 12);
-  return ['match', ['to-string', ['get', col]], ...top.flatMap(([v], i) => [v, CAT_COLORS[i]]), '#6b7178'];
+  return known(['match', ['to-string', get], ...top.flatMap(([v], i) => [v, CAT_COLORS[i]]), '#6b7178']);
 }
 function paints(){
   const op = +els.opacity.value / 100, color = colors ? colors.expr : '#5c9dff';
@@ -319,6 +320,8 @@ function clearChunks(){
   if (popup){ popup.remove(); popup = null; }
 }
 function addChunk(r){
+  const b = r.bounds, e = data.extent;
+  if (b && !data.bounds4326) data.extent = e ? b.map((v, i) => (i < 2 ? Math.min : Math.max)(v, e[i])) : b;
   loaded = r.next ?? data.count;
   if (!r.parts.length) return;
   const fc = {type: 'FeatureCollection', features: r.parts.flatMap(features)};
@@ -331,8 +334,9 @@ function addChunk(r){
   chunks.push({src, fc, layers: types.map(t => `${src}-${t}`)});
 }
 
+map.on('movestart', e => { if (e.originalEvent) moved = true; });
 function fitToData(instant){
-  const b = data && data.bounds4326;
+  const b = data && (data.bounds4326 || data.extent);
   if (!b) return;
   map.fitBounds([[b[0], b[1]], [b[2], b[3]]],
     {padding: 60, duration: instant === false ? 400 : 0, maxZoom: 15});
@@ -411,7 +415,7 @@ function featureCount(){
 function renderMeta(){
   if (!data) return;
   const rows = [
-    ['file', P.file().split('/').pop()],
+    ['file', loadedFile.split('/').pop()],
     ['size (all sidecars)', human(data.file_size)],
     ['features', featureCount()],
     ['geometry', data.geometry_types.join(', ')],
@@ -517,6 +521,12 @@ async function refreshExplorer(dir){
 // ---------------- load ----------------
 let loadedFile = null, loadSeq = 0, doneSeq = 0, noteTimer;
 
+function progress(){
+  if (P.file() !== loadedFile) return;
+  if (streaming) status(`Loading features… ${featureCount()}`, false, true);
+  else status(stopped && `stopped after ${fmt(loaded)} features: ${stopped}`, !!stopped);
+}
+
 async function applyColorBy(){
   const col = P.colorBy(), file = loadedFile;
   if (!data || (colors ? colors.col === col : !col)) return;
@@ -531,7 +541,7 @@ async function applyColorBy(){
     map.getSource(src).setData(fc);
   }
   restyle();
-  status(streaming ? `Loading features… ${featureCount()}` : '', false, streaming);
+  progress();
 }
 
 async function loadFile(){
@@ -550,7 +560,7 @@ async function loadFile(){
   if (r.error){ status(r.error, true); return; }
   clearChunks();
   const {first, ...meta} = r;
-  data = meta; source = src; loadedFile = file; colors = null; streaming = !isPreview();
+  data = meta; source = src; loadedFile = file; colors = null; streaming = !isPreview(); stopped = ''; moved = false;
   const fetchNext = c => streaming && c.next != null ? call({file: source, op: 'chunk', start: String(c.next)}) : null;
   let pending = fetchNext(first), err = '';
   syncControls();
@@ -560,23 +570,25 @@ async function loadFile(){
   renderMeta();
   applyColorBy();
   while (pending){
-    status(`Loading features… ${featureCount()}`, false, true);
+    progress();
     const c = await pending;
-    if (seq !== loadSeq) return;
+    if (data !== meta) return;
     if (c.error){ err = c.error; break; }
     pending = fetchNext(c);
     addChunk(c);
     if (els.metaPanel.style.display === 'block') renderMeta();
   }
-  streaming = false;
+  streaming = false; stopped = err;
   renderMeta();
-  status(err ? `stopped after ${fmt(loaded)} features: ${err}` : `features: ${featureCount()}`, !!err);
-  if (!err) noteTimer = setTimeout(() => status(''), 4000);
+  if (!data.bounds4326 && !moved) fitToData();
+  if (err || P.file() !== file) return progress();
+  status(`features: ${featureCount()}`);
+  noteTimer = setTimeout(() => status(''), 4000);
 }
 
 function onParamsChanged(){
   if (P.file() !== loadedFile){ loadFile(); return; }
-  if (doneSeq !== loadSeq){ doneSeq = ++loadSeq; status(''); }
+  if (doneSeq !== loadSeq){ doneSeq = ++loadSeq; progress(); }
   syncControls();
   applyColorBy();
 }

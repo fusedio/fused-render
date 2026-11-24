@@ -92,8 +92,8 @@ def _safe(v):
     return json.dumps(v, default=str) if isinstance(v, (dict, list)) else str(v)
 
 
-def _records(table, layer=None):
-    return [{**({"_layer": layer} if layer else {}), **{k: _safe(v) for k, v in r.items()}}
+def _records(table, tag=None, layer=None):
+    return [{**({tag: layer} if tag else {}), **{k: _safe(v) for k, v in r.items()}}
             for r in table.to_pylist()]
 
 
@@ -134,7 +134,25 @@ def _encode(geoms, ids):
     return parts
 
 
-class _Parquet:
+class _Source:
+    cursor = (-1, None, None)
+
+    def take(self, start, n):
+        (pos, held, blocks), self.cursor = self.cursor, _Source.cursor
+        if pos != start:
+            held, blocks = np.empty(0, dtype=object), self.blocks(start)
+        parts, rows, coords = [held], len(held), shapely.get_num_coordinates(held).sum()
+        while rows < n and coords <= CHUNK_COORDS and (block := next(blocks, None)) is not None:
+            parts.append(block)
+            rows, coords = rows + len(block), coords + shapely.get_num_coordinates(block).sum()
+        geoms = np.concatenate(parts)
+        over = np.flatnonzero(np.cumsum(shapely.get_num_coordinates(geoms[:n])) > CHUNK_COORDS)
+        k = max(1, int(over[0])) if len(over) else min(n, len(geoms))
+        self.cursor = (start + k, geoms[k:], blocks)
+        return geoms[:k]
+
+
+class _Parquet(_Source):
     def __init__(self, file):
         self.pf = pq.ParquetFile(_Ranged(file) if "://" in file else file, pre_buffer=True)
         schema, md = self.pf.schema_arrow, self.pf.metadata
@@ -166,9 +184,12 @@ class _Parquet:
         groups = [self.group(i, tuple(columns)) for i in range(a, b + 1)]
         return pa.concat_tables(groups).slice(start - base, stop - start)
 
-    def geoms(self, start, stop):
-        gs = _arrow_to_geopandas(self._rows(start, stop, [self.col]), self.geo).geometry
-        return (gs if self.lonlat else gs.to_crs(4326)).to_numpy()
+    def blocks(self, start):
+        for i in range(int(np.searchsorted(self.ends, start, side="right")), len(self.ends)):
+            table = self.group(i, (self.col,))
+            for k in range(max(0, start - int(self.ends[i]) + table.num_rows), table.num_rows, BLOCK):
+                gs = _arrow_to_geopandas(table.slice(k, BLOCK), self.geo).geometry
+                yield (gs if self.lonlat else gs.to_crs(4326)).to_numpy()
 
     def records(self, start, stop):
         return _records(self._rows(start, stop, self.attrs))
@@ -179,7 +200,7 @@ class _Parquet:
         return [_safe(v) for v in self.pf.read(columns=[name])[name].to_pylist()]
 
 
-class _Ogr:
+class _Ogr(_Source):
     def __init__(self, file):
         self.src = file
         if "://" in file:
@@ -191,46 +212,50 @@ class _Ogr:
         infos = [pyogrio.read_info(self.src, layer=n, force_feature_count=True) for n in names]
         crs = [gpd.GeoSeries([], crs=i["crs"]).crs for i in infos]
         counts = [max(0, int(i["features"])) for i in infos]
-        self.spans = list(zip(names, np.cumsum([0, *counts[:-1]]).tolist(), counts, map(_is_lonlat, crs)))
+        self.spans = [(n, b, c, None if _is_lonlat(r) else r)
+                      for n, b, c, r in zip(names, np.cumsum([0, *counts[:-1]]).tolist(), counts, crs)]
         self.count, self.crs, self.multi = sum(counts), crs[0], len(names) > 1
         self.block = functools.lru_cache(8)(lambda n, b: pyogrio.read_arrow(
             self.src, layer=n, skip_features=b * BLOCK, max_features=BLOCK, read_geometry=False)[1])
-        fields = {"_layer": "object"} if self.multi else {}
+        fields = {}
         for info in infos:
             for name, dtype in zip(info["fields"], info["dtypes"]):
                 fields.setdefault(str(name), str(dtype))
+        self.tag = "_layer" if self.multi else None
+        while self.tag in fields:
+            self.tag = "_" + self.tag
         self.info = {"layers": names,
                      "geometry_types": sorted({str(i["geometry_type"]) for i in infos} - {"Unknown", "None"}),
                      "native_bounds": _union(i["total_bounds"] for i in infos),
                      "bounds4326": _union(_bounds4326(i["total_bounds"], c) for i, c in zip(infos, crs)),
-                     "schema": [{"name": n, "dtype": t} for n, t in fields.items()]}
+                     "schema": [{"name": n, "dtype": t} for n, t in {self.tag: "object", **fields}.items() if n]}
 
     def _parts(self, start, stop):
-        for name, base, n, lonlat in self.spans:
+        for name, base, n, crs in self.spans:
             lo, hi = max(start, base), min(stop, base + n)
             if lo < hi:
-                yield name, lo - base, hi - lo, lonlat
+                yield name, lo - base, hi - lo, crs
 
-    def geoms(self, start, stop):
-        out = [np.empty(0, dtype=object)]
-        for name, skip, n, lonlat in self._parts(start, stop):
-            g = pyogrio.read_dataframe(self.src, layer=name, skip_features=skip, max_features=n, columns=[],
-                                       use_arrow=True).geometry
-            out.append((g if lonlat else g.to_crs(4326)).to_numpy())
-        return np.concatenate(out)
+    def blocks(self, start):
+        for name, skip, _, crs in self._parts(start, self.count):
+            with pyogrio.open_arrow(self.src, layer=name, skip_features=skip, columns=[], batch_size=BLOCK,
+                                    use_pyarrow=True) as (meta, reader):
+                for batch in reader:
+                    g = shapely.from_wkb(batch[meta["geometry_name"] or "wkb_geometry"])
+                    yield g if crs is None else gpd.GeoSeries(g, crs=crs).to_crs(4326).to_numpy()
 
     def records(self, start, stop):
         out = []
         for name, skip, n, _ in self._parts(start, stop):
             first, last = skip // BLOCK, (skip + n - 1) // BLOCK
             table = pa.concat_tables([self.block(name, b) for b in range(first, last + 1)])
-            out += _records(table.slice(skip - first * BLOCK, n), self.multi and name)
+            out += _records(table.slice(skip - first * BLOCK, n), self.tag, name)
         return out
 
     def column(self, name):
         out = []
         for layer, _, n, _ in self.spans:
-            if name == "_layer":
+            if name == self.tag:
                 out += [layer] * n
                 continue
             table = pyogrio.read_arrow(self.src, layer=layer, read_geometry=False, columns=[name])[1]
@@ -266,24 +291,22 @@ def main(file: str = "", op: str = "meta", start: int = 0, column: str = "", chu
                 return {"props": (source.records(start, start + 1) or [{}])[0]}
             if op == "column":
                 return {"values": source.column(column)}
-            geoms = source.geoms(start, min(source.count, start + (chunk if op == "chunk" else min(chunk, FIRST_CHUNK))))
+            geoms = source.take(start, chunk if op == "chunk" else min(chunk, FIRST_CHUNK))
             table = source.records(0, min(source.count, table_rows)) if op != "chunk" else None
-        over = np.flatnonzero(np.cumsum(shapely.get_num_coordinates(geoms)) > CHUNK_COORDS)
-        geoms = geoms[:max(1, int(over[0])) if len(over) else len(geoms)]
-        end = start + len(geoms)
-        first = {"parts": _encode(geoms, np.arange(start, end)), "next": end if end < source.count else None}
+        end, box = start + len(geoms), shapely.total_bounds(geoms)
+        first = {"parts": _encode(geoms, np.arange(start, end)), "next": end if start < end < source.count else None,
+                 "bounds": box.tolist() if np.isfinite(box).all() else None}
     except NotVector as e:
         return {"error": str(e)}
     except Exception as e:  # noqa: BLE001
         return {"error": f"could not read vector file: {type(e).__name__}: {e}"}
     if op == "chunk":
         return first
-    info, crs, box = source.info, source.crs, shapely.total_bounds(geoms)
+    info, crs = source.info, source.crs
     return {**info, "count": source.count, "table": table, "first": first, "file_size": sum(sizes),
             "crs": {"epsg": crs.to_epsg() if crs else None, "name": crs.name if crs else None},
             "geometry_types": info["geometry_types"] or sorted(
-                {p["kind"].replace("geojson", "GeometryCollection") for p in first["parts"]}),
-            "bounds4326": info["bounds4326"] or (box.tolist() if np.isfinite(box).all() else None)}
+                {p["kind"].replace("geojson", "GeometryCollection") for p in first["parts"]})}
 
 
 try:

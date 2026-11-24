@@ -47,6 +47,10 @@ gpd.GeoDataFrame({"k": range(6)}, crs=4326, geometry=[
     shapely.GeometryCollection([shapely.Point(4, 4), shapely.LineString([(4, 4), (5, 5)])]), None,
     shapely.MultiLineString([[(0, 0), (1, 0)], [(0, 1), (1, 1)]])]).to_file(f"{d}/mixed.geojson")
 gdf.to_parquet(f"{d}/arrow.parquet", row_group_size=250, geometry_encoding="geoarrow")
+tag = gpd.GeoDataFrame({"_layer": ["x", "y"]}, geometry=gpd.points_from_xy([0, 1], [0, 1]), crs=4326)
+tag.to_file(f"{d}/tag.geojson")
+tag.to_file(f"{d}/tag.gpkg", layer="a")
+tag.to_file(f"{d}/tag.gpkg", layer="b", mode="a")
 """
 
 _MAIN = r"""
@@ -62,6 +66,11 @@ import geopandas as gpd, numpy as np, pyogrio, shapely
 sys.path.insert(0, sys.argv[1])
 import vector_reader
 vector_reader.CHUNK_COORDS = int(sys.argv[2])
+decoded, reads = [], []
+from_wkb, open_arrow, read_dataframe = shapely.from_wkb, pyogrio.open_arrow, pyogrio.read_dataframe
+shapely.from_wkb = lambda g, *a, **k: decoded.append(len(g)) or from_wkb(g, *a, **k)
+pyogrio.open_arrow = lambda *a, **k: reads.append(k.get("layer")) or open_arrow(*a, **k)
+pyogrio.read_dataframe = lambda *a, **k: reads.append(k.get("layer")) or read_dataframe(*a, **k)
 
 
 def decode(part):
@@ -79,15 +88,23 @@ def truth(path):
     return np.concatenate([f.geometry.to_crs(4326).to_numpy() for f in frames])
 
 
+def drawn(chunks, local):
+    ids, geoms = map(np.concatenate, zip(*[decode(p) for c in chunks for p in c["parts"]]))
+    return sorted(ids.tolist()), bool(shapely.equals(geoms, truth(local)[ids]).all())
+
+
 out = []
 for path, local in zip(sys.argv[3::2], sys.argv[4::2]):
+    del decoded[:], reads[:]
     meta = vector_reader.main(path, chunk=700)
     chunks = [meta["first"]]
     while chunks[-1]["next"] is not None:
         chunks.append(vector_reader.main(path, op="chunk", start=chunks[-1]["next"], chunk=700))
-    ids, geoms = map(np.concatenate, zip(*[decode(p) for c in chunks for p in c["parts"]]))
-    out.append({"count": meta["count"], "chunks": len(chunks), "drawn": sorted(ids.tolist()),
-                "same": bool(shapely.equals(geoms, truth(local)[ids]).all()),
+    work, last = {"decoded": sum(decoded), "reads": len(reads)}, meta["count"] - 3
+    ids, same = drawn(chunks, local)
+    tail, tail_same = drawn([vector_reader.main(path, op="chunk", start=last)], local)
+    out.append({"count": meta["count"], "chunks": len(chunks), "drawn": ids, "same": same, **work,
+                "tail": tail_same and tail == [i for i in ids if i >= last],
                 "kinds": sorted({p["kind"] for c in chunks for p in c["parts"]})})
 print(json.dumps(out))
 """
@@ -201,6 +218,9 @@ def test_every_feature_streams_once_in_lon_lat_across_chunks_layers_and_crs(file
     parquet, shp, two, mixed, remote = _run(_STREAM, 20_000, *args, bucket.url("v/t.parquet"), files / "t.parquet")
     for out in (parquet, shp, two):
         assert out["same"] and out["drawn"] == list(range(out["count"])) and out["chunks"] > out["count"] / 700
+    for out in (parquet, shp, two, mixed):
+        assert out["decoded"] == out["count"] and out["tail"]
+    assert (shp["reads"], two["reads"], mixed["reads"]) == (1, 2, 1)
     assert (parquet["count"], two["count"]) == (3000, 1500) and remote == parquet
     assert two["kinds"] == ["Point", "Polygon"]
     assert mixed["same"] and mixed["drawn"] == [0, 1, 2, 3, 5]
@@ -210,6 +230,7 @@ def test_every_feature_streams_once_in_lon_lat_across_chunks_layers_and_crs(file
 def test_a_feature_over_the_coordinate_budget_is_still_sent_alone(files):
     (one,) = _run(_STREAM, 1, files / "six.geojson", files / "six.geojson")
     assert one["same"] and one["chunks"] == len(one["drawn"]) == 600
+    assert (one["decoded"], one["reads"]) == (600, 1)
 
 
 def test_attributes_are_read_by_the_id_the_map_drew(files):
@@ -220,3 +241,16 @@ def test_attributes_are_read_by_the_id_the_map_drew(files):
         {"props": {"id": 1234, "name": "n12"}}, {"values": [f"n{i % 13}" for i in range(3000)]},
         {"values": [None] * 3000}, {"props": {"_layer": "pts", "id": 3}},
         {"values": ["roads"] * 1000 + ["pts"] * 500}, {"values": [*range(1000), *range(500)]}]
+
+
+def test_a_real_layer_field_keeps_its_values_next_to_the_layer_name(files):
+    one, two = files / "tag.geojson", files / "tag.gpkg"
+    meta1, col1, row1, meta2, row2, names, col2 = _main(
+        {"file": one}, {"file": one, "op": "column", "column": "_layer"}, {"file": one, "op": "row", "start": 1},
+        {"file": two}, {"file": two, "op": "row", "start": 3}, {"file": two, "op": "column", "column": "__layer"},
+        {"file": two, "op": "column", "column": "_layer"})
+    assert [s["name"] for s in meta1["schema"]] == ["_layer"] and (col1, row1) == (
+        {"values": ["x", "y"]}, {"props": {"_layer": "y"}})
+    assert [s["name"] for s in meta2["schema"]] == ["__layer", "_layer"]
+    assert (row2, names, col2) == ({"props": {"__layer": "b", "_layer": "y"}}, {"values": ["a", "a", "b", "b"]},
+                                   {"values": ["x", "y", "x", "y"]})
