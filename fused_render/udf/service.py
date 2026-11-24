@@ -13,10 +13,12 @@ stderr, fused_cached, source}`; `source` is "saved", "fused-cache" or
 "fresh". The bytes are at `url` (GET /api/udf/results/<token>).
 
 The run key always holds the hash of the UDF's code. A file's is its
-contents. A UDF named by canvas and name has its code on Fused, so the
-worker loads it first (`{op: "code"}`) and the run that follows reuses that
-load: after the UDF changes on Fused its old saved copy has another key and
-is never shown.
+contents. A UDF named by canvas and name whose canvas folder is on this
+machine IS its node file there: the run is that file's (its code as it
+stands on disk, its hash, its saved results). Only a canvas with no folder
+here has its code on Fused alone: the worker loads it first (`{op: "code"}`)
+and the run that follows reuses that load. Either way a changed UDF has
+another key and its old saved copy is never shown.
 
 Error codes: bad_ref, bad_env, env_locked, signed_out, unavailable,
 udf_error (with line/stdout/stderr), needs_confirmation (with
@@ -80,8 +82,8 @@ class Target:
     """What to run, resolved: where (`env`), what `fused.load` gets
     (`load_as`, `collection`) and what identifies it for the run key.
     `file_sha` is the hash of the code the key is made from: a file's
-    contents, or for a UDF by name what `_load_named` got from the worker
-    (None until then). `loaded` names that load in the worker, for the run
+    contents, or for a UDF by name with no file here what `_load_named` got
+    from the worker (None until then). `loaded` names that load in the worker, for the run
     to reuse.
     `clone_dir` is the canvas folder of a canvas node file: its saved results
     are kept there (`store.clone_folder`)."""
@@ -119,8 +121,10 @@ def _env_ok(env) -> str:
 def resolve(ref) -> Target:
     """A page's reference -> a Target. `{file, env?}`: a UDF's .py on disk; a
     canvas node file runs in its canvas's environment and canvas, any other
-    .py needs `env`. `{canvas, name, env?}`: a UDF as saved on Fused (`env`
-    defaults to the workbench environment)."""
+    .py needs `env`. `{canvas, name, env?}` (`env` defaults to the workbench
+    environment): the node file `<name>.py` of that canvas's folder on this
+    machine when there is one, resolved as `{file}`; else the UDF as saved
+    on Fused."""
     from fused_render import canvases
 
     if not isinstance(ref, dict):
@@ -156,6 +160,12 @@ def resolve(ref) -> Target:
     if "/" in name or os.sep in name or name.endswith(".py"):
         raise RunError("bad_ref", "'name' is a UDF's name, not a path")
     env = _env_ok(ref.get("env") or canvases.workbench_env())
+    if canvases._NAME_RE.fullmatch(canvas):
+        path = os.path.join(canvases._canvas_dir(env, canvas), name + ".py")
+        info = canvases.canvas_node_file(path)
+        if (info is not None and info["kind"] == "udf"
+                and info["env"] == env and info["name"] == canvas):
+            return resolve({"file": path})
     return Target(env, name, canvas, ["name", canvas, name])
 
 

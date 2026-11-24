@@ -13053,7 +13053,7 @@ milliseconds.
 
 - **SR-1 Key.** sha256 of the environment, the account (the access token's
   `sub`, hashed), the source (a file's path and content hash, or canvas,
-  name and the hash of the code Fused holds, SR-4a), the params, the format and, for a tile run, the tile `x, y, z`.
+  name and the hash of the code Fused holds when no file is here, SR-4a), the params, the format and, for a tile run, the tile `x, y, z`.
   An edit, another account, other params or another tile is another key; a
   run without a tile has the key it had before tiles existed.
 - **SR-2 What is kept.** Only successful runs; never errors or
@@ -13079,10 +13079,14 @@ milliseconds.
 - **SR-4 Shown as saved.** The key cannot see sibling UDFs read through
   `fused.load`, outside data or the clock, so a saved copy is always
   labelled saved and, under `cache: "auto"`, always followed by a run.
-- **SR-4a A UDF by name.** Its code is on Fused, so before the key is made
-  the worker loads the UDF (`{op: "code"}`) and answers the hash of its
-  code; the run that follows takes that same load. After the UDF changes on
-  Fused its key is another one: the old copy is never shown.
+- **SR-4a A UDF by name.** When the canvas's folder is on this machine
+  and holds the node file `<name>.py`, the run is that file's: its code as
+  it stands on disk, its key, its saved results (the same ones the node's
+  own page shows). An edit of the file is another key at once, pushed or
+  not. Only for a canvas with no folder here is the code on Fused alone:
+  before the key is made the worker loads the UDF (`{op: "code"}`) and
+  answers the hash of its code, and the run that follows takes that same
+  load.
 - **SR-5 Clearing.** Preferences → Advanced → Debugging → "Saved UDF
   cache" shows the results' count and size, `<home>`'s and every canvas
   folder's (`GET /api/udf/saved`), and Clear deletes them all (`DELETE /api/udf/saved`, guarded); the next open of

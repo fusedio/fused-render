@@ -314,6 +314,23 @@ def test_prefer_saved_ends_at_the_saved_copy(clone, signed_in, fake_runner):
     assert len(fake_runner.requests) == 1
 
 
+def test_a_udf_by_name_is_its_node_file_when_the_canvas_folder_is_here(clone, signed_in, fake_runner):
+    by_name = {"canvas": "demo", "name": "udf_1", "env": ENV}
+    by_file = {"file": str(clone / "udf_1.py")}
+    frames = run_frames({"ref": by_name})
+    assert [f["type"] for f in frames] == ["started", "done"]
+    # The file on disk is what ran; nothing was asked of Fused for the key.
+    assert [r["op"] for _, r in fake_runner.requests] == ["run"]
+    assert fake_runner.requests[0][1]["source"] == str(clone / "udf_1.py")
+    assert fake_runner.requests[0][1]["collection"] == "demo"
+    # One saved copy for the node, by name or by file.
+    assert run_frames({"ref": by_file})[0]["type"] == "saved"
+    assert run_frames({"ref": by_name})[0]["type"] == "saved"
+    # An edit on disk: the old copy is never shown.
+    (clone / "udf_1.py").write_text(UDF_SOURCE + "# edit\n", encoding="utf-8")
+    assert [f["type"] for f in run_frames({"ref": by_name})] == ["started", "done"]
+
+
 def test_a_udf_by_name_has_its_code_in_the_key(base, signed_in, fake_runner):
     ref = {"canvas": "demo", "name": "udf_1", "env": ENV}
     assert [f["type"] for f in run_frames({"ref": ref})] == ["started", "done"]
