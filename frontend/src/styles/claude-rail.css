@@ -2263,7 +2263,7 @@ html.claude-rail-resizing :is(.claude-rail-peek, .claude-rail-peek .claude-rail-
   flex: 1 1 auto;
 }
 /* The icon's own 28px box: the glyph centred as in the 28px seat, and the
-   box the dots (`.sidebar-rail-dot`, `.is-second`, the bot's corner dot) and
+   box the dots (`.sidebar-rail-dot`, the bot's corner dot) and
    the pin mark (`.claude-rail-pinmark`) are placed against — on the icon, as
    before, not at the row's far end. */
 .claude-rail-icon {
