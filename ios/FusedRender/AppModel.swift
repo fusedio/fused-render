@@ -260,13 +260,17 @@ final class AppModel: ObservableObject {
     /// and the port the listener is actually on.
     func noteReached(_ server: Server, host: String, port: Int? = nil, resolvedIP: String? = nil) {
         guard let i = known.firstIndex(of: server) else { return }
-        // The tailnet name is not a Wi-Fi fallback: nothing about it belongs
-        // in the Wi-Fi fields.
-        if known[i].isAway(host) { return }
         var changed = false
+        // The port is the listener's own, whichever route found it.
         if let port, port != known[i].port {
             known[i].port = port
             changed = true
+        }
+        // The tailnet name is not a Wi-Fi fallback: its address does not
+        // belong in the Wi-Fi fields.
+        if known[i].isAway(host) {
+            if changed, current == server { current = known[i] }
+            return
         }
         let address = Server.looksLikeIP(host) ? host : resolvedIP
         if let address, Server.looksLikeIP(address), address != known[i].host, address != known[i].lastIP {

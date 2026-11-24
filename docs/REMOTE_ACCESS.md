@@ -60,7 +60,13 @@ host it arrived on (`routes(proven=…)`). And the answer carries `away`
 only when that is false, never because a route is missing from one answer.
 The probe is a blocking connection to this very listener, so the phone
 listener runs `routes` off its event loop (`asyncio.to_thread`); on the loop
-it could only time out, stalling every phone request while it did.
+it could only time out, stalling every phone request while it did. For the
+same reason the Host check never waits for the Tailscale CLI: on the loop it
+reads the last answer and a thread refreshes it (`tailscale._cached(block=False)`).
+
+The tailnet route tries the listener's fallback ports as the Wi-Fi does
+(`Server.candidatePorts`), and the phone keeps the port that answered: the
+computer may have restarted on another port since the phone last saw it.
 
 ## 2. The one idea: do not terminate TLS anywhere new
 
@@ -82,20 +88,31 @@ scoping) applies unchanged to away requests. On top of it:
 1. **Classified by the transport, never by headers.** `_via(scope)`: a source
    address in Tailscale's ranges is `tailscale`; else `lan`. `X-Forwarded-For`
    and friends are never read. A local network numbered out of Tailscale's
-   range stays `lan` (`_lan_overlaps_tailnet`).
+   range stays `lan` (`_lan_overlaps_tailnet`), except for an address
+   Tailscale itself lists as on the tailnet (`tailscale.peer_ips()`): that one
+   is `tailscale` even when it shares a /24 with the Wi-Fi.
 2. **Off means closed.** With away access off, any `tailscale` request is
    404 / WebSocket 1008, and the tailnet name and addresses are not in the
    Host allowlist.
-3. **Pairing needs the Wi-Fi.** `/pair` over the tailnet answers "Pair on the
-   same Wi-Fi first" and does **not** spend the code. A QR code that leaks (a
-   screen share, a photo) cannot pair someone who is merely on the same
-   tailnet; it still needs someone on your network within five minutes.
+3. **Pairing needs the local network, judged by where the connection came
+   from.** `/pair` over the tailnet, or from a source address that is not on
+   a network this computer is on (`_on_local_network`: private, link-local or
+   loopback, or inside one of the computer's own interface networks), answers
+   "Pair on the same Wi-Fi first" and does **not** spend the code. The Host
+   header is not evidence: the listener binds every interface, so on a
+   computer whose port is reachable from the internet anyone can send its
+   local name. A QR code that leaks (a screen share, a photo) cannot pair
+   someone on the tailnet or across the internet; it still needs someone on
+   your network within five minutes.
 4. **Per-phone switch.** Each paired phone has an **Away** switch in
    Preferences (`remote` in `lan_devices.json`, on by default). Off: that phone
    works on the Wi-Fi only, gets 403 away, and is not told the away route.
 5. **Visibility.** The device list shows how each phone last came in
-   (`last_via`: Wi-Fi or Tailscale). Revoking works on every route at once
-   (the cookie is checked per request).
+   (`last_via`: Wi-Fi or Tailscale). Revoking works on every route at once:
+   the cookie is checked per request, and a websocket that is already open
+   (`/api/fs/events`, checked only at its handshake) is closed with code 1008
+   (`close_sockets`) when its phone is revoked, when that phone's Away switch
+   goes off, or when away access goes off (the last two: away sockets only).
 6. **Management stays loopback-only.** `/api/lan/*` (pair codes, devices, the
    away switch) is on the desktop's loopback API; the LAN wrapper never forwards
    it, so a phone cannot widen its own access.

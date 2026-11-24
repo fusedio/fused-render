@@ -76,11 +76,16 @@ enum Reachability {
         // on someone else's Wi-Fi. The same pinned certificate decides, so it
         // never trusts more than the Wi-Fi does. Tried before the subnet scan:
         // one request, where the scan is hundreds.
+        // The stored port first, with the long wait a cellular path needs;
+        // then the listener's fallback ports, as on the Wi-Fi: the computer
+        // may have restarted on another one since this phone last saw it.
         if online {
             for endpoint in server.awayEndpoints {
-                if await reach(host: endpoint.host, port: endpoint.port, fingerprint: server.fingerprint,
-                               timeout: 6) == .reached {
-                    return .ok(host: endpoint.host, port: endpoint.port)
+                for port in server.candidatePorts {
+                    if await reach(host: endpoint.host, port: port, fingerprint: server.fingerprint,
+                                   timeout: port == endpoint.port ? 6 : 3) == .reached {
+                        return .ok(host: endpoint.host, port: port)
+                    }
                 }
             }
         }

@@ -41,18 +41,22 @@ class _Remote:
         """Turn away access on or off to match the preference. Idempotent."""
         with self._lock:
             self.enabled = enabled
+        if enabled:
+            tailscale.warm()
 
     def stop(self) -> None:
         """Phone access went off: no away routes until ``apply`` again."""
         with self._lock:
             self.enabled = False
 
-    def tailnet(self) -> dict | None:
-        return tailscale.status() if self.enabled else None
+    def tailnet(self, block: bool = True) -> dict | None:
+        return tailscale.status(block) if self.enabled else None
 
     def hosts(self) -> set[str]:
-        """Names and addresses away routes may put in ``Host``."""
-        ts = self.tailnet() if self.enabled else None
+        """Names and addresses away routes may put in ``Host``. Asked on the
+        phone listener's event loop for every tailnet request, so it never
+        waits for the Tailscale CLI: the last read, refreshed on a thread."""
+        ts = self.tailnet(block=False) if self.enabled else None
         if not ts:
             return set()
         out: set[str] = set(ts.get("ips") or [])

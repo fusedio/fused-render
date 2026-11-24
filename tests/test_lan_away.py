@@ -26,6 +26,8 @@ def home(tmp_path, monkeypatch):
     monkeypatch.setattr(lan._controller, "ips", ["192.168.1.20"])
     monkeypatch.setattr(lan_doctor, "lan_ips", lambda: ["192.168.1.20"])
     monkeypatch.setattr(lan_doctor, "best_ip", lambda: "192.168.1.20")
+    # No real Tailscale CLI in a test: nobody is on the tailnet unless a test says so.
+    monkeypatch.setattr(tailscale, "peer_ips", lambda: frozenset())
     return tmp_path
 
 
@@ -34,7 +36,7 @@ def away(home, monkeypatch):
     """Away access ON, with a tailnet (faked at the tunnel/host.py seam)."""
     r = tunnel_host.remote
     monkeypatch.setattr(r, "enabled", True)
-    monkeypatch.setattr(r, "tailnet", lambda: {"host": TS_HOST, "ips": [TS_IP]})
+    monkeypatch.setattr(r, "tailnet", lambda block=True: {"host": TS_HOST, "ips": [TS_IP]})
     # The computer's own try at its tailnet route (lan._tailnet_probe) answers.
     monkeypatch.setattr(lan_doctor, "self_connect", lambda host, port, fingerprint, timeout=2.0: True)
     return r

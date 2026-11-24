@@ -634,12 +634,14 @@ def revoke_device(device_id: str) -> bool:
         if len(kept) == len(devices):
             return False
         _write_devices(kept)
+    close_sockets(device_id)
     return True
 
 
 def revoke_all_devices() -> None:
     with _devices_lock:
         _write_devices([])
+    close_sockets()
 
 
 def set_device_remote(device_id: str, allowed: bool) -> bool:
@@ -651,8 +653,12 @@ def set_device_remote(device_id: str, allowed: bool) -> bool:
             if d.get("id") == device_id:
                 d["remote"] = bool(allowed)
                 _write_devices(devices)
-                return True
-    return False
+                break
+        else:
+            return False
+    if not allowed:
+        close_sockets(device_id, away_only=True)
+    return True
 
 
 def _cookie_secret(scope) -> str | None:
@@ -734,9 +740,53 @@ def _via(scope) -> tuple[str, str | None]:
     (the connection's own source), never by anything the client sends."""
     client = scope.get("client") or ()
     ip = str(client[0]) if len(client) > 0 and client[0] else ""
-    if ip and tailscale.is_tailnet_ip(ip) and not _lan_overlaps_tailnet(ip):
-        return "tailscale", ip
+    if ip and tailscale.is_tailnet_ip(ip):
+        # An address Tailscale itself lists is the tailnet, even when the
+        # Wi-Fi is numbered out of the same range and the two share a /24:
+        # the prefix alone would call that peer `lan`, past the away switches
+        # and able to pair. Only an address in the range that Tailscale does
+        # not know can be the Wi-Fi.
+        if _same_address(ip) in tailscale.peer_ips() or not _lan_overlaps_tailnet(ip):
+            return "tailscale", ip
     return "lan", ip or None
+
+
+def _same_address(ip: str) -> str:
+    """``ip`` in the one spelling ``tailscale.peer_ips()`` uses."""
+    import ipaddress
+
+    try:
+        return str(ipaddress.ip_address(ip.split("%")[0]))
+    except ValueError:
+        return ip
+
+
+def _on_local_network(scope) -> bool:
+    """Did the connection come from a network this computer is on, going by
+    its source address — never by the Host header, which the client writes?
+
+    The listener binds every interface, so on a computer whose port is
+    reachable from the internet (a port forward, a public address) anyone can
+    send the computer's local name as Host. Pairing asks this first: a
+    private, link-local or loopback source, or one inside a network one of the
+    computer's own interfaces is attached to (so a campus network that hands
+    out public addresses still pairs)."""
+    import ipaddress
+
+    client = scope.get("client") or ()
+    try:
+        addr = ipaddress.ip_address(str(client[0]).split("%")[0])
+    except (ValueError, IndexError):
+        return False
+    mapped = getattr(addr, "ipv4_mapped", None)
+    if mapped is not None:
+        addr = mapped
+    if addr.is_loopback or addr.is_link_local or addr.is_private:
+        return True
+    try:
+        return any(addr in net for _, net in lan_doctor.networks())
+    except Exception:  # noqa: BLE001 — unknown is not local
+        return False
 
 
 def _lan_overlaps_tailnet(ip: str) -> bool:
@@ -825,6 +875,69 @@ def _handle_pair(scope) -> Response:
     return _with_cookie(RedirectResponse("/", status_code=302), secret)
 
 
+#: Every open phone websocket: its task -> {device id, route, loop, revoked}.
+#: The gate above a socket is asked once, at the handshake; this is what lets
+#: a revoke or an away switch end one that is already open (``close_sockets``).
+_live_sockets: dict = {}
+_live_lock = threading.Lock()
+
+
+def close_sockets(device_id: str | None = None, away_only: bool = False) -> int:
+    """End open phone websockets: one device's (``device_id``) or everyone's,
+    on every route or only the away ones. Each gets close code 1008. Callable
+    from any thread; returns how many were asked to close."""
+    with _live_lock:
+        entries = list(_live_sockets.items())
+    asked = 0
+    for task, entry in entries:
+        if device_id is not None and entry["device"] != device_id:
+            continue
+        if away_only and entry["via"] == "lan":
+            continue
+        entry["revoked"] = True
+        try:
+            entry["loop"].call_soon_threadsafe(task.cancel)
+            asked += 1
+        except RuntimeError:  # that loop is gone, and its sockets with it
+            pass
+    return asked
+
+
+async def _serve_socket(inner, scope, receive, send) -> None:
+    """Hand an admitted websocket to the inner app, and keep it on record so
+    ``close_sockets`` can end it when its phone is revoked or loses the route
+    it came by."""
+    import asyncio
+
+    seen = {"closed": False}
+
+    async def watched(message):
+        if message.get("type") == "websocket.close":
+            seen["closed"] = True
+        await send(message)
+
+    task = asyncio.ensure_future(inner(scope, receive, watched))
+    entry = {"device": (_paired_record(scope) or {}).get("id"), "via": scope.get("fused.via", "lan"),
+             "loop": asyncio.get_running_loop(), "revoked": False}
+    with _live_lock:
+        _live_sockets[task] = entry
+    try:
+        await task
+    except asyncio.CancelledError:
+        if not entry["revoked"]:
+            task.cancel()  # we were cancelled ourselves (the listener is stopping)
+            raise
+        logger.info("lan: closed a %s socket of %s (access withdrawn)", entry["via"], entry["device"])
+        if not seen["closed"]:
+            try:
+                await send({"type": "websocket.close", "code": 1008})
+            except Exception:  # noqa: BLE001 — already gone
+                pass
+    finally:
+        with _live_lock:
+            _live_sockets.pop(task, None)
+
+
 #: (status, address) -> when it was last logged: see ``_log_refusal``.
 _refusal_logged: dict[tuple[int, str], float] = {}
 _REFUSAL_LOG_EVERY_S = 10.0
@@ -908,7 +1021,7 @@ class LanApp:
                              keep_blank_values=True)
             if (_host_ok(scope) and _device_ok(scope) and scope["path"] == "/api/fs/events"
                     and query.get("path") and _args_in_scope(query)):
-                await self.inner(scope, receive, send)
+                await _serve_socket(self.inner, scope, receive, send)
             else:
                 _log_refusal(scope, 1008)
                 await send({"type": "websocket.close", "code": 1008})
@@ -934,8 +1047,9 @@ class LanApp:
             return _not_found()
         via = scope.get("fused.via", "lan")
         if path == "/pair" and method == "GET":
-            if via != "lan":
-                logger.info("lan: refused pairing over %s from %s", via, (scope.get("client") or ("?",))[0])
+            if via != "lan" or not _on_local_network(scope):
+                logger.info("lan: refused pairing over %s from %s", via if via != "lan" else "another network",
+                            (scope.get("client") or ("?",))[0])
                 return _pair_page(
                     "Pair on the same Wi-Fi first",
                     "For safety, a phone can only pair while it is on the same network as the "
@@ -1424,7 +1538,10 @@ def apply_remote() -> None:
     preferences. Away access needs Phone access on: it is the same listener."""
     from fused_render.shell import prefs
 
-    remote.apply(prefs.lan_enabled() and prefs.lan_remote_enabled())
+    want = prefs.lan_enabled() and prefs.lan_remote_enabled()
+    remote.apply(want)
+    if not want:
+        close_sockets(away_only=True)
 
 
 def routes(away: bool = True, proven: str | None = None) -> dict:
