@@ -153,6 +153,10 @@ class _Remote:
             "relay_from_env": os.environ.get("FUSED_RENDER_RELAY") is not None,
             "relay": relay,
             "tailscale": ts,
+            # Why there is (not) a tailnet, for the Preferences row: "missing"
+            # (not installed), "off" (not running or signed out), "running".
+            # None while away access is off: nothing was asked.
+            "tailscale_state": (tailscale.RUNNING if ts else tailscale.state()) if self.enabled else None,
             "error": self.error,
         }
 

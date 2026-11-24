@@ -2180,6 +2180,25 @@
 .lan-remote {
   margin-top: 10px;
 }
+/* The Tailscale route's state and next step (lan.tsx TailscaleGuide). */
+.lan-remote-ts {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  max-width: 34rem;
+  margin-bottom: 10px;
+  font-size: 13px;
+  color: var(--fg-muted);
+}
+.lan-remote-ts > b {
+  flex: 0 0 auto;
+  color: var(--fg);
+  font-weight: 500;
+}
+.lan-remote-ts a {
+  color: inherit;
+  text-decoration: underline;
+}
 .lan-remote-relay {
   display: flex;
   align-items: center;

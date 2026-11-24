@@ -326,6 +326,37 @@ function LanDevices({
   );
 }
 
+export const TAILSCALE_DOWNLOAD_URL = "https://tailscale.com/download";
+
+// The Tailscale route, said out loud: which of three states this computer is
+// in (tunnel/tailscale.py `state`) and the one next step for it. Nothing to
+// switch on here, Fused only reads what Tailscale reports, so without this
+// row a missing or signed-out Tailscale looked the same as a working one.
+function TailscaleGuide({ state, name }: { state?: "missing" | "off" | "running" | null; name: string | null }) {
+  if (!state) return null;
+  return (
+    <div className="lan-remote-ts" data-state={state}>
+      <b className={state === "running" ? "settings-dot" : "settings-dot settings-dot-warn"}>Tailscale</b>
+      {state === "running" ? (
+        <span>
+          Reachable as <code className="break-all">{name}</code>. The phone needs Tailscale too, signed in to the same
+          account and turned on.
+        </span>
+      ) : state === "off" ? (
+        <span>Installed, but not connected. Open Tailscale on this computer and sign in.</span>
+      ) : (
+        <span>
+          Not installed on this computer.{" "}
+          <a href={TAILSCALE_DOWNLOAD_URL} target="_blank" rel="noopener noreferrer">
+            Get Tailscale
+          </a>
+          , then sign in here and on the phone.
+        </span>
+      )}
+    </div>
+  );
+}
+
 // Away access (tunnel/, docs/REMOTE_ACCESS.md): a child of Phone access. On,
 // paired phones reach this computer off the Wi-Fi through the relay (the
 // computer dials out; the relay passes the phone's pinned TLS through blind)
@@ -358,6 +389,26 @@ export function LanRemoteControl({ prefs, onChange }: PrefControlProps) {
   // The agent connects a moment after the switch: follow it until it settles.
   const relay = remote?.relay;
   const settling = enabled && !!relay && !relay.connected && !relay.error;
+  // Tailscale is set up outside this page (install, sign in): keep reading,
+  // slowly, so the row turns green without a reload. The server caches the
+  // read for 20 s, so this costs no extra CLI runs.
+  const awaitingTailscale = enabled && !!remote?.tailscale_state && remote.tailscale_state !== "running";
+  useEffect(() => {
+    if (!awaitingTailscale || settling) return;
+    let alive = true;
+    const id = window.setInterval(async () => {
+      try {
+        const next = await getPrefs();
+        if (alive) onChange(next);
+      } catch {
+        /* the next tick retries */
+      }
+    }, 10_000);
+    return () => {
+      alive = false;
+      window.clearInterval(id);
+    };
+  }, [awaitingTailscale, settling, onChange]);
   useEffect(() => {
     if (!settling) return;
     let alive = true;
@@ -384,7 +435,7 @@ export function LanRemoteControl({ prefs, onChange }: PrefControlProps) {
         ? `Reachable on your Tailscale network as ${ts.host}.`
         : relay
           ? "Connecting to the relay…"
-          : "No relay set and no Tailscale network found — add a relay below.";
+          : "Not reachable away from the Wi-Fi yet. Set up Tailscale or add a relay below.";
 
   return (
     <SettingRow
@@ -394,6 +445,7 @@ export function LanRemoteControl({ prefs, onChange }: PrefControlProps) {
     >
       {enabled && (
         <div className="lan-remote">
+          <TailscaleGuide state={remote?.tailscale_state} name={ts?.host ?? ts?.ips?.[0] ?? null} />
           <form
             className="lan-remote-relay"
             onSubmit={(e) => {

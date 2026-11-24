@@ -23,6 +23,17 @@ tailnet, the relay; then the subnet scan (Reachability.swift). Every time the
 app comes to the foreground it starts again from the top, so it moves back to
 the direct Wi-Fi route as soon as it is home.
 
+**Tailscale is guided, not configured.** Fused only reads what Tailscale
+reports, so Preferences says which of three states the computer is in
+(`tunnel/tailscale.py` `state()`, sent as `remote.tailscale_state`) and the
+one next step: `missing` (not installed: a link to the download), `off`
+(installed, but stopped or signed out: open it and sign in), `running`
+(reachable as its MagicDNS name; the phone needs Tailscale on the same
+account). The row re-reads every 10 s until it is `running`. On the phone,
+when no route answers and the computer named a tailnet route, the banner says
+to turn on Tailscale there: iOS gives an app no way to see whether another
+app's VPN is up, so that is a hint, not a diagnosis.
+
 ## 2. The one idea: do not terminate TLS anywhere new
 
 The Wi-Fi design already has the right trust model: **one self-signed

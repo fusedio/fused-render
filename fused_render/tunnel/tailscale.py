@@ -9,7 +9,8 @@ the Wi-Fi routes. Encryption is WireGuard underneath and the same pinned TLS
 on top.
 
 Read from ``tailscale status --json`` (cached; a missing CLI or a stopped
-daemon is simply "no tailnet").
+daemon is simply "no tailnet"). ``state()`` says which of those it was, so
+Preferences can name the next step: install it, sign in, or nothing.
 """
 from __future__ import annotations
 
@@ -22,7 +23,12 @@ import threading
 import time
 
 _TTL_S = 20.0
-_cache: tuple[float, dict | None] | None = None
+#: (when, identity or None, state): one CLI run answers both questions.
+_cache: tuple[float, dict | None, str] | None = None
+
+#: ``state()`` values. MISSING: no CLI on this computer. OFF: installed, but
+#: the backend is stopped, signed out or still starting. RUNNING: on a tailnet.
+MISSING, OFF, RUNNING = "missing", "off", "running"
 _lock = threading.Lock()
 
 #: Where the CLI lives when it is not on PATH (the macOS App Store / standalone app).
@@ -39,22 +45,23 @@ def _cli() -> str | None:
     return _MAC_CLI if os.path.exists(_MAC_CLI) else None
 
 
-def _read() -> dict | None:
+def _read() -> tuple[dict | None, str]:
     cli = _cli()
     if cli is None:
-        return None
+        return None, MISSING
     try:
         out = subprocess.run([cli, "status", "--json"], capture_output=True,
                              timeout=3, check=False)
     except (OSError, subprocess.SubprocessError):
-        return None
+        return None, OFF
     if out.returncode != 0:
-        return None
+        return None, OFF
     try:
         data = json.loads(out.stdout)
     except ValueError:
-        return None
-    return parse(data)
+        return None, OFF
+    value = parse(data)
+    return value, RUNNING if value else OFF
 
 
 def parse(data) -> dict | None:
@@ -72,17 +79,27 @@ def parse(data) -> dict | None:
     return {"host": host, "ips": ips}
 
 
-def status() -> dict | None:
-    """The computer's tailnet identity, or None (no CLI, not running)."""
+def _cached() -> tuple[dict | None, str]:
     global _cache
     now = time.monotonic()
     with _lock:
         if _cache is not None and now - _cache[0] < _TTL_S:
-            return _cache[1]
-    value = _read()
+            return _cache[1], _cache[2]
+    value, state = _read()
     with _lock:
-        _cache = (now, value)
-    return value
+        _cache = (now, value, state)
+    return value, state
+
+
+def status() -> dict | None:
+    """The computer's tailnet identity, or None (no CLI, not running)."""
+    return _cached()[0]
+
+
+def state() -> str:
+    """Why ``status()`` is what it is: MISSING, OFF or RUNNING. Same cached
+    read as ``status()``, so asking for both costs one CLI run."""
+    return _cached()[1]
 
 
 def reset_cache() -> None:

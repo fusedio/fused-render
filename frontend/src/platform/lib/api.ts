@@ -2379,6 +2379,10 @@ export interface LanRemoteStatus {
     streams: number;
   } | null;
   tailscale: { host: string | null; ips: string[] } | null;
+  // Why there is (not) a tailnet (tunnel/tailscale.py `state`): not installed,
+  // installed but not running or signed out, or running. Null while away
+  // access is off.
+  tailscale_state?: "missing" | "off" | "running" | null;
   error: string | null;
 }
 
