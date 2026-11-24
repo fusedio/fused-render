@@ -95,7 +95,7 @@ export const lastUserTs = (evs: BotEvent[]): number => {
 // Card subtitle: the bot's latest message (not yours, not system noise), flattened to one plain line.
 export const BOT_ROLES: BotEvent["role"][] = ["thought", "done", "question", "error"];
 /** A message as a row's one plain line: no markdown marks, no line breaks. */
-export const previewLine = (text: string): string => text.replace(/[*_`#>]+/g, "").replace(/\s+/g, " ").trim().slice(0, 160);
+export const previewLine = (text?: string | null): string => (text ?? "").replace(/[*_`#>]+/g, "").replace(/\s+/g, " ").trim().slice(0, 160);
 export const lastBotMsg = (evs: BotEvent[]): string => {
   for (let i = evs.length - 1; i >= 0; i--)
     if (BOT_ROLES.includes(evs[i].role) && evs[i].text) return previewLine(evs[i].text);
