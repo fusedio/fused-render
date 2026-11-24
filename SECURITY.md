@@ -41,10 +41,9 @@ only".** Phone access (`lan.py`, off by default) opens a second, https-only
 listener that serves a fixed allowlist of routes to devices paired by QR code,
 pinned to one self-signed certificate. Away access (docs/REMOTE_ACCESS.md, a
 second switch, off by default) lets those already-paired devices reach the
-same listener from anywhere, through a relay that passes the pinned TLS
-through without being able to read it, or over the user's Tailscale network.
-Pairing still requires the same network; each phone can be limited to the
-Wi-Fi or revoked at any time.
+same listener from anywhere over the user's own Tailscale network, still
+pinned to that certificate. Pairing still requires the same network; each
+phone can be limited to the Wi-Fi or revoked at any time.
 
 In short: **treat fused-render like a code editor or a local Jupyter
 kernel, not like a multi-tenant web service.** Anything with local code

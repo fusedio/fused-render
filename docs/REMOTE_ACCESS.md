@@ -1,9 +1,11 @@
 # Away access: the phone app off the Wi-Fi
 
-Status: draft (2026-11-21). Code: `fused_render/tunnel/`, `fused_render/lan.py`
-(`_via`, `_classify`, `routes`), `frontend/src/shell/settings/lan.tsx`
-(`LanRemoteControl`), `ios/FusedRender/{AppModel,Reachability,ManifestSync}.swift`.
-Tests: `tests/test_tunnel.py`, `tests/test_lan_away.py`.
+Status: draft (2026-11-24). Code: `fused_render/tunnel/` (`tailscale.py`,
+`host.py`), `fused_render/lan.py` (`_via`, `_classify`, `routes`,
+`_tailnet_probe`, `_log_refusal`), `frontend/src/shell/settings/lan.tsx`
+(`LanRemoteControl`, `TailscaleGuide`),
+`ios/FusedRender/{AppModel,Reachability,ManifestSync,RootView}.swift`.
+Tests: `tests/test_lan_away.py`.
 
 ## 1. What it does
 
@@ -11,28 +13,45 @@ Phone access (`lan.py`, docs/LAN_SIMPLIFICATION.md) lets a paired phone open
 your apps **on the same Wi-Fi**. Away access is a second switch under it:
 **Preferences → Phone access → Also reachable away from this Wi-Fi**. With it
 on, a phone that already paired reaches the same listener from anywhere, as
-long as the computer is on and online, by one of two routes:
+long as the computer is on and online, over **Tailscale**: the computer and
+the phone both run Tailscale, signed in to the same tailnet.
 
-| Route | What carries it | Needs | Who can read the traffic |
-|---|---|---|---|
-| **Tailscale** | the computer's tailnet (WireGuard), direct | Tailscale on both devices, same tailnet | nobody: WireGuard + our pinned TLS |
-| **Relay** | `tunnel/relay.py`, any public host | a relay (self-hosted, or one Fused runs) | nobody: the relay passes our pinned TLS through blind |
+Nothing is run or hosted for it. The listener already binds every interface;
+away access admits the tailnet name and addresses and tells the phone the
+name. Tailscale carries the traffic over WireGuard, directly between the two
+devices where it can, and inside it the phone still talks our pinned TLS.
 
 The phone tries routes in order: the Wi-Fi name, the Wi-Fi address, the
-tailnet, the relay; then the subnet scan (Reachability.swift). Every time the
-app comes to the foreground it starts again from the top, so it moves back to
-the direct Wi-Fi route as soon as it is home.
+tailnet; then the subnet scan (Reachability.swift). It starts again from the
+top every time the app comes to the foreground, whenever the phone's network
+changes (left the Wi-Fi, came home, a VPN came up or went down), and every
+ten minutes while the app stays open. So it moves back to the direct Wi-Fi
+route as soon as it is home. A check that finds the computer where the
+webview already is changes nothing on screen.
 
 **Tailscale is guided, not configured.** Fused only reads what Tailscale
-reports, so Preferences says which of three states the computer is in
+reports, so Preferences says which state the computer is in
 (`tunnel/tailscale.py` `state()`, sent as `remote.tailscale_state`) and the
 one next step: `missing` (not installed: a link to the download), `off`
 (installed, but stopped or signed out: open it and sign in), `running`
 (reachable as its MagicDNS name; the phone needs Tailscale on the same
-account). The row re-reads every 10 s until it is `running`. On the phone,
-when no route answers and the computer named a tailnet route, the banner says
-to turn on Tailscale there: iOS gives an app no way to see whether another
-app's VPN is up, so that is a hint, not a diagnosis.
+account). The row re-reads every 10 s until it is `running` and reachable.
+On the phone, when no route answers and the computer named a tailnet route,
+the banner says to turn on Tailscale there: iOS gives an app no way to see
+whether another app's VPN is up, so that is a hint, not a diagnosis.
+
+**The computer tries the route before it hands it out.** `lan._tailnet_probe`
+opens a TLS connection from this computer to its own listener on the tailnet
+name and checks it gets its own certificate (`lan_doctor.self_connect`, the
+same check as the Wi-Fi self-probe). The name answered: phones get the name.
+Only the address answered (the name does not resolve here, MagicDNS off):
+phones get the tailnet IPv4 address, and Preferences says so. Neither
+answered: no tailnet route is told to phones, and Preferences says Tailscale
+is on but the computer does not answer on it. The verdict rides in
+`remote.tailscale_probe` (`ok` / `address` / `failed`) beside
+`remote.tailscale_route`. This probe sees the listener, the firewall and name
+resolution on the computer. It cannot see what the phone's own system would
+refuse (§4).
 
 ## 2. The one idea: do not terminate TLS anywhere new
 
@@ -40,177 +59,87 @@ The Wi-Fi design already has the right trust model: **one self-signed
 certificate per computer, pinned by the SHA-256 in the pairing QR**
 (`lan_tls.py`, `TLSTrust.swift`). The phone checks nothing else.
 
-Away access keeps exactly that. The relay never terminates the phone's TLS: it
-reads the **SNI** of the phone's ClientHello (`<host-id>.<relay domain>`), asks
-that computer for a data connection, and splices raw bytes. The TLS session is
-between the phone and the computer's own listener, so:
+Away access keeps exactly that. The tailnet is a network path, not a trust
+anchor: the phone dials `https://<machine>.<tailnet>.ts.net:<port>/` and
+accepts only the pinned certificate, as on the Wi-Fi. No new cryptography
+runs on the phone or the computer, and nothing in between holds a key.
+WebSockets, uploads and streaming responses work unchanged.
 
-- the relay cannot read or change a request, a response, a cookie or a token;
-- it cannot impersonate the computer (it does not hold the certificate key, and
-  the phone accepts only the pinned certificate);
-- WebSockets, uploads, streaming responses work unchanged — it is a TCP pipe.
-
-What the relay **does** see: which host id a phone asks for (the SNI), the
-phone's and computer's IP addresses, and the timing and size of traffic.
-
-No new cryptography runs on the phone. The only new crypto anywhere is an
-Ed25519 signature the computer makes to claim its name on the relay.
-
-## 3. Relay protocol
-
-`tunnel/protocol.py` has the wire format; summary:
-
-```
-phone ──TLS (pinned, end to end)──► relay :443 ──raw bytes──► data conn ──► agent ──► 127.0.0.1:<listener>
-                                         ▲
-computer (agent) ──TLS to relay :8443── control conn (JSON lines)
-```
-
-1. **The computer dials out** to the relay's agent port over TLS (verified by
-   the system trust store, or pinned with `#<sha256>` for a self-hosted relay
-   with a self-signed certificate). No inbound port, no port forwarding, works
-   behind NAT and most firewalls.
-2. **It claims its name** by signing `context ‖ relay domain ‖ fresh nonce` with
-   its Ed25519 key (`<state>/tunnel/host.key`, 0600). The relay checks the
-   signature and hands out `<host-id>.<domain>` where
-   `host-id = base32(SHA-256("fused-render-host-id" ‖ public key))[:26]`.
-   **Self-certifying names**: no accounts, nothing to register, and no one can
-   take over another computer's name without its key. The fresh nonce stops
-   replay at the same relay; binding the domain stops replay at another one,
-   because the agent signs only for the relay it dialled (`domain_matches`:
-   the hello's domain must be the relay's host name or a parent of it; a
-   pinned relay is identified by its certificate instead).
-3. **A phone connects** to `https://<host-id>.<domain>/`. The relay reads the
-   ClientHello (bounded: 16 KiB, 10 s), finds the agent, sends
-   `{"t":"open","sid":<random 128-bit>,"peer":<phone ip>}`.
-4. **The agent opens two connections**: a fresh one to the relay
-   (`{"t":"data","sid":…}` then raw bytes) and one to the phone listener on
-   loopback. The relay forwards the buffered ClientHello and splices.
-
-The agent reconnects with jittered exponential backoff (1 s → 60 s) after
-sleep, network changes or a relay restart. The relay pings every 30 s and
-drops an agent silent for 95 s.
-
-## 4. Safety rules on the computer
+## 3. Safety rules on the computer
 
 All in `lan.py`; the Wi-Fi allowlist (`_EXACT`, `_PREFIXES`, `_DOORS`, path
 scoping) applies unchanged to away requests. On top of it:
 
-1. **Classified by the transport, never by headers.** `_via(scope)`: a loopback
-   connection whose source port the agent opened is `relay`; a source address
-   in Tailscale's ranges is `tailscale`; else `lan`. `X-Forwarded-For` and
-   friends are never read.
-2. **A relayed request is never local.** Its `client` is rewritten to the phone
-   address the relay reported, so nothing downstream ever sees `127.0.0.1` for
-   relayed traffic. The reported address is validated (`clean_peer`): anything
-   that is not a real remote IP — loopback, unspecified, a hostname, a string
-   with a newline — becomes the placeholder `relay`.
-3. **Off means closed.** With away access off, any `relay`/`tailscale` request
-   is 404 / WebSocket 1008, and the relay and tailnet names are not in the
-   Host allowlist. Turning Phone access off stops the agent.
-4. **Pairing needs the Wi-Fi.** `/pair` over an away route answers "Pair on the
+1. **Classified by the transport, never by headers.** `_via(scope)`: a source
+   address in Tailscale's ranges is `tailscale`; else `lan`. `X-Forwarded-For`
+   and friends are never read. A local network numbered out of Tailscale's
+   range stays `lan` (`_lan_overlaps_tailnet`).
+2. **Off means closed.** With away access off, any `tailscale` request is
+   404 / WebSocket 1008, and the tailnet name and addresses are not in the
+   Host allowlist.
+3. **Pairing needs the Wi-Fi.** `/pair` over the tailnet answers "Pair on the
    same Wi-Fi first" and does **not** spend the code. A QR code that leaks (a
-   screen share, a photo) cannot pair a stranger from across the internet; it
-   still needs someone on your network within five minutes. (OpenMausBot and
-   t3code allow remote pairing behind extra gates; we chose the simpler, stricter
-   rule.)
-5. **Per-phone switch.** Each paired phone has an **Away** switch in
+   screen share, a photo) cannot pair someone who is merely on the same
+   tailnet; it still needs someone on your network within five minutes.
+4. **Per-phone switch.** Each paired phone has an **Away** switch in
    Preferences (`remote` in `lan_devices.json`, on by default). Off: that phone
-   works on the Wi-Fi only, gets 403 away, and is not told the away routes.
-6. **Visibility.** The device list shows how each phone last came in
-   (`last_via`: Wi-Fi, Tailscale, relay). Revoking works on every route at once
+   works on the Wi-Fi only, gets 403 away, and is not told the away route.
+5. **Visibility.** The device list shows how each phone last came in
+   (`last_via`: Wi-Fi or Tailscale). Revoking works on every route at once
    (the cookie is checked per request).
-7. **Management stays loopback-only.** `/api/lan/*` (pair codes, devices, the
+6. **Management stays loopback-only.** `/api/lan/*` (pair codes, devices, the
    away switch) is on the desktop's loopback API; the LAN wrapper never forwards
    it, so a phone cannot widen its own access.
-8. **Bounded load.** The agent runs at most 256 streams and 32 per phone
-   address, and tells the relay at once when it refuses one; a stream idle for
-   5 minutes either way is closed. A malicious relay can at worst open
-   connections to the listener, which is what any stranger on the Wi-Fi can
-   do, and gets 401 without a paired cookie.
+7. **Refusals are logged.** Every request the listener answers itself with a
+   refusal (401, 403, 404, a WebSocket 1008) leaves one line: status, method,
+   path, route, source address and the Host it named (`_log_refusal`). At most
+   one line per status and address every ten seconds, so a peer hammering the
+   listener cannot fill the log. Before this, "the phone never arrived" and
+   "the phone was turned away" looked the same on the computer.
 
-## 5. Safety rules on the relay
+## 4. iOS: the tailnet name and App Transport Security
 
-`tunnel/relay.py` keeps everything in memory, logs no payload, and enforces:
-new phone connections per IP (token bucket, `--conn-per-ip-per-min`, default
-240/min, burst 120 — raise it behind carrier NAT), concurrent connections per
-IP (256) and in total (8192), streams per computer (128,
-`--streams-per-host`) and per computer per phone IP (32), agent handshakes per
-IP (30/min), a deadline on every pre-splice step and on every write to an
-agent, an idle bound on every read and drain of a spliced stream (a peer that
-stops reading cannot park a slot), and a size bound on every buffer. The
-ClientHello is parsed only when a whole TLS record has arrived and may span at
-most 8 records, so a byte-at-a-time sender costs a handful of parses. An
-unknown or malformed SNI is dropped without answering. The relay holds no secrets that matter: its own
-agent-port certificate, nothing else.
+The native pinned `URLSession` (reachability, manifest, capture uploads) is
+subject to App Transport Security. `NSAllowsLocalNetworking` exempts only
+`.local` names and bare addresses, so a `ts.net` name with a self-signed
+certificate failed with `-1200` before the pin was ever consulted, and the
+tailnet route was never chosen. `ios/project.yml` adds a `ts.net` exception
+domain (`NSExceptionAllowsInsecureHTTPLoads`, with subdomains); the pin still
+decides trust. `NSAllowsArbitraryLoads` is no alternative: iOS ignores it when
+`NSAllowsLocalNetworking` or `NSAllowsArbitraryLoadsInWebContent` is present.
+WKWebView was never affected (`NSAllowsArbitraryLoadsInWebContent`).
 
-## 6. Running a relay
+## 5. Compared with t3code and OpenMausBot
 
-On any host with a public IP and DNS for both `relay.example.com` and
-`*.relay.example.com`:
-
-```bash
-pip install 'fused-render[bundled]'    # or just: pip install cryptography, and copy fused_render/tunnel/
-python -m fused_render.tunnel.relay --domain relay.example.com \
-    --cert /etc/letsencrypt/live/relay.example.com/fullchain.pem \
-    --key  /etc/letsencrypt/live/relay.example.com/privkey.pem
-```
-
-Without `--cert` it makes a self-signed certificate and prints the setting
-to paste into Preferences, pin included:
-
-```
-relay setting for Fused Render (Preferences → Phone access → Relay): relay.example.com:8443#3f9a…
-```
-
-Phones dial port 443 (`--public-port`; `--advertise-port` when a NAT or load
-balancer changes it). The public port must be a **TCP** pass-through: put no
-TLS-terminating proxy in front of it.
-
-On the computer: Preferences → Phone access → Also reachable away from this
-Wi-Fi → Relay, or `FUSED_RENDER_RELAY=relay.example.com:8443[#sha256]`.
-`tunnel/host.py` `DEFAULT_RELAY` is empty until Fused runs a relay; setting
-it makes away access work with no configuration.
-
-## 7. Compared with t3code and OpenMausBot
-
-| | t3code (T3 Connect) | OpenMausBot (relay) | Fused Render |
+| | t3code | OpenMausBot | Fused Render |
 |---|---|---|---|
-| Transport | Cloudflare Tunnel (`cloudflared`) | own WebSocket relay | own TCP relay (SNI) + Tailscale |
-| End to end | no — TLS ends at Cloudflare | yes — Noise NKpsk0 inside the relay | yes — the phone's pinned TLS passes through |
-| New crypto on the phone | DPoP keys | Noise, yamux, HPKE | none |
-| Host name ownership | cloud account | Ed25519-signed relay tokens | Ed25519 self-certifying host id |
-| Remote pairing | yes (account + optional approval) | yes (token, lockout) | no — pairing needs the Wi-Fi |
-| WebSockets over relay | yes | not yet (501) | yes |
+| Away transport | Cloudflare Tunnel run by the vendor; Tailscale as an alternative | vendor-run WebSocket relay; Tailscale as an alternative | Tailscale only |
+| What it costs the user | an account | an account on the computer | Tailscale on both devices |
+| Who can read traffic | Cloudflare (TLS ends there) | nobody (Noise inside the relay) | nobody (WireGuard, pinned TLS inside) |
+| Certificate on the tailnet | a public one via Tailscale Serve, or plain http to the address | their own channel | our own pinned self-signed one |
+| Remote pairing | yes (account, optional approval) | yes (token, lockout) | no: pairing needs the Wi-Fi |
 | Per-device scope | scopes | scopes, Wi-Fi-only | Away switch per phone |
 
-Borrowed: the ordered route list that falls back to the direct route
-(t3code); the relay-blind design, pinned host identity, per-IP limits and
-"relayed traffic is never local" rule (OpenMausBot).
+Borrowed from t3code: the ordered route list that falls back to the direct
+route, rechecking for a better route while the app is open, and probing the
+route on the computer before advertising it.
 
-## 8. Not done / follow-ups
+## 6. Not done / follow-ups
 
-- **Residual: an attacker who knows a host id can tie up streams.** The host
-  id is in the SNI (and in the pairing code). Silent TLS connections each
-  hold an agent slot until the 5-minute idle bound; caps per phone address
-  (agent 32, relay 32) mean one address cannot fill a computer, but an
-  attacker with many addresses (an IPv6 /64) still can, degrading the relay
-  route until the idle bound frees it. Wi-Fi and Tailscale are unaffected.
-  The real fix is relay-side admission (next item).
+- **A relay for people without Tailscale.** A blind TLS relay (the computer
+  dials out, the relay routes the phone's pinned TLS by SNI and cannot read
+  it) was built and then taken out before this shipped: with no relay run by
+  Fused it was a field to paste a self-hosted address into, and on iOS the
+  relay name hit the same App Transport Security wall as the tailnet name,
+  with no exception domain able to cover a relay of unknown name. It is in
+  the history of PR #2400 (last commit carrying it: `75fe9d959`). Bringing it
+  back needs a Fused-run relay with a fixed domain, admission of paired
+  phones only at the relay, and per-computer caps.
 - **Traffic that looks local.** A Tailscale subnet router (which SNATs to a
   LAN address) or Tailscale Serve/Funnel (which proxies from loopback) makes
   tailnet traffic arrive as `lan`. Both are things the user configures on
   their own tailnet; with them, the tailnet counts as the Wi-Fi.
-- **A Fused-hosted relay** (and its `DEFAULT_RELAY`). Until then a user needs
-  Tailscale or a relay of their own.
-- **Relay admission before the computer.** Today any client can reach the
-  listener through the relay and get a 401; OpenMausBot's relay also rejects
-  unpaired phones (an HMAC of the device token). With SNI pass-through the
-  relay sees no secret; the cost is an unauthenticated 401 per probe, rate
-  limited at the relay.
-- **iOS on device.** The Swift changes are not compiled on a Mac in this
-  draft. ATS: WKWebView loads any host (`NSAllowsArbitraryLoadsInWebContent`);
-  the native pinned `URLSession` (reachability, manifest, capture uploads) to a
-  relay name relies on the custom trust evaluation, to verify on device.
-- **Android / other clients**: same protocol, nothing phone-specific.
+- **Finer Tailscale states.** `off` covers stopped, signed out, still
+  starting, and a CLI error or timeout.
+- **Android / other clients**: same routes, nothing phone-specific.
 - **Wake-on-LAN / sleeping computers**: away access needs the computer awake.

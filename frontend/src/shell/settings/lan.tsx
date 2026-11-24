@@ -23,7 +23,6 @@ import {
 } from "@platform/lib/api";
 import { ErrorBanner } from "@platform/ui/ErrorBanner";
 import { Button } from "@platform/shadcn/ui/button";
-import { Input } from "@platform/shadcn/ui/input";
 import { Switch } from "@platform/shadcn/ui/switch";
 import { RowSwitch, SettingRow, type PrefControlProps } from "./SettingRow";
 
@@ -270,7 +269,7 @@ function agoLabel(ts: number): string {
 /** A phone seen within this window is getting through right now. */
 const REACHABLE_WITHIN_S = 15 * 60;
 
-const VIA_LABEL: Record<string, string> = { lan: "on Wi-Fi", tailscale: "via Tailscale", relay: "via relay" };
+const VIA_LABEL: Record<string, string> = { lan: "on Wi-Fi", tailscale: "via Tailscale" };
 
 function LanDevices({
   devices,
@@ -332,12 +331,36 @@ export const TAILSCALE_DOWNLOAD_URL = "https://tailscale.com/download";
 // in (tunnel/tailscale.py `state`) and the one next step for it. Nothing to
 // switch on here, Fused only reads what Tailscale reports, so without this
 // row a missing or signed-out Tailscale looked the same as a working one.
-function TailscaleGuide({ state, name }: { state?: "missing" | "off" | "running" | null; name: string | null }) {
+function TailscaleGuide({
+  state,
+  name,
+  route,
+  probe,
+}: {
+  state?: "missing" | "off" | "running" | null;
+  name: string | null;
+  route?: string | null;
+  probe?: "ok" | "address" | "failed" | null;
+}) {
   if (!state) return null;
+  // Tailscale is up, but this computer could not reach its own phone listener
+  // through it: no phone will either, so the route is not handed out.
+  const unreachable = state === "running" && probe === "failed";
   return (
-    <div className="lan-remote-ts" data-state={state}>
-      <b className={state === "running" ? "settings-dot" : "settings-dot settings-dot-warn"}>Tailscale</b>
-      {state === "running" ? (
+    <div className="lan-remote-ts" data-state={unreachable ? "unreachable" : state}>
+      <b className={state === "running" && !unreachable ? "settings-dot" : "settings-dot settings-dot-warn"}>Tailscale</b>
+      {unreachable ? (
+        <span>
+          Tailscale is on, but this computer does not answer on it. Check that a firewall is not blocking Fused Render,
+          then turn Phone access off and on again.
+        </span>
+      ) : state === "running" && probe === "address" && route ? (
+        <span>
+          Reachable at <code className="break-all">{route}</code>. The name <code className="break-all">{name}</code>{" "}
+          does not work on this computer, so phones use the address. The phone needs Tailscale too, signed in to the same
+          account and turned on.
+        </span>
+      ) : state === "running" ? (
         <span>
           Reachable as <code className="break-all">{name}</code>. The phone needs Tailscale too, signed in to the same
           account and turned on.
@@ -358,43 +381,34 @@ function TailscaleGuide({ state, name }: { state?: "missing" | "off" | "running"
 }
 
 // Away access (tunnel/, docs/REMOTE_ACCESS.md): a child of Phone access. On,
-// paired phones reach this computer off the Wi-Fi through the relay (the
-// computer dials out; the relay passes the phone's pinned TLS through blind)
-// and, when the computer is on a tailnet, over Tailscale. The relay setting
-// is `host[:port][#sha256]` — what the relay prints at startup.
+// paired phones reach this computer off the Wi-Fi over Tailscale, when the
+// computer and the phone are on the same tailnet. Nothing to configure here:
+// the row says what state Tailscale is in and what to do next.
 export function LanRemoteControl({ prefs, onChange }: PrefControlProps) {
   const lan = prefs.lan;
   const enabled = !!lan?.remote_enabled;
   const remote = lan?.remote;
   const [pending, setPending] = useState<boolean | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const [draft, setDraft] = useState(lan?.relay_setting ?? "");
-  const stored = lan?.relay_setting ?? "";
-  useEffect(() => setDraft(stored), [stored]);
 
-  const put = async (body: { lan_remote_enabled?: boolean; lan_relay?: string }) => {
+  const toggle = async (want: boolean) => {
+    setPending(want);
     setError(null);
     try {
-      onChange(await putLanRemote(body));
+      onChange(await putLanRemote(want));
     } catch (e) {
       setError((e as Error).message);
     }
-  };
-  const toggle = async (want: boolean) => {
-    setPending(want);
-    await put({ lan_remote_enabled: want });
     setPending(null);
   };
 
-  // The agent connects a moment after the switch: follow it until it settles.
-  const relay = remote?.relay;
-  const settling = enabled && !!relay && !relay.connected && !relay.error;
   // Tailscale is set up outside this page (install, sign in): keep reading,
   // slowly, so the row turns green without a reload. The server caches the
   // read for 20 s, so this costs no extra CLI runs.
-  const awaitingTailscale = enabled && !!remote?.tailscale_state && remote.tailscale_state !== "running";
+  const awaitingTailscale =
+    enabled && !!remote?.tailscale_state && (remote.tailscale_state !== "running" || remote.tailscale_probe === "failed");
   useEffect(() => {
-    if (!awaitingTailscale || settling) return;
+    if (!awaitingTailscale) return;
     let alive = true;
     const id = window.setInterval(async () => {
       try {
@@ -408,34 +422,14 @@ export function LanRemoteControl({ prefs, onChange }: PrefControlProps) {
       alive = false;
       window.clearInterval(id);
     };
-  }, [awaitingTailscale, settling, onChange]);
-  useEffect(() => {
-    if (!settling) return;
-    let alive = true;
-    const id = window.setInterval(async () => {
-      try {
-        const next = await getPrefs();
-        if (alive) onChange(next);
-      } catch {
-        /* the next tick retries */
-      }
-    }, 1500);
-    return () => {
-      alive = false;
-      window.clearInterval(id);
-    };
-  }, [settling, onChange]);
+  }, [awaitingTailscale, onChange]);
 
   const ts = remote?.tailscale;
   const status = !enabled
     ? undefined
-    : relay?.connected
-      ? `Reachable from anywhere through the relay as ${relay.host}${ts?.host ? `, and on Tailscale as ${ts.host}` : ""}.`
-      : ts?.host
-        ? `Reachable on your Tailscale network as ${ts.host}.`
-        : relay
-          ? "Connecting to the relay…"
-          : "Not reachable away from the Wi-Fi yet. Set up Tailscale or add a relay below.";
+    : remote?.tailscale_route
+      ? `Reachable on your Tailscale network as ${remote.tailscale_route}.`
+      : "Not reachable away from the Wi-Fi yet. Set up Tailscale below.";
 
   return (
     <SettingRow
@@ -445,36 +439,16 @@ export function LanRemoteControl({ prefs, onChange }: PrefControlProps) {
     >
       {enabled && (
         <div className="lan-remote">
-          <TailscaleGuide state={remote?.tailscale_state} name={ts?.host ?? ts?.ips?.[0] ?? null} />
-          <form
-            className="lan-remote-relay"
-            onSubmit={(e) => {
-              e.preventDefault();
-              void put({ lan_relay: draft.trim() });
-            }}
-          >
-            <label htmlFor="lan-relay-input">Relay</label>
-            <Input
-              id="lan-relay-input"
-              value={remote?.relay_from_env ? (remote.relay_setting ?? "") : draft}
-              disabled={!!remote?.relay_from_env}
-              title={remote?.relay_from_env ? "Set by FUSED_RENDER_RELAY" : undefined}
-              placeholder="relay.example.com:8443"
-              spellCheck={false}
-              autoCapitalize="off"
-              onChange={(e) => setDraft(e.target.value)}
-            />
-            <Button type="submit" variant="outline" size="sm" disabled={!!remote?.relay_from_env || draft.trim() === stored}>
-              Save
-            </Button>
-          </form>
+          <TailscaleGuide
+            state={remote?.tailscale_state}
+            name={ts?.host ?? ts?.ips?.[0] ?? null}
+            route={remote?.tailscale_route}
+            probe={remote?.tailscale_probe}
+          />
           <p className="settings-row-desc">
-            Phones pair on the Wi-Fi first (scan the code above); after that they connect from anywhere. Traffic stays
-            encrypted end to end with this computer's own certificate — the relay sees only which computer a phone is
-            asking for. A self-hosted relay prints the exact setting to paste here when it starts.
+            Phones pair on the Wi-Fi first (scan the code above). After that they connect from anywhere the phone has
+            Tailscale turned on. Traffic stays encrypted end to end with this computer's own certificate.
           </p>
-          {relay?.error && <ErrorBanner>{`Relay: ${relay.error}`}</ErrorBanner>}
-          {remote?.error && <ErrorBanner>{remote.error}</ErrorBanner>}
         </div>
       )}
       {error && <ErrorBanner>{error}</ErrorBanner>}

@@ -1,7 +1,7 @@
 """Away access on the phone listener (lan.py + tunnel/host.py,
-docs/REMOTE_ACCESS.md): how a request is classified (lan / tailscale /
-relay) from its transport, what an away request may and may not do, and the
-routes a phone is told about."""
+docs/REMOTE_ACCESS.md): how a request is classified (lan / tailscale) from
+its transport, what an away request may and may not do, and the routes a
+phone is told about."""
 import asyncio
 import json
 
@@ -11,18 +11,15 @@ from fused_render import lan, lan_doctor, lan_tls
 from fused_render.tunnel import host as tunnel_host
 from fused_render.tunnel import tailscale
 
-RELAY_HOST = "a" * 26 + ".relay.test"
 TS_HOST = "studio.tail1234.ts.net"
 TS_IP = "100.101.1.2"
 PHONE_IP = "203.0.113.9"
-RELAY_LEG_PORT = 50123
 
 
 @pytest.fixture
 def home(tmp_path, monkeypatch):
     monkeypatch.setenv("FUSED_RENDER_HOME", str(tmp_path / "home"))
     monkeypatch.delenv("FUSED_RENDER_BRANCH", raising=False)
-    monkeypatch.delenv("FUSED_RENDER_RELAY", raising=False)
     lan_tls._cert_by_dir.clear()
     lan_doctor.reset_cache()
     monkeypatch.setattr(lan._controller, "hostname", "studio.local")
@@ -34,13 +31,12 @@ def home(tmp_path, monkeypatch):
 
 @pytest.fixture
 def away(home, monkeypatch):
-    """Away access ON, with a connected relay and a tailnet (both faked at
-    the tunnel/host.py seam: the real agent is exercised in test_tunnel.py)."""
+    """Away access ON, with a tailnet (faked at the tunnel/host.py seam)."""
     r = tunnel_host.remote
     monkeypatch.setattr(r, "enabled", True)
-    monkeypatch.setattr(r, "relay_endpoint", lambda: (RELAY_HOST, 443))
     monkeypatch.setattr(r, "tailnet", lambda: {"host": TS_HOST, "ips": [TS_IP]})
-    monkeypatch.setattr(r, "peer_for", lambda port: PHONE_IP if port == RELAY_LEG_PORT else None)
+    # The computer's own try at its tailnet route (lan._tailnet_probe) answers.
+    monkeypatch.setattr(lan_doctor, "self_connect", lambda host, port, fingerprint, timeout=2.0: True)
     return r
 
 
@@ -75,7 +71,6 @@ def _cookie(name="phone"):
     return (b"cookie", f"{lan.COOKIE}={secret}".encode()), record
 
 
-RELAY = dict(host=RELAY_HOST, client=("127.0.0.1", RELAY_LEG_PORT))
 TAILNET = dict(host=TS_HOST + ":1889", client=(TS_IP, 40000))
 WIFI = dict(host="studio.local:1889", client=("192.168.1.30", 40000))
 
@@ -84,8 +79,7 @@ WIFI = dict(host="studio.local:1889", client=("192.168.1.30", 40000))
 
 
 def test_classification_comes_from_the_transport_not_the_client(away):
-    assert lan._via({"client": ("127.0.0.1", RELAY_LEG_PORT)}) == ("relay", PHONE_IP)
-    # Loopback the agent did NOT open is the computer itself: never "relay".
+    # Loopback is the computer itself: never an away route.
     assert lan._via({"client": ("127.0.0.1", 1)}) == ("lan", "127.0.0.1")
     assert lan._via({"client": (TS_IP, 1)}) == ("tailscale", TS_IP)
     assert lan._via({"client": ("192.168.1.30", 1)}) == ("lan", "192.168.1.30")
@@ -117,27 +111,24 @@ def test_the_computers_own_tailnet_address_does_not_make_peers_lan(away, monkeyp
 
 def test_stopping_away_access_clears_its_switch(home):
     r = tunnel_host._Remote()
-    r.apply(True, "", lambda: None)
+    r.apply(True)
     assert r.enabled
     r.stop()
     assert not r.enabled and r.hosts() == set() and r.routes() == []
 
 
-def test_a_relayed_request_reaches_the_inner_app_as_the_phone_never_as_loopback(away):
+def test_a_tailnet_request_reaches_the_inner_app_stamped_with_its_route(away):
     cookie, _ = _cookie()
     # A forwarded prefix route shows the inner app's view of the request.
-    status, body, _ = call(lan.LanApp(_echo), "/static/x.js", headers=[cookie], **RELAY)
+    status, body, _ = call(lan.LanApp(_echo), "/static/x.js", headers=[cookie], **TAILNET)
     assert status == 200
-    seen = json.loads(body)
-    assert seen == {"client": [PHONE_IP, 0], "via": "relay"}
+    assert json.loads(body) == {"client": [TS_IP, 40000], "via": "tailscale"}
 
 
 def test_away_routes_are_closed_while_away_access_is_off(home, monkeypatch):
     monkeypatch.setattr(tunnel_host.remote, "enabled", False)
-    monkeypatch.setattr(tunnel_host.remote, "peer_for", lambda port: PHONE_IP)
     cookie, _ = _cookie()
     app = lan.LanApp(_echo)
-    assert call(app, "/static/x.js", headers=[cookie], host="studio.local", client=("127.0.0.1", 5))[0] == 404
     assert call(app, "/static/x.js", headers=[cookie], host="studio.local", client=(TS_IP, 5))[0] == 404
     sent = call(app, "/api/fs/events", headers=[cookie], host="studio.local", client=(TS_IP, 5), kind="websocket")
     assert sent == [{"type": "websocket.close", "code": 1008}]
@@ -148,24 +139,23 @@ def test_away_routes_are_closed_while_away_access_is_off(home, monkeypatch):
 def test_host_allowlist_admits_away_names_only_while_on(home, away, monkeypatch):
     cookie, _ = _cookie()
     app = lan.LanApp(_echo)
-    for host in (RELAY_HOST, RELAY_HOST + ":443", TS_HOST, TS_IP):
+    for host in (TS_HOST, TS_HOST + ":1889", TS_IP):
         assert call(app, "/static/x.js", headers=[cookie], host=host, client=("192.168.1.30", 1))[0] == 200, host
     monkeypatch.setattr(tunnel_host.remote, "enabled", False)
-    for host in (RELAY_HOST, TS_HOST, TS_IP):
+    for host in (TS_HOST, TS_IP):
         assert call(app, "/static/x.js", headers=[cookie], host=host, client=("192.168.1.30", 1))[0] == 404, host
-    # Never another relay name, even while on.
+    # Never another tailnet name, even while on.
     monkeypatch.setattr(tunnel_host.remote, "enabled", True)
-    other = "b" * 26 + ".relay.test"
+    other = "other.tail1234.ts.net"
     assert call(app, "/static/x.js", headers=[cookie], host=other, client=("192.168.1.30", 1))[0] == 404
 
 
 # ---- what away requests may not do ----------------------------------------------------
 
 
-@pytest.mark.parametrize("route", [RELAY, TAILNET])
-def test_pairing_is_refused_away_and_the_code_is_not_spent(away, route):
+def test_pairing_is_refused_away_and_the_code_is_not_spent(away):
     token = lan.mint_pair_token()
-    status, body, headers = call(lan.LanApp(_echo), "/pair", query=f"t={token}".encode(), **route)
+    status, body, headers = call(lan.LanApp(_echo), "/pair", query=f"t={token}".encode(), **TAILNET)
     assert status == 403 and b"same Wi-Fi" in body
     assert not any(k == b"set-cookie" for k, _ in headers)
     assert lan._read_devices() == []
@@ -174,31 +164,29 @@ def test_pairing_is_refused_away_and_the_code_is_not_spent(away, route):
     assert status == 302 and any(k == b"set-cookie" for k, _ in headers)
 
 
-@pytest.mark.parametrize("route", [RELAY, TAILNET])
-def test_unpaired_away_requests_get_401(away, route):
-    assert call(lan.LanApp(_echo), "/static/x.js", **route)[0] == 401
+def test_unpaired_away_requests_get_401(away):
+    assert call(lan.LanApp(_echo), "/static/x.js", **TAILNET)[0] == 401
 
 
 def test_a_phone_limited_to_the_wifi_is_refused_away(away):
     cookie, record = _cookie()
     assert lan.set_device_remote(record["id"], False)
     app = lan.LanApp(_echo)
-    assert call(app, "/static/x.js", headers=[cookie], **RELAY)[0] == 403
     assert call(app, "/static/x.js", headers=[cookie], **TAILNET)[0] == 403
-    status, body, _ = call(app, "/", headers=[cookie], **RELAY)
+    status, body, _ = call(app, "/", headers=[cookie], **TAILNET)
     assert status == 403 and b"Away access is off" in body
-    sent = call(app, "/api/fs/events", headers=[cookie], query=b"path=/x", kind="websocket", **RELAY)
+    sent = call(app, "/api/fs/events", headers=[cookie], query=b"path=/x", kind="websocket", **TAILNET)
     assert sent == [{"type": "websocket.close", "code": 1008}]
     assert call(app, "/static/x.js", headers=[cookie], **WIFI)[0] == 200
     assert lan.set_device_remote(record["id"], True)
-    assert call(app, "/static/x.js", headers=[cookie], **RELAY)[0] == 200
+    assert call(app, "/static/x.js", headers=[cookie], **TAILNET)[0] == 200
 
 
 def test_the_device_list_says_how_each_phone_last_came_in(away):
     cookie, record = _cookie()
-    call(lan.LanApp(_echo), "/static/x.js", headers=[cookie], **RELAY)
+    call(lan.LanApp(_echo), "/static/x.js", headers=[cookie], **TAILNET)
     [dev] = lan.list_devices()
-    assert dev["last_via"] == "relay" and dev["remote"] is True
+    assert dev["last_via"] == "tailscale" and dev["remote"] is True
     call(lan.LanApp(_echo), "/static/x.js", headers=[cookie], **WIFI)
     assert lan.list_devices()[0]["last_via"] == "lan"
 
@@ -206,12 +194,12 @@ def test_the_device_list_says_how_each_phone_last_came_in(away):
 # ---- routes and the pairing code ---------------------------------------------------------
 
 
-def test_routes_list_wifi_then_tailnet_then_relay(away, monkeypatch):
+def test_routes_list_wifi_then_tailnet(away, monkeypatch):
     monkeypatch.setattr(type(lan._controller), "running", property(lambda self: True))
     monkeypatch.setattr(lan._controller, "port", 1889)
     monkeypatch.setattr(lan._controller, "fingerprint", lambda: "f" * 64)
     cookie, _ = _cookie()
-    status, body, _ = call(lan.LanApp(_echo), "/api/lan/routes", headers=[cookie], **RELAY)
+    status, body, _ = call(lan.LanApp(_echo), "/api/lan/routes", headers=[cookie], **TAILNET)
     assert status == 200
     got = json.loads(body)
     assert got["fingerprint"] == "f" * 64
@@ -219,7 +207,6 @@ def test_routes_list_wifi_then_tailnet_then_relay(away, monkeypatch):
         {"kind": "lan", "host": "studio.local", "port": 1889},
         {"kind": "lan", "host": "192.168.1.20", "port": 1889},
         {"kind": "tailscale", "host": TS_HOST, "port": 1889},
-        {"kind": "relay", "host": RELAY_HOST, "port": 443},
     ]
     # Unpaired: nothing.
     assert call(lan.LanApp(_echo), "/api/lan/routes", **WIFI)[0] == 401
@@ -230,7 +217,7 @@ def test_routes_list_wifi_then_tailnet_then_relay(away, monkeypatch):
     assert [r["kind"] for r in json.loads(body)["routes"]] == ["lan", "lan"]
 
 
-def test_pair_code_carries_away_routes(away, monkeypatch):
+def test_pair_code_carries_the_tailnet_name(away, monkeypatch):
     from fastapi import FastAPI
     from fastapi.testclient import TestClient
 
@@ -242,8 +229,8 @@ def test_pair_code_carries_away_routes(away, monkeypatch):
     from urllib.parse import parse_qs, urlparse
 
     q = parse_qs(urlparse(got["url"]).query)
-    assert q["r"] == [f"{RELAY_HOST}:443"] and q["ts"] == [TS_HOST]
-    assert got["relay"] == f"{RELAY_HOST}:443" and got["tailscale"] == TS_HOST
+    assert q["ts"] == [TS_HOST] and "r" not in q
+    assert got["tailscale"] == TS_HOST and "relay" not in got
 
 
 def test_pair_code_has_no_away_routes_while_off(home, monkeypatch):
@@ -256,7 +243,7 @@ def test_pair_code_has_no_away_routes_while_off(home, monkeypatch):
     app = FastAPI()
     app.include_router(lan.router)
     url = TestClient(app).get("/api/lan/pair-token").json()["url"]
-    assert "r=" not in url.split("?")[1].split("&")[0] and "&r=" not in url and "&ts=" not in url
+    assert "&ts=" not in url
 
 
 def test_device_away_switch_endpoint_needs_the_fused_header(home):
@@ -295,32 +282,21 @@ def test_turning_phone_access_off_stops_away_access(home, monkeypatch):
 
 def test_apply_remote_follows_both_switches(home, monkeypatch):
     calls = []
-    monkeypatch.setattr(tunnel_host.remote, "apply", lambda want, setting, port: calls.append((want, setting)))
+    monkeypatch.setattr(tunnel_host.remote, "apply", calls.append)
     from fused_render.shell import prefs
 
     monkeypatch.setattr(prefs, "lan_enabled", lambda: True)
     monkeypatch.setattr(prefs, "lan_remote_enabled", lambda: True)
-    monkeypatch.setattr(prefs, "lan_relay", lambda: "relay.example.com:8443")
     lan.apply_remote()
     monkeypatch.setattr(prefs, "lan_enabled", lambda: False)
     lan.apply_remote()
-    monkeypatch.setenv("FUSED_RENDER_RELAY", "env.example.com")
     monkeypatch.setattr(prefs, "lan_enabled", lambda: True)
+    monkeypatch.setattr(prefs, "lan_remote_enabled", lambda: False)
     lan.apply_remote()
-    assert calls == [(True, "relay.example.com:8443"), (False, "relay.example.com:8443"),
-                     (True, "env.example.com")]
+    assert calls == [True, False, False]
 
 
-def test_remote_controller_reports_a_bad_setting_without_starting(home):
-    r = tunnel_host._Remote()
-    r.apply(True, "not a host!", lambda: None)
-    assert r.error and "relay setting" in r.error
-    assert r.status()["relay"] is None
-    r.apply(False, "", lambda: None)
-    assert r.error is None
-
-
-def test_prefs_validate_the_relay_setting(home, monkeypatch):
+def test_prefs_validate_the_away_switch(home, monkeypatch):
     from fastapi import FastAPI
     from fastapi.testclient import TestClient
 
@@ -330,12 +306,11 @@ def test_prefs_validate_the_relay_setting(home, monkeypatch):
     app = FastAPI()
     app.include_router(prefs.router)
     client = TestClient(app, headers={"X-Fused": "1"})
-    assert client.put("/api/prefs", json={"lan_relay": "bad host!"}).status_code == 400
     assert client.put("/api/prefs", json={"lan_remote_enabled": "yes"}).status_code == 400
-    assert client.put("/api/prefs", json={"lan_relay": "relay.example.com:9443", "lan_remote_enabled": True}).status_code == 200
-    assert prefs.lan_relay() == "relay.example.com:9443" and prefs.lan_remote_enabled() is True
+    assert client.put("/api/prefs", json={"lan_remote_enabled": True}).status_code == 200
+    assert prefs.lan_remote_enabled() is True
     snap = client.get("/api/prefs").json()["lan"]
-    assert snap["remote_enabled"] is True and snap["relay_setting"] == "relay.example.com:9443"
+    assert snap["remote_enabled"] is True and "relay_setting" not in snap
 
 
 # ---- tailscale ---------------------------------------------------------------------------------

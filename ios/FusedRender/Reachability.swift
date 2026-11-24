@@ -8,8 +8,8 @@
 //     policy-denied DNS error within a few hundred milliseconds. The browse
 //     is also what triggers the system prompt the first time.
 //   - The phone is not on Wi-Fi (cellular, airplane mode) — and, when the
-//     computer has away access on, its relay and tailnet did not answer
-//     either (docs/REMOTE_ACCESS.md).
+//     computer has away access on, its tailnet name did not answer either
+//     (docs/REMOTE_ACCESS.md).
 //   - Permission fine, Wi-Fi fine, but nobody answers: a different or
 //     isolated network (guest Wi-Fi), the computer asleep, its firewall.
 //     Before saying so, the phone's own /24 is probed for the pinned
@@ -72,12 +72,10 @@ enum Reachability {
                 }
             }
         }
-        // AWAY ROUTES (docs/REMOTE_ACCESS.md): the tailnet, then the relay —
-        // on cellular, on someone else's Wi-Fi, or when Local Network access
-        // is off (the relay is an internet host and needs no such permission).
-        // The same pinned certificate decides, so a route never trusts more
-        // than the Wi-Fi does. Tried before the subnet scan: one request each,
-        // where the scan is hundreds.
+        // THE AWAY ROUTE (docs/REMOTE_ACCESS.md): the tailnet — on cellular or
+        // on someone else's Wi-Fi. The same pinned certificate decides, so it
+        // never trusts more than the Wi-Fi does. Tried before the subnet scan:
+        // one request, where the scan is hundreds.
         if online {
             for endpoint in server.awayEndpoints {
                 if await reach(host: endpoint.host, port: endpoint.port, fingerprint: server.fingerprint,
@@ -108,6 +106,24 @@ enum Reachability {
                     cont.resume(returning: path)
                 }
             }
+            monitor.start(queue: queue)
+        }
+    }
+
+    /// One element each time the phone's network changes in a way that can
+    /// change the best route: it went on or off line, joined or left a Wi-Fi,
+    /// or a VPN (Tailscale) came up or went down. The first report, which is
+    /// only the state at the time of asking, is not an element. Ends when the
+    /// consuming task is cancelled.
+    static func pathChanges() -> AsyncStream<Void> {
+        AsyncStream { continuation in
+            let monitor = NWPathMonitor()
+            let last = PathSignature()
+            monitor.pathUpdateHandler = { path in
+                let names = path.availableInterfaces.map { "\($0.type):\($0.name)" }.sorted().joined(separator: ",")
+                if last.changed(to: "\(path.status)|\(names)") { continuation.yield() }
+            }
+            continuation.onTermination = { _ in monitor.cancel() }
             monitor.start(queue: queue)
         }
     }
@@ -306,5 +322,18 @@ private final class Once {
         done = true
         lock.unlock()
         if first { body() }
+    }
+}
+
+/// The last network path seen by `Reachability.pathChanges`, as a string.
+private final class PathSignature: @unchecked Sendable {
+    private let lock = NSLock()
+    private var value: String?
+
+    /// Whether `next` differs from the one before. The first is never a change.
+    func changed(to next: String) -> Bool {
+        lock.lock(); defer { lock.unlock() }
+        defer { value = next }
+        return value != nil && value != next
     }
 }

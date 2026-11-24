@@ -32,9 +32,8 @@ enum ManifestSync {
     }
 
     /// The computer's routes (`/api/lan/routes`): the away routes it has now
-    /// (relay, tailnet), so a phone that paired before away access was on — or
-    /// whose relay moved — learns them while it is connected, without a new
-    /// scan. Same pinned session and cookie as the manifest; the answer only
+    /// (the tailnet), so a phone that paired before away access was on learns
+    /// it while it is connected, without a new scan. Same pinned session and cookie as the manifest; the answer only
     /// ever names hosts, and every host is still checked against the pin.
     private static func refreshRoutes(server: Server, base: URL, cookieHeader: String,
                                       session: PinnedSession) async {
@@ -51,9 +50,6 @@ enum ManifestSync {
             return  // an older computer (no such route), or offline: keep what we have
         }
         var info: [String: Any] = ["fingerprint": server.fingerprint]
-        if let relay = payload.routes.first(where: { $0.kind == "relay" }) {
-            info["relay"] = "\(relay.host):\(relay.port ?? 443)"
-        }
         if let ts = payload.routes.first(where: { $0.kind == "tailscale" }) {
             info["tailnet"] = ts.host
         }
