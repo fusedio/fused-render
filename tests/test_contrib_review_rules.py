@@ -224,3 +224,52 @@ def test_a_decoder_call_is_a_look_not_a_fail():
     blob = "A" * 240
     diff2 = diff.replace("+var t=String.fromCharCode(65),u=atob(x);", f"+var p=\"{blob}\";")
     assert any(h["rule"] == "hidden-code" and h["level"] == "hard" for h in R.static_hits(diff=diff2, files=["jszip.min.js"]))
+
+
+# ------------------------------------------------------- declared AI models
+
+
+_MODELS_TOML = (
+    "[tool.fused-render.app.models]\n"
+    'image = { model = "black-forest-labs/FLUX.2-klein-4B" }\n')
+
+
+def _tree(py: str, toml: str = _MODELS_TOML) -> dict:
+    return {"pyproject.toml": toml, "app.py": py}
+
+
+def test_a_models_table_alone_is_not_a_background_hit():
+    diff = file_diff("pyproject.toml", _MODELS_TOML.splitlines())
+    got = rules.static_hits(diff=diff, files=["pyproject.toml"])
+    assert not [h for h in got if h["rule"] == "background"]
+
+
+def test_a_daemon_line_is_still_a_background_hit():
+    diff = file_diff("pyproject.toml", ["[tool.fused-render.app]", "daemon = true"])
+    got = rules.static_hits(diff=diff, files=["pyproject.toml"])
+    assert [h for h in got if h["rule"] == "background"]
+
+
+def test_an_undeclared_model_is_a_soft_note_with_file_and_line():
+    py = 'import fused\nfused.ai.text("hi", model="acme/Other-7B")\n'
+    notes = rules.model_notes(_tree(py))
+    assert len(notes) == 1
+    n = notes[0]
+    assert (n["rule"], n["level"], n["file"], n["line"]) == \
+        ("models:undeclared", "soft", "app.py", 2)
+    assert "acme/Other-7B" in n["detail"]
+
+
+def test_a_declared_model_gives_no_note():
+    py = 'fused.ai.image("x", model="black-forest-labs/FLUX.2-klein-4B")\n'
+    assert rules.model_notes(_tree(py)) == []
+
+
+def test_model_notes_are_never_hard_and_never_in_hard_hits():
+    py = 'fused.ai.text("hi", model="acme/Other-7B")\n'
+    assert all(h["level"] == "soft" for h in rules.model_notes(_tree(py)))
+    assert not [h for h in rules.hard_hits(_tree(py)) if h["rule"] == "models:undeclared"]
+
+
+def test_a_tree_with_no_ai_calls_has_no_notes():
+    assert rules.model_notes({"app.py": "print(1)\n"}) == []

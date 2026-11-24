@@ -39,6 +39,18 @@ Six tiers. `provider: "local" | "apple" | "claude" | "copilot" | "codex" | "gemi
 
 `fused.ai.models`: `list()`, `load(id, {capability})` / `download(id, {capability})` → `{jobId}` (**always pass capability** — wrong runner otherwise), `unload({capability})` (by capability, not id), `fused.ai.cancel(capability?)` (default text-generation — name capability to stop anything else).
 
+## Declaring models for your app
+
+An app that calls `fused.ai` declares the models it uses in its folder `pyproject.toml`, so the user sees them (name, size, what each is for) in a "Before you open" overview before anything downloads:
+
+```toml
+[tool.fused-render.app.models]
+image = { model = "black-forest-labs/FLUX.2-klein-4B", use = "Cover art" }
+text  = { model = "Qwen/Qwen3-4B-Instruct-GGUF" }
+```
+
+Key = the `fused.ai` verb (`text image video speech transcribe embed decide vision`). `model` = a catalog id (opaque, as above). The user can pick any already-downloaded model of the same capability instead of a declared one, and the runtime substitutes it for calls that name the declared id (or none). `use` = a short label. Acceptance is per app and per declaration: change a `model` (or add one) and the overview shows again; relabeling `use` does not. App Doctor's `models` check warns on a literal id the app uses but doesn't declare. The table does NOT make an app a background app.
+
 ## Text and cold start
 
 **text** options: `prompt, provider, model, systemPrompt, effort ("low"|"medium"|"high"|"xhigh", Claude only; default "low" = no extended thinking — ask for more explicitly), history, raw, images, temperature/maxTokens/topP, thinking, onChunk, abortSignal`. Tier split: `history`/`raw` local-only, **reject `bad_request` on Claude**; `images` works on local vision models AND Claude (PNG/JPEG/GIF/WebP, ≤3.75 MB each, HEIC → convert with `sips` first); apple honours `history`, rejects `raw`, rejects `images` (until macOS 27 image input). `temperature`/`maxTokens`/`topP` on Claude, `effort` on local, `effort`/`topP`/`thinking` on apple dropped with `warnings[]` entry, call succeeds. `history` = `[{role: "user"|"assistant", content}]` — push user+assistant pair after each turn. Feed aggregates, not datasets — compute in Python first. Structured output: demand strict JSON, strip fences, `JSON.parse` in try/catch. Vision: `images` on Claude (any model) or a local model with `acceptsImage`.
