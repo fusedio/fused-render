@@ -392,7 +392,20 @@ async def _run(msg: dict, send: Send, rid, cancelled: asyncio.Event | None) -> N
         raise RunError("signed_out", "not signed in to Fused — sign in first")
     account = canvases._listing_account(target.env)
     if target.file_sha is None:
-        await _load_named(target)
+        load = asyncio.ensure_future(_load_named(target))
+        if cancelled is not None:
+            # A cancel during the load ends this request now; nothing is
+            # shown or run after it.
+            stop = asyncio.ensure_future(cancelled.wait())
+            try:
+                await asyncio.wait({load, stop}, return_when=asyncio.FIRST_COMPLETED)
+            finally:
+                stop.cancel()
+            if cancelled.is_set():
+                # The load goes on for whoever else waits on it.
+                load.add_done_callback(lambda f: f.cancelled() or f.exception())
+                raise RunError("cancelled", "the run was cancelled")
+        await load
     key = run_key(target, account, params, fmt, tile)
 
     if cache != "fresh":
