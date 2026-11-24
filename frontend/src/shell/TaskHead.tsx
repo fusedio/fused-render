@@ -469,11 +469,20 @@ export function TaskHead({
       pressedIn = inside;
       sync();
     };
+    // Focus that lands outside the card ends a standing press even when the
+    // card itself held no focus (so no focusout fired on it).
+    const focusElsewhere = (e: Event) => {
+      const at = e.target as Node | null;
+      if (!at || win.contains(at) || !pressedIn) return;
+      pressedIn = false;
+      sync();
+    };
     win.addEventListener("pointerenter", on);
     win.addEventListener("pointerleave", off);
     win.addEventListener("focusin", focusOn);
     win.addEventListener("focusout", focusOff);
     doc?.addEventListener?.("pointerdown", press, true);
+    doc?.addEventListener?.("focusin", focusElsewhere, true);
     // Mounted under a pointer that is already there (a card opened by a
     // press), or around the focus (its composer took the keyboard first).
     if (typeof win.matches === "function" && win.matches(":hover")) pointerIn = true;
@@ -487,6 +496,7 @@ export function TaskHead({
       win.removeEventListener("focusin", focusOn);
       win.removeEventListener("focusout", focusOff);
       doc?.removeEventListener?.("pointerdown", press, true);
+      doc?.removeEventListener?.("focusin", focusElsewhere, true);
       setHot(false);
       setFocused(false);
     };

@@ -1032,6 +1032,12 @@ test("a rail window clicked or holding the keyboard is `.is-focused` (the Archiv
   expect(has("is-focused")).toBe(true);
   w.win("focusout", { relatedTarget: w.outside });
   expect(has("is-focused")).toBe(false);
+  // A click on plain text, then the keyboard (Tab) lands outside with no
+  // focusout on the card: let go too.
+  w.doc("pointerdown", { target: w.inside });
+  expect(has("is-focused")).toBe(true);
+  w.doc("focusin", { target: w.outside });
+  expect(has("is-focused")).toBe(false);
 });
 
 test("a focused window still has no Archive on a running task, nor under a rename", () => {
