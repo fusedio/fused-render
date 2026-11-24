@@ -13079,6 +13079,14 @@ milliseconds.
 - **SR-4 Shown as saved.** The key cannot see sibling UDFs read through
   `fused.load`, outside data or the clock, so a saved copy is always
   labelled saved and, under `cache: "auto"`, always followed by a run.
+- **SR-4a A UDF by name.** Its key holds no code (the code is on Fused,
+  not on this machine), so its saved copy records the hash of the code it
+  was made from and is held back until the worker has loaded the UDF:
+  `saved` is sent with `started`, only when the loaded code has that hash.
+  After the UDF changes on Fused its old copy is never shown; the run's
+  answer replaces it. `prefer-saved` goes to the worker for the same check
+  and ends at the saved copy when it passes. A copy saved before this rule
+  has no hash and is not shown.
 - **SR-5 Clearing.** Preferences → Advanced → Debugging → "Saved UDF
   cache" shows the results' count and size, `<home>`'s and every canvas
   folder's (`GET /api/udf/saved`), and Clear deletes them all (`DELETE /api/udf/saved`, guarded); the next open of

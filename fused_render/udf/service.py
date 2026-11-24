@@ -12,6 +12,13 @@
 stderr, fused_cached, source}`; `source` is "saved", "fused-cache" or
 "fresh". The bytes are at `url` (GET /api/udf/results/<token>).
 
+A UDF named by canvas and name has no code on this machine to make its run
+key from, so its saved copy is one the server cannot vouch for until the
+worker has loaded the UDF from Fused: `saved` is sent then (with `started`),
+and only when the code that was loaded hashes to the code the copy was made
+from. Changed code never shows the old copy. Under "prefer-saved" such a run
+goes to the worker for that check and ends at the saved copy when it passes.
+
 Error codes: bad_ref, bad_env, env_locked, signed_out, unavailable,
 udf_error (with line/stdout/stderr), needs_confirmation (with
 execution_type/title/reason; nothing ran), too_large (with size/limit; past
@@ -74,7 +81,10 @@ class Target:
     """What to run, resolved: where (`env`), what `fused.load` gets
     (`load_as`, `collection`) and what identifies it for the run key.
     `clone_dir` is the canvas folder of a canvas node file: its saved results
-    are kept there (`store.clone_folder`)."""
+    are kept there (`store.clone_folder`). `file_sha` is the hash of a file's
+    code, part of its key; a target without one (a UDF by name) has a key
+    that does not follow its code, so its saved copy is shown only once the
+    worker's loaded code matches the copy's (`_run`)."""
 
     def __init__(self, env: str, source: str, collection: str | None, ident: list,
                  file_sha: str | None = None, clone_dir: str | None = None):
@@ -202,6 +212,8 @@ class _Flight:
         self.waiting = 0
         self.env = ""
         self.rid = ""
+        # sha256 of the code the worker loaded, known from its "started".
+        self.code_sha: str | None = None
 
 
 _FLIGHTS: dict[tuple, _Flight] = {}
@@ -219,6 +231,7 @@ async def _execute(flight: _Flight, target: Target, key: str, params: dict, fmt:
         if event.get("event") == "started":
             if event.get("kind") not in (None, canvas_node_exec.NONE):
                 deadline["s"] = BATCH_RUN_TIMEOUT_S
+            flight.code_sha = event.get("code_sha256") or ""
             for listener in list(flight.listeners):
                 listener({"type": "started", "kind": event.get("kind")})
 
@@ -280,6 +293,9 @@ async def _execute(flight: _Flight, target: Target, key: str, params: dict, fmt:
             "seconds": final.get("seconds"), "stdout": final.get("stdout") or "",
             "stderr": final.get("stderr") or "", "fused_cached": bool(final.get("fused_cached")),
             "sha256": final.get("sha256"),
+            # The code this answer was made from: what a saved copy of a UDF
+            # by name is checked against before it is shown again.
+            "code_sha256": final.get("code_sha256") or None,
             "env": target.env}
     return {"result": await asyncio.to_thread(store.keep, body_path, meta, keep_key,
                                               target.clone_dir)}
@@ -318,9 +334,14 @@ async def _run(msg: dict, send: Send, rid, cancelled: asyncio.Event | None) -> N
     account = canvases._listing_account(target.env)
     key = run_key(target, account, params, fmt, tile)
 
+    # A saved copy whose key does not follow the UDF's code (a UDF by name):
+    # held back until the worker says which code it loaded.
+    held: dict | None = None
     if cache != "fresh":
         saved = await asyncio.to_thread(store.get, key, target.clone_dir)
-        if saved is not None:
+        if saved is not None and target.file_sha is None:
+            held = saved
+        elif saved is not None:
             await send({"id": rid, "type": "saved", "result": _page_result(saved, "saved")})
             if cache == "prefer-saved":
                 await send({"id": rid, "type": "done", "result": _page_result(saved, "saved")})
@@ -343,16 +364,40 @@ async def _run(msg: dict, send: Send, rid, cancelled: asyncio.Event | None) -> N
 
         flight.task = asyncio.ensure_future(go())
 
-    started_frames: list[dict] = []
+    # Set when the held copy was shown under "prefer-saved": it ends the run
+    # for this page (the worker run goes on and is saved).
+    preferred = asyncio.Event()
+    shown: dict | None = None
+
+    def offer_held() -> None:
+        """The worker has loaded the UDF: show the held copy if it was made
+        from that same code, else drop it for good."""
+        nonlocal held, shown
+        copy, held = held, None
+        if copy is None or not flight.code_sha or copy.get("code_sha256") != flight.code_sha:
+            return
+        shown = copy
+        asyncio.ensure_future(send({"id": rid, "type": "saved",
+                                    "result": _page_result(copy, "saved")}))
+        if cache == "prefer-saved":
+            preferred.set()
 
     def listen(frame: dict) -> None:
-        started_frames.append(frame)
+        if frame.get("type") == "started":
+            offer_held()
         asyncio.ensure_future(send(dict(frame, id=rid)))
 
     flight.listeners.append(listen)
     flight.waiting += 1
+    if flight.code_sha is not None:
+        # Joined a run that had already started.
+        offer_held()
+    prefer = None
     try:
         waits = {flight.task}
+        if held is not None or preferred.is_set():
+            prefer = asyncio.ensure_future(preferred.wait())
+            waits.add(prefer)
         stop = None
         if cancelled is not None:
             stop = asyncio.ensure_future(cancelled.wait())
@@ -368,8 +413,13 @@ async def _run(msg: dict, send: Send, rid, cancelled: asyncio.Event | None) -> N
             raise RunError("cancelled", "the run was cancelled")
         if stop is not None:
             stop.cancel()
+        if prefer is not None and prefer in done and shown is not None:
+            await send({"id": rid, "type": "done", "result": _page_result(shown, "saved")})
+            return
         outcome = flight.task.result()
     finally:
+        if prefer is not None:
+            prefer.cancel()
         flight.waiting -= 1
         try:
             flight.listeners.remove(listen)
