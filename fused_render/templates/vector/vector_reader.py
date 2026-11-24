@@ -3,25 +3,43 @@
 OGR formats are read with pyogrio/GDAL, GeoParquet with pyarrow (pyogrio's GDAL
 has no Parquet driver), in this folder's environment (`pyproject.toml`, SPEC
 PY-16). A signed https URL is read with range requests: /vsicurl/, or the
-parquet footer and the row groups the feature cap needs. Output is EPSG:4326
-GeoJSON with schema/CRS/bounds metadata and an attribute-table preview;
-multi-layer sources get a `_layer` column. A feature cap and a vertex budget
-(simplifying with an extent-derived tolerance) keep the payload renderable.
+parquet footer and the row groups each chunk needs. Output is EPSG:4326
+with schema/CRS/bounds metadata and an attribute-table preview;
+multi-layer sources get a `_layer` column.
 """
+import base64
+import functools
 import io
+import json
+import math
 import os
+import threading
 import urllib.request
+from concurrent.futures import ThreadPoolExecutor
 
 import truststore
 
 os.environ["GDAL_SKIP"] = "OGR_VRT"
 truststore.inject_into_ssl()
-MAX_VERTICES = 300_000
+
+import geopandas as gpd
+import numpy as np
+import pyarrow as pa
+import pyarrow.parquet as pq
+import pyogrio
+import shapely
+from geopandas.io.arrow import _arrow_to_geopandas
+
+CHUNK_COORDS = 1_000_000
+FIRST_CHUNK = 20_000
+BLOCK = 10_000
 H3_NAMES = ("h3", "hex", "h3_index", "h3index", "h3_cell", "cell_id", "hex_id", "h3_id")
 GDAL_HTTP = {"GDAL_DISABLE_READDIR_ON_OPEN": "EMPTY_DIR",
              "CPL_VSIL_CURL_CHUNK_SIZE": str(1 << 20),
              "CPL_VSIL_CURL_CACHE_SIZE": str(256 << 20),
              "GDAL_HTTP_MAX_RETRY": "3", "GDAL_HTTP_RETRY_DELAY": "0.5"}
+KINDS = {k.upper(): k for k in ("Point", "LineString", "Polygon", "MultiPoint", "MultiLineString", "MultiPolygon")}
+_lock = threading.Lock()
 
 
 class NotVector(ValueError):
@@ -65,171 +83,207 @@ class _Ranged(io.RawIOBase):
         return len(data)
 
 
-def _read_ogr(src, cap):
-    import geopandas as gpd
-    import pandas as pd
-    import pyogrio
 
-    remote = "://" in src
-    if remote:
-        pyogrio.set_gdal_config_options(GDAL_HTTP)
-        src = "/vsicurl/" + src
-    layers = [str(name) for name, gtype in pyogrio.list_layers(src) if gtype]
-    parts, read, used, capped = [], [], 0, False
-    for name in layers:
-        if used >= cap:
-            capped = True
-            break
-        try:
-            part = pyogrio.read_dataframe(src, layer=name, max_features=cap - used + 1, use_arrow=True)
-        except Exception:  # noqa: BLE001
-            if len(layers) == 1:
-                raise
-            continue
-        read.append(name)
-        capped = capped or len(part) > cap - used
-        part = part.iloc[:cap - used]
-        used += len(part)
-        if len(layers) > 1:
-            part = part[part.geometry.notna()]
-            part.insert(0, "_layer", name)
-        if len(part):
-            parts.append(part)
-    if not parts:
-        raise NotVector("no features with geometry in this file")
-    gdf = gpd.GeoDataFrame(pd.concat(parts, ignore_index=True), crs=parts[0].crs)
-    if not capped:
-        return gdf, len(gdf), False, layers
-    counts = [pyogrio.read_info(src, layer=n, force_feature_count=not remote)["features"]
-              for n in read + layers[layers.index(read[-1]) + 1:]]
-    total = None if any(c is None or c < 0 for c in counts) else sum(counts)
-    return gdf, total, total is None or total > used, layers
+def _safe(v):
+    if isinstance(v, float):
+        return v if math.isfinite(v) else None
+    if v is None or isinstance(v, (bool, int, str)):
+        return v
+    return json.dumps(v, default=str) if isinstance(v, (dict, list)) else str(v)
 
 
-def _read_parquet(file, cap):
-    import json
-    import pyarrow as pa
-    import pyarrow.parquet as pq
-    from geopandas.io.arrow import _arrow_to_geopandas
-
-    pf = pq.ParquetFile(_Ranged(file) if "://" in file else file, pre_buffer=True)
-    schema = pf.schema_arrow
-    geo = json.loads((schema.metadata or {}).get(b"geo") or (pf.metadata.metadata or {}).get(b"geo") or "{}")
-    col = geo.get("primary_column")
-    if col not in schema.names:
-        h3 = next((c for c in schema.names if c.lower() in H3_NAMES), None)
-        raise NotVector("This parquet has no GeoParquet geometry column"
-                        + (f" ({h3!r} looks like H3 cells: open it in the H3 mode)." if h3 else "."))
-    meta = geo["columns"][col]
-    skip = {v[0] for v in meta.get("covering", {}).get("bbox", {}).values()}
-    groups = rows = 0
-    while rows < cap and groups < pf.num_row_groups:
-        rows += pf.metadata.row_group(groups).num_rows
-        groups += 1
-    columns = [f.name for f in schema if f.name == col
-               or not (f.name in skip or pa.types.is_binary(f.type))]
-    table = pf.read_row_groups(range(groups), columns=columns).slice(0, cap)
-    return _arrow_to_geopandas(table, geo), pf.metadata.num_rows, pf.metadata.num_rows > cap, []
+def _records(table, layer=None):
+    return [{**({"_layer": layer} if layer else {}), **{k: _safe(v) for k, v in r.items()}}
+            for r in table.to_pylist()]
 
 
-def main(file: str = "", max_features: int = 20000, table_rows: int = 50):
-    import json
-    from concurrent.futures import ThreadPoolExecutor
-    import numpy as np
-    from shapely import get_coordinates
+def _is_lonlat(crs):
+    return not crs or crs.to_epsg() == 4326 or crs.equals("OGC:CRS84")
 
-    max_features, table_rows = int(max_features), int(table_rows)
+
+def _bounds4326(bounds, crs):
+    if bounds is None or not np.isfinite(bounds).all():
+        return None
+    box = gpd.GeoSeries([shapely.box(*bounds)], crs=crs or 4326)
+    return box.segmentize(max(bounds[2] - bounds[0], bounds[3] - bounds[1]) / 64 or 1).to_crs(4326).total_bounds.tolist()
+
+
+def _union(boxes):
+    boxes = [b for b in boxes if b is not None and np.isfinite(b).all()]
+    return [float(f(b[i] for b in boxes)) for i, f in enumerate((min, min, max, max))] if boxes else None
+
+
+def _b64(values, dtype):
+    return base64.b64encode(np.ascontiguousarray(values, dtype=dtype).tobytes()).decode("ascii")
+
+
+def _encode(geoms, ids):
+    kind = shapely.get_type_id(geoms)
+    drawn = (kind >= 0) & ~shapely.is_empty(geoms)
+    parts = []
+    for family in ((3, 6), (1, 5), (0, 4)):
+        sel = drawn & np.isin(kind, family)
+        if sel.any():
+            gtype, coords, offsets = shapely.to_ragged_array(geoms[sel], include_z=False)
+            parts.append({"kind": KINDS[gtype.name], "ids": _b64(ids[sel], "<u4"),
+                          "coords": _b64(coords, "<f8"), "offsets": [_b64(o, "<i4") for o in offsets]})
+    rest = drawn & ~np.isin(kind, (0, 1, 3, 4, 5, 6))
+    if rest.any():
+        parts.append({"kind": "geojson", "ids": _b64(ids[rest], "<u4"),
+                      "geoms": shapely.to_geojson(geoms[rest]).tolist()})
+    return parts
+
+
+class _Parquet:
+    def __init__(self, file):
+        self.pf = pq.ParquetFile(_Ranged(file) if "://" in file else file, pre_buffer=True)
+        schema, md = self.pf.schema_arrow, self.pf.metadata
+        self.geo = json.loads((schema.metadata or {}).get(b"geo") or (md.metadata or {}).get(b"geo") or "{}")
+        self.col = self.geo.get("primary_column")
+        if self.col not in schema.names:
+            h3 = next((c for c in schema.names if c.lower() in H3_NAMES), None)
+            raise NotVector("This parquet has no GeoParquet geometry column"
+                            + (f" ({h3!r} looks like H3 cells: open it in the H3 mode)." if h3 else "."))
+        meta = self.geo["columns"][self.col]
+        skip = {v[0] for v in meta.get("covering", {}).get("bbox", {}).values()}
+        self.attrs = [f.name for f in schema
+                      if f.name != self.col and not (f.name in skip or pa.types.is_binary(f.type))]
+        self.ends = np.cumsum([md.row_group(i).num_rows for i in range(md.num_row_groups)])
+        self.group = functools.lru_cache(4)(lambda i, cols: self.pf.read_row_group(i, columns=list(cols)))
+        self.count, self.crs = md.num_rows, _arrow_to_geopandas(schema.empty_table().select([self.col]), self.geo).crs
+        self.lonlat = _is_lonlat(self.crs)
+        bbox = meta.get("bbox") or []
+        native = [bbox[i] for i in (0, 1, 3, 4)] if len(bbox) == 6 else bbox[:4] or None
+        self.info = {"layers": [], "geometry_types": [t for t in meta.get("geometry_types") or [] if t],
+                     "native_bounds": native, "bounds4326": _bounds4326(native, self.crs),
+                     "schema": [{"name": f.name, "dtype": str(f.type)} for f in schema if f.name in self.attrs]}
+
+    def _rows(self, start, stop, columns):
+        if stop <= start:
+            return self.pf.schema_arrow.empty_table().select(columns)
+        a, b = np.searchsorted(self.ends, [start, stop - 1], side="right")
+        base = int(self.ends[a - 1]) if a else 0
+        groups = [self.group(i, tuple(columns)) for i in range(a, b + 1)]
+        return pa.concat_tables(groups).slice(start - base, stop - start)
+
+    def geoms(self, start, stop):
+        gs = _arrow_to_geopandas(self._rows(start, stop, [self.col]), self.geo).geometry
+        return (gs if self.lonlat else gs.to_crs(4326)).to_numpy()
+
+    def records(self, start, stop):
+        return _records(self._rows(start, stop, self.attrs))
+
+    def column(self, name):
+        if name not in self.attrs:
+            return [None] * self.count
+        return [_safe(v) for v in self.pf.read(columns=[name])[name].to_pylist()]
+
+
+class _Ogr:
+    def __init__(self, file):
+        self.src = file
+        if "://" in file:
+            pyogrio.set_gdal_config_options(GDAL_HTTP)
+            self.src = "/vsicurl/" + file
+        names = [str(n) for n, kind in pyogrio.list_layers(self.src) if kind]
+        if not names:
+            raise NotVector("no features with geometry in this file")
+        infos = [pyogrio.read_info(self.src, layer=n, force_feature_count=True) for n in names]
+        crs = [gpd.GeoSeries([], crs=i["crs"]).crs for i in infos]
+        counts = [max(0, int(i["features"])) for i in infos]
+        self.spans = list(zip(names, np.cumsum([0, *counts[:-1]]).tolist(), counts, map(_is_lonlat, crs)))
+        self.count, self.crs, self.multi = sum(counts), crs[0], len(names) > 1
+        self.block = functools.lru_cache(8)(lambda n, b: pyogrio.read_arrow(
+            self.src, layer=n, skip_features=b * BLOCK, max_features=BLOCK, read_geometry=False)[1])
+        fields = {"_layer": "object"} if self.multi else {}
+        for info in infos:
+            for name, dtype in zip(info["fields"], info["dtypes"]):
+                fields.setdefault(str(name), str(dtype))
+        self.info = {"layers": names,
+                     "geometry_types": sorted({str(i["geometry_type"]) for i in infos} - {"Unknown", "None"}),
+                     "native_bounds": _union(i["total_bounds"] for i in infos),
+                     "bounds4326": _union(_bounds4326(i["total_bounds"], c) for i, c in zip(infos, crs)),
+                     "schema": [{"name": n, "dtype": t} for n, t in fields.items()]}
+
+    def _parts(self, start, stop):
+        for name, base, n, lonlat in self.spans:
+            lo, hi = max(start, base), min(stop, base + n)
+            if lo < hi:
+                yield name, lo - base, hi - lo, lonlat
+
+    def geoms(self, start, stop):
+        out = [np.empty(0, dtype=object)]
+        for name, skip, n, lonlat in self._parts(start, stop):
+            g = pyogrio.read_dataframe(self.src, layer=name, skip_features=skip, max_features=n, columns=[],
+                                       use_arrow=True).geometry
+            out.append((g if lonlat else g.to_crs(4326)).to_numpy())
+        return np.concatenate(out)
+
+    def records(self, start, stop):
+        out = []
+        for name, skip, n, _ in self._parts(start, stop):
+            first, last = skip // BLOCK, (skip + n - 1) // BLOCK
+            table = pa.concat_tables([self.block(name, b) for b in range(first, last + 1)])
+            out += _records(table.slice(skip - first * BLOCK, n), self.multi and name)
+        return out
+
+    def column(self, name):
+        out = []
+        for layer, _, n, _ in self.spans:
+            if name == "_layer":
+                out += [layer] * n
+                continue
+            table = pyogrio.read_arrow(self.src, layer=layer, read_geometry=False, columns=[name])[1]
+            out += [_safe(v) for v in table[name].to_pylist()] if name in table.column_names else [None] * n
+        return out
+
+
+@functools.lru_cache(maxsize=2)
+def _source(file, stamp):
+    return (_Parquet if file.split("?")[0].lower().endswith(".parquet") else _Ogr)(file)
+
+
+def main(file: str = "", op: str = "meta", start: int = 0, column: str = "", chunk: int = 100_000,
+         table_rows: int = 50):
+    start, chunk, table_rows = int(start), int(chunk), int(table_rows)
     if not file:
         return {"error": "no file selected"}
-    if not file.lower().startswith(("http://", "https://")):
+    remote = file.lower().startswith(("http://", "https://"))
+    if not remote:
         if "://" in file:
             return {"error": "only http(s) URLs are read: sign an s3:// address first"}
         file = os.path.abspath(os.path.expanduser(file))
         if not os.path.isfile(file):
             return {"error": f"not a file: {file}"}
-    stem, _, ext = (file.split("?")[0] if "://" in file else file).rpartition(".")
-    ext = ext.lower()
-    parts = [file] + ([f"{stem}.{e}" for e in ("shx", "dbf", "prj", "cpg")] if ext == "shp" else [])
-    sizes = ThreadPoolExecutor(len(parts)).map(_size, parts)
-
+    stem, _, ext = (file.split("?")[0] if remote else file).rpartition(".")
+    files = [file] + ([f"{stem}.{e}" for e in ("shx", "dbf", "prj", "cpg")] if ext.lower() == "shp" else [])
+    sizes = ThreadPoolExecutor(len(files)).map(_size, files) if op == "meta" else ()
     try:
-        gdf, total, truncated, layers = (_read_parquet if ext == "parquet" else _read_ogr)(file, max_features)
+        with _lock:
+            st = None if remote else os.stat(file)
+            source = _source(file, st and (st.st_mtime_ns, st.st_size))
+            if op == "row":
+                return {"props": (source.records(start, start + 1) or [{}])[0]}
+            if op == "column":
+                return {"values": source.column(column)}
+            geoms = source.geoms(start, min(source.count, start + (chunk if op == "chunk" else min(chunk, FIRST_CHUNK))))
+            table = source.records(0, min(source.count, table_rows)) if op != "chunk" else None
+        over = np.flatnonzero(np.cumsum(shapely.get_num_coordinates(geoms)) > CHUNK_COORDS)
+        geoms = geoms[:max(1, int(over[0])) if len(over) else len(geoms)]
+        end = start + len(geoms)
+        first = {"parts": _encode(geoms, np.arange(start, end)), "next": end if end < source.count else None}
     except NotVector as e:
         return {"error": str(e)}
     except Exception as e:  # noqa: BLE001
         return {"error": f"could not read vector file: {type(e).__name__}: {e}"}
-
-    crs = gdf.crs
-    crs_info = {"epsg": (crs.to_epsg() if crs else None),
-                "name": (crs.name if crs else None),
-                "wkt_head": (crs.to_wkt()[:200] if crs else None)}
-    native_bounds = [float(v) for v in gdf.total_bounds] if len(gdf) else None
-
-    if crs and (crs.to_epsg() or 0) != 4326:
-        try:
-            gdf = gdf.to_crs(4326)
-        except Exception as e:  # noqa: BLE001
-            return {"error": f"reprojection to EPSG:4326 failed: {e}",
-                    "crs": crs_info}
-
-    # vertex budget -> simplify (degrees tolerance scaled to extent)
-    simplified = None
-    if len(gdf):
-        nvert = int(len(get_coordinates(gdf.geometry.values)))
-        if nvert > MAX_VERTICES:
-            minx, miny, maxx, maxy = gdf.total_bounds
-            span = max(maxx - minx, maxy - miny, 1e-6)
-            tol = span / 2000.0
-            for _ in range(6):
-                g2 = gdf.geometry.simplify(tol, preserve_topology=True)
-                if int(len(get_coordinates(g2.values))) <= MAX_VERTICES:
-                    break
-                tol *= 3
-            gdf = gdf.set_geometry(g2)
-            simplified = tol
-
-    # geometry kinds present
-    kinds = sorted(set(gdf.geom_type.dropna())) if len(gdf) else []
-
-    # schema + attribute preview (JSON-safe)
-    def safe(v):
-        if v is None or (isinstance(v, float) and (v != v)):
-            return None
-        if isinstance(v, (np.integer,)):
-            return int(v)
-        if isinstance(v, (np.floating,)):
-            f = float(v)
-            return None if f != f else f
-        if isinstance(v, (int, float, bool, str)):
-            return v
-        return str(v)
-
-    cols = [c for c in gdf.columns if c != gdf.geometry.name]
-    schema = [{"name": c, "dtype": str(gdf[c].dtype)} for c in cols]
-    table = [{c: safe(r[c]) for c in cols}
-             for _, r in gdf.head(table_rows).iterrows()]
-
-    gj = json.loads(gdf.to_json(default=str))
-    # keep a stable feature id for hover state
-    for i, feat in enumerate(gj.get("features", [])):
-        feat["id"] = i
-
-    b = [float(v) for v in gdf.total_bounds] if len(gdf) else None
-    return {
-        "file_size": sum(sizes),
-        "layers": layers,
-        "count": total,
-        "shown": int(len(gdf)),
-        "truncated": bool(truncated),
-        "simplified_tolerance": simplified,
-        "geometry_types": kinds,
-        "crs": crs_info,
-        "native_bounds": native_bounds,
-        "bounds4326": b,
-        "schema": schema,
-        "table": table,
-        "geojson": gj,
-    }
+    if op == "chunk":
+        return first
+    info, crs, box = source.info, source.crs, shapely.total_bounds(geoms)
+    return {**info, "count": source.count, "table": table, "first": first, "file_size": sum(sizes),
+            "crs": {"epsg": crs.to_epsg() if crs else None, "name": crs.name if crs else None},
+            "geometry_types": info["geometry_types"] or sorted(
+                {p["kind"].replace("geojson", "GeometryCollection") for p in first["parts"]}),
+            "bounds4326": info["bounds4326"] or (box.tolist() if np.isfinite(box).all() else None)}
 
 
 try:
