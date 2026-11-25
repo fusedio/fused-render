@@ -103,6 +103,10 @@ param as its `screen` field, and `agent._user_screen_block` writes it as a leadi
 tag, stripped from titles and restored transcripts like `<terminal-hint>`). A location, never contents. See
 docs/bots.md §6 USER'S SCREEN for the bots' side.
 
+A main `start` that names no session continues the recorded main one (`server/routers/claude_agent.py`
+`_expert_main_resume`): the chat may be mounted twice (the Bots page, the rail's card), and a mount that loaded
+before the other started the session would otherwise start a second one and fold the first.
+
 All three are `agent._start` with `expert="<id>:<kind>"`. The page sends `<id>:main` or `<id>:breakout` as an
 extra start field (`ChatMount extraParams`, carried on every start and send by the run controller); `agent.main`
 drops a `:update` key from a page, so only the server starts an update (`claude_spawn.spawn_helper(...,

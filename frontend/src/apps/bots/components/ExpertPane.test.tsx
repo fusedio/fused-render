@@ -30,7 +30,7 @@ const answers: Record<string, unknown> = {
 };
 afterAll(() => { (globalThis as { fetch: unknown }).fetch = realFetch; });
 
-const s: Expert = { id: "canvas", name: "Canvas", about: "Canvases", folder: "", face: null, home: "/w/canvas", working: false, last: null, updating: false, last_update: null, new: true };
+const s: Expert = { id: "canvas", name: "Canvas", about: "Canvases", folder: "", face: null, home: "/w/canvas", working: false, created: 0, last: null, updating: false, last_update: null, new: true };
 const settle = () => act(async () => { await new Promise((r) => setTimeout(r, 0)); });
 const text = (r: ReactTestRenderer) => JSON.stringify(r.toJSON());
 const byText = (r: ReactTestRenderer, t: string) => r.root.find((n) => typeof n.type === "string" && n.children.includes(t));

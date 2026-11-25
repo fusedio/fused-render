@@ -14,6 +14,15 @@ import {
 } from "@platform/lib/api";
 import { useCurrentAppsChanged, TASKS_CHANGED_EVENT } from "@platform/lib/tasksChanged";
 import { api as botsApi, type Bot } from "@apps/bots/lib/api";
+import {
+  getCanvasesStatus,
+  isWorkbenchEnv,
+  listCanvases,
+  type CanvasEntry,
+  type WorkbenchEnv,
+} from "@apps/canvases/api";
+import { listDir, type FsEntry } from "@platform/lib/api";
+import { remoteList, type RemoteEntry } from "@platform/lib/remote";
 import type { AppsSort } from "./layout";
 import { MAX_ROW } from "./strip";
 import { isDraftTask, sortForList } from "../tasks-lib";
@@ -137,28 +146,29 @@ export interface AsyncState<T> {
   refresh: () => void;
 }
 
-/** Fetch on mount, refetch every `pollMs` and on the optional window `event`.
+/** Fetch on mount, refetch every `pollMs` (0: never) and on the optional
+    window `event`, and again whenever `key` changes (what `load` reads).
     A failed fetch sets `error`, keeps the data already shown and keeps polling.
     `retry` clears both, then refetches. */
 function useAsyncResource<T>(
   load: () => Promise<T>,
-  opts: { pollMs: number; event?: string; errorText: string },
+  opts: { pollMs: number; event?: string; errorText: string; key?: string },
 ): AsyncState<T> {
   const [data, setData] = useState<T | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [nonce, setNonce] = useState(0);
   const loadRef = useRef(load);
   loadRef.current = load;
-  const { pollMs, event, errorText } = opts;
+  const { pollMs, event, errorText, key } = opts;
   useEffect(() => {
     const bump = () => setNonce((n) => n + 1);
     if (event) window.addEventListener(event, bump);
     // Hidden windows skip the tick and catch up once on return.
     const gated = pauseWhileHidden(bump);
-    const t = setInterval(gated, pollMs);
+    const t = pollMs > 0 ? setInterval(gated, pollMs) : undefined;
     return () => {
       if (event) window.removeEventListener(event, bump);
-      clearInterval(t);
+      if (t !== undefined) clearInterval(t);
       gated.cancel();
     };
   }, [pollMs, event]);
@@ -175,7 +185,7 @@ function useAsyncResource<T>(
     return () => {
       alive = false;
     };
-  }, [nonce, errorText]);
+  }, [nonce, errorText, key]);
   return {
     data,
     error,
@@ -229,4 +239,99 @@ export function useHomeTasks(): AsyncState<HomeTasks> {
 /** Bots from the bots status endpoint, polled gently while mounted. */
 export function useHomeBots(): AsyncState<Bot[]> {
   return useAsyncResource(loadHomeBots, { pollMs: 10000, errorText: "Couldn't reach bots." });
+}
+
+/** One request in flight at a time, shared by every caller: the add sheet
+    draws each widget once per format, and two previews must not mean two
+    identical fetches. */
+function shared<T>(load: () => Promise<T>): () => Promise<T> {
+  let flight: Promise<T> | null = null;
+  return () => {
+    if (!flight) flight = load().finally(() => (flight = null));
+    return flight;
+  };
+}
+
+/** Dot-names are hidden, folders come first, then by name (Finder's order). */
+export function visibleEntries<E extends { name: string; is_dir: boolean }>(entries: E[]): E[] {
+  return entries
+    .filter((e) => !e.name.startsWith("."))
+    .sort((a, b) => (a.is_dir === b.is_dir ? a.name.localeCompare(b.name, undefined, { sensitivity: "base" }) : a.is_dir ? -1 : 1));
+}
+
+/** Single-flight `shared` per folder, built once per folder (not per render). */
+const dirLoaders = new Map<string, () => Promise<FsEntry[]>>();
+function dirLoader(dir: string): () => Promise<FsEntry[]> {
+  let load = dirLoaders.get(dir);
+  if (!load) {
+    load = shared(() => listDir(dir).then((r) => visibleEntries(r.entries)));
+    dirLoaders.set(dir, load);
+  }
+  return load;
+}
+
+/** One listing page of a local folder (the Local files widget: the home
+    folder). Re-read on a slow beat so a new download shows up. The caller
+    mounts this only once `dir` is known. */
+export function useHomeDirListing(dir: string): AsyncState<FsEntry[]> {
+  return useAsyncResource(dirLoader(dir), {
+    pollMs: 60000,
+    errorText: "Couldn't list this folder.",
+    key: dir,
+  });
+}
+
+/** The S3 data available today: one bucket, public and indexed. Generic name,
+    one constant, so more locations slot in here later. */
+export const S3_ROOT = "s3://fused-asset/";
+
+const loadS3 = shared(() => remoteList(S3_ROOT).then((r) => visibleEntries(r.entries)));
+
+/** The top level of S3_ROOT. Fetched once per mount: the bucket changes on
+    its own publish cadence, not while Home is open. */
+export function useS3Listing(): AsyncState<RemoteEntry[]> {
+  return useAsyncResource(loadS3, { pollMs: 0, errorText: "Couldn't reach S3." });
+}
+
+export type HomeCanvases =
+  | { kind: "ok"; env: WorkbenchEnv; canvases: CanvasEntry[]; stale: boolean }
+  | { kind: "no-cli" }
+  | { kind: "signed-out" }
+  | { kind: "no-env" };
+
+/** Canvases in the default workbench environment (the Canvases page's own
+    first pick), newest update first. A missing CLI or sign-in is a state the
+    widget explains, not an error. */
+let canvasesFreshNext = false;
+
+async function loadHomeCanvases(): Promise<HomeCanvases> {
+  const status = await getCanvasesStatus();
+  if (!status.cli_found) return { kind: "no-cli" };
+  const env = isWorkbenchEnv(status.workbench_env) ? status.workbench_env : null;
+  if (!env) return { kind: "no-env" };
+  if (!status.logged_in) return { kind: "signed-out" };
+  // Stale-while-revalidate, as the Canvases page does: the disk baseline
+  // paints first, and a `stale` answer makes the next read ask with fresh=1.
+  const fresh = canvasesFreshNext;
+  canvasesFreshNext = false;
+  const { canvases, stale } = await listCanvases(env, fresh);
+  const sorted = canvases.slice().sort((a, b) => (b.updated_at ?? b.mtime ?? 0) - (a.updated_at ?? a.mtime ?? 0));
+  return { kind: "ok", env, canvases: sorted, stale: stale && !fresh };
+}
+
+const loadHomeCanvasesShared = shared(loadHomeCanvases);
+
+/** Polls slowly (a fresh read costs a control-plane round trip): each beat
+    paints the baseline, then re-reads fresh when it was stale. */
+export function useHomeCanvases(): AsyncState<HomeCanvases> {
+  const state = useAsyncResource(loadHomeCanvasesShared, { pollMs: 5 * 60000, errorText: "Couldn't load canvases." });
+  const { data, refresh } = state;
+  useEffect(() => {
+    if (data?.kind === "ok" && data.stale) {
+      canvasesFreshNext = true;
+      refresh();
+    }
+    // `refresh` is a new function every render; only a new answer matters.
+  }, [data]);
+  return state;
 }

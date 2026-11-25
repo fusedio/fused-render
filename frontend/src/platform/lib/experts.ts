@@ -13,6 +13,8 @@ export interface Expert {
   face: Record<string, unknown> | null;
   home: string;
   working: boolean;
+  /** When it was made (epoch seconds; 0 unknown): its place in the Bots list until it has a chat. */
+  created: number;
   last: { text: string; at: number } | null;
   /** A learning run in progress, and when the last one ended (epoch seconds). */
   updating: boolean;

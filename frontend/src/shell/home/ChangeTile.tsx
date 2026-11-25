@@ -7,9 +7,10 @@ import { createPortal } from "react-dom";
 import { useDismissOnOutside } from "@platform/lib/dismissOnOutside";
 import { SourceIcon } from "./AddWidgetPanel";
 import { FormatPicks, ShowChips, SizeChips, SortChips } from "./Pickers";
-import { FIXED_ROWS, MAX_WIDGETS, SOURCES, allowedSizes, dimsOf, formatMinRows, rectOf, sizesFor, sourceFits, type TileTarget, type WidgetSource } from "./layout";
+import { CANVASES_SOURCES, FIXED_ROWS, MAX_WIDGETS, SOURCES, allowedSizes, dimsOf, formatMinRows, rectOf, sizesFor, sourceFits, type TileTarget, type WidgetSource } from "./layout";
 import { placePopover, type Box, type Placement } from "./popoverPlace";
 import type { HomeLayoutApi } from "./useHomeLayout";
+import { useCanvasesFeature } from "@apps/canvases/feature-flag";
 
 const NEEDS_CHOICE = new Set<WidgetSource>(["folder", "app"]);
 const SOURCE_KEYS = Object.keys(SOURCES) as WidgetSource[];
@@ -133,6 +134,7 @@ export function ChangeTile({
     onClose();
   };
 
+  const canvasesOn = useCanvasesFeature();
   const spec = widget ? SOURCES[widget.source] : null;
   const style: CSSProperties = pos
     ? { left: pos.left, top: pos.top, width: pos.width, maxHeight: pos.maxHeight }
@@ -144,7 +146,7 @@ export function ChangeTile({
     <div ref={root} className="hw-pop" style={style} role="dialog" aria-label={`Change ${title}`}>
       <div className="hw-label">Show in this tile</div>
       <div className="hw-po-list">
-        {SOURCE_KEYS.map((s) => {
+        {SOURCE_KEYS.filter((s) => canvasesOn || !CANVASES_SOURCES.has(s) || widget?.source === s).map((s) => {
           const fit = sourceFits(layout, rect, s, widget?.id);
           const current = widget?.source === s;
           const homeFull = target.kind === "fill" && layout.widgets.length >= MAX_WIDGETS;

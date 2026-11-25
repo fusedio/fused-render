@@ -929,8 +929,8 @@ a location, never contents. On the Bots page itself the composer sends
 `Bot.set_screen` cleans it (8 lines of 320 characters, no control
 characters) and keeps it in memory only. `Bot.screen_section()` is a
 per-turn part of `first_message`, rides a tool result after a mid-task
-instruction when it changed (`_handle_core`), and is a history line in the
-steps engine. It is left out of a task that did not come from the chat (a
+instruction when it changed (`_handle_core`), and is a section of every
+step's prompt in the steps engine. It is left out of a task that did not come from the chat (a
 routine, a text, an app page) and of one the note predates (set more than
 `SCREEN_LEAD_S` before `start_task`). The transcript's user line never
 carries it. Three more consequences of the conversation: Super

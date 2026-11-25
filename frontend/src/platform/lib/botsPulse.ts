@@ -49,7 +49,7 @@ export interface BotPulseRow {
 export function expertPulseRow(e: Expert): BotPulseRow {
   return {
     id: e.id, status: e.working ? "running" : "idle", seq: 0, pinned: !!e.pinned, name: e.name, face: e.face,
-    last_user_ts: 0, created: e.last?.at || 0, expert: true,
+    last_user_ts: 0, created: e.last?.at || e.created || 0, expert: true,
   };
 }
 

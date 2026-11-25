@@ -315,6 +315,10 @@ export function Composer({ b, reply, setReply, threadRef, floating = false }: Co
     const files = pendingRef.current; setPending([]);
     const r = reply; setReply(null);
     t.value = ""; fitInput();
+    // A chat floating over another page (the rail's bot card) tells the bot what that page is; on the Bots page
+    // itself (the page's own composer, or a card opened there) nothing is behind the chat, and "" clears the last note.
+    // Read now, before the uploads below: the page as it stood when the message was sent.
+    const screen = floating && !isBotsPath(location.pathname) ? screenContext() : "";
     setSending(true);
     try {
       const names: string[] = [];
@@ -326,9 +330,6 @@ export function Composer({ b, reply, setReply, threadRef, floating = false }: Co
       askScrollToEnd(threadRef);   // consumed by THIS thread: show the message you just sent
       setBase(b.id, b.seq);   // sending resets the count: only what the bot says from here on is new
       markSeen(b.id, b.seq);  // and you have plainly read everything up to your own message
-      // A chat floating over another page (the rail's bot card) tells the bot what that page is; on the Bots page
-      // itself (the page's own composer, or a card opened there) nothing is behind the chat, and "" clears the last note.
-      const screen = floating && !isBotsPath(location.pathname) ? screenContext() : "";
       await act(() => api.send(b.id, text, r ? r.seq : null, undefined, undefined, screen));
       const th = threadRef.current; if (th) th.scrollTop = th.scrollHeight;
     } catch (e) {

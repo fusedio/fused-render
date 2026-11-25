@@ -32,6 +32,8 @@ import {
   navigateUrl,
 } from "@platform/lib/router";
 import { installVerdict, useStatIsDir } from "./install-view-lib";
+// Eager, unlike the page it stands in for: it shows while that chunk downloads.
+import PreferencesSkeleton from "@shell/settings/PreferencesSkeleton";
 import { useRecentsTracking } from "@apps/explorer/lib/recents";
 import { setSideTab } from "@apps/explorer/lib/side-tab-store";
 // The route parser, not the barrel: api.ts is already in the main bundle (the
@@ -1010,7 +1012,7 @@ export default function App({ config }: { config: Config }) {
     // split actions are explorer concepts and never render outside it.
     main = (
       <div id="content" key={epoch}>
-        <Suspense fallback={<RouteFallback />}>
+        <Suspense fallback={<PreferencesSkeleton />}>
           <Preferences key={epoch} />
         </Suspense>
       </div>

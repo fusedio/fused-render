@@ -1032,8 +1032,11 @@ class LanApp:
         if response is None:
             await self.inner(scope, receive, send)
         else:
-            if response.status_code >= 400:
-                _log_refusal(scope, response.status_code,
+            # A forward (`_AsDevice`, `_Forward`) is an ASGI app, not a
+            # Response: no status to log, the inner app answers for itself.
+            status = getattr(response, "status_code", 0)
+            if status >= 400:
+                _log_refusal(scope, status,
                              "" if _host_ok(scope) else "that Host is not one of this computer's names")
             await response(scope, receive, send)
 

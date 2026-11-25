@@ -13,24 +13,29 @@ import {
   Bookmark,
   Bot,
   Clock,
+  Cloud,
   ArrowLeft,
   Database,
   FileText,
   Folder,
   FolderGit2,
   Hammer,
+  HardDrive,
   LayoutGrid,
   ListChecks,
   Search,
   Sparkles,
+  Store,
+  Workflow,
   X,
   type LucideIcon,
 } from "lucide-react";
 import { createPortal } from "react-dom";
 import { useBookmarksVersion } from "@platform/lib/hooks";
+import { useCanvasesFeature } from "@apps/canvases/feature-flag";
 import { isTopmost, popModal, pushModal } from "@platform/ui/modal/esc-stack";
 import { isFolder, loadBookmarks, type BookmarkFolder, type BookmarkItem } from "@platform/lib/bookmarks";
-import { CELL, GRID_COLS, MAX_WIDGETS, SOURCES, type TileTarget, type Widget, type WidgetSource } from "./layout";
+import { CANVASES_SOURCES, CELL, GRID_COLS, MAX_WIDGETS, SOURCES, type TileTarget, type Widget, type WidgetSource } from "./layout";
 import { freeSpaceNote, galleryEntries, previewPx, previewScale, type GalleryEntry } from "./gallery";
 import { WidgetBody } from "./Widget";
 import type { HomeLayoutApi } from "./useHomeLayout";
@@ -49,6 +54,10 @@ const SOURCE_ICONS: Record<WidgetSource, LucideIcon> = {
   bots: Bot,
   folder: Bookmark,
   index: Database,
+  files: HardDrive,
+  s3: Cloud,
+  canvases: Workflow,
+  marketplace: Store,
 };
 
 /** The source's mark: a lucide glyph on an accent-tinted rounded square. */
@@ -99,9 +108,13 @@ export function AddWidgetPanel({
     const only = galleryEntries(api.layout, target, initialSource);
     return only.length === 1 && !only[0].disabled ? only[0] : null;
   });
+  const canvasesOn = useCanvasesFeature();
   const entries = useMemo(
-    () => galleryEntries(api.layout, target, target ? (initialSource ?? "folder") : undefined, at),
-    [api.layout, target, initialSource, at],
+    () =>
+      galleryEntries(api.layout, target, target ? (initialSource ?? "folder") : undefined, at).filter(
+        (e) => canvasesOn || !CANVASES_SOURCES.has(e.source),
+      ),
+    [api.layout, target, initialSource, at, canvasesOn],
   );
   const sections = useMemo(() => {
     const out: { source: WidgetSource; entries: GalleryEntry[] }[] = [];
