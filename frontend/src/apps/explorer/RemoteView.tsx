@@ -107,6 +107,16 @@ function parentLocation(loc: string): string {
   return `s3://${p.bucket}/${i < 0 ? "" : key.slice(0, i + 1)}`;
 }
 
+/** No nav hint: does the address read as a folder? The bucket root, a key
+ *  spelled with a trailing "/", or a last segment without an extension. */
+function looksLikePrefix(loc: string): boolean {
+  const p = parseRemoteLocation(loc);
+  if (!p) return false;
+  if (!p.key || p.key.endsWith("/")) return true;
+  const last = p.key.slice(p.key.lastIndexOf("/") + 1);
+  return !last.includes(".");
+}
+
 /** A prefix URL for `remoteList`: always ends in "/" (the location in the
  *  address bar does not carry it — path-url.ts rootedFsPath). */
 function asPrefix(url: string): string {
@@ -583,7 +593,14 @@ export function RemoteView({ location, home }: { location: string; home: string 
   // no live lookup, and an address that is both an object and a prefix opens
   // as the folder it was clicked as. No hint (pasted, reloaded, bookmarked):
   // the address as is, and the server decides.
-  const [statUrl] = useState(() => (navHintIsDir() === true ? asPrefix(location) : location));
+  const [navHint] = useState(() => navHintIsDir());
+  const [statUrl] = useState(() => (navHint === true ? asPrefix(location) : location));
+  // Whether to paint the folder view before the stat lands (below). The hint
+  // when there is one; with none (pasted, reloaded, a typed address + Enter),
+  // the address's shape: a bucket root or a last segment with no extension is
+  // most likely a prefix. A wrong guess only costs skeleton rows until the
+  // stat swaps in the file view — `provisional` keeps a failed list quiet.
+  const [likelyDir] = useState(() => navHint ?? looksLikePrefix(location));
   useEffect(() => {
     const c = new AbortController();
     // A re-stat after a download keeps the progress card up until the answer
@@ -607,7 +624,17 @@ export function RemoteView({ location, home }: { location: string; home: string 
   useDocumentTitle(renderedTitle || name);
 
   let content: ReactNode;
-  if (state.status === "loading") {
+  if (state.status === "loading" && likelyDir) {
+    // Reached as (or read as) a folder: mount the folder view now, as StatView's
+    // LoadingScaffold does for a local folder, so its search field (in the
+    // crumb bar's slot) and rows don't blink out for the length of the stat
+    // on every folder-to-folder step. Same element position as the resolved
+    // `dir` branch below, so the stat landing flips `provisional` in place
+    // instead of remounting. Provisional: a stale hint or a wrong guess (the
+    // address is a file, its list 404s) must not paint "Failed to list"
+    // before the stat says so.
+    content = <Listing fsPath={location} provisional barChrome />;
+  } else if (state.status === "loading") {
     content = (
       <div className="preview-body">
         <div className="preview-resolving">

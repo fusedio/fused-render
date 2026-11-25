@@ -503,7 +503,7 @@ const ENTRIES = [
     id: "experts",
     group: "features",
     section: "Other",
-    label: "Experts",
+    label: "Expert bots",
     description: "A kind of bot on the Bots page that knows one subject and keeps its own memory and skills. Tasks get its guidance, send it notes, and can open a breakout with it. Once a day it updates its memory from what they did.",
     keywords: "expert bot memory skills breakout notes update learn",
   },
