@@ -14,7 +14,7 @@
 // remixes and contributors, and a Releases section lists every release with
 // its What's new — "Blocked" where Fused blocked it since.
 import { useEffect, useRef, type ReactNode } from "react";
-import { ArrowUpRight, ExternalLink, FolderOpen, LayoutPanelTop, Trash2 } from "lucide-react";
+import { ArrowUpRight, ExternalLink, FolderOpen, LayoutPanelTop, Link2, Trash2 } from "lucide-react";
 import {
   AppIcon,
   DetailBody,
@@ -34,7 +34,10 @@ import {
   type InfoStripItem,
 } from "@platform/ui/appstore";
 import type { MenuEntry } from "@platform/ui/ContextMenu";
+import { listingPageUrl } from "@platform/lib/backend-canvas";
+import { copyToClipboard } from "@platform/lib/clipboard";
 import { formatSize, releaseDate } from "@platform/lib/format";
+import { notify } from "@platform/lib/notifications";
 import { navigateUrl } from "@platform/lib/router";
 import { openUninstallApp } from "@platform/lib/uninstall-app";
 import {
@@ -173,6 +176,17 @@ export function AppDetailPage({ slug, snap, bare = false }: { slug: string; snap
       onClick: () => showInstalledFolder(installedPath),
     });
   }
+  // The app's public listing page: it opens in any browser and hands over to
+  // the installed app (or to the download) from there.
+  menu.push({
+    label: "Copy link",
+    icon: <Link2 size={14} strokeWidth={2} />,
+    onClick: () => {
+      void copyToClipboard(listingPageUrl(app.slug)).then((ok) =>
+        notify({ title: ok ? "Link copied" : "Couldn't copy the link", tone: ok ? "info" : "error" }),
+      );
+    },
+  });
   if (sourceUrl) {
     const src = sourceUrl;
     menu.push({
