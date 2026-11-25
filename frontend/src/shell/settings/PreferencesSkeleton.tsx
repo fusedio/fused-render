@@ -8,7 +8,31 @@
 // the same body while it waits for its reads — one loading look, start to end.
 // Bars only, never a group's name or count: which groups this machine has is
 // part of what is being loaded.
-import type { CSSProperties } from "react";
+import { useEffect, useState, type CSSProperties } from "react";
+
+// The fade-in is held back (preferences.css: a warm read must not flash a
+// skeleton) — but one wait is two mounts, the route's fallback and then the
+// page's own, and a second mount would restart the hold and blink. A skeleton
+// that mounts right after another left picks the fade up where that one was.
+const HOLD_MS = 150;
+const SAME_WAIT_MS = 200;
+let waitStart = 0;
+let lastGone = Number.NEGATIVE_INFINITY;
+
+function useFadeDelay(): CSSProperties {
+  const [style] = useState<CSSProperties>(() => {
+    const now = performance.now();
+    if (now - lastGone > SAME_WAIT_MS) waitStart = now;
+    return { animationDelay: `${Math.round(HOLD_MS - (now - waitStart))}ms` };
+  });
+  useEffect(
+    () => () => {
+      lastGone = performance.now();
+    },
+    [],
+  );
+  return style;
+}
 
 // Label widths (px) for the nav's two sections and the rows of two cards —
 // ragged on purpose, so it reads as text to come and not as a grid.
@@ -37,13 +61,15 @@ function Bar({ w, h, className }: { w: number | string; h?: number; className?: 
 
 /** The search box's place in the header, before there are settings to search. */
 export function SettingsSearchSkeleton() {
-  return <div className="settings-search settings-skel-search" aria-hidden="true" />;
+  const fade = useFadeDelay();
+  return <div className="settings-search settings-skel-search" style={fade} aria-hidden="true" />;
 }
 
 /** The nav and the rows. Carries the loading announcement for the whole page. */
 export function SettingsBodySkeleton() {
+  const fade = useFadeDelay();
   return (
-    <div className="settings-body settings-skel" role="status" aria-busy="true" aria-label="Loading preferences">
+    <div className="settings-body settings-skel" style={fade} role="status" aria-busy="true" aria-label="Loading preferences">
       <div className="settings-nav" aria-hidden="true">
         {NAV.map((items, s) => (
           <div key={s} className="settings-nav-section">

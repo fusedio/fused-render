@@ -1583,10 +1583,12 @@
    The real frame — nav column, head, cards of rows — in `.skel-bar`s
    (explorer.css), so the answer lands in place instead of pushing bars away.
    Held back a beat: a warm read answers in a few ms, and a skeleton that
-   flashes for one frame is worse than none. */
+   flashes for one frame is worse than none. The hold is the component's
+   inline `animation-delay` (HOLD_MS), so the page's skeleton continues the
+   route fallback's fade instead of starting it over. */
 .settings-skel,
 .settings-skel-search {
-  animation: settings-skel-in 0.2s ease 0.15s both;
+  animation: settings-skel-in 0.2s ease both;
 }
 
 @keyframes settings-skel-in {

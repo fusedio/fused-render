@@ -21,6 +21,7 @@ import ipaddress
 import logging
 import os
 import re
+import select
 import socket
 import subprocess
 import sys
@@ -116,20 +117,34 @@ def _hostname_resolves(name: str) -> bool | None:
     """Uncached ``hostname_resolves``."""
     mine = set(lan_ips())
     if _is_mac():
-        # `dns-sd -G v4 <name>` streams until killed: run it for two seconds
-        # and read what it printed. A resolved line carries the address in
-        # its fifth column.
+        # `dns-sd -G v4 <name>` streams until killed. A resolved line carries
+        # the address in its fifth column: stop at the first one that is this
+        # computer's, which is the answer and arrives in milliseconds. Only a
+        # name that does not resolve (or resolves elsewhere) waits the two
+        # seconds out — this runs inside GET /api/prefs, so the healthy case
+        # must not cost every Preferences open that wait.
         try:
             proc = subprocess.Popen(["dns-sd", "-G", "v4", name], stdout=subprocess.PIPE,
-                                    stderr=subprocess.DEVNULL, text=True, encoding="utf-8", errors="replace")
+                                    stderr=subprocess.DEVNULL)
         except OSError:
             return None
+        found: set[str] = set()
+        buf = b""
         try:
-            out, _ = proc.communicate(timeout=2.0)
-        except subprocess.TimeoutExpired:
+            fd = proc.stdout.fileno()
+            deadline = time.monotonic() + 2.0
+            while not (found & mine):
+                left = deadline - time.monotonic()
+                if left <= 0 or not select.select([fd], [], [], left)[0]:
+                    break
+                chunk = os.read(fd, 4096)
+                if not chunk:
+                    break
+                buf += chunk
+                found = set(re.findall(r"\b(\d+\.\d+\.\d+\.\d+)\b", buf.decode("utf-8", "replace")))
+        finally:
             proc.kill()
-            out, _ = proc.communicate()
-        found = set(re.findall(r"\b(\d+\.\d+\.\d+\.\d+)\b", out or ""))
+            proc.communicate()
         return bool(found & mine) if (found or mine) else None
     out = _run(["avahi-resolve", "-4", "-n", name], timeout=3.0)
     if out is None:
