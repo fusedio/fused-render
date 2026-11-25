@@ -54,7 +54,7 @@ def _result(text: str, ok: bool) -> dict:
 def _folder_note(spec) -> str:
     f = str(getattr(spec, "folder", "") or "")
     return (f"Without `folder` it works in your project folder ({f})." if f
-            else "`folder` is required: the absolute path of the folder it works in.")
+            else "Without `folder` it gets a new folder of its own under the user's Fused workspace (tasks/<title>).")
 
 
 def mcp_tools(spec) -> list[dict]:
@@ -66,9 +66,23 @@ def started(home: str) -> list:
     return _rows(chat.load(home))
 
 
+def _is(rec: dict, row: dict) -> bool:
+    """`row` is the task `rec` remembers: by entry id, or by the session it minted (a retry of a failed task
+    gets a fresh entry; the conversation is the same one)."""
+    return bool(row.get("entry_id") and row["entry_id"] == rec["entry_id"]) \
+        or bool(rec.get("session") and row.get("session_id") == rec["session"])
+
+
 def _own(home: str):
-    ids = {str(r["entry_id"]) for r in started(home)}
-    return lambda row: bool(row.get("entry_id")) and row["entry_id"] in ids
+    recs = started(home)
+    return lambda row: any(_is(r, row) for r in recs)
+
+
+def _note_session(home: str, rec: dict, row: dict) -> None:
+    sid = str(row.get("session_id") or "")
+    if sid and rec.get("session") != sid:
+        rec["session"] = sid
+        _mark(home, rec["entry_id"], session=sid)
 
 
 def _rows(d: dict) -> list:
@@ -170,10 +184,13 @@ def watch(home: str, rec: dict, resumed: bool = False) -> None:
                     rows = tasktools.api("GET", f"/api/tasks?under={quote(str(rec.get('dir') or ''))}").get("tasks") or []
                 except Exception:  # noqa: BLE001
                     continue
-                row = next((t for t in rows if t.get("entry_id") == rec["entry_id"]), None) or {}
+                row = next((t for t in rows if _is(rec, t)), None) or {}
+                _note_session(home, rec, row)
                 st = str(row.get("status") or "")
                 if st in ("in_progress", "queued", "needs_attention", "blocked"):
                     seen = True
+                if rec.get("base") is not None and row and tasktools.last_active(row) > float(rec["base"]):
+                    seen = True  # a follow-up that ran between two polls
                 if st in ("needs_attention", "blocked") and row.get("blocked_reason"):
                     now = tasktools.status_words(row)
                     if now != stall:
@@ -201,9 +218,10 @@ def _catch_up(home: str, rows: list) -> list:
     for rec in started(home):
         if rec.get("done_at") or (home, str(rec["entry_id"])) in _WATCHING:
             continue
-        row = next((t for t in rows if t.get("entry_id") == rec["entry_id"]), None)
+        row = next((t for t in rows if _is(rec, t)), None)
         if row is None:
             continue
+        _note_session(home, rec, row)
         if str(row.get("status") or "") in ("done", "archived"):
             _mark(home, rec["entry_id"], done_at=time.time())
             out.append(_ended(rec, row))
@@ -250,10 +268,10 @@ def call(spec, name: str, args) -> dict:
         elif name == tasktools.SEND:
             out = tasktools.send(row, d.get("text"))
             if out.startswith("ok"):
-                rec = next((r for r in started(home) if r["entry_id"] == row.get("entry_id")), None)
+                rec = next((r for r in started(home) if _is(r, row)), None)
                 if rec is not None:
                     _mark(home, rec["entry_id"], done_at=None, at=time.time())
-                    watch(home, {**rec, "at": time.time()})
+                    watch(home, {**rec, "at": time.time(), "base": tasktools.last_active(row)})
         else:
             out = tasktools.stop(row) if name == tasktools.STOP else tasktools.archive(row)
         return _result(head + out, not out.startswith("error"))

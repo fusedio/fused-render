@@ -605,13 +605,14 @@ docs/bots.md §12, and the tool definitions, the listing and the calls are the s
   get it: nobody is there to approve a start. `launch.spec`'s `append` gains one sentence saying the tools exist
   (`tasks.NOTE`).
 - **Reach.** Only the tasks this expert started: `.expert/state.json` `tasks`
-  (`[{entry_id, key, title, dir, at, done_at?}]`, last 40), matched to the listing by entry id. Any other task
+  (`[{entry_id, key, title, dir, at, session?, done_at?}]`, last 40), matched to the listing by entry id or by
+  the session the task minted (a retry of a failed task gets a fresh entry in the same conversation). Any other task
   reads as not there. An expert's own sessions are not tasks (§1) and never show up here.
 - **`task_start`** asks the user every time, in every permission mode: it is in `launch.spec`'s `ask`, and
   `permission_server.EXPERT_TASK_START` keeps the chat's "Always approve" from answering it (as for
   `canvas_create`). The new task runs in mode `default` (it asks before risky steps) whatever the expert's own
-  chat runs in. It works in `folder`, else the expert's project folder (the manifest's `folder`); with neither
-  the call is refused. The tasks API already refuses a task inside an expert's home
+  chat runs in. It works in `folder`, else the expert's project folder (the manifest's `folder`), else a
+  scratch folder of its own (`<workspace>/tasks/<slug of the title>`). The tasks API already refuses a task inside an expert's home
   (`schedule_api.expert_home_refusal`). The other five go through the session's permission mode like any tool.
 - **Hearing back.** `tasks.watch` follows each started task (and each follow-up the expert sent) until it
   settles, polling the listing every 15 s for at most 3 h, and tells the expert: once per distinct stall (a

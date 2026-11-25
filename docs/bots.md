@@ -2018,9 +2018,11 @@ door `build` already used). Every bot gets, on both engines:
   (it survives the rekey from `pending:<entry>` to the session id), else the
   key; `tasktools.match` accepts either.
 - **`task_start`**: `tasktools.start_check` validates without writing
-  (prompt required, at most 12000 characters; the folder must exist; no
-  `folder` is the bot's own `files_dir`, so what the task writes there the
-  bot can `readfile`). The card (`tasktools.start_preview`) shows the title,
+  (prompt required, at most 12000 characters; a named folder must exist and
+  may not be inside a bot's private `.fused/` folder, whose sessions the
+  Tasks listing drops as bot conversations, `paths.is_bot_workdir`; no
+  `folder` is a scratch folder of the task's own,
+  `<workspace>/tasks/<slug of the title>`, made when the task starts). The card (`tasktools.start_preview`) shows the title,
   the folder, how it will run and the prompt (first 1200 characters). The
   permission mode is not the model's to pick: `tools._task_mode` reads the
   bot's Builds setting as `build` does (`BUILD_MODES`: scoped asks before
@@ -2041,7 +2043,9 @@ door `build` already used). Every bot gets, on both engines:
   key}`; the stall's `build` ref has `kind: "task"`, which is all the card
   reads to say Task instead of Build. `past_conversation` labels them TASK
   NOTICE: another session's words are data. A `task_send` into a settled
-  task of the bot's own re-arms the watcher (`Bot.task_rewatch`). Watchers
+  task of the bot's own re-arms the watcher (`Bot.task_rewatch`, with the
+  row's `last_active` as `base`: a follow-up that runs and ends between two
+  polls still counts as having run). Watchers
   resume at load like builds'. `meta["tasks"]` is kept apart from
   `meta["builds"]` on purpose: a build's folder is an app the bot owns
   (`apptools.is_owned`: its scripts run without a card), a task's folder is

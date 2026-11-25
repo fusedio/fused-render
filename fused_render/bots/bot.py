@@ -3113,6 +3113,8 @@ class Bot:
                 st = (row or {}).get("status") or ""
                 if st in ("in_progress", "queued", "needs_attention", "blocked"):
                     seen_running = True
+                if bd.get("base") is not None and row and tasktools.last_active(row) > float(bd["base"]):
+                    seen_running = True  # a `task_send` follow-up that ran between two polls (Bot.task_rewatch)
                 self._surface_build_stall(bd, row or {}, st)
                 if st in ("done", "archived") and seen_running:
                     if stable != st:      # status can flicker for ~15 s after a turn: want it twice in a row
@@ -3124,6 +3126,7 @@ class Bot:
                         with self.lock:
                             bd["done_at"] = time.time()
                             bd["key"] = (row or {}).get("key") or bd.get("key") or ""
+                            bd.pop("base", None)
                             self.save()
                         failed = bool((row or {}).get("failed"))
                         self.emit("done", f"The task \"{bd['name']}\" {'stopped without finishing' if failed else 'finished'}."
@@ -3248,6 +3251,9 @@ class Bot:
             td.pop("done_at", None)
             td.pop("stall", None)
             td["created_at"] = time.time()  # the watcher's clock (BUILD_MAX_S) starts over
+            # A follow-up's turn can start and end between two polls: the watcher also counts the task as having
+            # run once its row has moved past where it stood at the send.
+            td["base"] = tasktools.last_active(row)
             self.save()
         self._watch_build(td)
 

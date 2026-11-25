@@ -115,6 +115,13 @@ def task_id(row: dict) -> str:
     return str(row.get("entry_id") or row.get("key") or "")
 
 
+def last_active(row: dict) -> float:
+    try:
+        return float((row or {}).get("last_active") or 0)
+    except (TypeError, ValueError):
+        return 0.0
+
+
 def match(row: dict, ref: str) -> bool:
     ref = str(ref or "").strip()
     eid = str(row.get("entry_id") or "")
@@ -254,8 +261,18 @@ def read_text(row: dict, last=None) -> str:
 
 
 # ------------------------------------------------------------------ calls ---
+def scratch_folder(title: str) -> str:
+    """Where a task with no `folder` works: `<workspace>/tasks/<slug of its title>`, made when the task starts.
+    Not inside a bot's own folder: a session whose cwd is under `<bot>/.fused/` is a bot conversation to the
+    Tasks listing (`paths.is_bot_workdir`) and would never show as a task."""
+    from fused_render.bots import paths as bpaths
+    return os.path.join(bpaths.workspace_dir(), "tasks", bpaths.slug(title))
+
+
 def start_check(d: dict, default_folder: str = ""):
-    """`({title, prompt, folder}, "")` for a task_start call, or `(None, "error: …")`. Nothing is written."""
+    """`({title, prompt, folder, make?}, "")` for a task_start call, or `(None, "error: …")`. Nothing is written.
+    `default_folder`: where it works when the call names none; "" means a scratch folder of its own
+    (`scratch_folder`, `make: True`: `start` creates it)."""
     d = d or {}
     title = _one(d.get("title") or d.get("name"), TITLE_MAX)
     prompt = str(d.get("prompt") if d.get("prompt") is not None else d.get("text") or "").strip()
@@ -267,10 +284,13 @@ def start_check(d: dict, default_folder: str = ""):
     if not title:
         title = _one(prompt, 60)
     if not folder:
-        return None, "error: task_start needs `folder`, the absolute path of the folder the task works in; ask the user which one"
+        return {"title": title, "prompt": prompt, "folder": scratch_folder(title), "make": True}, ""
     folder = os.path.abspath(os.path.expanduser(folder))
     if not os.path.isdir(folder):
         return None, f"error: {_home(folder)} is not a folder on this machine"
+    from fused_render.bots import paths as bpaths
+    if bpaths.is_bot_workdir(folder):
+        return None, "error: a task cannot work inside a bot's own private folder; name another folder, or leave `folder` out"
     return {"title": title, "prompt": prompt, "folder": folder}, ""
 
 
@@ -281,13 +301,15 @@ def start_preview(fields: dict, mode: str) -> str:
     """The approval card's line for a task_start: the folder, how it runs, and the prompt the session will get."""
     p = fields["prompt"]
     cut = p[:CARD_PROMPT_CAP] + "…" if len(p) > CARD_PROMPT_CAP else p
-    return (f"start the task \"{fields['title']}\" in {_home(fields['folder'])} "
+    return (f"start the task \"{fields['title']}\" in {_home(fields['folder'])}{' (a new folder)' if fields.get('make') and not os.path.isdir(fields['folder']) else ''} "
             f"({MODE_WORDS.get(mode, mode)}): \"{cut}\"")
 
 
 def start(fields: dict, mode: str, bot: str = "") -> dict:
     """Create the task and send it now: `{entry_id, key}`. `bot`: the id of the bot starting it, kept on the row.
     Raises RuntimeError with the server's sentence."""
+    if fields.get("make"):
+        os.makedirs(fields["folder"], exist_ok=True)
     body = {"prompt": fields["prompt"], "target": fields["folder"], "title": fields["title"], "permission_mode": mode}
     if bot:
         body["bot"] = bot

@@ -388,7 +388,7 @@ ROUTINE_TOOLS = ("routine_add",)
 TASK_TOOLS = tasktools.TOOLS
 TASK_READ_TOOLS = tasktools.READ_TOOLS
 TASK_WRITE_TOOLS = tasktools.WRITE_TOOLS
-TASK_FOLDER_NOTE = "Without `folder` it works in your own files folder (what it writes there you can `readfile`)."
+TASK_FOLDER_NOTE = "Without `folder` it gets a new folder of its own under the user's Fused workspace (tasks/<title>)."
 TOOL_SPECS.update(tasktools.specs(False, TASK_FOLDER_NOTE))
 _SUPER_TASK_SPECS = tasktools.specs(True, TASK_FOLDER_NOTE)
 ALWAYS_ASK = frozenset(MANAGE_TOOLS + ROUTINE_TOOLS + ("marketplace_install", tasktools.START))
@@ -1366,7 +1366,9 @@ def _task_mode(bot) -> str:
 
 
 def _task_start_fields(bot, d: dict):
-    return tasktools.start_check(d, _call0(lambda: bot.files_dir, "") or "")
+    d = d or {}
+    # Either engine: the steps engine's JSON carries the title in `name`, the prompt in `text`, the folder in `file`.
+    return tasktools.start_check(d)
 
 
 def _task_preview(bot, act: str, d: dict) -> str:
