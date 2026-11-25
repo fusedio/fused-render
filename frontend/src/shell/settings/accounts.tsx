@@ -66,11 +66,23 @@ function setWorkbenchShared(patch: Partial<WorkbenchShared>) {
   workbenchListeners.forEach((fn) => fn());
 }
 
-function reloadWorkbenchShared(): Promise<void> {
-  if (workbenchLoading) return workbenchLoading;
+// Bumped by every read that must be newer than a write: an answer that left
+// before it is dropped rather than stored over the write's result.
+let workbenchGen = 0;
+
+/** Read the shared status. `afterWrite` is the read that follows a change (a
+ *  switch, a config save): it never rides a read already on the wire, which
+ *  may have left before the change and would put the old list back. */
+function reloadWorkbenchShared(afterWrite = false): Promise<void> {
+  if (workbenchLoading && !afterWrite) return workbenchLoading;
+  const gen = afterWrite ? ++workbenchGen : workbenchGen;
   const p = getCanvasesStatus()
-    .then((status) => setWorkbenchShared({ status, error: null }))
-    .catch((e: Error) => setWorkbenchShared({ error: e.message }))
+    .then((status) => {
+      if (gen === workbenchGen) setWorkbenchShared({ status, error: null });
+    })
+    .catch((e: Error) => {
+      if (gen === workbenchGen) setWorkbenchShared({ error: e.message });
+    })
     .finally(() => {
       if (workbenchLoading === p) workbenchLoading = null;
     });
@@ -127,7 +139,7 @@ function WorkbenchEnvRow({ env }: { env: WorkbenchEnv }) {
     try {
       const want = WORKBENCH_ENVS.filter((e) => (e === env ? next : enabled.includes(e)));
       await putWorkbenchEnvsEnabled(want);
-      await reloadWorkbenchShared();
+      await reloadWorkbenchShared(true);
     } catch (e) {
       setError((e as Error).message);
     } finally {
@@ -211,7 +223,7 @@ function WorkbenchEnvRow({ env }: { env: WorkbenchEnv }) {
             setEditing(false);
             // The deployment may have changed under a signed-in line: custom's
             // `[auth]` can name another credentials file.
-            void reloadWorkbenchShared().then(() =>
+            void reloadWorkbenchShared(true).then(() =>
               setWorkbenchShared({ authGen: workbenchShared.authGen + 1 }),
             );
           }}
@@ -277,6 +289,17 @@ function WorkbenchEnvSignIn({ env, locked }: { env: WorkbenchEnv | null; locked:
   }, [refresh, authGen]);
 
   const announce = () => setWorkbenchShared({ authGen: workbenchShared.authGen + 1 });
+
+  // Coming back to the window re-reads: a sign-in finishes in the browser,
+  // and one started on a row since switched off (or in another window, or a
+  // terminal) has nobody polling for it here.
+  useEffect(() => {
+    const onFocus = () => {
+      refresh().catch(() => undefined);
+    };
+    window.addEventListener("focus", onFocus);
+    return () => window.removeEventListener("focus", onFocus);
+  }, [refresh]);
 
   // Ends when the credentials file's stamp changes (a completed login), or
   // when the browser child exits without one (closed tab, denied).
@@ -348,6 +371,8 @@ function WorkbenchEnvSignIn({ env, locked }: { env: WorkbenchEnv | null; locked:
   const onLogout = () =>
     act(async () => {
       await logout(env);
+      // This line first, while the button is still held; then the others.
+      await refresh();
       announce();
     });
 
