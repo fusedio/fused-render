@@ -21,7 +21,7 @@ import { lastUserTs, noBrowser, sentByYou } from "../lib/derive";
 import { chime, notifyEvents, notifyHandover, updateTitle } from "../lib/notify";
 import type { NewBotPick } from "../lib/presets";
 import { botsMounted } from "../lib/root";
-import { publishBots } from "@platform/lib/botsPulse";
+import { expertPulseRow, publishBots } from "@platform/lib/botsPulse";
 import { BOTS_PREFIX, botHref, isBotsPath, parseBotsPath, searchSansTask } from "../routes";
 import { navigateUrl, replaceSearch } from "@platform/lib/router";
 
@@ -332,7 +332,8 @@ function publishPulse(): void {
   // these rows while this page is the feeder (CodeRabbit, #2136).
   // …and the page's own recency (BotList `recency`: your last message, else when it was made), so the rail's pinned
   // bots sort as this list does while the page feeds them (owner, 2026-11-09: the foot's order disagreed with the page).
-  publishBots(S.bots.filter((b) => !b.expert).map((b) => ({
+  // An expert rides as its own kind of row (botsPulse `expertPulseRow`): pinned, it stands on the rail like a bot.
+  publishBots(S.bots.map((b) => b.expert ? expertPulseRow(b.expert) : ({
     id: b.id, status: b.status, seq: b.seq, news_seq: b.news_seq, seen_seq: S.seen[b.id], hidden: b.hidden, pinned: b.pinned,
     name: b.name, face: b.face, last_user_ts: lastUserTs(eventsOf(b.id)) || b.last_user_ts || 0, created: b.created,
   })));

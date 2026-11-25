@@ -391,11 +391,13 @@ and `expert_canvas` (§14).
 right after an expert action (`actExpert`), never on the phone; each row becomes a `Bot` of kind `expert`
 carrying the row (`asBot`), status `running` while `working`. The rail's Bots card (`BotsPeek`) lists them too and
 opens an expert's chat floating over the page (`BotChat` renders `ExpertChat`; the quiet feed reads `/api/experts`
-once the switch is known on). Pinned bot rings and the sidebar pulse leave them out. In the list (`BotList.tsx`) a row shows the face, name, EXPERT badge (tooltip "Expert: <about>"), the
+once the switch is known on). The sidebar's Bots pulse counts a working expert as running. In the list (`BotList.tsx`) a row shows the face, name, EXPERT badge (tooltip "Expert: <about>"), the
 last reply as one plain line (else `about`), its time, and a dot when `new` (a learning run ended since the Learning
 tab was last opened; opening the chat does not clear it). The row's menu pins it to the top of the list (`POST
 /api/experts/<id>/pin {pinned}`, kept in the home's `state.json`, not the manifest; the row carries `pinned`). A
-pinned expert gets no ring on the Claude rail. Hide, mark as read and thread search do not apply.
+pinned expert stands on the Claude rail like a pinned bot: `platform/lib/botsPulse.ts` reads `/api/experts` beside
+`/api/bots/pulse` while the switch is on (`expertPulseRow`: `expert: true`, `running` while working, never unread), the
+Bots page publishes the same rows while it feeds, and the ring opens the expert's chat in the bot card. Hide, mark as read and thread search do not apply.
 
 **Without bots (Windows).** The server runs no bots there (`/api/config` `bots_available` false; `/api/bots*` answers
 503), but experts are task sessions, not bots, so the Bots page still opens while the flag is on and lists them
