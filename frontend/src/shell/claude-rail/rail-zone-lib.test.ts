@@ -71,11 +71,20 @@ describe("RailZone", () => {
     expect(zone.isInside).toBe(true);
     zone.heat();
     expect(zone.openMs()).toBe(RAIL_HOT_OPEN_MS);
-    // Dwelling earns nothing by itself: only a card (or a press) heats.
-    const cold = new RailZone(() => now);
-    cold.enter();
-    now += 10_000;
-    expect(cold.openMs()).toBe(RAIL_COLD_OPEN_MS);
+    // Dwelling heats too: in the zone the cold wait long, anywhere in it.
+    const dwell = new RailZone(() => now);
+    dwell.enter();
+    now += RAIL_COLD_OPEN_MS - 100;
+    expect(dwell.isHot).toBe(false);
+    // A ring reached partway waits out only what is left.
+    expect(dwell.openMs()).toBe(100);
+    now += 100;
+    expect(dwell.isHot).toBe(true);
+    expect(dwell.openMs()).toBe(RAIL_HOT_OPEN_MS);
+    // A dwell-hot leave keeps the heat through the cool-off.
+    dwell.leave();
+    now += RAIL_COOL_MS - 1;
+    expect(dwell.isHot).toBe(true);
   });
 
   it("keeps the heat through a brief leave, loses it after the cool-off", () => {
@@ -134,7 +143,7 @@ describe("PeekIntent on the zone", () => {
     expect(zone.isHot).toBe(true);
   });
 
-  it("a pass-through opens nothing — and a sweep across rings earns nothing", () => {
+  it("a pass-through opens nothing; a fast sweep opens nothing; a rest on the rail's empty area heats it", () => {
     const { clock, zone, win } = rail();
     const a = win();
     zone.enter();
@@ -144,19 +153,24 @@ describe("PeekIntent on the zone", () => {
     zone.leave();
     clock.tick(10_000);
     expect(a.shown).toEqual([]);
-    // A sweep down the rail: each ring is crossed in less than the wait.
+    // A fast sweep across the rail: in and out within the wait.
     zone.enter();
-    for (const k of ["a", "b", "c", "d"]) {
+    for (const k of ["a", "b", "c"]) {
       a.intent.enterRing(k, "pointer");
-      clock.tick(RAIL_COLD_OPEN_MS / 2);
+      clock.tick(RAIL_COLD_OPEN_MS / 4);
       a.intent.leaveRing("pointer");
     }
-    // …then parked on the rail's empty edge, long.
+    zone.leave();
     clock.tick(10_000);
     expect(a.shown).toEqual([]);
+    // Parked on the rail's empty area past the wait: hot, the next ring is
+    // at once.
+    zone.enter();
+    clock.tick(RAIL_COLD_OPEN_MS);
+    expect(zone.isHot).toBe(true);
     a.intent.enterRing("e", "pointer");
-    clock.tick(RAIL_COLD_OPEN_MS - 1);
-    expect(a.shown).toEqual([]);
+    clock.tick(0);
+    expect(a.shown).toEqual(["e"]);
   });
 
   it("hot: ring to ring is instant, mounted first — in every window on the rail", () => {

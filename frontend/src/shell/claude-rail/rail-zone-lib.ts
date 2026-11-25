@@ -5,14 +5,15 @@
 // moving ring to ring, must not wait. The parts that need no DOM (rail-zone.ts
 // feeds the pointer in; every door's hover machine asks it how long to wait).
 //
-//   - COLD (the pointer came from outside): a ring's card waits
-//     RAIL_COLD_OPEN_MS of the pointer resting on THAT ring before it shows.
-//     The wait is per ring — a sweep across several rings, or a rest on the
-//     rail's empty edge, earns nothing — so a pointer crossing the rail, or
-//     parked at the window's edge and coming back, opens nothing.
-//   - HOT (a card has shown while the pointer is in the zone, or a press
-//     inside it): every door's card shows at once (RAIL_HOT_OPEN_MS) — the
-//     list's rings, the favourites, the bots, the doors, the +, a draft.
+//   - COLD (the pointer came from outside): a ring's card waits until the
+//     pointer has been in the zone RAIL_COLD_OPEN_MS — anywhere in it, a ring
+//     or the rail's empty area (owner, 2026-11-25: "if I am on the rail for
+//     more than the threshold, even not on a button, it should be hot"). A
+//     pointer that crosses the rail faster than that opens nothing.
+//   - HOT (the pointer has been in the zone RAIL_COLD_OPEN_MS, a card has
+//     shown while it is in the zone, or a press inside it): every door's
+//     card shows at once (RAIL_HOT_OPEN_MS) — the list's rings, the
+//     favourites, the bots, the doors, the +, a draft.
 //   - THE ZONE is the rail and its own cards (rail-zone `RAIL_ZONE_SELECTOR`):
 //     reading a card and coming back to a ring is still "in the rail".
 //   - LEAVING keeps the heat for RAIL_COOL_MS: a brief overshoot off the
@@ -21,7 +22,8 @@
 //   - THE KEYBOARD is not a pointer crossing anything: a focus keeps its own
 //     timing (`HoverPace` is asked for pointer arrivals only).
 
-/** A cold ring's card waits this long under a resting pointer. */
+/** In the zone this long, the rail is hot (a cold ring's card waits out
+ *  what is left of it). */
 export const RAIL_COLD_OPEN_MS = 300;
 /** A hot ring's card: no wait. */
 export const RAIL_HOT_OPEN_MS = 0;
@@ -48,6 +50,8 @@ export class RailZone {
   private hot = false;
   /** Outside: when a HOT pointer left (null: it left cold, or never was). */
   private hotLeftAt: number | null = null;
+  /** Inside: when the pointer came in. */
+  private enteredAt = 0;
 
   constructor(private readonly now: () => number) {}
 
@@ -58,7 +62,7 @@ export class RailZone {
 
   /** The rail is hot (header) — inside, or within the cool-off. */
   get isHot(): boolean {
-    if (this.inside) return this.hot;
+    if (this.inside) return this.hot || this.dwelt() >= RAIL_COLD_OPEN_MS;
     return this.hotLeftAt !== null && this.now() - this.hotLeftAt < RAIL_COOL_MS;
   }
 
@@ -68,12 +72,18 @@ export class RailZone {
     this.hot = this.isHot;
     this.inside = true;
     this.hotLeftAt = null;
+    this.enteredAt = this.now();
+  }
+
+  /** Inside: how long the pointer has been in the zone. */
+  private dwelt(): number {
+    return this.inside ? this.now() - this.enteredAt : 0;
   }
 
   /** The pointer left the zone (the page, another frame, the window). */
   leave(): void {
     if (!this.inside) return;
-    this.hotLeftAt = this.hot ? this.now() : null;
+    this.hotLeftAt = this.isHot ? this.now() : null;
     this.inside = false;
     this.hot = false;
   }
@@ -88,7 +98,8 @@ export class RailZone {
    *  arrival proves the pointer is in the zone, whatever the watcher saw. */
   openMs(): number {
     this.enter();
-    return this.hot ? RAIL_HOT_OPEN_MS : RAIL_COLD_OPEN_MS;
+    if (this.isHot) return RAIL_HOT_OPEN_MS;
+    return Math.ceil(RAIL_COLD_OPEN_MS - this.dwelt());
   }
 
   /** Forget everything (tests). */
@@ -96,5 +107,6 @@ export class RailZone {
     this.inside = false;
     this.hot = false;
     this.hotLeftAt = null;
+    this.enteredAt = 0;
   }
 }
