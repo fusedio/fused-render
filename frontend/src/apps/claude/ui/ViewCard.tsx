@@ -16,9 +16,14 @@ import { ViewKindIcon, ViewModal, viewKindLabel, viewSubtitle } from "@platform/
 import type { ViewCardRef } from "../experts/view-card";
 import { topDocumentBody } from "./topContainer";
 
-// Cards that have already had their one unasked live frame in this window, by tool_use id: a card remounted
-// while its turn is still running (the user left the chat and came back) asks before loading again.
-const shownLive = new Set<string>();
+// Which cards hold a live frame, by tool_use id, kept OUTSIDE the component: the transcript remounts a card
+// when its turn settles (the row is re-keyed), and a card that was live a moment ago must come back live, not
+// as the prompt. `spent` is every card that has had its one unasked load in this window; `held` is the cards
+// loaded right now, each released a moment after it unmounts, so a remount in the same breath keeps the frame
+// while a real leave-and-return (longer than HOLD_MS) finds the prompt.
+const spent = new Set<string>();
+const held = new Map<string, ReturnType<typeof setTimeout> | null>();
+const HOLD_MS = 1500;
 // How far past the viewport a live frame may sit before it is dropped back to the prompt.
 const KEEP_MARGIN = "2000px";
 
@@ -64,11 +69,18 @@ function CanvasCard({ view }: { view: ViewCardRef }) {
 }
 
 function NodeCard({ view, id, live }: { view: ViewCardRef; id: string; live: boolean }) {
-  const [loaded, setLoaded] = useState(() => live && !(id && shownLive.has(id)));
+  const [loaded, setLoaded] = useState(() => (id ? held.has(id) || (live && !spent.has(id)) : live));
   const box = useRef<HTMLDivElement>(null);
   // Recorded in an effect, not in the initializer above: StrictMode calls an initializer twice.
   useEffect(() => {
-    if (loaded && id) shownLive.add(id);
+    if (!loaded || !id) return;
+    const pending = held.get(id);
+    if (pending) clearTimeout(pending);
+    held.set(id, null);
+    spent.add(id);
+    return () => {
+      held.set(id, setTimeout(() => held.delete(id), HOLD_MS));
+    };
   }, [loaded, id]);
   // A live frame scrolled far out of view goes back to the prompt; the box keeps its size.
   useEffect(() => {

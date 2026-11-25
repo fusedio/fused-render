@@ -565,7 +565,8 @@ canvas's sync log records.
   fixed height (380px) that holds either the node's live frame (`/explorer/embed/<path>`, the node's own template,
   D1495) or a "Load live" prompt. The two fill the same box, so loading a card moves nothing.
   - Live without being asked: only a card born in a turn that is still running (`SegmentView`'s `live`), and only
-    once per window per `show` call (`shownLive` in `ViewCard.tsx`).
+    once per window per `show` call. The live state is held by tool_use id outside the component (`held`, `spent`
+    in `ViewCard.tsx`), because the transcript remounts the card when its turn settles.
   - The prompt: every other drawing of the card (history, the chat reopened, a second visit to a running turn),
     and a live frame scrolled more than 2000px out of view, which is dropped. So a long chat does not run a
     workbench frame per card.
