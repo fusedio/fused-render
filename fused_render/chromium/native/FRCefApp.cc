@@ -121,12 +121,29 @@ const char kPointerLockShim[] = R"JS((function (send) {
     });
   }
 
+  // A sandboxed frame without `allow-pointer-lock` gets no lock, as in a
+  // browser: the shell's thumbnail frames (frame-focus.ts, THUMB_SEAL) count
+  // on it. A cross-origin parent cannot be read, and the walk stops there.
+  function sandboxed() {
+    try {
+      for (var w = window; w !== w.parent; w = w.parent) {
+        var frame = w.frameElement;
+        if (!frame) return false;
+        if (frame.hasAttribute('sandbox') && !frame.sandbox.contains('allow-pointer-lock')) return true;
+      }
+    } catch (e) { /* cross-origin */ }
+    return false;
+  }
+
   Element.prototype.requestPointerLock = function () {
     var el = this;
     return new Promise(function (resolve, reject) {
       var waiter = { resolve: resolve, reject: reject };
       if (el.ownerDocument !== document || !el.isConnected) {
         return fail([waiter], 'WrongDocumentError', 'The element is not in this document.');
+      }
+      if (sandboxed()) {
+        return fail([waiter], 'SecurityError', 'Blocked pointer lock on an element because the element\'s frame is sandboxed and the \'allow-pointer-lock\' permission is not set.');
       }
       if (locked) {
         if (locked !== el) { locked = el; fire('pointerlockchange'); }
