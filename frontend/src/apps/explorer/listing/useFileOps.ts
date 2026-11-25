@@ -23,6 +23,9 @@ import {
 import type { ArchiveFormat } from "@platform/lib/api";
 import { exportAppFileOnly, openShareApp } from "@platform/lib/share-app";
 import { useAppShareOffered } from "@platform/lib/share-app-flag";
+import { openShareBot } from "@platform/lib/share-bot";
+import { useBotsAvailable } from "@platform/lib/bots-available";
+import { shareBotRow } from "@apps/explorer/lib/share-bot-row";
 import {
   normDir,
   join,
@@ -120,6 +123,8 @@ export function useFileOps({
   // "Export App File" — see share-app-flag.ts; default off. Read here, at the
   // hook's top, not inside the menu closure (which is not a render).
   const sharing = useAppShareOffered();
+  // "Share with bot…" on a file row; absent where the server runs no bots.
+  const botsOffered = useBotsAvailable();
   // Same reasoning: read once here, not inside fileGroups/folderGroups (plain
   // closures rebuilt per call, not renders of their own).
   const canRun = useCanRunInTerminal();
@@ -911,6 +916,13 @@ export function useFileOps({
                 onClick: () => void exportAppFileOnly({ path: row.path, name: row.name }),
               } as MenuEntry]
         : []),
+      // Files only: the file to a bot's FILES folder with a message (Preview's
+      // `shareBotRow`, the one definition of the row).
+      ...shareBotRow({
+        botsAvailable: botsOffered,
+        isDir: row.isDir,
+        onClick: () => openShareBot({ path: row.path, name: row.name }),
+      }),
       "separator",
       { label: "Cut", icon: MenuIcons.cut, onClick: () => setClipboard({ paths: [row.path], op: "cut" }) },
       { label: "Copy", icon: MenuIcons.copy, onClick: () => setClipboard({ paths: [row.path], op: "copy" }) },

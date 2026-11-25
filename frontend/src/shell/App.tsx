@@ -79,6 +79,7 @@ import { ShareAppHost } from "@platform/ui/ShareAppModal";
 import { UninstallAppHost } from "@platform/ui/UninstallAppModal";
 import InstallLinkPage from "@shell/InstallLinkPage";
 import { ShareFileHost } from "@platform/ui/ShareFileModal";
+import { ShareBotHost } from "@shell/ShareBotHost";
 import OnboardingWizard from "@shell/onboarding/OnboardingWizard";
 import { ONBOARDING_PATH, shouldAutoShow } from "@shell/onboarding/state";
 import { onboardingUrl } from "@shell/onboarding/progress";
@@ -1441,6 +1442,9 @@ export default function App({ config }: { config: Config }) {
       {/* Same shape, for any file the Fused catalog can render rather than
           just a .fused app — platform/lib/share-file's openShareFile store. */}
       <ShareFileHost />
+      {/* And for "Share with bot…" (the explorer's file menus):
+          platform/lib/share-bot's openShareBot store. */}
+      <ShareBotHost />
       {shortcutsOpen && (
         <ShortcutsOverlay onClose={() => setShortcutsOpen(false)} />
       )}

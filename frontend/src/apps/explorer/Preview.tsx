@@ -44,6 +44,9 @@ import {
 } from "@apps/explorer/lib/fs-actions";
 import { crumbMenu, fileMenu, splitItems } from "@apps/explorer/lib/bar-menus";
 import { getShareFileStatus, openShareFile } from "@platform/lib/share-file";
+import { openShareBot } from "@platform/lib/share-bot";
+import { shareBotRow } from "@apps/explorer/lib/share-bot-row";
+import { useBotsAvailable } from "@platform/lib/bots-available";
 import { useAppSharingFeature } from "@platform/lib/share-app-flag";
 import { enterPanel } from "@apps/explorer/lib/split-actions";
 import { publishTopbarMenu } from "@apps/explorer/topbar-menu";
@@ -579,6 +582,7 @@ function usePreviewFileMenu(
     if (!shareEligibility.canShare) return;
     openShareFile({ path: fsPath, name: stat.name });
   };
+  const botsOffered = useBotsAvailable();
 
   // "Set Current View as Preview" (Akshil, 2026-08-27): photograph what the
   // frame is showing and write it as the folder's preview.png — the ONE
@@ -675,14 +679,21 @@ function usePreviewFileMenu(
           ]
         : []),
     ],
-    share: shareRow({
-      sharingEnabled: sharingFilesEnabled,
-      isDir: stat.is_dir,
-      isAppEntry,
-      name: stat.name,
-      eligibility: shareEligibility,
-      onClick: doShareFile,
-    }),
+    share: [
+      ...shareRow({
+        sharingEnabled: sharingFilesEnabled,
+        isDir: stat.is_dir,
+        isAppEntry,
+        name: stat.name,
+        eligibility: shareEligibility,
+        onClick: doShareFile,
+      }),
+      ...shareBotRow({
+        botsAvailable: botsOffered,
+        isDir: stat.is_dir,
+        onClick: () => openShareBot({ path: fsPath, name: stat.name, size: stat.size }),
+      }),
+    ],
     copy: [
       { label: "Copy Path", icon: MenuIcons.copyPath, onClick: doCopyPath },
       ...(isBackendEnabled("claude") ? [{
