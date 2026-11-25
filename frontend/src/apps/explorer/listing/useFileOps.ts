@@ -23,6 +23,9 @@ import {
 import type { ArchiveFormat } from "@platform/lib/api";
 import { exportAppFileOnly, openShareApp } from "@platform/lib/share-app";
 import { useAppShareOffered } from "@platform/lib/share-app-flag";
+import { openShareBot } from "@platform/lib/share-bot";
+import { useBotsAvailable } from "@platform/lib/bots-available";
+import { shareBotRow } from "@apps/explorer/lib/share-bot-row";
 import {
   normDir,
   join,
@@ -120,6 +123,8 @@ export function useFileOps({
   // "Export App File" — see share-app-flag.ts; default off. Read here, at the
   // hook's top, not inside the menu closure (which is not a render).
   const sharing = useAppShareOffered();
+  // "Share with bot…" on a file row; absent where the server runs no bots.
+  const botsOffered = useBotsAvailable();
   // Same reasoning: read once here, not inside fileGroups/folderGroups (plain
   // closures rebuilt per call, not renders of their own).
   const canRun = useCanRunInTerminal();
@@ -911,6 +916,13 @@ export function useFileOps({
                 onClick: () => void exportAppFileOnly({ path: row.path, name: row.name }),
               } as MenuEntry]
         : []),
+      // A file to a bot's FILES folder, or a folder to the folders it may
+      // read, with a message (lib/share-bot-row, the one definition).
+      ...shareBotRow({
+        botsAvailable: botsOffered,
+        isDir: row.isDir,
+        onClick: () => openShareBot({ path: row.path, name: row.name, isDir: row.isDir }),
+      }),
       "separator",
       { label: "Cut", icon: MenuIcons.cut, onClick: () => setClipboard({ paths: [row.path], op: "cut" }) },
       { label: "Copy", icon: MenuIcons.copy, onClick: () => setClipboard({ paths: [row.path], op: "copy" }) },
@@ -945,7 +957,7 @@ export function useFileOps({
   // `folder` only when canRenameBase allows renaming THIS folder — root, home
   // and mount roots never get it. Rebuilt per call, which is how Paste's
   // enabled state tracks the clipboard.
-  const folderGroups = (): Pick<FolderMenuGroups, "create" | "folder" | "open" | "copy"> => {
+  const folderGroups = (): Pick<FolderMenuGroups, "create" | "folder" | "open" | "share" | "copy"> => {
     const dir = normDir(base);
     if (readOnly) {
       return {
@@ -976,6 +988,11 @@ export function useFileOps({
         { label: "Reveal in Finder", icon: MenuIcons.reveal, onClick: () => doReveal(dir) },
         { label: "Open in New Tab", icon: MenuIcons.newTab, onClick: () => doOpenInNewTab(dir) },
       ],
+      share: shareBotRow({
+        botsAvailable: botsOffered,
+        isDir: true,
+        onClick: () => openShareBot({ path: dir, name: basename(dir) || dir, isDir: true }),
+      }),
       copy: [
         { label: "Copy path", icon: MenuIcons.copyPath, onClick: () => doCopyPath(dir) },
         ...(isBackendEnabled("claude") ? [{
