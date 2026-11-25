@@ -13,6 +13,10 @@ export type WidgetSource =
   | "playground"
   | "sessions"
   | "recents"
+  | "files"
+  | "s3"
+  | "canvases"
+  | "marketplace"
   | "tasks"
   | "bots"
   | "folder"
@@ -144,6 +148,30 @@ export const SOURCES: Record<WidgetSource, SourceSpec> = {
     sizes: ["4x1", "2x1", "1x2", "2x2", "1x3", "2x3"],
     formats: ["cards", "list"],
   },
+  files: {
+    label: "Local files",
+    description: "What's in your home folder on this machine.",
+    sizes: ["2x2", "2x1", "1x2", "1x1", "4x1", "1x3", "2x3"],
+    formats: ["list", "icons"],
+  },
+  s3: {
+    label: "S3 files",
+    description: "Folders in the S3 data available to you.",
+    sizes: ["2x2", "2x1", "1x2", "1x1", "4x1", "1x3", "2x3"],
+    formats: ["list", "icons"],
+  },
+  canvases: {
+    label: "Canvases",
+    description: "Your Fused canvases, most recently updated first.",
+    sizes: ["2x2", "2x1", "1x2", "1x1", "4x1", "1x3", "2x3"],
+    formats: ["list", "icons"],
+  },
+  marketplace: {
+    label: "Community",
+    description: "Apps from the community: featured first, then most installed.",
+    sizes: ["2x2", "2x1", "1x2", "4x1", "1x3", "2x3"],
+    formats: ["icons", "list"],
+  },
   tasks: {
     label: "Tasks",
     description: "Open Claude tasks: queued, running, and waiting on you.",
@@ -171,6 +199,11 @@ export const SOURCES: Record<WidgetSource, SourceSpec> = {
 };
 
 const SOURCE_KEYS = Object.keys(SOURCES) as WidgetSource[];
+
+/** Sources that exist only with the Canvases switch on (the sidebar's rule: a
+    machine that has not turned Canvases on is not shown it anywhere). The add
+    sheet and the Change menu leave them out; a placed tile says it is off. */
+export const CANVASES_SOURCES: ReadonlySet<WidgetSource> = new Set<WidgetSource>(["s3", "canvases"]);
 
 export function newWidgetId(): string {
   const c = globalThis.crypto as Crypto | undefined;
@@ -493,11 +526,15 @@ export function dimsOf(w: Pick<Widget, "source" | "size" | "cols" | "rows">): { 
 
 /** Fewest unit rows a format can be drawn in, per source. Home is one fixed
     grid, so a format that cannot fit a size is not offered at that size. Apps
-    cards need two cells, and folder icons draw 82px tiles that clip in one
-    cell; every other source's cards render header-only at one. */
+    cards need two cells, and icon tiles (folder, files, s3, canvases,
+    marketplace) draw 82px tiles that clip in one cell; every other source's cards render header-only at one. */
 export const FORMAT_MIN_ROWS: Partial<Record<WidgetSource, Partial<Record<WidgetFormat, number>>>> = {
   apps: { cards: 2 * CELL },
   folder: { icons: 2 * CELL },
+  files: { icons: 2 * CELL },
+  s3: { icons: 2 * CELL },
+  canvases: { icons: 2 * CELL },
+  marketplace: { icons: 2 * CELL },
 };
 
 export function formatMinRows(source: WidgetSource, format?: WidgetFormat): number {

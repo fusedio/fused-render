@@ -1048,6 +1048,15 @@ button.hw-row:hover {
   color: var(--fg-muted);
 }
 
+/* A canvas preview image as a row icon (the Canvases widget); in a tile it
+   cover-fills the squircle like any other icon image. */
+.hw-row-icon .hw-canvas-thumb {
+  width: 22px;
+  height: 22px;
+  border-radius: 5px;
+  object-fit: cover;
+}
+
 .hw-row-text {
   flex: 1 1 auto;
   min-width: 0;

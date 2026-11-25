@@ -15,6 +15,11 @@ import { FolderWidget, useWidgetFolder } from "./widgets/FolderWidget";
 import { SearchWidget } from "./widgets/SearchWidget";
 import { BuildWidget } from "./widgets/BuildWidget";
 import { IndexWidget } from "./widgets/IndexWidget";
+import { LocalFilesWidget, S3FilesWidget, S3_SEE_ALL, filesSeeAll } from "./widgets/FilesWidgets";
+import { CANVASES_SEE_ALL, CanvasesWidget } from "./widgets/CanvasesWidget";
+import { MarketplaceWidget } from "./widgets/MarketplaceWidget";
+import { MARKETPLACE_HOME } from "@platform/lib/marketplace";
+import { useHome } from "@platform/lib/home-path";
 import { AppEmbedWidget, OpenAppLink, OpenPageLink, appName, pageTitle, useWidgetApp } from "./widgets/AppEmbedWidget";
 
 const SEE_ALL: Partial<Record<WidgetModel["source"], string>> = {
@@ -24,6 +29,9 @@ const SEE_ALL: Partial<Record<WidgetModel["source"], string>> = {
   recents: "/explorer?tab=recents",
   tasks: "/tasks",
   bots: "/bots",
+  s3: S3_SEE_ALL,
+  canvases: CANVASES_SEE_ALL,
+  marketplace: MARKETPLACE_HOME,
 };
 
 /** The widget's content by source; the add sheet's gallery draws it too. */
@@ -49,6 +57,14 @@ export function WidgetBody({ widget, edit, onRemove }: { widget: WidgetModel; ed
       return <FolderWidget widget={widget} />;
     case "index":
       return <IndexWidget widget={widget} />;
+    case "files":
+      return <LocalFilesWidget widget={widget} />;
+    case "s3":
+      return <S3FilesWidget widget={widget} />;
+    case "canvases":
+      return <CanvasesWidget widget={widget} />;
+    case "marketplace":
+      return <MarketplaceWidget widget={widget} />;
     case "app":
       return <AppEmbedWidget widget={widget} edit={edit} onRemove={onRemove} />;
   }
@@ -87,7 +103,9 @@ export function WidgetFrame(p: WidgetFrameProps): ReactNode {
             ? pageTitle(widget.appPath)
             : spec.label
         : spec.label;
-  const seeAll = SEE_ALL[widget.source];
+  const home = useHome() ?? "";
+  // The home folder is only known at runtime, so Local files' link is built here.
+  const seeAll = widget.source === "files" ? filesSeeAll(home) : SEE_ALL[widget.source];
   // The search and build widgets ARE their box: no header, in edit mode too.
   const bare = widget.source === "search" || widget.source === "build";
   // Too narrow for the "Change" label: the pill shrinks to its icon.
