@@ -47,7 +47,7 @@ import { ClaudeMark } from "@platform/ui/ClaudeMark";
 import { isMac } from "@platform/lib/platform";
 import { cn } from "@platform/lib/utils";
 import { ErrorBanner } from "@platform/ui/ErrorBanner";
-import { SkeletonLines } from "@platform/ui/Skeleton";
+import { SettingsBodySkeleton, SettingsSearchSkeleton } from "./settings/PreferencesSkeleton";
 import { Badge } from "@platform/shadcn/ui/badge";
 import { Button } from "@platform/shadcn/ui/button";
 import { Input } from "@platform/shadcn/ui/input";
@@ -282,6 +282,7 @@ function PreferencesPage({ claudeConfig }: { claudeConfig: boolean | null }) {
     <div className="settings-page" ref={pageRef}>
       <div className="settings-header">
         <h1 className="settings-title">Preferences</h1>
+        {!prefs && !error && <SettingsSearchSkeleton />}
         {prefs && (
           <div className="settings-search" role="search">
             <Search aria-hidden="true" className="settings-search-icon" />
@@ -322,7 +323,7 @@ function PreferencesPage({ claudeConfig }: { claudeConfig: boolean | null }) {
         )}
       </div>
       {error && <ErrorBanner>{error}</ErrorBanner>}
-      {!loaded && !error && <SkeletonLines rows={4} label="Loading preferences" />}
+      {!loaded && !error && <SettingsBodySkeleton />}
       {prefs && loaded && (
         <div className="settings-body">
           <nav className="settings-nav" aria-label="Preference groups">
