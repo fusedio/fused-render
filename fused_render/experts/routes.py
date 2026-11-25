@@ -48,11 +48,20 @@ def _fields(body) -> dict:
     return body
 
 
+def _created(home: str) -> float:
+    """When the home folder was made (epoch seconds): a never-chatted expert's place in the Bots list."""
+    try:
+        st = os.stat(home)
+    except OSError:
+        return 0
+    return getattr(st, "st_birthtime", None) or st.st_mtime
+
+
 def _row(s: store.Expert) -> dict:
     st = chat.load(s.home)
     # After Clear, the folded chat's last message keeps the row's place.
     last = chat.last(s.home, st["main"] or (st["folded"][-1]["session_id"] if st["folded"] else ""))
-    return {**s.manifest(), "home": s.home, "working": bool(store.live_runs(s.home)),
+    return {**s.manifest(), "home": s.home, "working": bool(store.live_runs(s.home)), "created": _created(s.home),
             "last": {"text": last["text"], "at": last["at"]} if last else None,
             # Learning: a run in progress, when the last one ended, and whether one ended since the user last
             # opened the Learning tab.
