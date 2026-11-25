@@ -687,6 +687,38 @@ describe("chipPlace / chipDoor (the where-chip's door)", () => {
     expect(chipPlace(folder, PLACE)).toEqual({ kind: "folder", dir: "/apps/x", word: "Folder" });
   });
 
+  it("a rail on a folder above names the row's own canvas or project, not itself", () => {
+    const HOME: RailPlace = { kind: "folder", dir: "/home/me" };
+    const labels = (t: TaskPulseTask) => {
+      const at = chipPlace(t, HOME);
+      return placeTags(railScope(t, at), at, { pageRoot: placeRoot(HOME), here: false }).map((x) => x.label);
+    };
+    // A canvas under the folder: `demo › Canvas`, `demo › hex`.
+    const whole = pulse(task({ key: "a", project: DIR, target: DIR, canvas: { env: "unstable", name: "demo", file: "" } }));
+    expect(chipPlace(whole, HOME)).toEqual({ kind: "canvas", env: "unstable", name: "demo", dir: DIR });
+    expect(labels(whole)).toEqual(["demo", "Canvas"]);
+    const node = pulse(
+      task({ key: "b", project: DIR, target: `${DIR}/hex.py`, canvas: { env: "unstable", name: "demo", file: "hex.py" } }),
+    );
+    expect(labels(node)).toEqual(["demo", "hex"]);
+    // A project under the folder: its own name alone, or `project › file`.
+    const proj = pulse(task({ key: "c", canvas: null, project: "/home/me/app/pinlib", target: "/home/me/app/pinlib" }));
+    expect(labels(proj)).toEqual(["pinlib"]);
+    const file = pulse(task({ key: "d", canvas: null, project: "/home/me/app", target: "/home/me/app/src/index.html" }));
+    expect(labels(file)).toEqual(["app", "src/index.html"]);
+  });
+
+  it("the rail's own place is kept when it is the row's: the app page's word, the canvas's clone dir", () => {
+    const APP: RailPlace = { kind: "folder", dir: "/home/me/app/", word: "App" };
+    const mine = pulse(task({ key: "a", canvas: null, project: "/home/me/app", target: "/home/me/app/main.py" }));
+    expect(chipPlace(mine, APP)).toBe(APP);
+    // A row that predates `task.canvas`, on its canvas's page: the node is
+    // read off the clone dir the page holds.
+    const old = pulse(task({ key: "b", canvas: null, project: DIR, target: `${DIR}/hex.py` }));
+    expect(chipPlace(old, PLACE)).toBe(PLACE);
+    expect(railScope(old, chipPlace(old, PLACE))).toEqual({ kind: "node", name: "hex", file: "hex.py" });
+  });
+
   it("a node on another canvas (or no canvas page) navigates to that canvas with the node selected", () => {
     const at: RailPlace = { kind: "canvas", env: "prod", name: "other", dir: OTHER };
     const door = chipDoor({ kind: "node", name: "map", file: "map.py" }, at, { env: "unstable", name: "demo", file: null })!;

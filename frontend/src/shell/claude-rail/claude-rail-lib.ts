@@ -154,12 +154,23 @@ export function ownPlace(t: Pick<TaskPulseTask, "canvas" | "target" | "project">
   return { kind: "file", file: t.target || "" };
 }
 
-/** THE PLACE A CARD'S WHERE-CHIP NAMES (RailPeek's head): the rail's own
- *  place when the row is in it, else the row's own (`ownPlace`) — a
- *  favourite from another canvas or folder, hovered on this rail, says where
- *  IT lives, not where the rail stands. */
+/** THE PLACE A CARD'S WHERE-CHIP NAMES (RailPeek's head): the row's OWN
+ *  place (`ownPlace` — its canvas, else its project) wherever the rail
+ *  stands (Akshil, 2026-11-25: "pick up what a project or a canvas is and
+ *  break it down like that"). A rail on a folder ABOVE the row's canvas or
+ *  project used to name itself and spell the whole way down (`Fused ›
+ *  canvas/unstable/user/Overture_Enrichment`); the card now reads
+ *  `Overture_Enrichment › Canvas`, `pin-remake › index.html`, `pinlib` — the
+ *  tags the favourite's window and the chat pane already draw.
+ *
+ *  The rail's own place is kept when it IS the row's (same `placeRoot`: its
+ *  selected node, its "App" word ride along), and a canvas page keeps every
+ *  row in it — its clone dir is what reads the node off a row that predates
+ *  `task.canvas`. */
 export function chipPlace(t: Pick<TaskPulseTask, "canvas" | "target" | "project">, place: RailPlace): RailPlace {
-  return inPlace(t, place) ? place : ownPlace(t);
+  if (place.kind === "canvas" && inPlace(t, place)) return place;
+  const own = ownPlace(t);
+  return placeRoot(own) === placeRoot(place) ? place : own;
 }
 
 /** The canvas the PAGE stands on, when the page can select a node in place
