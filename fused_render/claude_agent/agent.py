@@ -1609,6 +1609,30 @@ _FUSED_PREAPPROVED = (" — that exact form is pre-approved, while compound "
                       "commands (`cd x && fused ...`) ask the user first —")
 
 
+def _links_note() -> str:
+    """The prompt paragraph that keeps a URL or a path in a reply clickable.
+
+    The chat makes these a click target (frontend protocol/markdown.ts `link`,
+    ui/linkifyPaths.ts): a markdown link — a local path there opens
+    fused-render's preview, a URL opens a tab — a bare URL (GFM autolink),
+    and a path in prose or inline code once a stat finds the file. A FENCED
+    block is never linked, and neither is a URL in backticks, so a model that
+    "formats" the path or link it just produced as code hands the user text
+    to copy instead of something to click (Akshil, 2026-11-25). A markdown
+    link is the one form that always works: no stat, no opener needed,
+    folders and spaces included. Appended to every target and backend: it is
+    a fact about the chat that renders the reply, not about the target."""
+    return (
+        " Every URL, file path or folder path you give the user must be "
+        "clickable in this chat: write a local path as a markdown link whose "
+        "target is the absolute path — [report.html](/abs/path/report.html), "
+        "or [x.py](</abs/path with spaces/x.py>) when it has spaces — and a "
+        "URL as a bare https://… link or a markdown link. Never put a path or "
+        "URL you are handing over in a fenced code block or in backticks: "
+        "there it is not a link. Commands and code still go in code blocks."
+    )
+
+
 def _origin_note() -> str:
     """The prompt paragraph disclosing the server's origin, or "" when none is
     published. Same rule as `_fused_cli_note`: a fact about the machine, so it
@@ -5555,7 +5579,7 @@ def _appended_prompt(file: str, pane: bool, backend: str = "",
         shape = _system_prompt(file)
     return (shape + _canvas_reference_copy_note(file)
             + _canvas_reference_note(file, backend)
-            + _canvas_shot_note(file) + _fused_cli_note(backend)
+            + _canvas_shot_note(file) + _links_note() + _fused_cli_note(backend)
             + _origin_note() + (_s3_note(file, backend) if s3 else "")
             + _blocked_note(backend)
             + (_breakout_note(file) if breakout else ""))
