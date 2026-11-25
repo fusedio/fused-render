@@ -21,6 +21,8 @@ export interface Expert {
   last_update: number | null;
   /** A learning run ended since its Learning tab was last opened. */
   new: boolean;
+  /** Pinned to the top of the Bots list. */
+  pinned?: boolean;
 }
 
 export const listExperts = () => getJson<Expert[]>("/api/experts");

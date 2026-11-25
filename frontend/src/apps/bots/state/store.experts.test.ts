@@ -68,8 +68,8 @@ describe("expert rows", () => {
     expect(getState().sel).toBe("canvas");
   });
 
-  test("the menu: Settings…, Export transcript, Delete…", () => {
+  test("the menu: Settings…, Export transcript, Pin to top, Delete…", () => {
     const row = getState().bots.find((b) => b.id === "canvas")!;
-    expect(menuItems(row, { live: true }).map((i) => (i === "hr" ? "hr" : i.a))).toEqual(["settings", "export", "hr", "delete"]);
+    expect(menuItems(row, { live: true }).map((i) => (i === "hr" ? "hr" : i.a))).toEqual(["settings", "export", "hr", "pin", "hr", "delete"]);
   });
 });

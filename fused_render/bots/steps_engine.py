@@ -549,6 +549,11 @@ def _prompt(bot, task, history, obs, visited=None, past=None, result=None):
         dls_s += "\n\nOFFERS DECLINED (the user turned these app offers down recently; do not offer them again): " + ", ".join(sorted(declined))
     dls_s += apptools.prompt_section(apptools.registry(), apptools.trusted_set(bot.meta), apptools.connections_set(bot.meta))
     dls_s += apptools.skill_section(bot._skill_dirs(task))  # SKILL.md of the apps this task needs (see _skill_dirs)
+    # The page behind the floating chat, as it stands now: a section of every step's prompt, not a history line
+    # (history keeps its last 14 entries, and the note would scroll out of a long task).
+    screen_s = bot.screen_section()
+    if screen_s:
+        dls_s += "\n\n" + screen_s
     skills_s = bot.skills_for_prompt(task)
     # CURRENT RESULT: the last app call's value IS the bot's current state.
     # Full text, not the 800-char trim RECENT STEPS gets.

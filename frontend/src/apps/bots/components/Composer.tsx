@@ -7,11 +7,13 @@
 // Dictation: push-to-talk, not live: record the mic (/api/capture), transcribe with the local speech model
 // (/api/ai/transcribe, a job), drop the text at the caret for review. Nothing is sent on its own.
 import { useEffect, useLayoutEffect, useRef, useState, type ClipboardEvent, type DragEvent, type KeyboardEvent, type RefObject } from "react";
+import { screenContext } from "@platform/lib/screen-context";
 import { api, rawFileUrl, request, type Bot } from "../lib/api";
 import { canClear, commandFor, matchCommands, slashQuery, type Command } from "../lib/commands";
 import { jobNote } from "../lib/dictation";
 import { runningStatusText } from "../lib/derive";
 import { fmtBytes, fmtSecs } from "../lib/format";
+import { isBotsPath } from "../routes";
 import { act, errMsg, eventsOf, markSeen, setBase, setScrollToEnd, showBanner, useBotsSelector } from "../state/store";
 
 export interface ReplyTo { seq: number; text: string }
@@ -24,6 +26,8 @@ export interface ComposerProps {
   setReply: (r: ReplyTo | null) => void;
   /** The thread, scrolled to its end after a send. */
   threadRef: RefObject<HTMLDivElement>;
+  /** This chat floats over another page (the rail's bot card, BotChat): its sends carry a note of that page. */
+  floating?: boolean;
 }
 
 export const ATTACH_MAX = 8 * 1024 * 1024;
@@ -135,7 +139,7 @@ function askScrollToEnd(threadRef: RefObject<HTMLDivElement>): void {
   setScrollToEnd(true);
 }
 
-export function Composer({ b, reply, setReply, threadRef }: ComposerProps) {
+export function Composer({ b, reply, setReply, threadRef, floating = false }: ComposerProps) {
   const on = !!b;
   const ta = useRef<HTMLTextAreaElement>(null);
   const [pending, setPendingState] = useState<File[]>([]);
@@ -311,6 +315,10 @@ export function Composer({ b, reply, setReply, threadRef }: ComposerProps) {
     const files = pendingRef.current; setPending([]);
     const r = reply; setReply(null);
     t.value = ""; fitInput();
+    // A chat floating over another page (the rail's bot card) tells the bot what that page is; on the Bots page
+    // itself (the page's own composer, or a card opened there) nothing is behind the chat, and "" clears the last note.
+    // Read now, before the uploads below: the page as it stood when the message was sent.
+    const screen = floating && !isBotsPath(location.pathname) ? screenContext() : "";
     setSending(true);
     try {
       const names: string[] = [];
@@ -322,7 +330,7 @@ export function Composer({ b, reply, setReply, threadRef }: ComposerProps) {
       askScrollToEnd(threadRef);   // consumed by THIS thread: show the message you just sent
       setBase(b.id, b.seq);   // sending resets the count: only what the bot says from here on is new
       markSeen(b.id, b.seq);  // and you have plainly read everything up to your own message
-      await act(() => api.send(b.id, text, r ? r.seq : null));
+      await act(() => api.send(b.id, text, r ? r.seq : null, undefined, undefined, screen));
       const th = threadRef.current; if (th) th.scrollTop = th.scrollHeight;
     } catch (e) {
       showBanner(errMsg(e));

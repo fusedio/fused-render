@@ -499,6 +499,7 @@ def first_message(bot, task: str, past=None, page: dict | None = None, conv: dic
     hints = [h for h in _call(bot._offer_hints, [], task) if h]
     if hints:
         per_turn.append("\n".join(hints))
+    per_turn.append(_call(getattr(bot, "screen_section", lambda: ""), "").strip())
     page_s = ""
     if page:
         view = tools.format_observation(page, compact=True)
@@ -1311,6 +1312,11 @@ def _handle_core(bot, sess: Turn, name: str, args: dict) -> dict:
         return out if out is not None else _permission_answer(False, args, "Stopped by the user.")
     for m in msgs:
         _instruction(sess, notes, m)
+    if msgs:
+        # The page behind the floating chat, when the user moved since this task was told (bot.screen_section).
+        screen_s = _call(getattr(bot, "screen_section", lambda **k: ""), "", changed=True)
+        if screen_s:
+            notes.append(screen_s)
     sess.steps += 1
     n = sess.steps
     if n > sess.max_steps:

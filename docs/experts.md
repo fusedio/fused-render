@@ -97,6 +97,16 @@ the Learning tab), `last_update` (when the last learning run ended), and `update
     breakout   a breakout card "with" the expert        home     no (fresh)         the pill, Auto at first
     update     the timer or Learn now (update.start)        home     no (fresh)         Auto
 
+An expert's chat that floats over another page of the window tells the expert what that page is: a breakout card
+(`BreakoutCards.tsx`, always) and `ExpertChat` anywhere off the Bots page (the rail's Bots card) pass `screenNote` (`platform/lib/screen-context.ts`), `ClaudeChat` puts it in the `terminal_hint`
+param as its `screen` field, and `agent._user_screen_block` writes it as a leading `<user-screen>` line (a machinery
+tag, stripped from titles and restored transcripts like `<terminal-hint>`). A location, never contents. See
+docs/bots.md §6 USER'S SCREEN for the bots' side.
+
+A main `start` that names no session continues the recorded main one (`server/routers/claude_agent.py`
+`_expert_main_resume`): the chat may be mounted twice (the Bots page, the rail's card), and a mount that loaded
+before the other started the session would otherwise start a second one and fold the first.
+
 All three are `agent._start` with `expert="<id>:<kind>"`. The page sends `<id>:main` or `<id>:breakout` as an
 extra start field (`ChatMount extraParams`, carried on every start and send by the run controller); `agent.main`
 drops a `:update` key from a page, so only the server starts an update (`claude_spawn.spawn_helper(...,
@@ -383,10 +393,15 @@ and `expert_canvas` (§14).
 
 **Bots page.** `state/store.ts` reads `/api/experts` with each poll at most every 10 s (`EXPERTS_MS`), and
 right after an expert action (`actExpert`), never on the phone; each row becomes a `Bot` of kind `expert`
-carrying the row (`asBot`), status `running` while `working`. The rail's bot cards and the sidebar pulse leave them
-out. In the list (`BotList.tsx`) a row shows the face, name, EXPERT badge (tooltip "Expert: <about>"), the
+carrying the row (`asBot`), status `running` while `working`. The rail's Bots card (`BotsPeek`) lists them too and
+opens an expert's chat floating over the page (`BotChat` renders `ExpertChat`; the quiet feed reads `/api/experts`
+once the switch is known on). The sidebar's Bots pulse counts a working expert as running. In the list (`BotList.tsx`) a row shows the face, name, EXPERT badge (tooltip "Expert: <about>"), the
 last reply as one plain line (else `about`), its time, and a dot when `new` (a learning run ended since the Learning
-tab was last opened; opening the chat does not clear it). Pin, hide, mark as read and thread search do not apply.
+tab was last opened; opening the chat does not clear it). The row's menu pins it to the top of the list (`POST
+/api/experts/<id>/pin {pinned}`, kept in the home's `state.json`, not the manifest; the row carries `pinned`). A
+pinned expert stands on the Claude rail like a pinned bot: `platform/lib/botsPulse.ts` reads `/api/experts` beside
+`/api/bots/pulse` while the switch is on (`expertPulseRow`: `expert: true`, `running` while working, never unread), the
+Bots page publishes the same rows while it feeds, and the ring opens the expert's chat in the bot card. Hide, mark as read and thread search do not apply.
 
 **Without bots (Windows).** The server runs no bots there (`/api/config` `bots_available` false; `/api/bots*` answers
 503), but experts are task sessions, not bots, so the Bots page still opens while the flag is on and lists them

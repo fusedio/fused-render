@@ -66,7 +66,8 @@ def _row(s: store.Expert) -> dict:
             # Learning: a run in progress, when the last one ended, and whether one ended since the user last
             # opened the Learning tab.
             "updating": update.learning(s.home), "last_update": st["last_update"] or None,
-            "new": st["last_update"] > st["seen"]}
+            "new": st["last_update"] > st["seen"],
+            "pinned": bool(st.get("pinned"))}  # at the top of the Bots list (chat.set_pinned)
 
 
 @router.get(P)
@@ -140,6 +141,16 @@ def experts_seen(spec_id: str, x_fused: str | None = Header(default=None)):
     if guard := _require_fused(x_fused):
         return guard
     chat.mark_seen(_spec(spec_id).home)
+    return {"ok": True}
+
+
+@router.post(P + "/{spec_id}/pin")
+@_handled
+def experts_pin(spec_id: str, body: dict = Body(...), x_fused: str | None = Header(default=None)):
+    """`{pinned}`: at the top of the Bots list, or back in its order."""
+    if guard := _require_fused(x_fused):
+        return guard
+    chat.set_pinned(_spec(spec_id).home, bool(body.get("pinned")))
     return {"ok": True}
 
 

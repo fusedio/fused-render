@@ -86,7 +86,7 @@ import {
   type Recorder,
 } from "./ann";
 import { captureAudio, captureSources } from "@platform/lib/capture-audio";
-import { terminalHint } from "@platform/lib/terminalFocus";
+import { terminalHintObject } from "@platform/lib/terminalFocus";
 import { breakoutContextIn, composeOutgoing, formatAnnotations, isInterruptMark, type AnnotationWire } from "./protocol/wire";
 import { getStream, isNativeOff, noteSourcesProbe, shotsDir } from "./shots";
 import {
@@ -390,6 +390,10 @@ export interface ClaudeChatProps {
    *  `{expert: "<id>:main"}`). Such a chat opens as a chat and has no
    *  Schedule seat. */
   extraParams?: Record<string, string>;
+  /** The page behind this chat, in a few lines, read at each send ("" = none):
+   *  an expert's chat floating over another page (platform/lib/screen-context).
+   *  Rides the `terminal_hint` param as its `screen` field. */
+  screenNote?: () => string;
   /** `/clear` calls this instead of going back to Chats. */
   onClear?: () => void;
   /** `_noopen=1` — this mount must not record the app it frames as OPENED
@@ -1447,6 +1451,8 @@ function ChatBody(props: ChatBodyProps) {
   const [cardPolicy] = useState(createCardPolicy);
   /** `onCommandsChanged`'s target — a ref, because the controller is built once. */
   const commandsChanged = useRef<() => void>(() => {});
+  const screenNoteRef = useRef(props.screenNote);
+  screenNoteRef.current = props.screenNote;
   const controller = useMemo(
     () =>
       createChatController({
@@ -1488,7 +1494,14 @@ function ChatBody(props: ChatBodyProps) {
           appFrame() ? watcher.blockForSend() : Promise.resolve(""),
         // Which status-bar terminal the user means: metadata only, "" when the
         // drawer holds no live terminal (platform/lib/terminalFocus.ts).
-        terminalHint,
+        // …and, for a chat floating over another page (`screenNote`), what that
+        // page is: one more field of the same param, read at send time too.
+        terminalHint: async () => {
+          const hint = await terminalHintObject();
+          const screen = screenNoteRef.current?.() || "";
+          if (!hint && !screen) return "";
+          return JSON.stringify({ ...(hint ?? {}), ...(screen ? { screen } : {}) });
+        },
         // PR4's two run-clock hooks. Both go through refs: the controller is
         // built before the strip's store and the landing's counter exist, and
         // rebuilding it for either would restart the run loop (T:16229,

@@ -6,12 +6,17 @@ import { Fragment, useCallback, useEffect, useState, type MutableRefObject } fro
 import type { Expert } from "@platform/lib/experts";
 import { ChatMount } from "@apps/claude";
 import { fetchHistory } from "@apps/claude/protocol/history";
+import { screenContext } from "@platform/lib/screen-context";
+import { isBotsPath } from "../routes";
 import { expertApi, type ExpertChat as Chat } from "../lib/api";
 import { fmtTime, fmtWhen } from "../lib/format";
 import { actExpert, errMsg, showBanner } from "../state/store";
 import { MdDoc } from "./MdDoc";
 
 type Line = { role: string; text: string };
+
+/** The page behind the chat, when it floats over one: on the Bots page itself the chat IS the page. */
+const screenNote = (): string => (isBotsPath(location.pathname) ? "" : screenContext());
 
 export function ExpertChat({ s, clearRef }: { s: Expert; clearRef: MutableRefObject<(() => void) | null> }) {
   const [chat, setChat] = useState<Chat | null>(null);
@@ -59,7 +64,7 @@ export function ExpertChat({ s, clearRef }: { s: Expert; clearRef: MutableRefObj
       ) : null}
       {chat ? (
         <ChatMount key={epoch} file={s.home} backend="claude" {...(chat.session_id ? { sessionId: chat.session_id } : {})}
-          extraParams={{ expert: `${s.id}:main` }} permission="auto" onClear={clear} chatOnly peek noAnnTools paramsSource="memory" />
+          extraParams={{ expert: `${s.id}:main` }} permission="auto" onClear={clear} chatOnly peek noAnnTools paramsSource="memory" screenNote={screenNote} />
       ) : null}
     </>
   );

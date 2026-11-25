@@ -4282,7 +4282,7 @@ _MACHINERY_DROP = (
 # constant on this side at all — only template.html, which writes the block,
 # names it.)
 _MACHINERY_STRIP = ("live-app-state", "pane-shot", "annotations",
-                    "terminal-hint")
+                    "terminal-hint", "user-screen")
 
 _MACHINERY_TAGS = _MACHINERY_DROP + _MACHINERY_STRIP
 _LEADING_MACHINERY = re.compile(
@@ -4511,8 +4511,10 @@ def _strip_terminal_hint(text: str) -> str:
         m = _LEADING_MACHINERY.match(out, pos)
         if not m:
             return out.strip()
-        if m.group(1) == TERMINAL_HINT_TAG:
-            return (out[:m.start()] + out[m.end():]).strip()
+        if m.group(1) in (TERMINAL_HINT_TAG, USER_SCREEN_TAG):
+            # Cut it and look again from the same place: the screen line follows the hint.
+            out = out[:m.start()] + out[m.end():]
+            continue
         pos = m.end()
 
 
@@ -4568,11 +4570,45 @@ def _terminal_hint_block(raw) -> str:
     return "<%s>%s</%s>" % (TERMINAL_HINT_TAG, line, TERMINAL_HINT_TAG)
 
 
+# The page behind a floating chat (an expert's chat mounted over another page of
+# the window): the hint's `screen` field, a few "Label: value" lines the page
+# composed (frontend platform/lib/screen-context.ts). A location, never contents.
+USER_SCREEN_TAG = "user-screen"
+_SCREEN_LINES = 8
+_SCREEN_LINE_MAX = 320
+
+
+def _screen_lines(value) -> list:
+    """A page-supplied screen note as safe lines: at most `_SCREEN_LINES`, each
+    cleaned like a hint field (no control characters, no angle brackets)."""
+    if not isinstance(value, str):
+        return []
+    lines = (_hint_text(ln, _SCREEN_LINE_MAX) for ln in value.splitlines())
+    return [ln for ln in lines if ln][:_SCREEN_LINES]
+
+
+def _user_screen_block(raw) -> str:
+    """The `<user-screen>` block for a hint carrying `screen`, or ""."""
+    hint = raw
+    if isinstance(raw, str):
+        try:
+            hint = json.loads(raw) if raw.strip() else None
+        except ValueError:
+            return ""
+    lines = _screen_lines(hint.get("screen")) if isinstance(hint, dict) else []
+    if not lines:
+        return ""
+    body = ("What the user's Fused Render window shows behind this chat as they wrote this "
+            "(a description of where they are, not the page's contents): " + "; ".join(lines))
+    return "<%s>%s</%s>" % (USER_SCREEN_TAG, body, USER_SCREEN_TAG)
+
+
 def _with_terminal_hint(message: str, raw) -> str:
-    """`message` with the hint block inserted after any leading machinery
-    blocks (app state first, so `_pane_file` still finds it) and before the
-    user's words. Unchanged when there is no usable hint."""
-    block = _terminal_hint_block(raw)
+    """`message` with the hint block (and the screen block, when the hint
+    carries one) inserted after any leading machinery blocks (app state first,
+    so `_pane_file` still finds it) and before the user's words. Unchanged
+    when there is neither."""
+    block = "\n\n".join(b for b in (_terminal_hint_block(raw), _user_screen_block(raw)) if b)
     if not block:
         return message
     pos = 0

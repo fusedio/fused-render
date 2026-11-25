@@ -693,6 +693,8 @@ def bot_send(bid: str, body: dict = Body(...), x_fused: str | None = Header(defa
     answers = body.get("answers")  # a relayed card's button (docs §11): the seq the click meant, else None
     registry.require_workspace()
     try:
+        if "screen" in body:  # the composer's note of the page behind a floating chat; "" clears it (docs §3)
+            _bot(bid).set_screen(body.get("screen"))
         _bot(bid).send(text, reply_to=body.get("reply_to"), forever=bool(body.get("forever")),
                        answers=int(answers) if answers is not None else None)
     except _botmod().CardSettled as e:

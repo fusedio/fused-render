@@ -1961,7 +1961,7 @@ _MACHINERY_DROP = (
 )
 
 _MACHINERY_STRIP = ("live-app-state", "pane-shot", "annotations",
-                    "terminal-hint")
+                    "terminal-hint", "user-screen")
 
 _MACHINERY_TAGS = _MACHINERY_DROP + _MACHINERY_STRIP
 

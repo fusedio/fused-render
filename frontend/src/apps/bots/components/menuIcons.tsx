@@ -34,6 +34,7 @@ export type MenuItem = { a: MenuAction; label: string; icon: ReactNode; danger?:
 export function menuItems(b: Bot, opts: { live?: boolean } = {}): MenuItem[] {
   // An expert is not a bot of the bots backend: only what its own routes do.
   if (b.expert) return [{ a: "settings", label: "Settings…", icon: MI.settings }, { a: "export", label: "Export transcript", icon: MI.export },
+    "hr", { a: "pin", label: b.pinned ? "Unpin" : "Pin to top", icon: b.pinned ? MI.unpin : MI.pin },
     "hr", { a: "delete", label: "Delete…", icon: MI.delete, danger: true }];
   const { live } = opts, out: MenuItem[] = [], ea = b.kind === "super";
   if (live) out.push({ a: "live", label: "Open live view", icon: MI.live }, "hr");

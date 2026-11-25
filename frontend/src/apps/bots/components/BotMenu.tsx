@@ -16,6 +16,7 @@ export function runMenuAction(a: MenuAction, b: Bot): void {
   const id = b.id;
   if (b.expert) {
     if (a === "export") void exportBot(b);
+    else if (a === "pin") void actExpert(() => expertApi.pin(id, !b.pinned));
     else if (a === "delete") void askConfirm(`Delete "${b.name}"?`, "It leaves the Bots list, and its folder moves to the experts' trash folder.").then((ok) => { if (ok) void actExpert(() => expertApi.remove(id)); });
     else openDialog({ kind: "settings", id });
     return;

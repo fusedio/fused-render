@@ -33,13 +33,19 @@ def test_create_list_patch_delete(client, tmp_path):
     sid = row["id"]
     assert row == {"id": sid, "name": "Canvas", "about": "Fused canvases", "folder": str(tmp_path), "face": None,
                    "home": row["home"], "working": False, "created": row["created"], "last": None, "updating": False, "last_update": None,
-                   "new": False}
+                   "new": False, "pinned": False}
     assert os.path.isdir(row["home"]) and row["created"] > 0
     assert req(client, "POST", "/api/experts", {"name": "canvas", "about": "dup"})[0] == 409
     assert req(client, "POST", "/api/experts", {"about": "no name"})[0] == 400
     assert req(client, "POST", "/api/experts", {"name": "x", "about": "y", "model": "opus"})[0] == 400
     assert req(client, "POST", "/api/experts", {"name": "x", "about": "y"}, {"X-Fused": ""})[0] == 403
     assert req(client, "GET", "/api/experts") == (200, [row])
+    # Pinned to the top of the Bots list: the row carries it, and it is not a manifest field.
+    assert req(client, "POST", f"/api/experts/{sid}/pin", {"pinned": True}, {"X-Fused": ""})[0] == 403
+    assert req(client, "POST", f"/api/experts/{sid}/pin", {"pinned": True}) == (200, {"ok": True})
+    assert req(client, "GET", "/api/experts")[1][0]["pinned"] is True
+    assert req(client, "PATCH", f"/api/experts/{sid}", {"pinned": False})[0] == 400
+    assert req(client, "POST", f"/api/experts/{sid}/pin", {"pinned": False}) == (200, {"ok": True})
     st, out = req(client, "PATCH", f"/api/experts/{sid}", {"about": "Canvases", "face": {"shape": "circle"}})
     assert st == 200 and out["about"] == "Canvases" and out["face"] == {"shape": "circle"}
     assert req(client, "PATCH", "/api/experts/nope", {"about": "x"}) == (404, {"error": "no such expert"})

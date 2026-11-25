@@ -77,6 +77,12 @@ def mark_seen(home: str) -> None:
     change(home, lambda d: d.update(seen=time.time()))
 
 
+def set_pinned(home: str, on: bool) -> None:
+    """Pinned to the top of the Bots list. This Mac's own bookkeeping, like `seen`: not in the manifest (which is
+    committed to the expert's history and travels with it)."""
+    change(home, lambda d: d.update(pinned=bool(on)))
+
+
 # -------------------------------------------------------------- transcripts ---
 def transcript(target: str, session_id: str) -> str:
     agent = agent_module()

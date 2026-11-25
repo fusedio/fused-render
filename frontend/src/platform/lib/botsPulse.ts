@@ -1,5 +1,7 @@
 import { useEffect, useState } from "react";
 import { getJson } from "./api";
+import { listExperts, type Expert } from "./experts";
+import { expertsEnabledNow, readExpertsFlag } from "./experts-flag";
 
 // What the sidebar's Bots entry says about the page behind it — the pure half,
 // so the derivation is testable without a DOM or a poll (the shape
@@ -37,6 +39,18 @@ export interface BotPulseRow {
    *  older server: 0. */
   last_user_ts?: number;
   created?: number;
+  /** AN EXPERT'S ROW (`expertPulseRow`): a task session, not a bot of the
+   *  bots backend — pinned, it stands on the rail like a bot. It has no
+   *  event seqs, so it is never unread; working, it counts as running. */
+  expert?: boolean;
+}
+
+/** An expert (`/api/experts` row) as a pulse row. */
+export function expertPulseRow(e: Expert): BotPulseRow {
+  return {
+    id: e.id, status: e.working ? "running" : "idle", seq: 0, pinned: !!e.pinned, name: e.name, face: e.face,
+    last_user_ts: 0, created: e.last?.at || e.created || 0, expert: true,
+  };
 }
 
 export interface BotsPulse {
@@ -259,13 +273,29 @@ export function botsRowsNow(): BotPulseRow[] {
   return rows;
 }
 
+/** THE EXPERTS, BESIDE THE BOTS (owner, 2026-11-25: "experts should have the
+ *  same privilege as the bots"): the bots backend does not know them, so
+ *  each self-poll reads `/api/experts` too while the switch is on. A failed
+ *  read keeps the expert rows it had, so a pinned expert's ring does not
+ *  blink off the rail. */
+async function expertRows(prev: readonly BotPulseRow[]): Promise<BotPulseRow[]> {
+  try {
+    await readExpertsFlag();
+    if (!expertsEnabledNow()) return [];
+    return (await listExperts()).map(expertPulseRow);
+  } catch {
+    return prev.filter((b) => b.expert);
+  }
+}
+
 async function poll() {
   if (inFlight) return;
   inFlight = true;
   const departed = generation;
   try {
-    const r = await getBotsPulse();
-    const rows = await withPins(r.bots ?? [], current());
+    const before = current();
+    const [r, experts] = await Promise.all([getBotsPulse(), expertRows(before)]);
+    const rows = [...(await withPins(r.bots ?? [], before.filter((b) => !b.expert))), ...experts];
     if (feeders === 0 && generation === departed) publishBots(rows);
   } catch {
     // Bots off, no owner (503), or a restart mid-poll: not news. The row keeps

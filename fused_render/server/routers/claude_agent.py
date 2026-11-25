@@ -343,6 +343,28 @@ def _mark_breakout(params: dict, envelope: dict) -> None:
         logger.exception("claude agent: could not mark the breakout")
 
 
+def _expert_main_resume(params: dict) -> None:
+    """An expert has ONE main chat, and it may be mounted twice (the Bots page,
+    the rail's card): a mount that loaded before the other started the session
+    sends its first message with no `session_id`, which would start a second
+    session and fold the first (experts/chat.py `record_start`). Such a start
+    continues the recorded main session instead. After Clear there is none, so
+    a fresh start stays fresh."""
+    if params.get("action") != "start" or params.get("session_id"):
+        return
+    spec_id, _, kind = str(params.get("expert") or "").partition(":")
+    if kind != "main" or not spec_id:
+        return
+    try:
+        from fused_render.experts import chat, paths
+
+        main = chat.load(paths.home(spec_id)).get("main")
+    except Exception:  # noqa: BLE001 - no record to continue: the start goes as sent
+        return
+    if main:
+        params["session_id"] = str(main)
+
+
 def _expert_after(params: dict, envelope: dict) -> None:
     """An expert's main chat or breakout (`expert: "<id>:<kind>"`)
     started: record its session, for the pane's chat and the breakout's inbox
@@ -374,6 +396,7 @@ async def agent_dispatch(body: dict, call: dict | None) -> Response:
     # apart so that token never reaches `main` or the log, the same split
     # /api/run kept between its `params` and its body.
     params = dict(body)
+    _expert_main_resume(params)
     try:
         bound = bind_params(agent.main, params)
     except ParamError as exc:

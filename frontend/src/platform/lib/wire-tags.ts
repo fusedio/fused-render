@@ -13,6 +13,10 @@ export const PANE_SHOT_TAG = "pane-shot";
  *  onto a send (D1326). Server-side only: the page never composes it, but the
  *  inbox rows and the CLI's echoed user records carry it back verbatim. */
 export const TERMINAL_HINT_TAG = "terminal-hint";
+/** The page-behind-a-floating-chat line agent.py writes beside the terminal
+ *  hint (`_user_screen_block`), from the hint's `screen` field. Server-side
+ *  only, like the hint. */
+export const USER_SCREEN_TAG = "user-screen";
 /** The wire block a breakout's first message carries: the selected parent
  *  messages, quoted as background. `wire.ts` strips and parses it. */
 export const BREAKOUT_CTX_TAG = "breakout-context";

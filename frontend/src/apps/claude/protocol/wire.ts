@@ -21,10 +21,10 @@
 // Pure TS: no DOM, no React.
 
 import { BREAKOUT_FILES_TAG } from "@platform/lib/breakout-context";
-import { ANN_TAG, APP_STATE_TAG, BREAKOUT_CTX_TAG, PANE_SHOT_TAG, TERMINAL_HINT_TAG } from "@platform/lib/wire-tags";
+import { ANN_TAG, APP_STATE_TAG, BREAKOUT_CTX_TAG, PANE_SHOT_TAG, TERMINAL_HINT_TAG, USER_SCREEN_TAG } from "@platform/lib/wire-tags";
 
 export { formatBreakoutContext } from "@platform/lib/breakout-context";
-export { ANN_TAG, APP_STATE_TAG, BREAKOUT_CTX_TAG, PANE_SHOT_TAG, TERMINAL_HINT_TAG };
+export { ANN_TAG, APP_STATE_TAG, BREAKOUT_CTX_TAG, PANE_SHOT_TAG, TERMINAL_HINT_TAG, USER_SCREEN_TAG };
 
 // ---- markers (T:10525-10545) ----------------------------------------------
 //
@@ -493,7 +493,8 @@ export function stripAnnBlock(text: string | null | undefined): string {
  *  on restore (`_history`) only; a follow-up parked in the inbox, or the CLI's
  *  echo of a sent turn, still reached the live bubble with the raw hint in it. */
 export function stripTerminalHintBlock(text: string | null | undefined): string {
-  const re = new RegExp("<" + TERMINAL_HINT_TAG + ">[\\s\\S]*?</" + TERMINAL_HINT_TAG + ">\\s*", "g");
+  // …and the `<user-screen>` line the server writes beside it (same origin, same fate).
+  const re = new RegExp("<(" + TERMINAL_HINT_TAG + "|" + USER_SCREEN_TAG + ")>[\\s\\S]*?</\\1>\\s*", "g");
   return (text || "").replace(re, "").trim();
 }
 

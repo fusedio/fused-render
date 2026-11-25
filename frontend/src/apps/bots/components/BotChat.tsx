@@ -27,6 +27,7 @@ import { botHref } from "../routes";
 import { feedBotQuietly, jumpTo, useBotsSelector } from "../state/store";
 import { Composer, type ReplyTo } from "./Composer";
 import { ReactionPicker, type ReactionReq } from "./ReactionPicker";
+import { ExpertChat } from "./ExpertChat";
 import { Thread } from "./Thread";
 import { ToBottom } from "./ToBottom";
 
@@ -57,6 +58,7 @@ export default function BotChat({ id, markRead = true, sharedScroll = true }: Bo
   const [reply, setReply] = useState<ReplyTo | null>(null);
   const [pick, setPick] = useState<ReactionReq | null>(null);
   const closePick = useCallback(() => setPick(null), []);
+  const expertClear = useRef<(() => void) | null>(null);  // ExpertChat's clear door: the page's header button, none here
   // A reply quote and an open picker belong to one bot: a swap drops them.
   useEffect(() => {
     setReply(null);
@@ -76,6 +78,17 @@ export default function BotChat({ id, markRead = true, sharedScroll = true }: Bo
       </div>
     );
   }
+  if (b.expert) {
+    // An expert is a task session, not a bot: its chat is the Bots page's own (ChatPane), floating here — and it
+    // hears what page is behind it (ExpertChat `screenNote`).
+    return (
+      <div className="bots-page bots-peek">
+        <section className="chat">
+          <div className="tw"><ExpertChat key={b.expert.id} s={b.expert} clearRef={expertClear} /></div>
+        </section>
+      </div>
+    );
+  }
   return (
     <div className="bots-page bots-peek">
       <section className="chat">
@@ -83,7 +96,7 @@ export default function BotChat({ id, markRead = true, sharedScroll = true }: Bo
           <Thread b={b} threadRef={threadRef} searchQ="" onSearchCount={noop} onReact={(anchor, seq) => setPick({ anchor, seq })} onReply={setReply} markRead={markRead} sharedScroll={sharedScroll} onOpenBot={openBot} />
           <ToBottom threadRef={threadRef} botId={b.id} sharedScroll={sharedScroll} />
         </div>
-        <Composer b={b} reply={reply} setReply={setReply} threadRef={threadRef} />
+        <Composer b={b} reply={reply} setReply={setReply} threadRef={threadRef} floating />
         <ReactionPicker req={pick} onClose={closePick} botId={b.id} />
       </section>
     </div>
