@@ -206,7 +206,9 @@ test("the rail card: its pulse's facts ride the head's own slots, its star and a
   // place's name is no longer the favourite window's alone — and every card
   // hands the ⋮ over (2026-11-17: "show the kebab when we show fav and open
   // icon"): the head shows it with the star and the door.
-  expect(shared).toContain('place={placeEl(head, "place")}');
+  expect(shared).toContain(': placeEl(head, "place")');
+  // …but window A drops the place tag on its own page (2026-11-25).
+  expect(shared).toContain("onChipLeave && pageRoot != null && placeRoot(head.at) === pageRoot");
   expect(shared).not.toContain("placeName ? placeEl");
   expect(shared).toContain('{...(hasWhereTag(head.scope, head.at) ? { where: placeEl(head, "where") } : {})}');
   expect(shared).toContain("kebab={head.t.session_id && shownKey ? kebabFor(head) : null}");
