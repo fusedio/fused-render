@@ -13062,7 +13062,10 @@ milliseconds.
   `tmp/`).
 - **SR-3 Bounds.** No size limits: any size is kept and nothing is
   evicted for space. An entry older than 7 days is a miss and is removed; a
-  run of the same key replaces its entry. Clearing everything is the
+  run of the same key replaces its entry. The server also deletes every
+  entry older than 7 days, in the home folder and every canvas folder, at
+  startup and once a day after (`store.prune`, a daemon thread; not in
+  `lean`), so a result nobody runs again does not stay for good. Clearing everything is the
   user's (SR-5).
 - **SR-3a Where.** A canvas node file's result is kept in its canvas
   folder, `<clone>/.fused/cache/udf/<key>.body|.json` (the `.fused/cache`
