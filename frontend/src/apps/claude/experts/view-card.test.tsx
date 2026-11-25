@@ -1,5 +1,5 @@
 // An expert's `show` row as a card (docs/experts.md §14): which tool rows are cards, that a card never
-// folds behind "more", and that the collapsed card mounts nothing of the work.
+// folds behind "more", that a canvas card mounts nothing, and that a node card loads in place only when new.
 import { describe, expect, test } from "bun:test";
 import { renderToStaticMarkup } from "react-dom/server";
 
@@ -47,10 +47,22 @@ test("the two tools read as plain words", () => {
   expect(canvasToolLabel("Bash", {}, true)).toBeNull();
 });
 
-test("collapsed, the card is one row with an Open button and no frame", () => {
-  const html = renderToStaticMarkup(<ViewCard view={payload} />);
-  expect(html).toContain("Sales by month");
-  expect(html).toContain("Monthly sales · Widget · in Mine · prod");
+test("a canvas card is one row with an Open button and no frame", () => {
+  const html = renderToStaticMarkup(<ViewCard view={{ ...payload, kind: "canvas" }} live />);
   expect(html).toContain(">Open</button>");
   expect(html).not.toContain("<iframe");
+  expect(html).not.toContain("c-viewcard-box");
+});
+
+test("a node card from history asks before it loads; one born in a live turn loads in the same box", () => {
+  const stale = renderToStaticMarkup(<ViewCard view={payload} id="s1" />);
+  expect(stale).toContain("Sales by month");
+  expect(stale).toContain("Monthly sales · Widget · in Mine · prod");
+  expect(stale).toContain("Load live");
+  expect(stale).toContain("c-viewcard-box");
+  expect(stale).not.toContain("<iframe");
+  const fresh = renderToStaticMarkup(<ViewCard view={payload} id="s2" live />);
+  expect(fresh).toContain("c-viewcard-box");
+  expect(fresh).toContain("<iframe");
+  expect(fresh).not.toContain("Load live");
 });

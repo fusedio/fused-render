@@ -485,8 +485,8 @@ That is the only one; `FUSED_RENDER_EXPERT_ORIGIN` (§4) and `FUSED_EXPERT_UNATT
 ## 14. Showing work in the chat
 
 An expert can build something and hand it back: a UDF that pulls a dataset, a widget that charts it, shown in
-its main chat as a card the user opens live, and changed when the user says so. The chat renders none of it
-inline; the card opens an overlay. Built in `experts/show.py`.
+its main chat as a card, and changed when the user says so. One node (a UDF, a widget, an HTML node, a note)
+is drawn live in the card itself; a whole canvas opens in an overlay. Built in `experts/show.py`.
 
 **When** (`show.on`, decided in `launch.spec`): the main chat only, while the Canvases preference is on and the
 `fused` CLI wrapper exists. A breakout and a learning run get neither the server nor the sentence about it.
@@ -555,23 +555,26 @@ canvas's sync log records.
   Such a row is drawn as a card in place of the tool row (`ui/SegmentView.tsx`, `ui/ViewCard.tsx`) and never folds
   behind "more" (`protocol/segments.ts`). A running or failed `show` stays an ordinary tool row;
   `canvas_create` reads "Made the canvas <name>".
-- The card is one row in the shape of the Bots thread's app card: the workbench's own icon for the kind
+- The card's head is one row in the shape of the Bots thread's app card: the workbench's own icon for the kind
   (`platform/ui/NodeTypeIcons`: Python for a UDF, sliders for a widget, the HTML file, the text T, the canvas
-  mark), the title, the
-  expert's note and "Widget · in <canvas> · <env>", and Open. Collapsed it mounts nothing of the work.
-- Open raises `platform/ui/ViewModal.tsx`: a node through the `_node`
-  native view (the component the explorer mounts for that file: it clones, starts the sync, signs in and frames
-  the hosted workbench as needed), a whole canvas as its page in a frame (`/canvases/<env>/<name>?embed=1`). The
-  head has the kind's icon, the title and "Widget · in <canvas> · <env>", then "Open in explorer" for a node or
-  "Open canvas" for a canvas. A node's own strip under it keeps only what is live (status, sync, "Open in canvas");
-  the kind, name, canvas and environment it repeats are hidden in the overlay (`view-modal.css`). Closing unmounts
-  it.
+  mark), the title, the expert's note and "Widget · in <canvas> · <env>", then one button.
+- A canvas card is that row alone, with Open. It mounts nothing until Open raises `platform/ui/ViewModal.tsx`: the
+  canvas as its page in a frame (`/canvases/<env>/<name>?embed=1`), with "Open canvas" in the head. Closing
+  unmounts it.
+- A node card never opens an overlay. Under the head (whose button is "Open in explorer") it has one box of a
+  fixed height (380px) that holds either the node's live frame (`/explorer/embed/<path>`, the node's own template,
+  D1495) or a "Load live" prompt. The two fill the same box, so loading a card moves nothing.
+  - Live without being asked: only a card born in a turn that is still running (`SegmentView`'s `live`), and only
+    once per window per `show` call (`shownLive` in `ViewCard.tsx`).
+  - The prompt: every other drawing of the card (history, the chat reopened, a second visit to a running turn),
+    and a live frame scrolled more than 2000px out of view, which is dropped. So a long chat does not run a
+    workbench frame per card.
 - A change is the same chat: the expert edits the same files, and the open view follows them through the sync.
 
 **Not verified here.** This was built without a Fused sign-in and without a real `claude`: that the CLI lists the
 server's two tools in a main chat, that the ask rule raises the card for `canvas_create` in Auto, that Auto lets
 `show` and the canvas writes through without one, that a fresh
-clone's watcher publishes the expert's first files, and that an open overlay follows an edit. The tools, the
+clone's watcher publishes the expert's first files, and that an open card follows an edit. The tools, the
 launch spec, the session door, the card and its fold are covered by tests with those two ends stubbed.
 
 ## 15. Coming from specialists

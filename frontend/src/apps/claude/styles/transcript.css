@@ -2945,19 +2945,75 @@
   max-width: max(40%, min(82%, calc(100% - 108px)));
 }
 
-/* An expert's `show` card (ui/ViewCard.tsx): one row in the shape of the
-   Bots thread's app card. Collapsed it holds no frame; Open raises the overlay. */
+/* An expert's `show` card (ui/ViewCard.tsx). A canvas is one head line whose
+   Open raises the overlay. A node adds one box of a FIXED height under the
+   head: the "Load live" prompt and the live frame fill the same box, so
+   loading a card never moves the transcript. */
 .chat-root .c-viewcard {
-  display: flex;
-  align-items: center;
-  gap: 10px;
   width: min(42rem, 100%);
   margin: 8px 0;
-  padding: 9px 12px;
   border: 1px solid var(--c-border);
   border-radius: 12px;
   background: var(--c-surface);
   font-size: calc(13px * var(--c-zoom, 1));
+  overflow: hidden;
+}
+.chat-root .c-viewcard-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 9px 12px;
+}
+.chat-root .c-viewcard-box {
+  position: relative;
+  height: 380px;
+  border-top: 1px solid var(--c-border);
+}
+.chat-root .c-viewcard-frame {
+  position: absolute;
+  inset: 0;
+  display: block;
+  width: 100%;
+  height: 100%;
+  border: 0;
+}
+.chat-root .c-viewcard-wait {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--c-dim);
+}
+.chat-root .c-viewcard-load {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  cursor: pointer;
+}
+.chat-root .c-viewcard-load small {
+  color: var(--c-dim);
+  font-size: calc(11px * var(--c-zoom, 1));
+}
+.chat-root .c-viewcard-load b {
+  font-weight: 500;
+}
+.chat-root .c-viewcard-load-ico {
+  display: inline-flex;
+  margin-bottom: 4px;
+  color: var(--c-dim);
+}
+.chat-root .c-viewcard-load:hover b {
+  color: var(--c-accent);
 }
 .chat-root .c-viewcard-ico {
   flex: none;

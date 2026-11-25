@@ -213,7 +213,7 @@ export const SegmentView = memo(function SegmentView({
       nodes.push(
         withFiled(
           view ? (
-            <ViewCard key={key} view={view} />
+            <ViewCard key={key} view={view} id={seg.id} live={live} />
           ) : (
             <ToolChip key={key} seg={seg} cardKey={key} cwd={cwd} nested={nested} />
           ),
