@@ -207,8 +207,8 @@ describe("the two hosts", () => {
     // The wrap encloses `.app-page` — header, tab strip and panels alike.
     // Indented deeper again since the git peek rework (2026-09-22):
     // TaskPeekFrame now nests inside `.app-page-frame-slot`, itself inside
-    // `.app-page-split` — the split that lets the git peek slide in beside
-    // it (AppPageGitPeek.tsx). What this pins is the DIRECT-CHILD
+    // `.app-page-split` — the split that holds the right-hand pane beside
+    // it. What this pins is the DIRECT-CHILD
     // relationship — `.app-page` is TaskPeekFrame's immediate child, not
     // wrapped in some intermediate element — not the wrapper's absolute
     // indentation depth, which is free to move as the page nests deeper.

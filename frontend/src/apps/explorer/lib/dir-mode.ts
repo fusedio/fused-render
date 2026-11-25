@@ -126,7 +126,7 @@ export interface DirMode {
   // null, failed: false`, which is a genuine denial or absence): a caller that
   // auto-closes on "not offered" must not treat a transient failure the same
   // way, or a flaky request silently and permanently shuts a column the reader
-  // never got an honest answer from (useAppPageGitColumn.ts's own history).
+  // never got an honest answer from (shell/useAppPagePaneTab.ts's own history).
   // `loadDirModes`'s cache evicts a rejection on the spot, so the ordinary close
   // + reopen cycle already re-probes for free — this field exists only so a
   // caller can tell the two apart, not to add a retry mechanism of its own.

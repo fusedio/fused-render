@@ -68,8 +68,8 @@ import { railInset } from "@shell/claude-rail/ClaudeRail";
 //
 // BACK TO ONE CONTAINER (2026-09-22): the app page briefly reused this
 // component for its own git column, which is why this was a selector LIST for
-// a while (`.stat-split, .app-page-split`); the git peek redesign gave the app
-// page its own slim component instead (shell/AppPageGitPeek.tsx) and this one
+// a while (`.stat-split, .app-page-split`); the app page draws its own pane
+// (shell/AppPage.tsx, Claude | Git in one column since 2026-11-25) and this one
 // no longer renders there at all, so `.stat-split` — the explorer's own,
 // reached through the portal — is the only container this ever needs to find.
 const SPLIT_SEL = ".stat-split";

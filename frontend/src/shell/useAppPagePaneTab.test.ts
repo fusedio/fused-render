@@ -1,15 +1,14 @@
-// useAppPageGitColumn.ts — the app page's right-hand git column state,
-// extracted out of AppPage.tsx's own body for the same reason
-// useAppPageSnapshot.ts was (see that file, and AppPage.test.tsx's own
-// header): AppPage.tsx itself has no render-test precedent, so the piece of
+// useAppPagePaneTab.ts — the app page's right-hand pane's Claude | Git strip:
+// which tab is up and the borrowed `git` probe. AppPage.tsx itself has no
+// render-test precedent (see AppPage.test.tsx's own header), so the piece of
 // it with real behaviour to pin gets its own hook and its own test, driven
 // through the REAL code path (useDirMode's real fetches, stubbed at the
 // network boundary) rather than hand-assigned state.
-import { beforeEach, expect, test } from "bun:test";
+import { afterEach, beforeEach, expect, test } from "bun:test";
 import { installDomShim } from "@platform/lib/testDomShim";
 import { act, create, type ReactTestRenderer } from "react-test-renderer";
 import { createElement, type ReactElement } from "react";
-import type { AppPageGitColumn } from "@shell/useAppPageGitColumn";
+import type { AppPagePaneTab } from "@shell/useAppPagePaneTab";
 
 // `@apps/explorer/lib/dir-mode` pulls in `@platform/lib/api`, whose module
 // init (through `@platform/lib/router`'s legacy-URL rewrite) reads `location`
@@ -24,25 +23,32 @@ import type { AppPageGitColumn } from "@shell/useAppPageGitColumn";
 // `ReferenceError: location is not defined` on CI, none locally, purely by
 // file order (2026-09-24).
 installDomShim();
-const { useAppPageGitColumn } = await import("@shell/useAppPageGitColumn");
+const { useAppPagePaneTab } = await import("@shell/useAppPagePaneTab");
+const { setSideTab, getSideTab } = await import("@apps/explorer/lib/side-tab-store");
 
 // ---- a tiny local hook harness, mirroring AppPage.test.tsx's own -----------
 
-function renderHook(dir: string): {
-  current: () => AppPageGitColumn;
+function renderHook(dir: string, enabled = true): {
+  current: () => AppPagePaneTab;
+  setEnabled: (on: boolean) => void;
   unmount: () => void;
 } {
-  let latest: AppPageGitColumn;
+  let latest: AppPagePaneTab;
   let renderer: ReactTestRenderer;
-  function Probe(props: { dir: string }): ReactElement | null {
-    latest = useAppPageGitColumn(props.dir);
+  function Probe(props: { dir: string; enabled: boolean }): ReactElement | null {
+    latest = useAppPagePaneTab(props.dir, props.enabled);
     return null;
   }
   act(() => {
-    renderer = create(createElement(Probe, { dir }));
+    renderer = create(createElement(Probe, { dir, enabled }));
   });
   return {
     current: () => latest,
+    setEnabled: (on) => {
+      act(() => {
+        renderer.update(createElement(Probe, { dir, enabled: on }));
+      });
+    },
     unmount: () => {
       act(() => {
         renderer.unmount();
@@ -102,83 +108,124 @@ function installFetch() {
   }) as typeof fetch;
 }
 
+// The store is one module shared by every suite in this bun process: leave it
+// as found (side-tab-store.test.ts expects it empty).
+afterEach(() => setSideTab(null));
+
 beforeEach(() => {
+  setSideTab(null);
   calls = [];
   statPlan = {};
   failPlan = new Set();
   installFetch();
 });
 
-// ------------------------------------------------------------- not asked for
+const GIT = { mode: "git", path: "/templates/git", icon: null };
 
-test("makes no probe at all until the column is asked for", async () => {
-  const dir = "/repo/app-not-asked";
-  statPlan[dir] = { templates: [{ mode: "git", path: "/templates/git", icon: null }] };
-  const box = renderHook(dir);
+// ------------------------------------------------------------- pane shut
+
+test("makes no probe at all while the pane is shut", async () => {
+  const dir = "/repo/app-shut";
+  statPlan[dir] = { templates: [GIT] };
+  const box = renderHook(dir, false);
   await flush();
-  expect(box.current().open).toBe(false);
+  expect(box.current().tab).toBe("claude");
   expect(calls).toEqual([]);
   box.unmount();
 });
 
-// ------------------------------------------------------------------- opening
+// ------------------------------------------------------------- default tab
 
-test("openGit probes the FOLDER and frames the git template's src against it", async () => {
-  const dir = "/repo/app-opens";
-  statPlan[dir] = { templates: [{ mode: "git", path: "/templates/git", icon: null }] };
+test("opens on Claude, and probes the FOLDER once for both tabs", async () => {
+  const dir = "/repo/app-default";
+  statPlan[dir] = { templates: [GIT] };
   const box = renderHook(dir);
-  act(() => box.current().openGit());
-  expect(box.current().open).toBe(true);
+  expect(box.current().tab).toBe("claude");
+  expect(box.current().gitMode.pending).toBe(true);
   await flush();
   expect(calls).toEqual(["/api/fs/stat?path=" + encodeURIComponent(dir)]);
   expect(box.current().gitMode.pending).toBe(false);
+  expect(box.current().tab).toBe("claude");
+  box.unmount();
+});
+
+// ------------------------------------------------------------- switching
+
+test("showTab puts Git up and frames the git template's src against the folder", async () => {
+  const dir = "/repo/app-opens";
+  statPlan[dir] = { templates: [GIT] };
+  const box = renderHook(dir);
+  act(() => box.current().showTab("git"));
+  expect(box.current().tab).toBe("git");
+  // A door, not the reader's pick: the explorer's remembered tab is untouched.
+  expect(getSideTab()).toBeNull();
+  await flush();
   expect(box.current().gitSrc).toBe(
     "/render?path=" + encodeURIComponent("/templates/git") + "&_file=" + encodeURIComponent(dir),
   );
+  expect(box.current().tab).toBe("git");
   box.unmount();
 });
 
-// ------------------------------------------------------------------- closing
-
-test("closeGit shuts the column and its src goes back to nothing to show", async () => {
-  const dir = "/repo/app-closes";
-  statPlan[dir] = { templates: [{ mode: "git", path: "/templates/git", icon: null }] };
+test("a strip press switches back to Claude and is remembered with the explorer's tab", async () => {
+  const dir = "/repo/app-switch";
+  statPlan[dir] = { templates: [GIT] };
   const box = renderHook(dir);
-  act(() => box.current().openGit());
+  act(() => box.current().selectTab("git"));
+  expect(getSideTab()).toBe("git");
+  act(() => box.current().selectTab("claude"));
+  expect(box.current().tab).toBe("claude");
+  expect(getSideTab()).toBe("claude");
+  box.unmount();
+});
+
+test("starts on Git when Git was the tab last picked (here or in the explorer)", async () => {
+  const dir = "/repo/app-remembered";
+  statPlan[dir] = { templates: [GIT] };
+  setSideTab("git");
+  const box = renderHook(dir);
+  expect(box.current().tab).toBe("git");
   await flush();
-  expect(box.current().open).toBe(true);
-  act(() => box.current().closeGit());
-  expect(box.current().open).toBe(false);
+  expect(box.current().tab).toBe("git");
   box.unmount();
 });
 
-// ---------------------------------------------------------------- auto-close
+// ------------------------------------------------------------- fall back
 
-test("auto-closes once the folder settles as not offering git at all", async () => {
+test("falls back to Claude once the folder settles as not offering git", async () => {
   const dir = "/repo/app-no-git";
-  statPlan[dir] = { templates: [] }; // no git entry bound here
+  statPlan[dir] = { templates: [] };
   const box = renderHook(dir);
-  act(() => box.current().openGit());
-  expect(box.current().open).toBe(true);
+  act(() => box.current().showTab("git"));
+  expect(box.current().tab).toBe("git");
   await flush();
   expect(box.current().gitMode.entry).toBeNull();
-  expect(box.current().open).toBe(false);
+  expect(box.current().tab).toBe("claude");
   box.unmount();
 });
 
-// ---------------------------------------------------------------- probe failure
+test("does not fall back during the commit the pane opens on (ABSENT before the probe starts)", async () => {
+  const dir = "/repo/app-reopen";
+  statPlan[dir] = { templates: [GIT] };
+  setSideTab("git");
+  const box = renderHook(dir, false);
+  expect(box.current().tab).toBe("git");
+  box.setEnabled(true);
+  expect(box.current().tab).toBe("git");
+  await flush();
+  expect(box.current().tab).toBe("git");
+  expect(box.current().gitSrc).not.toBeNull();
+  box.unmount();
+});
 
-test("does not auto-close on a probe that failed — a rejected fetch is not a settled 'no git'", async () => {
+test("does not fall back on a probe that failed — a rejected fetch is not a settled 'no git'", async () => {
   const dir = "/repo/app-probe-fails";
   failPlan.add(dir);
   const box = renderHook(dir);
-  act(() => box.current().openGit());
-  expect(box.current().open).toBe(true);
+  act(() => box.current().showTab("git"));
   await flush();
-  // Same shape `useDirMode` gives a genuine "no git here" — entry null,
-  // pending false — except the caller can tell the two apart.
   expect(box.current().gitMode.entry).toBeNull();
   expect(box.current().gitMode.failed).toBe(true);
-  expect(box.current().open).toBe(true);
+  expect(box.current().tab).toBe("git");
   box.unmount();
 });
