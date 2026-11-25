@@ -19,7 +19,7 @@
 //
 // FED WITHOUT THE BOTS PAGE (BotPickList's rule): the store's quiet feed for
 // as long as the sheet is open.
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { Check, Folder, Loader2, XIcon } from "lucide-react";
 import { api, type Bot } from "@apps/bots/lib/api";
 import { ATTACH_MAX } from "@apps/bots/components/Composer";
@@ -27,11 +27,12 @@ import { Face } from "@apps/bots/components/Face";
 import { fmtBytes } from "@apps/bots/lib/format";
 import { botHref } from "@apps/bots/routes";
 import { feedBotQuietly, useBots } from "@apps/bots/state/store";
-import { rawUrl } from "@platform/lib/api";
+import { rawUrl, statPath } from "@platform/lib/api";
 import { basename, dirname } from "@platform/lib/format";
 import { notify } from "@platform/lib/notifications";
 import { navigateUrl } from "@platform/lib/router";
 import type { BotShareFile } from "@platform/lib/share-bot";
+import { acquireOverlay, releaseOverlay } from "@platform/lib/ui-overlay";
 import { cn } from "@platform/lib/utils";
 import { Button } from "@platform/shadcn/ui/button";
 import {
@@ -96,8 +97,23 @@ export default function ShareBotModal({ file, onClose }: { file: BotShareFile; o
   const S = useBots();
   const bots = useMemo(() => shareBotTargets(S.bots), [S.bots]);
   const [picked, setPicked] = useState<string | null>(null);
-  // The first bot is the default once the list lands; a pick that left the list (deleted, hidden) falls back to it.
-  const sel = bots.find((b) => b.id === picked) ?? bots[0] ?? null;
+  // The first bot is the default, taken ONCE when the list lands: the feed reorders the list while the sheet is
+  // open (a bot starts waiting, a pin), and a default read off `bots[0]` per render would move the recipient under
+  // the reader. A pick that left the list (deleted, hidden) leaves no recipient: Send waits for a new one.
+  const first = bots[0]?.id ?? null;
+  const defaulted = useRef(false);
+  useEffect(() => {
+    if (defaulted.current || !first) return;
+    defaulted.current = true;
+    setPicked((p) => p ?? first);
+  }, [first]);
+  const sel = bots.find((b) => b.id === picked) ?? null;
+  // The sheet holds the shared overlay count while open, so the app's own shortcuts (Mod+K's cheat sheet) stand
+  // down behind it — the shadcn Dialog does not register itself.
+  useLayoutEffect(() => {
+    acquireOverlay();
+    return () => releaseOverlay();
+  }, []);
   const [message, setMessage] = useState("");
   const [sending, setSending] = useState(false);
   const isDir = !!file.isDir;
@@ -129,11 +145,11 @@ export default function ShareBotModal({ file, onClose }: { file: BotShareFile; o
       }
       let name = stored.current.get(sel.id);
       if (!name) {
+        // A listing row knows no size: asked before the read, so an oversize file is never downloaded to be refused.
+        const size = file.size ?? (await statPath(file.path)).size;
+        if (size != null && size > ATTACH_MAX) throw new Error(tooLarge(file.name, size));
         const res = await fetch(rawUrl(file.path));
         if (!res.ok) throw new Error(`Could not read ${file.name} (HTTP ${res.status}).`);
-        // A listing row knows no size: the header refuses an oversize file before its body is read.
-        const declared = Number(res.headers.get("content-length"));
-        if (declared > ATTACH_MAX) throw new Error(tooLarge(file.name, declared));
         const blob = await res.blob();
         if (blob.size > ATTACH_MAX) throw new Error(tooLarge(file.name, blob.size));
         name = (await api.attach(sel.id, file.name, await b64(blob))).name;
