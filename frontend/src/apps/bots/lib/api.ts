@@ -579,6 +579,8 @@ export const expertApi = {
   /** Its main chat as Markdown (the task chat's export). */
   exportChat: (id: string) => get<{ name: string; text: string }>(`${sid(id)}/chat/export`, "export"),
   seen: (id: string) => post<Ok>(`${sid(id)}/seen`, {}, "expert seen"),
+  /** Pin to the top of the Bots list, or unpin. */
+  pin: (id: string, pinned: boolean) => post<Ok>(`${sid(id)}/pin`, { pinned }, "pin"),
   memory: (id: string) => get<{ text: string }>(`${sid(id)}/memory`, "expert memory"),
   skills: (id: string) => get<{ skills: { name: string; description: string; text: string }[] }>(`${sid(id)}/skills`, "expert skills"),
   notes: (id: string) => get<{ notes: ExpertEntry[] }>(`${sid(id)}/notes`, "expert notes"),

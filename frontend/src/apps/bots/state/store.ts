@@ -544,7 +544,7 @@ const EXPERTS_MS = 10_000;
 let specRows: Bot[] = [], specAt = 0;
 const asBot = (s: Expert): Bot => ({
   id: s.id, name: s.name, kind: "expert", expert: s, status: s.working ? "running" : "idle", seq: 0, events: [],
-  model: "", effort: "", face: s.face as Face | null, created: s.last?.at || 0,
+  model: "", effort: "", face: s.face as Face | null, created: s.last?.at || 0, pinned: !!s.pinned,
 });
 async function expertBots(): Promise<Bot[]> {
   if (isLanHost()) return [];
