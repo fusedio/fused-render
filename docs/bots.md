@@ -918,7 +918,8 @@ message is written (the sections are in the session's history whatever
 happens to the turn).
 
 **USER'S SCREEN** (2026-11-25). A bot's chat can float over another page of
-the window (the rail's bot card). The composer then sends `screen` with the
+the window (the rail's bot card: `BotChat` mounts `Composer` with
+`floating`). The composer then sends `screen` with the
 message: a few "Label: value" lines naming the page behind the chat
 (`frontend/src/platform/lib/screen-context.ts` `screenContext()`: the page
 title, the URL path, and the Claude rail's place: folder, file, or canvas
@@ -930,7 +931,9 @@ characters) and keeps it in memory only. `Bot.screen_section()` is a
 per-turn part of `first_message`, rides a tool result after a mid-task
 instruction when it changed (`_handle_core`), and is a history line in the
 steps engine. It is left out of a task that did not come from the chat (a
-routine, a text, an app page). The transcript's user line never carries it. Three more consequences of the conversation: Super
+routine, a text, an app page) and of one the note predates (set more than
+`SCREEN_LEAD_S` before `start_task`). The transcript's user line never
+carries it. Three more consequences of the conversation: Super
 Bot's `web_touched` starts true when `conversation["web_touched"]` is set
 (a hand-off result landed in this session; handoffs.py sets it, a rollover
 clears it) instead of the old string match on CONVERSATION SO FAR; a NOT RUN

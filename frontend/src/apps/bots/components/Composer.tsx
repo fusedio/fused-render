@@ -26,6 +26,8 @@ export interface ComposerProps {
   setReply: (r: ReplyTo | null) => void;
   /** The thread, scrolled to its end after a send. */
   threadRef: RefObject<HTMLDivElement>;
+  /** This chat floats over another page (the rail's bot card, BotChat): its sends carry a note of that page. */
+  floating?: boolean;
 }
 
 export const ATTACH_MAX = 8 * 1024 * 1024;
@@ -137,7 +139,7 @@ function askScrollToEnd(threadRef: RefObject<HTMLDivElement>): void {
   setScrollToEnd(true);
 }
 
-export function Composer({ b, reply, setReply, threadRef }: ComposerProps) {
+export function Composer({ b, reply, setReply, threadRef, floating = false }: ComposerProps) {
   const on = !!b;
   const ta = useRef<HTMLTextAreaElement>(null);
   const [pending, setPendingState] = useState<File[]>([]);
@@ -325,8 +327,8 @@ export function Composer({ b, reply, setReply, threadRef }: ComposerProps) {
       setBase(b.id, b.seq);   // sending resets the count: only what the bot says from here on is new
       markSeen(b.id, b.seq);  // and you have plainly read everything up to your own message
       // A chat floating over another page (the rail's bot card) tells the bot what that page is; on the Bots page
-      // itself there is nothing behind the chat, and "" clears the last note.
-      const screen = isBotsPath(location.pathname) ? "" : screenContext();
+      // itself (the page's own composer, or a card opened there) nothing is behind the chat, and "" clears the last note.
+      const screen = floating && !isBotsPath(location.pathname) ? screenContext() : "";
       await act(() => api.send(b.id, text, r ? r.seq : null, undefined, undefined, screen));
       const th = threadRef.current; if (th) th.scrollTop = th.scrollHeight;
     } catch (e) {

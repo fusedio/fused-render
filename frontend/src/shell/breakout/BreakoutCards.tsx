@@ -5,6 +5,7 @@
 // `ChatMount` in breakout posture: a fresh session that opens with a chip for
 // the parent messages it was seeded with (they ride on its first send),
 // research-only on the server (permission bridge), no queue, no nesting.
+import { screenContext } from "@platform/lib/screen-context";
 import { Suspense, lazy, useCallback, useEffect, useRef, useState, type ComponentProps, type ComponentType, type PointerEvent, type ReactNode } from "react";
 import { createPortal } from "react-dom";
 import { ChatMount } from "@apps/claude";
@@ -285,7 +286,8 @@ export function Card({
         <Mount
           file={card.expert?.home || card.cwd || card.file}
           breakout
-          {...(card.expert ? { extraParams: { expert: `${card.expert.id}:breakout` }, permission: "auto" } : {})}
+          // An expert's breakout floats over the page the user is on: it hears what that page is.
+          {...(card.expert ? { extraParams: { expert: `${card.expert.id}:breakout` }, permission: "auto", screenNote: screenContext } : {})}
           backend="claude"
           breakoutContext={card.context}
           {...(card.prompt ? { breakoutPrompt: card.prompt, onBreakoutPromptSent: () => consumeBreakoutPrompt(card.id) } : {})}

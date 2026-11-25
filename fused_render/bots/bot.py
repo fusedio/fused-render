@@ -551,6 +551,7 @@ MEMORY_LINES_HINT = 200  # Bot.MEMORY_LINES, visible to the class-body prompt st
 
 SCREEN_LINES = 8        # a screen note (Bot.set_screen): at most this many lines …
 SCREEN_LINE_MAX = 320   # … of this many characters
+SCREEN_LEAD_S = 15      # … set at most this long before the task it rides (the send that starts it sets it first)
 
 class Bot:
     _terminal_id = None  # id of this bot's live pty (terminal_session); class default for __new__-built test bots
@@ -593,6 +594,8 @@ class Bot:
         self.inbox = []           # user messages arriving mid-task
         self.screen = ""          # the page behind the floating chat the user last typed in (set_screen)
         self._screen_told = ""    # … as the running task was last told it (screen_section)
+        self.screen_at = 0.0      # when it was set
+        self._task_begun = 0.0    # when the running task started (start_task)
         self.task_dir = None      # this task's folder in the user's Inbox, made on first artifact
         self.deleted = False      # set by delete() before shutdown: nothing may write this bot back to disk
         self.last_task_dir = None  # (task_via, folder) of the task that ended last (collect_task_artifacts)
@@ -2270,6 +2273,7 @@ class Bot:
                 lines.append(ln)
         with self.lock:
             self.screen = "\n".join(lines[:SCREEN_LINES])
+            self.screen_at = time.time()
 
     def screen_section(self, changed=False):
         """The USER'S SCREEN block for the model, or "" (none known, or the task did not come from the chat:
@@ -2277,6 +2281,10 @@ class Bot:
         task was last told (a mid-task instruction typed after a page hop)."""
         with self.lock:
             screen = self.screen
+            # Sent with the message that started this task (just before it) or with one typed since: a note left
+            # by an earlier task says nothing about a task started some other way (a hand-off, a held message).
+            if getattr(self, "screen_at", 0) < getattr(self, "_task_begun", 0) - SCREEN_LEAD_S:
+                return ""
             if not screen or not chan.is_web(getattr(self, "task_via", None) or chan.WEB) \
                     or getattr(self, "task_origin", "manual") != "manual":
                 return ""
@@ -2576,6 +2584,7 @@ class Bot:
             self.pause_flag.clear()
             self.inbox = []
             self._screen_told = ""  # each task hears the screen once, then only when it changes
+            self._task_begun = time.time()  # screen_section: a note older than this task is not about it
             self.set_status("running", task=label or task, step=0, note="", waiting_on=None,
                             task_via=None if chan.is_web(via) else dict(via))
             engine = _engine_for(self.meta)

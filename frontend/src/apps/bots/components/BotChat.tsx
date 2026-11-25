@@ -83,7 +83,7 @@ export default function BotChat({ id, markRead = true, sharedScroll = true }: Bo
           <Thread b={b} threadRef={threadRef} searchQ="" onSearchCount={noop} onReact={(anchor, seq) => setPick({ anchor, seq })} onReply={setReply} markRead={markRead} sharedScroll={sharedScroll} onOpenBot={openBot} />
           <ToBottom threadRef={threadRef} botId={b.id} sharedScroll={sharedScroll} />
         </div>
-        <Composer b={b} reply={reply} setReply={setReply} threadRef={threadRef} />
+        <Composer b={b} reply={reply} setReply={setReply} threadRef={threadRef} floating />
         <ReactionPicker req={pick} onClose={closePick} botId={b.id} />
       </section>
     </div>
