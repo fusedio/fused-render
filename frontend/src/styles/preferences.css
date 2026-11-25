@@ -1579,6 +1579,89 @@
   font-size: 11px;
 }
 
+/* -- the page while it loads (shell/settings/PreferencesSkeleton.tsx) ------
+   The real frame — nav column, head, cards of rows — in `.skel-bar`s
+   (explorer.css), so the answer lands in place instead of pushing bars away.
+   Held back a beat: a warm read answers in a few ms, and a skeleton that
+   flashes for one frame is worse than none. */
+.settings-skel,
+.settings-skel-search {
+  animation: settings-skel-in 0.2s ease 0.15s both;
+}
+
+@keyframes settings-skel-in {
+  from {
+    opacity: 0;
+  }
+}
+
+/* The bars sit on two surfaces here — the page and the cards (`--bg-alt`) —
+   and `.skel-bar`'s own gradient starts at `--bg-alt`, which is no bar at all
+   on a card. Tints of the text colour read the same on both. */
+.settings-skel .skel-bar {
+  background-image: linear-gradient(
+    90deg,
+    color-mix(in srgb, var(--fg) 9%, transparent) 25%,
+    color-mix(in srgb, var(--fg) 17%, transparent) 50%,
+    color-mix(in srgb, var(--fg) 9%, transparent) 75%
+  );
+}
+
+/* Folded (nav above the rows), the column's children size to their content;
+   bars have none, so the rows take the width the real ones fill. */
+.settings-skel .settings-main {
+  align-self: stretch;
+}
+
+/* The search input's box (36px, `.settings-search-input`), empty. */
+.settings-skel-search {
+  height: 36px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--bg-alt);
+}
+
+/* A nav button's box (34px, `.settings-nav-item`): glyph then label. */
+.settings-skel-nav-item {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  height: 34px;
+  padding: 0 10px;
+}
+
+/* The group's title and blurb: the two lines `.settings-head` draws. */
+.settings-skel-head {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 8px 0 22px;
+}
+
+/* A row's label over its description, and its control at the right. */
+.settings-skel-row {
+  min-height: 62px;
+}
+
+.settings-skel-row .settings-row-main {
+  display: flex;
+  flex-direction: column;
+  gap: 9px;
+}
+
+.settings-skel-control {
+  height: 20px;
+  border-radius: 999px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .settings-skel,
+  .settings-skel-search {
+    animation: none;
+  }
+}
+
 /* -- blocks: a card that IS a panel section (Claude Code) ------------------ */
 /* The section's own groups, lists and rows (styles/claude-config.css)
    inside the page's card: the card's padding around the whole, and a list
