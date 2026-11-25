@@ -294,6 +294,10 @@ export interface ChatMountProps {
    *  `{expert: "<id>:main"}` or `"<id>:breakout"`. Such a chat opens as a
    *  chat and has no Schedule seat. */
   extraParams?: Record<string, string>;
+  /** The page behind this chat, in a few lines, read at each send ("" = none):
+   *  an expert's chat floating over another page (platform/lib/screen-context).
+   *  Rides the `terminal_hint` param as its `screen` field. */
+  screenNote?: () => string;
   /** `/clear` calls this instead of going back to Chats. */
   onClear?: () => void;
   /** `_noopen=1` — do not record an app open (the listing pane). */
@@ -407,6 +411,7 @@ export function ChatMount(props: ChatMountProps) {
         {...(props.onBreakoutControl ? { onBreakoutControl: props.onBreakoutControl } : {})}
         {...(props.onBreakoutState ? { onBreakoutState: props.onBreakoutState } : {})}
         {...(props.extraParams ? { extraParams: props.extraParams } : {})}
+        {...(props.screenNote ? { screenNote: props.screenNote } : {})}
         {...(props.onClear ? { onClear: props.onClear } : {})}
         {...(props.noOpen ? { noOpen: true } : {})}
         {...(props.onReady ? { onReady: props.onReady } : {})}

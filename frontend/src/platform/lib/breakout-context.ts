@@ -2,7 +2,7 @@
 // pure rules that build it from a chat's turns. No DOM, no React: `wire.ts`
 // (the chat's message wire) imports the files tag from here.
 
-import { ANN_TAG, APP_STATE_TAG, BREAKOUT_CTX_TAG, PANE_SHOT_TAG, TERMINAL_HINT_TAG } from "./wire-tags";
+import { ANN_TAG, APP_STATE_TAG, BREAKOUT_CTX_TAG, PANE_SHOT_TAG, TERMINAL_HINT_TAG, USER_SCREEN_TAG } from "./wire-tags";
 
 /** The slice of a chat transcript `buildHandoffDraft` reads (the chat's `Turn`
  *  satisfies it structurally; platform cannot import the chat's own types). */
@@ -36,6 +36,7 @@ const NEUTRALIZED_TAGS = [
   PANE_SHOT_TAG,
   ANN_TAG,
   TERMINAL_HINT_TAG,
+  USER_SCREEN_TAG,
   BREAKOUT_CTX_TAG,
   BREAKOUT_FILES_TAG,
 ];

@@ -496,9 +496,12 @@ export const api = {
   imessageTest: () => post<{ ok: true; handle: string }>(`${B}/imessage/test`, {}, "test text"),
   /** Also answers approvals ("approve"/"deny"), questions and offers. `forever`: the approval card's third button; the
    *  backend writes the card's rule on this yes (the flag lives on the message, so typed words never set it). */
-  send: (id: string, text: string, reply_to?: number | null, forever?: boolean, answers?: number | null) =>
+  send: (id: string, text: string, reply_to?: number | null, forever?: boolean, answers?: number | null, screen?: string) =>
     // `answers`: a relayed card's button (docs §11): the seq the click meant; 409 reason "settled" when that card is gone.
-    post<Ok>(`${bid(id)}/send`, { text, reply_to: reply_to ?? null, ...(forever ? { forever: true } : {}), ...(answers != null ? { answers } : {}) }, "send"),
+    // `screen`: the composer's note of the page behind a floating chat (platform/lib/screen-context); "" clears the
+    // last one (typed on the Bots page itself), absent (a card's button) leaves it as it was.
+    post<Ok>(`${bid(id)}/send`, { text, reply_to: reply_to ?? null, ...(forever ? { forever: true } : {}), ...(answers != null ? { answers } : {}),
+      ...(screen !== undefined ? { screen } : {}) }, "send"),
   pause: (id: string) => post<Ok>(`${bid(id)}/pause`, {}, "pause"),
   resume: (id: string) => post<Ok>(`${bid(id)}/resume`, {}, "resume"),
   stop: (id: string) => post<Ok>(`${bid(id)}/stop`, {}, "stop"),

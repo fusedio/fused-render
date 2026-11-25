@@ -549,6 +549,9 @@ def super_id():
 MEMORY_LINES_HINT = 200  # Bot.MEMORY_LINES, visible to the class-body prompt string
 
 
+SCREEN_LINES = 8        # a screen note (Bot.set_screen): at most this many lines …
+SCREEN_LINE_MAX = 320   # … of this many characters
+
 class Bot:
     _terminal_id = None  # id of this bot's live pty (terminal_session); class default for __new__-built test bots
     deleted = False  # class default: a Bot built with __new__ (tests) still has it; delete() sets the instance flag
@@ -588,6 +591,8 @@ class Bot:
         self.stop_flag = threading.Event()
         self.pause_flag = threading.Event()
         self.inbox = []           # user messages arriving mid-task
+        self.screen = ""          # the page behind the floating chat the user last typed in (set_screen)
+        self._screen_told = ""    # … as the running task was last told it (screen_section)
         self.task_dir = None      # this task's folder in the user's Inbox, made on first artifact
         self.deleted = False      # set by delete() before shutdown: nothing may write this bot back to disk
         self.last_task_dir = None  # (task_via, folder) of the task that ended last (collect_task_artifacts)
@@ -2254,6 +2259,35 @@ class Bot:
     def running(self):
         return self.thread is not None and self.thread.is_alive()
 
+    def set_screen(self, screen):
+        """The page the user's window shows behind this bot's floating chat (the rail card), as the composer
+        described it with the message it is about to send: a few "Label: value" lines, cleaned here. "" (typed
+        on the Bots page, nothing behind the chat) clears it. In memory only: it describes this moment."""
+        lines = []
+        for ln in (screen.splitlines() if isinstance(screen, str) else []):
+            ln = " ".join(re.sub(r"[\x00-\x1f\x7f]+", " ", ln).split())[:SCREEN_LINE_MAX]
+            if ln:
+                lines.append(ln)
+        with self.lock:
+            self.screen = "\n".join(lines[:SCREEN_LINES])
+
+    def screen_section(self, changed=False):
+        """The USER'S SCREEN block for the model, or "" (none known, or the task did not come from the chat:
+        a routine or a text says nothing about the window). `changed`: only when it differs from what this
+        task was last told (a mid-task instruction typed after a page hop)."""
+        with self.lock:
+            screen = self.screen
+            if not screen or not chan.is_web(getattr(self, "task_via", None) or chan.WEB) \
+                    or getattr(self, "task_origin", "manual") != "manual":
+                return ""
+            if changed and screen == self._screen_told:
+                return ""
+            self._screen_told = screen
+        return ("USER'S SCREEN (the user is talking to you from a chat floating over their Fused Render window; "
+                "this is what that window shows behind the chat as they wrote this. A description of where they "
+                "are, not the page's contents, and not your own browser's page; \"this\", \"here\" or \"this "
+                "file\" in their message likely means it):\n" + screen)
+
     def send(self, text, reply_to=None, forever=False, answers=None):
         """A message typed on the web page (the composer, a card button).
         `forever`: the approval card's third button; the yes also writes an allow rule (tools.add_allow_rule).
@@ -2541,6 +2575,7 @@ class Bot:
             self.stop_flag.clear()
             self.pause_flag.clear()
             self.inbox = []
+            self._screen_told = ""  # each task hears the screen once, then only when it changes
             self.set_status("running", task=label or task, step=0, note="", waiting_on=None,
                             task_via=None if chan.is_web(via) else dict(via))
             engine = _engine_for(self.meta)

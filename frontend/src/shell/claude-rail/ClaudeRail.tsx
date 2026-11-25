@@ -250,6 +250,7 @@ import {
 import { getSchedule, markWholeTaskRead, showLauncher, type Task, type TaskPulseTask } from "@platform/lib/api";
 import { useBotsAvailable, useLauncherAvailable } from "@platform/lib/bots-available";
 import { useExpertsEnabled } from "@platform/lib/experts-flag";
+import type { ScreenPlace } from "@platform/lib/screen-context";
 import {
   onDraftChange,
   readListing,
@@ -1486,11 +1487,22 @@ export function ClaudeRail({
   // place and every node selected. After the register above, in the same
   // commit, so the card hears one change.
   const pageNode = place.kind === "canvas" ? (place.file ?? null) : null;
+  // The place in words, for a floating bot chat's screen note (screen-context).
+  const placeDir = place.kind === "file" ? null : place.dir;
+  const placePath = place.kind === "file" ? place.file : null;
+  const placeWord = place.kind === "folder" ? place.word : undefined;
+  const canvasName = place.kind === "canvas" ? place.name : null;
+  const canvasEnv = place.kind === "canvas" ? place.env : null;
+  const screenPlace = useMemo<ScreenPlace>(() => {
+    if (canvasName !== null) return { kind: "canvas", name: canvasName, env: String(canvasEnv), dir: placeDir, node: pageNode };
+    if (placePath !== null) return { kind: "file", file: placePath };
+    return { kind: "folder", dir: placeDir ?? "", ...(placeWord ? { word: placeWord } : {}) };
+  }, [canvasName, canvasEnv, placeDir, placePath, placeWord, pageNode]);
   useLayoutEffect(() => {
     const el = railRef.current;
     // The fallback stands on no page (header): no place for a chip to name.
-    if (el) setRailPage(el, favouritesOnly ? null : { root, node: pageNode });
-  }, [root, pageNode, favouritesOnly]);
+    if (el) setRailPage(el, favouritesOnly ? null : { root, node: pageNode, place: screenPlace });
+  }, [root, pageNode, favouritesOnly, screenPlace]);
   // ONE CHAT, ONE MOUNT: this rail's card lets go of the chat the
   // favourite's card is taking — on a favourite ring's press
   // (`openFavourite`), when this card's own star is pressed on (`onStarred`,

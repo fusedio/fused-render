@@ -55,6 +55,7 @@
 import { useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import type { TaskPulseTask } from "@platform/lib/api";
 import { clearFavOpen, favOpenedAtMs, useFavOpen } from "@platform/lib/last-chat";
+import { publishScreenPlace, type ScreenPlace } from "@platform/lib/screen-context";
 import type { RailHere } from "./claude-rail-lib";
 import { FAV_SETTLE_MS, PeekIntent, favLike, favOpenVerdict, type Box } from "./rail-peek-lib";
 
@@ -63,6 +64,9 @@ import { FAV_SETTLE_MS, PeekIntent, favLike, favOpenVerdict, type Box } from "./
 export interface RailPage {
   root: string;
   node: string | null;
+  /** The same place in words, for a floating bot chat's screen note
+   *  (platform/lib/screen-context); not part of the page's identity. */
+  place?: ScreenPlace;
 }
 
 export interface FavPeekState {
@@ -141,6 +145,7 @@ const doors = new WeakMap<HTMLElement, (href: string) => void | Promise<boolean>
 function settleRail(): void {
   const top = topRail();
   const page = (top && pages.get(top)) ?? null;
+  publishScreenPlace(page?.place ?? null);
   if (live.rail !== top || !samePage(live.page, page)) mark({ ...live, rail: top, page });
 }
 

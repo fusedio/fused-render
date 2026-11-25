@@ -207,6 +207,9 @@ def run(bot, task, label=None):
                 history.append(f"USER INSTRUCTION: {m}")
                 ran_calls.clear()  # a new instruction may legitimately ask for the same call again
                 current_result = None
+            screen_s = bot.screen_section(changed=True)  # the page behind the floating chat, once and on a change
+            if screen_s:
+                history.append(screen_s)
             bot.set_status("running", step=step, step_cap=cap)
 
             obs = bot.browser.observe()

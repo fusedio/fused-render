@@ -97,6 +97,12 @@ the Learning tab), `last_update` (when the last learning run ended), and `update
     breakout   a breakout card "with" the expert        home     no (fresh)         the pill, Auto at first
     update     the timer or Learn now (update.start)        home     no (fresh)         Auto
 
+An expert's chat mounted over another page of the window (anywhere off the Bots page; today it is only mounted on
+the Bots page, so this is dormant) tells the expert what that page is: `ExpertChat` passes `screenNote`
+(`platform/lib/screen-context.ts`), `ClaudeChat` puts it in the `terminal_hint` param as its `screen` field, and
+`agent._user_screen_block` writes it as a leading `<user-screen>` line (a machinery tag, stripped from titles and
+restored transcripts like `<terminal-hint>`). See docs/bots.md §6 USER'S SCREEN for the bots' side.
+
 All three are `agent._start` with `expert="<id>:<kind>"`. The page sends `<id>:main` or `<id>:breakout` as an
 extra start field (`ChatMount extraParams`, carried on every start and send by the run controller); `agent.main`
 drops a `:update` key from a page, so only the server starts an update (`claude_spawn.spawn_helper(...,

@@ -7,11 +7,13 @@
 // Dictation: push-to-talk, not live: record the mic (/api/capture), transcribe with the local speech model
 // (/api/ai/transcribe, a job), drop the text at the caret for review. Nothing is sent on its own.
 import { useEffect, useLayoutEffect, useRef, useState, type ClipboardEvent, type DragEvent, type KeyboardEvent, type RefObject } from "react";
+import { screenContext } from "@platform/lib/screen-context";
 import { api, rawFileUrl, request, type Bot } from "../lib/api";
 import { canClear, commandFor, matchCommands, slashQuery, type Command } from "../lib/commands";
 import { jobNote } from "../lib/dictation";
 import { runningStatusText } from "../lib/derive";
 import { fmtBytes, fmtSecs } from "../lib/format";
+import { isBotsPath } from "../routes";
 import { act, errMsg, eventsOf, markSeen, setBase, setScrollToEnd, showBanner, useBotsSelector } from "../state/store";
 
 export interface ReplyTo { seq: number; text: string }
@@ -322,7 +324,10 @@ export function Composer({ b, reply, setReply, threadRef }: ComposerProps) {
       askScrollToEnd(threadRef);   // consumed by THIS thread: show the message you just sent
       setBase(b.id, b.seq);   // sending resets the count: only what the bot says from here on is new
       markSeen(b.id, b.seq);  // and you have plainly read everything up to your own message
-      await act(() => api.send(b.id, text, r ? r.seq : null));
+      // A chat floating over another page (the rail's bot card) tells the bot what that page is; on the Bots page
+      // itself there is nothing behind the chat, and "" clears the last note.
+      const screen = isBotsPath(location.pathname) ? "" : screenContext();
+      await act(() => api.send(b.id, text, r ? r.seq : null, undefined, undefined, screen));
       const th = threadRef.current; if (th) th.scrollTop = th.scrollHeight;
     } catch (e) {
       showBanner(errMsg(e));

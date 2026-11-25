@@ -341,7 +341,7 @@ POST   /api/bots/browsers/<bid>       {op: rename {name} | encrypt {on} | profil
                                       -> {ok, name?|bot?}   (Settings > Browsers; signin = takeover on one of its bots, `bot` says which; delete moves each bot to a fresh browser)
 GET    /api/bots/usage                -> the usage summary
 GET    /api/bots/imessage             -> the bridge state
-POST   /api/bots/<id>/send            {text, reply_to?}                     -> {ok}      (also answers approvals/questions/offers)
+POST   /api/bots/<id>/send            {text, reply_to?, screen?}            -> {ok}      (also answers approvals/questions/offers; `screen`: see §6 USER'S SCREEN)
 POST   /api/bots/<id>/pause | resume | stop | takeover | giveback | popout | dock | wake  -> {ok}   (dock keeps your take-over; giveback docks and hands back)
 POST   /api/bots/<id>/goto            {url}                                 -> {ok, url}
 POST   /api/bots/<id>/nav             {op: back|forward|reload}             -> {ok, url}
@@ -915,7 +915,22 @@ the browser already sits on a real page (`status_cached()` running and not
 about:/chrome://; observed through the turn so its refs and
 `prev_url`/visited are the live ones). `sent` is persisted right after the
 message is written (the sections are in the session's history whatever
-happens to the turn). Three more consequences of the conversation: Super
+happens to the turn).
+
+**USER'S SCREEN** (2026-11-25). A bot's chat can float over another page of
+the window (the rail's bot card). The composer then sends `screen` with the
+message: a few "Label: value" lines naming the page behind the chat
+(`frontend/src/platform/lib/screen-context.ts` `screenContext()`: the page
+title, the URL path, and the Claude rail's place: folder, file, or canvas
+with its selected node, published by `fav-peek-store` `settleRail`). It is
+a location, never contents. On the Bots page itself the composer sends
+`""`, which clears it; a card button sends no `screen` and leaves it.
+`Bot.set_screen` cleans it (8 lines of 320 characters, no control
+characters) and keeps it in memory only. `Bot.screen_section()` is a
+per-turn part of `first_message`, rides a tool result after a mid-task
+instruction when it changed (`_handle_core`), and is a history line in the
+steps engine. It is left out of a task that did not come from the chat (a
+routine, a text, an app page). The transcript's user line never carries it. Three more consequences of the conversation: Super
 Bot's `web_touched` starts true when `conversation["web_touched"]` is set
 (a hand-off result landed in this session; handoffs.py sets it, a rollover
 clears it) instead of the old string match on CONVERSATION SO FAR; a NOT RUN
