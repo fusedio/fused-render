@@ -1887,6 +1887,13 @@ def put_prefs(body: dict = Body(...), x_fused: str | None = Header(default=None)
                     {"error": f"the environment is pinned by {fusedcli.WORKBENCH_ENV_VAR}; "
                               "unset it to use the preference"},
                     status_code=423)
+            # With no enabled list stored, the list is derived from this
+            # very key (fusedcli._enabled_envs_from): pin it down first, plus
+            # the new pick, or moving the default would turn the old one off.
+            if not isinstance(prefs.get("workbench_envs_enabled"), list):
+                keep = {*fusedcli._enabled_envs_from(prefs), value}
+                prefs["workbench_envs_enabled"] = [
+                    e for e in fusedcli.WORKBENCH_ENV_CHOICES if e in keep]
             prefs["workbench_env"] = value
             changed = True
         if "workbench_envs_enabled" in body:

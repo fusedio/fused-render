@@ -138,7 +138,14 @@ function WorkbenchEnvRow({ env }: { env: WorkbenchEnv }) {
     setError(null);
     try {
       const want = WORKBENCH_ENVS.filter((e) => (e === env ? next : enabled.includes(e)));
-      await putWorkbenchEnvsEnabled(want);
+      const saved = await putWorkbenchEnvsEnabled(want);
+      // The write's own answer first: if the read below fails, the next
+      // switch must still build its list from what is now stored.
+      const confirmed = saved.workbench?.enabled;
+      if (confirmed && workbenchShared.status) {
+        workbenchGen += 1;
+        setWorkbenchShared({ status: { ...workbenchShared.status, enabled_envs: confirmed } });
+      }
       await reloadWorkbenchShared(true);
     } catch (e) {
       setError((e as Error).message);
@@ -218,7 +225,12 @@ function WorkbenchEnvRow({ env }: { env: WorkbenchEnv }) {
       {status && pinnedElsewhere && status.cli_found && <WorkbenchEnvSignIn env={null} locked={false} />}
       {editing && (
         <FusedSettingsModal
-          onClose={() => setEditing(false)}
+          onClose={() => {
+            setEditing(false);
+            // A save that left no `base_url` keeps the editor open and never
+            // reaches `onSaved`; closing after it must still re-read.
+            void reloadWorkbenchShared(true);
+          }}
           onSaved={() => {
             setEditing(false);
             // The deployment may have changed under a signed-in line: custom's
@@ -249,10 +261,15 @@ function WorkbenchEnvSignIn({ env, locked }: { env: WorkbenchEnv | null; locked:
   const loginStampRef = useRef<number | null>(null);
   const loginStartedRef = useRef<number | null>(null);
   const aliveRef = useRef(true);
+  // Reads overlap (mount, focus, after a logout): only the newest may write,
+  // or a read that left while signed in lands over the signed-out one.
+  const refreshGenRef = useRef(0);
 
   const refresh = useCallback(async () => {
+    const gen = ++refreshGenRef.current;
+    const current = () => aliveRef.current && gen === refreshGenRef.current;
     let s = await getCanvasesStatus(env);
-    if (!aliveRef.current) return s;
+    if (!current()) return s;
     if (s.logged_in && !locked) {
       // `logged_in` is the credentials FILE existing; whoami tells a live
       // store from a dead one. A 401 is DOWNGRADED to signed-out before
@@ -260,10 +277,10 @@ function WorkbenchEnvSignIn({ env, locked }: { env: WorkbenchEnv | null; locked:
       // Sign in rather than a Log out that would change nothing.
       try {
         const who = await getWhoami(env ?? undefined);
-        if (!aliveRef.current) return s;
+        if (!current()) return s;
         setHandle(who.handle);
       } catch (e) {
-        if (!aliveRef.current) return s;
+        if (!current()) return s;
         setHandle(null);
         if ((e as Error & { status?: number }).status === 401) {
           s = { ...s, logged_in: false };

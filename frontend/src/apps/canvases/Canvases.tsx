@@ -65,6 +65,9 @@ async function startSyncForOpen(env: WorkbenchEnv, name: string): Promise<void> 
   }
 }
 
+/** The default-environment writes a pick makes, one after another. */
+let defaultEnvWrites: Promise<void> = Promise.resolve();
+
 /** The `?env=` the URL carries, if it names an environment; anything else
  *  falls back to the default rather than erroring. */
 function envFromQuery(): WorkbenchEnv | null {
@@ -340,7 +343,13 @@ export default function Canvases() {
     // The pick is also the default from here on (where the catalog opens,
     // what `fused` outside a clone targets): Preferences no longer has a
     // picker for it. Best effort — the listing does not wait on it.
-    if (!status?.locked) void putWorkbenchEnv(next).catch(() => undefined);
+    // Chained, so two quick picks are stored in the order they were made.
+    if (!status?.locked) {
+      defaultEnvWrites = defaultEnvWrites.then(() => putWorkbenchEnv(next)).then(
+        () => undefined,
+        () => undefined,
+      );
+    }
     setCanvases(null);
     setRefreshing(false);
     // Collection ids and signed URLs belong to the environment they came from.
