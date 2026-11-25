@@ -290,6 +290,28 @@ def test_the_copilot_agent_file_never_speaks_claude(agent, home, tmp_path, monke
         note + agent._origin_note() + agent._blocked_note())
 
 
+def test_every_prompt_shape_says_paths_and_urls_go_out_as_links(
+        agent, home, tmp_path, monkeypatch):
+    """The chat links a markdown link, a bare URL and a stat-found path, but
+    never a fenced block or a backticked URL (frontend protocol/markdown.ts,
+    ui/linkifyPaths.ts). So every target shape and backend tells the model to
+    hand paths and URLs over as links, not as code."""
+    monkeypatch.setattr(agent, "_custom_env", lambda origin, file: None)
+    plain = tmp_path / "plain"
+    plain.mkdir()
+    page = tmp_path / "page.html"
+    page.write_text("<html></html>")
+    for target, pane in ((str(page), True), (str(plain), False)):
+        for backend in ("", "copilot", "codex", "gemini"):
+            body = agent._appended_prompt(target, pane, backend)
+            assert agent._links_note() in body, (target, backend)
+            assert body.endswith(agent._blocked_note(backend)), (target, backend)
+    note = agent._links_note()
+    assert "[report.html](/abs/path/report.html)" in note
+    assert "</abs/path with spaces/x.py>" in note
+    assert "fenced code block" in note
+
+
 def test_every_prompt_shape_says_a_blocked_turn_must_park_on_a_card(
         agent, home, tmp_path, monkeypatch):
     """A turn that ends reads Done on the Tasks row; only a run parked on an
