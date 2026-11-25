@@ -53,15 +53,21 @@ function Items({ widget, items, moreHref }: { widget: Widget; items: WidgetItem[
 }
 
 export function LocalFilesWidget({ widget }: { widget: Widget }) {
-  const home = useHome() ?? "";
+  const home = useHome();
+  return (
+    <div className="hw-body">
+      {home ? <LocalFilesBody widget={widget} home={home} /> : <ListSkeleton rows={3} label="Loading your files" />}
+    </div>
+  );
+}
+
+/** Mounted once the home folder is known, so nothing is fetched or cached for an empty path. */
+function LocalFilesBody({ widget, home }: { widget: Widget; home: string }) {
   const { data, error, retry } = useHomeDirListing(home);
-  let body;
-  if (!home) body = <ListSkeleton rows={3} label="Loading your files" />;
-  else if (error && !data) body = <ErrorLine message={error} onRetry={retry} />;
-  else if (!data) body = <ListSkeleton rows={3} label="Loading your files" />;
-  else if (!data.length) body = <EmptyLine>Your home folder is empty.</EmptyLine>;
-  else body = <Items widget={widget} items={data.map((e) => localItem(home, e))} moreHref={filesSeeAll(home)} />;
-  return <div className="hw-body">{body}</div>;
+  if (error && !data) return <ErrorLine message={error} onRetry={retry} />;
+  if (!data) return <ListSkeleton rows={3} label="Loading your files" />;
+  if (!data.length) return <EmptyLine>Your home folder is empty.</EmptyLine>;
+  return <Items widget={widget} items={data.map((e) => localItem(home, e))} moreHref={filesSeeAll(home)} />;
 }
 
 /** S3 browsing rides the Canvases switch (the explorer's S3 locations do), so

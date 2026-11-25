@@ -259,10 +259,22 @@ export function visibleEntries<E extends { name: string; is_dir: boolean }>(entr
     .sort((a, b) => (a.is_dir === b.is_dir ? a.name.localeCompare(b.name, undefined, { sensitivity: "base" }) : a.is_dir ? -1 : 1));
 }
 
+/** Single-flight `shared` per folder, built once per folder (not per render). */
+const dirLoaders = new Map<string, () => Promise<FsEntry[]>>();
+function dirLoader(dir: string): () => Promise<FsEntry[]> {
+  let load = dirLoaders.get(dir);
+  if (!load) {
+    load = shared(() => listDir(dir).then((r) => visibleEntries(r.entries)));
+    dirLoaders.set(dir, load);
+  }
+  return load;
+}
+
 /** One listing page of a local folder (the Local files widget: the home
-    folder). Re-read on a slow beat so a new download shows up. */
+    folder). Re-read on a slow beat so a new download shows up. The caller
+    mounts this only once `dir` is known. */
 export function useHomeDirListing(dir: string): AsyncState<FsEntry[]> {
-  return useAsyncResource(() => (dir ? listDir(dir).then((r) => visibleEntries(r.entries)) : Promise.resolve([])), {
+  return useAsyncResource(dirLoader(dir), {
     pollMs: 60000,
     errorText: "Couldn't list this folder.",
     key: dir,
@@ -273,17 +285,16 @@ export function useHomeDirListing(dir: string): AsyncState<FsEntry[]> {
     one constant, so more locations slot in here later. */
 export const S3_ROOT = "s3://fused-asset/";
 
+const loadS3 = shared(() => remoteList(S3_ROOT).then((r) => visibleEntries(r.entries)));
+
 /** The top level of S3_ROOT. Fetched once per mount: the bucket changes on
     its own publish cadence, not while Home is open. */
 export function useS3Listing(): AsyncState<RemoteEntry[]> {
-  return useAsyncResource(shared(() => remoteList(S3_ROOT).then((r) => visibleEntries(r.entries))), {
-    pollMs: 0,
-    errorText: "Couldn't reach S3.",
-  });
+  return useAsyncResource(loadS3, { pollMs: 0, errorText: "Couldn't reach S3." });
 }
 
 export type HomeCanvases =
-  | { kind: "ok"; env: WorkbenchEnv; canvases: CanvasEntry[] }
+  | { kind: "ok"; env: WorkbenchEnv; canvases: CanvasEntry[]; stale: boolean }
   | { kind: "no-cli" }
   | { kind: "signed-out" }
   | { kind: "no-env" };
@@ -291,19 +302,36 @@ export type HomeCanvases =
 /** Canvases in the default workbench environment (the Canvases page's own
     first pick), newest update first. A missing CLI or sign-in is a state the
     widget explains, not an error. */
+let canvasesFreshNext = false;
+
 async function loadHomeCanvases(): Promise<HomeCanvases> {
   const status = await getCanvasesStatus();
   if (!status.cli_found) return { kind: "no-cli" };
   const env = isWorkbenchEnv(status.workbench_env) ? status.workbench_env : null;
   if (!env) return { kind: "no-env" };
   if (!status.logged_in) return { kind: "signed-out" };
-  const { canvases } = await listCanvases(env);
+  // Stale-while-revalidate, as the Canvases page does: the disk baseline
+  // paints first, and a `stale` answer makes the next read ask with fresh=1.
+  const fresh = canvasesFreshNext;
+  canvasesFreshNext = false;
+  const { canvases, stale } = await listCanvases(env, fresh);
   const sorted = canvases.slice().sort((a, b) => (b.updated_at ?? b.mtime ?? 0) - (a.updated_at ?? a.mtime ?? 0));
-  return { kind: "ok", env, canvases: sorted };
+  return { kind: "ok", env, canvases: sorted, stale: stale && !fresh };
 }
 
 const loadHomeCanvasesShared = shared(loadHomeCanvases);
 
+/** Polls slowly (a fresh read costs a control-plane round trip): each beat
+    paints the baseline, then re-reads fresh when it was stale. */
 export function useHomeCanvases(): AsyncState<HomeCanvases> {
-  return useAsyncResource(loadHomeCanvasesShared, { pollMs: 60000, errorText: "Couldn't load canvases." });
+  const state = useAsyncResource(loadHomeCanvasesShared, { pollMs: 5 * 60000, errorText: "Couldn't load canvases." });
+  const { data, refresh } = state;
+  useEffect(() => {
+    if (data?.kind === "ok" && data.stale) {
+      canvasesFreshNext = true;
+      refresh();
+    }
+    // `refresh` is a new function every render; only a new answer matters.
+  }, [data]);
+  return state;
 }
