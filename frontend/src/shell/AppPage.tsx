@@ -35,19 +35,16 @@
 // (`rewritePathAgainst`), never a shared singleton. This picker stays
 // read-only and page-wide — it is not what the git column below is for.
 //
-// THE GIT COLUMN is a later, separate addition (opened only from App Doctor's
-// "Open in git" row — see the git-peek block further down in this file for
-// the full argument): the folder's `git` template beside the page — the WHOLE
-// template, with its ordinary write actions (stage, commit, branches,
-// push/pull) — in a slim peek of its own (AppPageGitPeek.tsx), styled after
-// the Tasks tab's own side peek rather than the explorer's file-preview
-// sidebar it first borrowed (owner's correction, 2026-09-22: "I just want the
-// git template. not the full right sidebar."). This page is NOT read-only
-// about git any more; it is read-only about the VERSION PICKER'S past
-// commits, which is a different thing, and the two must not be conflated.
-// There is still no Git TAB: a tab put the working tree on the same footing
-// as the app and took the app off the screen to reach it, and that argument
-// is what this page still declines.
+// GIT lives in the right-hand pane, as the Claude pane's second tab (owner,
+// 2026-11-25: one column with a Claude | Git strip, the explorer sidebar's
+// own SideTabs — see useAppPagePaneTab.ts): the folder's `git` template, the
+// WHOLE template with its ordinary write actions (stage, commit, branches,
+// push/pull), beside the app rather than in place of it. It used to be a slim
+// peek of its own (AppPageGitPeek.tsx) standing beside the Claude pane as a
+// second column. This page is NOT read-only about git; it is read-only about
+// the VERSION PICKER'S past commits, which is a different thing. There is
+// still no Git tab in the PAGE'S strip above: that would take the app off the
+// screen to reach the working tree.
 //
 // Opened from the sidebar's "Current apps" rows and NOWHERE ELSE (owner's
 // brief): the hub's cards and the explorer keep opening the entry page as they
@@ -130,9 +127,13 @@ import { useAppPageSnapshot, type AppPageSnapshotState } from "./useAppPageSnaps
 import { TaskPeekFrame } from "./TaskPeekFrame";
 import { APP_PAGE_FIT_LABEL, useAppHeadFit, useAppTabbarFit } from "./app-page-fit";
 import { useTaskPeekEnabled } from "./task-peek-flag";
-import { useAppPageGitColumn } from "@shell/useAppPageGitColumn";
-import AppPageGitPeek from "./AppPageGitPeek";
-import { useAppPageGitPeekWidth } from "./useAppPageGitPeekWidth";
+import { CLAUDE_TAB, GIT_TAB, useAppPagePaneTab, type PaneTab } from "./useAppPagePaneTab";
+import type { DirMode } from "@apps/explorer/lib/dir-mode";
+import { SideCloseButton, SideTabs } from "@apps/explorer/SideChrome";
+import { templateModeIcon } from "@apps/explorer/ModeSwitcher";
+import { unavailableReason } from "@platform/lib/mode-visibility";
+import { ClaudeMark } from "@platform/ui/ClaudeMark";
+import { GIT_ICON } from "./nav-icons";
 import { chatDoorOnApp, useAppPageClaudePane } from "./useAppPageClaudePane";
 import { ClaudeRail, paneHomeHref } from "./claude-rail/ClaudeRail";
 import { CHAT_PARAMS, placeRoot } from "./claude-rail/claude-rail-lib";
@@ -184,9 +185,8 @@ type TabCtx = {
    *  view's resolution by the time a caller reads it — there is no such
    *  singleton here at all, deliberately). */
   snapshot: AppPageSnapshotState;
-  /** Opens this page's git column (see useAppPageGitColumn.ts's `GIT_COLUMN_MODE`).
-   *  Only the Doctor tab takes it — its "Open in git" row is the one and only
-   *  way in. */
+  /** Opens the right-hand pane on its Git tab (useAppPagePaneTab.ts). Only
+   *  the Doctor tab takes it, for its "Open in git" row. */
   openGit: () => void;
   /** The folder's GitHub contribution-loop state (platform/lib/contrib.ts
    *  `useAppContrib`) — read once by this page and handed to the Overview
@@ -699,44 +699,6 @@ export default function AppPage({
   const peekOn = useTaskPeekEnabled();
   const peekable = peekOn === true && tab === "tasks";
 
-  // ---- THE GIT PEEK -----------------------------------------------------------
-  //
-  // The folder's `git` template beside the whole page, in a slim peek of its
-  // own (AppPageGitPeek.tsx) — the FULL template, ordinary write actions and
-  // all, framed like the Tasks tab's own side peek rather than through the
-  // explorer's borrowed-companion sidebar (apps/explorer/PreviewSidebar) the
-  // first draft used. See AppPageGitPeek.tsx's own header for why: no mode
-  // rail, no tab header, no panel-toggle — just the template, a close
-  // affordance and a resize seam.
-  //
-  // This does NOT bring back the Git TAB the header above says was removed, and
-  // the distinction is the whole design. A tab put the working tree on the same
-  // footing as the app itself, so reaching it took the app off the screen; a
-  // peek does not. Staging and committing are things you do WHILE looking at
-  // the app. What the header says about the VERSION PICKER is untouched: that
-  // stays read-only and page-wide, and this peek always shows the LIVE folder,
-  // never a `_snapshot` tree (there is no working tree to stage in an
-  // extracted copy).
-  //
-  // ONE WAY IN, by the owner's choice: App Doctor's "Open in git" row, which
-  // until now left this page for the explorer. No header button, so the peek
-  // costs a page nobody opened it from nothing at all — not a probe, not a
-  // frame. The way OUT is the peek's own close button.
-  //
-  // The open/probe state lives in useAppPageGitColumn.ts, not here: it is the
-  // one piece of this page with real behaviour to pin (the probe gate, the
-  // auto-close race against `useDirMode`'s own async settling, and now telling
-  // a rejected probe apart from a settled "no git here"), and this file has no
-  // render-test precedent to pin it against directly (see AppPage.test.tsx's
-  // header) — the hook gets its own test instead. The peek's WIDTH is a
-  // separate, purely-visual concern (useAppPageGitPeekWidth.ts) kept out of
-  // that hook for the same reason: nothing about "how wide" belongs beside
-  // "is it open and did the probe fail".
-  const { open: gitOpen, openGit, closeGit, gitMode, gitSrc } = useAppPageGitColumn(dir);
-  const gitSplitRef = useRef<HTMLDivElement | null>(null);
-  const gitPeekLayout = useAppPageGitPeekWidth(gitSplitRef);
-  const gitTaken = gitOpen ? gitPeekLayout.width : 0;
-
   // ---- THE CLAUDE PANE AND ITS RAIL ------------------------------------------
   //
   // The canvas page's right pane, on this page (owner, 2026-11-01: "replicate
@@ -744,22 +706,54 @@ export default function AppPage({
   // the chat on this app folder — the one the explorer's `_side=claude`
   // sidebar opens on the folder — beside the WHOLE page, header and tabs
   // included, so it stands whatever tab is up. Open by default; its Hide is
-  // the chat's own top-row seat (`onHidePane`), its seam drags and shuts past
-  // the floor, and while it is shut THE CLAUDE RAIL takes the edge
+  // the pane header's close (SideChrome's SideCloseButton), its seam drags and
+  // shuts past the floor, and while it is shut THE CLAUDE RAIL takes the edge
   // (shell/claude-rail): the way back in, a + that opens the New task card on
   // this app, and one ring per chat on this app in the List's order — the
   // same rail the canvas page and the explorer draw. Open/shut rides the URL
   // as `side=off`; the width is the explorer sidebar's shared one
   // (useAppPageClaudePane.ts has the argument for each).
   //
-  // OUTSIDE the git peek's row: the peek is absolute over `.app-page-left`'s
-  // right edge, and this pane stands past that edge, so the two never share
-  // one — the same reason the git peek was lifted above the Tasks tab's own
-  // side peek (`.app-page-split`'s header).
+  // ONE COLUMN, TWO TABS (owner, 2026-11-25): the pane wears the explorer
+  // sidebar's header — its close at the left, a Claude | Git strip at the
+  // right (SideChrome's SideTabs) — and Git is the folder's `git` template in
+  // the same column, not a second column beside it. useAppPagePaneTab.ts has
+  // the tab state and the probe.
   const claudeSplitRef = useRef<HTMLDivElement | null>(null);
   const claude = useAppPageClaudePane(claudeSplitRef);
   // Held mounted through its exit so the pane slides like the left sidebar.
   const pane = usePanePresence(claude.open);
+  const paneTab = useAppPagePaneTab(dir, pane.mounted);
+  // Leaving the Claude tab unmounts the chat, so words typed into it get the
+  // composer's own leave guard first — the explorer's `setSide` asks the same.
+  const switchTab = (next: PaneTab, go: () => void) => {
+    if (!pane.mounted || paneTab.tab !== CLAUDE_TAB || next === CLAUDE_TAB) go();
+    else void confirmLeave().then((ok) => ok && go());
+  };
+  // App Doctor's "Open in git" row and the rail's Git card: the pane, on Git.
+  const openGit = () =>
+    switchTab(GIT_TAB, () => {
+      paneTab.showTab(GIT_TAB);
+      claude.show();
+    });
+  const gitShown = paneTab.tab === GIT_TAB;
+  const gitAbsent =
+    !paneTab.gitMode.pending && paneTab.gitMode.entry === null && !paneTab.gitMode.failed;
+  // Each tab wears its template's own icon (the explorer strip's), and the
+  // same mark drawn inline until the folder's stat has answered.
+  const tabIcon = (m: DirMode, fallback: ReactNode): ReactNode => {
+    const e = m.bound ?? m.entry;
+    return e?.icon ? templateModeIcon(e) : fallback;
+  };
+  const paneTabs = [
+    { mode: CLAUDE_TAB, icon: tabIcon(paneTab.claudeMode, <ClaudeMark />) },
+    {
+      mode: GIT_TAB,
+      icon: tabIcon(paneTab.gitMode, GIT_ICON),
+      pending: paneTab.gitMode.pending,
+      ...(gitAbsent ? { disabledReason: unavailableReason(GIT_TAB) } : {}),
+    },
+  ];
   // A ring's door (ClaudeRail `onOpenChat`, the card's Open, the chat's own
   // Recent-list hops) is this app's explorer URL with the chat's session
   // (`taskHref`): ON THIS PAGE, that chat opens in THIS pane — the page is
@@ -798,6 +792,8 @@ export default function AppPage({
       next.searchParams.delete("side");
       if (next.href !== location.href) replaceSearch(next.pathname + next.search + next.hash);
       setClaudeSeq((n) => n + 1);
+      // A chat door shows the chat, whichever tab the pane was on.
+      paneTab.showTab(CLAUDE_TAB);
       claude.show();
       return true;
     });
@@ -806,8 +802,10 @@ export default function AppPage({
   // home — the chat with no session, remounted behind the same leave guard;
   // already there, it stays as it is (the rail focuses its composer).
   const openPaneHome = () => {
-    if (paneHomeHref(location.href) === null) claude.show();
-    else openChatDoor({ params: {} });
+    if (paneHomeHref(location.href) === null) {
+      paneTab.showTab(CLAUDE_TAB);
+      claude.show();
+    } else openChatDoor({ params: {} });
   };
   // Where the rail stands (claude-rail-lib `RailPlace`): this app's folder.
   const railPlace = useMemo(() => ({ kind: "folder" as const, dir, word: "App" }), [dir]);
@@ -880,28 +878,17 @@ export default function AppPage({
   };
 
   return (
-    // The page-level split, laid out exactly the way `TaskPeekFrame`'s own
-    // on-branch row is (Notion-style: a shrinking frame beside an absolutely
-    // positioned panel sliding in over the row's right edge) — but ONE LEVEL
-    // UP, so the git peek and the Tasks tab's own peek never share a right
-    // edge. `.app-page-frame-slot` is the frame's own width (100% minus
-    // whatever the git peek has taken); `TaskPeekFrame` renders inside it
-    // untouched, so the Tasks peek — when it opens — narrows to whatever room
-    // THIS split has already left it, rather than reaching for the same edge.
+    // The page-level split: the page (with the Tasks tab's own side peek
+    // inside `.app-page-frame-slot`), then the right-hand pane or its rail.
     <div
-      className={"app-page-split" + (gitPeekLayout.dragging || claude.dragging ? " is-dragging" : "")}
+      className={"app-page-split" + (claude.dragging ? " is-dragging" : "")}
       ref={claudeSplitRef}
     >
       <div
-        // The git peek's row (its `position: relative`, its `overflow`):
-        // everything but the Claude column.
+        // Everything but the right-hand pane.
         className="app-page-left"
-        ref={gitSplitRef}
       >
-      <div
-        className="app-page-frame-slot"
-        style={{ width: `calc(100% - ${gitTaken}px)` }}
-      >
+      <div className="app-page-frame-slot">
         <TaskPeekFrame peekable={peekable}>
           <div className="app-page">
           <header className="app-page-head" ref={headRef} data-fit={headFit}>
@@ -1193,13 +1180,6 @@ export default function AppPage({
         </div>
         </TaskPeekFrame>
       </div>
-      <AppPageGitPeek
-        open={gitOpen}
-        mode={gitMode}
-        src={gitMode.pending ? null : gitSrc}
-        onClose={closeGit}
-        layout={gitPeekLayout}
-      />
       </div>
       {pane.mounted && (
         <div
@@ -1220,6 +1200,40 @@ export default function AppPage({
             onPointerDown={claude.onSeamPointerDown}
           />
           <div className="app-page-claude-chat">
+            {/* The explorer sidebar's header, as-is (preview.css
+                `.preview-side-header`): the way out at the seam end, the
+                Claude | Git strip at the far end. */}
+            <div className="preview-side-header">
+              <SideCloseButton what={gitShown ? "Git" : "Claude"} onClick={claude.hide} />
+              <div className="side-header-tail">
+                <SideTabs
+                  tabs={paneTabs}
+                  active={paneTab.tab}
+                  onSelect={(m) => switchTab(m as PaneTab, () => paneTab.selectTab(m as PaneTab))}
+                />
+              </div>
+            </div>
+            {gitShown ? (
+              paneTab.gitMode.pending || paneTab.gitSrc === null ? (
+                <div className="preview-resolving">
+                  {paneTab.gitMode.failed ? (
+                    "Could not check this folder for git. Close this panel and open it again to retry."
+                  ) : (
+                    <>
+                      <span className="mode-icon-spinner" />
+                      Checking if this view applies…
+                    </>
+                  )}
+                </div>
+              ) : (
+                <iframe
+                  key={paneTab.gitSrc}
+                  className="preview-side-frame"
+                  src={paneTab.gitSrc}
+                  title="Git"
+                />
+              )
+            ) : (
             <ChatMount
               onBreakout={breakoutOpener()}
               // Remounted on a ring's door (`openChatHere`): the session is
@@ -1235,10 +1249,9 @@ export default function AppPage({
               // state from and points its notes at (the explorer's sidebar
               // hands its content frame over the same way).
               annotateTarget={() => document.querySelector<HTMLIFrameElement>(".app-page-frame")}
-              // The pane's close, at the chat's top row's left end.
-              onHidePane={claude.hide}
               onNavigate={openChatHere}
             />
+            )}
           </div>
         </div>
       )}
