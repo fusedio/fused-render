@@ -12,6 +12,8 @@ const CARD = "[fused-card] ";
 export interface ViewCardRef extends ViewRef {
   /** The expert's one line about what this is ("" when it gave none). */
   note: string;
+  /** The expert let the card load by itself when it appears; false for work it judged too heavy to run unasked. */
+  live: boolean;
 }
 
 export function viewCardOf(seg: Segment | null | undefined): ViewCardRef | null {
@@ -28,8 +30,20 @@ export function viewCardOf(seg: Segment | null | undefined): ViewCardRef | null 
   const view = viewOf(raw);
   if (!view) return null;
   const note = (raw as { note?: unknown }).note;
-  return { ...view, note: typeof note === "string" ? note : "" };
+  return { ...view, note: typeof note === "string" ? note : "", live: (raw as { live?: unknown }).live !== false };
 }
+
+// `show` calls this window has watched run, by tool_use id. A turn can settle in the same update that settles
+// its last `show`, so "the turn is still running" alone would miss a card that was born in front of the reader.
+const watched = new Set<string>();
+
+/** Note a `show` row that has not settled yet; a no-op for any other row. */
+export function watchShow(seg: Segment | null | undefined): void {
+  if (seg && seg.kind === "tool" && seg.id && seg.status === "running" && SHOW_RE.test(seg.name)) watched.add(seg.id);
+}
+
+/** This window saw the `show` call with this id while it was running. */
+export const wasWatched = (id: string): boolean => watched.has(id);
 
 /** The two tools as plain words for the tool row and the status line, or null for any other tool. */
 export function canvasToolLabel(tool: unknown, input: Record<string, unknown> | null | undefined, done: boolean): string | null {
