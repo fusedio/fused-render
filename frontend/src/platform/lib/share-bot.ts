@@ -14,6 +14,9 @@ export interface BotShareFile {
   /** Bytes, when the caller knows (the preview's stat). The dialog refuses an
    *  oversize file up front with it; without it the check runs on Send. */
   size?: number | null;
+  /** A folder: nothing is copied — the bot is let READ it (its "Folders it may
+   *  read"), and the message names it. */
+  isDir?: boolean;
 }
 
 export interface ShareBotRequest {

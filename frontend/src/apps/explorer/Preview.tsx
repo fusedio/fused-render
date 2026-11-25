@@ -691,7 +691,7 @@ function usePreviewFileMenu(
       ...shareBotRow({
         botsAvailable: botsOffered,
         isDir: stat.is_dir,
-        onClick: () => openShareBot({ path: fsPath, name: stat.name, size: stat.size }),
+        onClick: () => openShareBot({ path: fsPath, name: stat.name, size: stat.size, isDir: stat.is_dir }),
       }),
     ],
     copy: [

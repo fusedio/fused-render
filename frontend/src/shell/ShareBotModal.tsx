@@ -72,6 +72,19 @@ export function shareBotMessage(message: string, stored: string): string {
   return (text ? text + "\n\n" : "") + `Attached (in your FILES folder, use \`upload\` when a page needs them): ${stored}`;
 }
 
+/** The line for a shared folder: the bot's own words for the folders it may read (bot.py FOLDERS). */
+export function shareBotFolderMessage(message: string, path: string): string {
+  const text = message.trim();
+  return (text ? text + "\n\n" : "") + `Shared folder (in your FOLDERS: \`ls\` lists it, \`find\` searches it, \`readfile\` reads a file): ${path}`;
+}
+
+/** Is `path` one of `folders` or inside one? (A grant already covers it.) */
+export function folderCovered(folders: string[] | undefined, path: string): boolean {
+  const strip = (p: string) => (p.length > 1 ? p.replace(/\/+$/, "") : p);
+  const p = strip(path);
+  return (folders ?? []).some((f) => p === strip(f) || p.startsWith(strip(f) + "/"));
+}
+
 /** The bots a file can go to, in the Bots list's order: no hidden bot, and no expert (a task session, not a bot of
  *  the bots backend — it has no FILES folder). */
 export function shareBotTargets(bots: Bot[]): Bot[] {
@@ -87,7 +100,8 @@ export default function ShareBotModal({ file, onClose }: { file: BotShareFile; o
   const sel = bots.find((b) => b.id === picked) ?? bots[0] ?? null;
   const [message, setMessage] = useState("");
   const [sending, setSending] = useState(false);
-  const oversize = file.size != null && file.size > ATTACH_MAX;
+  const isDir = !!file.isDir;
+  const oversize = !isDir && file.size != null && file.size > ATTACH_MAX;
   const [err, setErr] = useState<string | null>(oversize ? tooLarge(file.name, file.size!) : null);
   // The name each bot stored the file under: a Send that failed after the upload retries the message alone, so
   // the bot's FILES folder never gets the file twice.
@@ -99,6 +113,20 @@ export default function ShareBotModal({ file, onClose }: { file: BotShareFile; o
     setSending(true);
     setErr(null);
     try {
+      if (isDir) {
+        // Nothing is copied: the folder joins the ones this bot may read (Settings › Permissions, whose list is
+        // sent whole), then the message names it.
+        if (!folderCovered(sel.folders, file.path)) await api.settings(sel.id, { folders: [...(sel.folders ?? []), file.path] });
+        await api.send(sel.id, shareBotFolderMessage(message, file.path), null, undefined, undefined, "");
+        const id = sel.id;
+        notify({
+          title: `Shared ${file.name} with ${sel.name || sel.id}`,
+          tone: "info",
+          action: { label: "Open chat", onClick: () => navigateUrl(botHref(id)) },
+        });
+        onClose();
+        return;
+      }
       let name = stored.current.get(sel.id);
       if (!name) {
         const res = await fetch(rawUrl(file.path));
@@ -203,7 +231,7 @@ export default function ShareBotModal({ file, onClose }: { file: BotShareFile; o
         <DialogHeader className="min-w-0 gap-0 px-4 pt-4 pb-3">
           <div className="flex min-w-0 items-start gap-3">
             <span className="mt-px flex size-9 shrink-0 items-center justify-center rounded-lg bg-muted">
-              {iconForEntry(file.name, false)}
+              {iconForEntry(file.name, isDir)}
             </span>
             <div className="flex min-w-0 flex-1 flex-col">
               <DialogTitle className="m-0 min-w-0 truncate text-[15px] leading-6 font-semibold">
@@ -245,6 +273,13 @@ export default function ShareBotModal({ file, onClose }: { file: BotShareFile; o
               }
             }}
           />
+          {isDir && sel && (
+            <p className="m-0 text-[12px] leading-4 text-muted-foreground">
+              {folderCovered(sel.folders, file.path)
+                ? `${sel.name || sel.id} can already read this folder.`
+                : `${sel.name || sel.id} will be able to read this folder and everything in it. Nothing is copied; it cannot change anything there.`}
+            </p>
+          )}
           {err && (
             <p className="m-0 text-[13px] leading-5 text-destructive" role="alert">
               {err}

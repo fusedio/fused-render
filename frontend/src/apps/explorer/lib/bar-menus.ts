@@ -105,6 +105,8 @@ export function splitItems(onSplit: (dir: SplitDir) => void): MenuEntry[] {
 //           Tab, Split right, Split down. One group because they all answer
 //           "show me this elsewhere"; the splits are not a special case of
 //           anything, just two more elsewheres.
+//   share   Share with bot… (lib/share-bot-row) — the file menu's `share`
+//           group, in the same place.
 //   copy    text to the clipboard: Copy path, Copy Claude session command.
 //   embed   Open in embed, LAST and alone (owner, 2026-09-20: "move open in
 //           embed to the bottom"): it leaves the explorer for the chrome-free
@@ -119,6 +121,7 @@ export interface FolderMenuGroups {
   create?: MenuEntry[];
   folder?: MenuEntry[];
   open?: MenuEntry[];
+  share?: MenuEntry[];
   copy?: MenuEntry[];
   embed?: MenuEntry[];
 }
@@ -128,6 +131,7 @@ const FOLDER_GROUP_ORDER: (keyof FolderMenuGroups)[] = [
   "create",
   "folder",
   "open",
+  "share",
   "copy",
   "embed",
 ];

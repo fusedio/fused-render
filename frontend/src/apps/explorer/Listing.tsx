@@ -1067,6 +1067,7 @@ export default function Listing({
         ...appRows.terminal,
         ...(ownsBarChrome ? splitItems((dir) => enterPanel(base, dir)) : []),
       ],
+      share: own.share,
       copy: own.copy,
       embed: appRows.embed,
     });

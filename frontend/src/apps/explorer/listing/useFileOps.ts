@@ -916,12 +916,12 @@ export function useFileOps({
                 onClick: () => void exportAppFileOnly({ path: row.path, name: row.name }),
               } as MenuEntry]
         : []),
-      // Files only: the file to a bot's FILES folder with a message (Preview's
-      // `shareBotRow`, the one definition of the row).
+      // A file to a bot's FILES folder, or a folder to the folders it may
+      // read, with a message (lib/share-bot-row, the one definition).
       ...shareBotRow({
         botsAvailable: botsOffered,
         isDir: row.isDir,
-        onClick: () => openShareBot({ path: row.path, name: row.name }),
+        onClick: () => openShareBot({ path: row.path, name: row.name, isDir: row.isDir }),
       }),
       "separator",
       { label: "Cut", icon: MenuIcons.cut, onClick: () => setClipboard({ paths: [row.path], op: "cut" }) },
@@ -957,7 +957,7 @@ export function useFileOps({
   // `folder` only when canRenameBase allows renaming THIS folder — root, home
   // and mount roots never get it. Rebuilt per call, which is how Paste's
   // enabled state tracks the clipboard.
-  const folderGroups = (): Pick<FolderMenuGroups, "create" | "folder" | "open" | "copy"> => {
+  const folderGroups = (): Pick<FolderMenuGroups, "create" | "folder" | "open" | "share" | "copy"> => {
     const dir = normDir(base);
     if (readOnly) {
       return {
@@ -988,6 +988,11 @@ export function useFileOps({
         { label: "Reveal in Finder", icon: MenuIcons.reveal, onClick: () => doReveal(dir) },
         { label: "Open in New Tab", icon: MenuIcons.newTab, onClick: () => doOpenInNewTab(dir) },
       ],
+      share: shareBotRow({
+        botsAvailable: botsOffered,
+        isDir: true,
+        onClick: () => openShareBot({ path: dir, name: basename(dir) || dir, isDir: true }),
+      }),
       copy: [
         { label: "Copy path", icon: MenuIcons.copyPath, onClick: () => doCopyPath(dir) },
         ...(isBackendEnabled("claude") ? [{
