@@ -921,8 +921,15 @@ test("no preset has a playground tile", () => {
   }
 });
 
-test("FORMAT_MIN_ROWS: apps cards and folder icons need two cells (4 units)", () => {
-  expect(FORMAT_MIN_ROWS).toEqual({ apps: { cards: 4 }, folder: { icons: 4 } });
+test("FORMAT_MIN_ROWS: apps cards and every icon-tile format need two cells (4 units)", () => {
+  expect(FORMAT_MIN_ROWS).toEqual({
+    apps: { cards: 4 },
+    folder: { icons: 4 },
+    files: { icons: 4 },
+    s3: { icons: 4 },
+    canvases: { icons: 4 },
+    marketplace: { icons: 4 },
+  });
   expect(formatMinRows("apps", "cards")).toBe(4);
   expect(formatMinRows("apps", "icons")).toBe(0);
   expect(formatMinRows("recents", "cards")).toBe(0);
