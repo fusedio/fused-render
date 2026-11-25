@@ -1,9 +1,9 @@
 // The rail's zone, watched (rail-zone.ts): the document's pointer crossings
 // feed the one zone while a rail stands; with none, every machine keeps its
 // usual wait.
-import { afterEach, describe, expect, it } from "bun:test";
+import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import { RAIL_COLD_OPEN_MS, RAIL_HOT_OPEN_MS } from "./rail-zone-lib";
-import { RAIL_ZONE_SELECTOR, inRailZone, installRailZone, railPace, railZoneForTests, resetRailZoneForTests } from "./rail-zone";
+import { RAIL_ZONE_SELECTOR, inRailZone, installRailZone, railPace, railZoneForTests, resetRailZoneForTests, setRailZoneClockForTests } from "./rail-zone";
 
 type Fn = (e: PointerEvent) => void;
 
@@ -29,9 +29,17 @@ function fakeDoc() {
 const el = (inZone: boolean) => ({ closest: (s: string) => (s === RAIL_ZONE_SELECTOR && inZone ? {} : null) }) as unknown as EventTarget;
 
 const offs: (() => void)[] = [];
+// The zone's clock stands still unless a test moves it: no real stall can
+// eat into a cold wait.
+let now = 0;
+beforeEach(() => {
+  now = 0;
+  setRailZoneClockForTests(() => now);
+});
 afterEach(() => {
   for (const off of offs.splice(0)) off();
   resetRailZoneForTests();
+  setRailZoneClockForTests(null);
 });
 
 describe("installRailZone", () => {
@@ -96,6 +104,16 @@ describe("installRailZone", () => {
     doc.fire("pointerover", { target: el(true) });
     expect(railPace.openMs(150)).toBe(RAIL_COLD_OPEN_MS);
     doc.fire("pointerdown", { target: el(true) });
+    expect(railPace.openMs(150)).toBe(RAIL_HOT_OPEN_MS);
+  });
+
+  it("time in the zone heats it, off any ring", () => {
+    const doc = fakeDoc();
+    offs.push(installRailZone(doc));
+    doc.fire("pointerover", { target: el(true) });
+    now += RAIL_COLD_OPEN_MS - 1;
+    expect(railZoneForTests().isHot).toBe(false);
+    now += 1;
     expect(railPace.openMs(150)).toBe(RAIL_HOT_OPEN_MS);
   });
 

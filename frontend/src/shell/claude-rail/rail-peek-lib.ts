@@ -535,6 +535,16 @@ export class PeekIntent {
     // The same arrival again waits on the first's clock — except the
     // keyboard reaching a ring the POINTER is waiting on (a cold rail's
     // longer wait): it takes its own timing.
+    // The pointer reaching a ring the FOCUS is waiting on: a hot rail shows
+    // it now; a cold one keeps the focus's own (shorter) clock.
+    if (this.pendingKey === key && via === "pointer" && this.pendingVia === "focus") {
+      const usual = this.shown === null ? PEEK_OPEN_MS : PEEK_SWAP_MS;
+      if (this.pace.openMs(usual) > 0) return;
+      this.cancelOpen();
+      this.sink.warm(key);
+      this.set(key);
+      return;
+    }
     if (this.pendingKey === key && !(via === "focus" && this.pendingVia === "pointer")) return;
     this.cancelOpen();
     const usual = this.shown === null ? PEEK_OPEN_MS : PEEK_SWAP_MS;

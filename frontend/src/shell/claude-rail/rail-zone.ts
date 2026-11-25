@@ -13,7 +13,9 @@ import { RailZone, type HoverPace } from "./rail-zone-lib";
 export const RAIL_ZONE_SELECTOR =
   ".claude-rail, .claude-rail-peek, .claude-rail-peek-bridge, .modal-popover .new-task-dialog";
 
-const zone = new RailZone(() => performance.now());
+const realClock = () => performance.now();
+let clock: () => number = realClock;
+const zone = new RailZone(() => clock());
 let watchers = 0;
 let unwatch: (() => void) | null = null;
 
@@ -92,4 +94,9 @@ export function railZoneForTests(): RailZone {
 /** Forget the zone (tests). */
 export function resetRailZoneForTests(): void {
   zone.reset();
+}
+
+/** Drive the zone's clock (tests); `null` puts the real one back. */
+export function setRailZoneClockForTests(now: (() => number) | null): void {
+  clock = now ?? realClock;
 }

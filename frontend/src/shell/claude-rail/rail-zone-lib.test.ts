@@ -258,6 +258,29 @@ describe("PeekIntent on the zone", () => {
     expect(a.shown).toEqual(["x", null, "y"]);
   });
 
+  it("a hot pointer reaching a ring the focus waits on shows it at once; a cold one keeps the focus's clock", () => {
+    const { clock, zone, win } = rail();
+    const a = win();
+    // Cold: the pointer arrives 50 ms into the focus's wait; the focus's
+    // clock still opens it.
+    zone.enter();
+    a.intent.enterRing("x", "focus");
+    clock.tick(50);
+    a.intent.enterRing("x", "pointer");
+    clock.tick(PEEK_OPEN_MS - 50 - 1);
+    expect(a.shown).toEqual([]);
+    clock.tick(1);
+    expect(a.shown).toEqual(["x"]);
+    a.intent.dismiss();
+    a.intent.leaveRing("pointer");
+    a.intent.leaveRing("focus");
+    // Hot (the card above showed): the pointer opens it now.
+    a.intent.enterRing("y", "focus");
+    clock.tick(10);
+    a.intent.enterRing("y", "pointer");
+    expect(a.shown).toEqual(["x", null, "y"]);
+  });
+
   it("a press heats the rail; a pinned window still moves for no hover", () => {
     const { clock, zone, win } = rail();
     const a = win();
