@@ -454,15 +454,21 @@ def _prune_loop(interval_s: float) -> None:
     import logging
 
     log = logging.getLogger(__name__)
+    due = 0.0
     while True:
-        try:
-            done = prune()
-            if done["entries"]:
-                log.info("udf cache: pruned %d entries (%d bytes) older than 7 days",
-                         done["entries"], done["bytes"])
-        except Exception:  # noqa: BLE001 - a failed sweep waits for the next day
-            log.exception("udf cache: prune failed")
-        time.sleep(interval_s)
+        # Due by the wall clock, checked hourly: `time.sleep` does not count
+        # a sleeping laptop's night, so sleeping a whole interval would
+        # drift to a sweep every few days.
+        if time.time() >= due:
+            due = time.time() + interval_s
+            try:
+                done = prune()
+                if done["entries"]:
+                    log.info("udf cache: pruned %d entries (%d bytes) older than %d days",
+                             done["entries"], done["bytes"], MAX_AGE_S // 86400)
+            except Exception:  # noqa: BLE001 - a failed sweep waits for the next one
+                log.exception("udf cache: prune failed")
+        time.sleep(min(3600.0, interval_s))
 
 
 def start_pruner(interval_s: float = PRUNE_INTERVAL_S) -> None:
