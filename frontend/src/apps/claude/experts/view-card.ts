@@ -31,6 +31,18 @@ export function viewCardOf(seg: Segment | null | undefined): ViewCardRef | null 
   return { ...view, note: typeof note === "string" ? note : "" };
 }
 
+// `show` calls this window has watched run, by tool_use id. A turn can settle in the same update that settles
+// its last `show`, so "the turn is still running" alone would miss a card that was born in front of the reader.
+const watched = new Set<string>();
+
+/** Note a `show` row that has not settled yet; a no-op for any other row. */
+export function watchShow(seg: Segment | null | undefined): void {
+  if (seg && seg.kind === "tool" && seg.id && seg.status === "running" && SHOW_RE.test(seg.name)) watched.add(seg.id);
+}
+
+/** This window saw the `show` call with this id while it was running. */
+export const wasWatched = (id: string): boolean => watched.has(id);
+
 /** The two tools as plain words for the tool row and the status line, or null for any other tool. */
 export function canvasToolLabel(tool: unknown, input: Record<string, unknown> | null | undefined, done: boolean): string | null {
   const name = String(tool ?? "");

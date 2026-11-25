@@ -86,12 +86,9 @@ function NodeCard({ view, id, live }: { view: ViewCardRef; id: string; live: boo
   useEffect(() => {
     const el = box.current;
     if (!loaded || !el || typeof IntersectionObserver === "undefined") return;
-    let seen = false;
     const io = new IntersectionObserver(
       (entries) => {
-        const near = entries[entries.length - 1]!.isIntersecting;
-        if (near) seen = true;
-        else if (seen) setLoaded(false);
+        if (!entries[entries.length - 1]!.isIntersecting) setLoaded(false);
       },
       { rootMargin: KEEP_MARGIN },
     );

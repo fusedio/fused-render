@@ -18,7 +18,7 @@ import { cn } from "@platform/lib/utils";
 import { groupCollapsibles, isRun, leadSplit, seatTriggers, type CollapsibleRun } from "../protocol/segments";
 import { segText } from "../protocol/summaries";
 import type { Segment } from "../protocol/types";
-import { viewCardOf } from "../experts/view-card";
+import { viewCardOf, wasWatched, watchShow } from "../experts/view-card";
 import { Caret } from "./Caret";
 import { cardKey, runKey, useCardOpens } from "./cardPolicy";
 import { MarkdownView } from "./MarkdownView";
@@ -210,10 +210,11 @@ export const SegmentView = memo(function SegmentView({
       );
     if (seg.kind === "tool") {
       const view = viewCardOf(seg);
+      if (!view) watchShow(seg);
       nodes.push(
         withFiled(
           view ? (
-            <ViewCard key={key} view={view} id={seg.id} live={live} />
+            <ViewCard key={key} view={view} id={seg.id} live={live || wasWatched(seg.id)} />
           ) : (
             <ToolChip key={key} seg={seg} cardKey={key} cwd={cwd} nested={nested} />
           ),
