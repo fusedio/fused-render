@@ -46,6 +46,14 @@ import { Textarea } from "@platform/shadcn/ui/textarea";
 import { iconForEntry } from "@platform/ui/FileIcons";
 import { homeBots } from "./home/bots";
 
+// The face's own geometry rules, which styles/bots.css scopes to `.bots-page`: Face sets a per-mood transform on
+// `.face` and each `.eyeg`, and without these origins a running or waiting bot's eyes draw off their place.
+const FACE_BOX =
+  "block size-11 rounded-full [&_svg]:block [&_svg]:size-full [&_.eye]:fill-[#0f172a] [&_.eyeg]:fill-[#0f172a] " +
+  "[&_.face]:[transform-box:view-box] [&_.face]:[transform-origin:50px_50px] [&_.body]:[transform-box:view-box] [&_.body]:[transform-origin:50px_50px] " +
+  "[&_.eyeg]:[transform-box:fill-box] [&_.eyeg]:[transform-origin:center] [&_.eye]:[transform-box:fill-box] [&_.eye]:[transform-origin:center] " +
+  "[&_.mark]:[transform-box:fill-box] [&_.mark]:[transform-origin:center]";
+
 const tooLarge = (name: string, size: number) =>
   `${name} is ${fmtBytes(size)}; a bot takes files up to ${fmtBytes(ATTACH_MAX)}.`;
 
@@ -95,12 +103,17 @@ export default function ShareBotModal({ file, onClose }: { file: BotShareFile; o
       if (!name) {
         const res = await fetch(rawUrl(file.path));
         if (!res.ok) throw new Error(`Could not read ${file.name} (HTTP ${res.status}).`);
+        // A listing row knows no size: the header refuses an oversize file before its body is read.
+        const declared = Number(res.headers.get("content-length"));
+        if (declared > ATTACH_MAX) throw new Error(tooLarge(file.name, declared));
         const blob = await res.blob();
         if (blob.size > ATTACH_MAX) throw new Error(tooLarge(file.name, blob.size));
         name = (await api.attach(sel.id, file.name, await b64(blob))).name;
         stored.current.set(sel.id, name);
       }
-      await api.send(sel.id, shareBotMessage(message, name));
+      // `screen: ""`: this is not a chat floating over a page, so an older floating chat's note of the page behind
+      // it must not ride this message (api.send: absent leaves the last note standing).
+      await api.send(sel.id, shareBotMessage(message, name), null, undefined, undefined, "");
       const id = sel.id;
       notify({
         title: `Sent ${file.name} to ${sel.name || sel.id}`,
@@ -156,7 +169,7 @@ export default function ShareBotModal({ file, onClose }: { file: BotShareFile; o
               )}
             >
               <span className="relative block size-11">
-                <span className={cn("block size-11 rounded-full [&_.eye]:fill-[#0f172a] [&_svg]:block [&_svg]:size-full", on && "ring-2 ring-primary ring-offset-2 ring-offset-background")}>
+                <span className={cn(FACE_BOX, on && "ring-2 ring-primary ring-offset-2 ring-offset-background")}>
                   <Face b={b} />
                 </span>
                 {on && (
