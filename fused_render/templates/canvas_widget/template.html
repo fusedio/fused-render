@@ -70,6 +70,18 @@
   .strip .status.error, .strip .sync.error { color: var(--error); }
   .strip .status.ok { color: var(--ok); }
   .strip .spacer { flex: 1; }
+  /* Too narrow for the words (a chat card, a slim pane): each button wears
+     its icon instead, with the words kept as its tooltip and its name, the
+     kind gives way, and the canvas name shortens. Nothing is cut off. */
+  .strip button .ico { display: none; width: 14px; height: 14px; fill: none; stroke: currentColor; stroke-width: 1.5; stroke-linecap: round; stroke-linejoin: round; }
+  @media (max-width: 560px) {
+    .strip { gap: 8px; }
+    .strip button { display: inline-flex; align-items: center; padding: 5px 7px; }
+    .strip button .ico { display: block; }
+    .strip button .lbl, .strip label .lbl { display: none; }
+    .strip .kind { display: none; }
+    .strip .canvas { flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+  }
   button {
     font: inherit; color: var(--fg); background: transparent;
     border: 1px solid var(--line); border-radius: 6px; padding: 3px 10px; cursor: pointer;
@@ -116,8 +128,8 @@
   <span class="spacer"></span>
   <span class="status" id="status"></span>
   <span class="sync" id="sync"></span>
-  <button type="button" id="reload" title="Load the saved canvas again">Reload</button>
-  <button type="button" id="open">Open in canvas</button>
+  <button type="button" id="reload" title="Reload: load the saved canvas again" aria-label="Reload"><svg class="ico" viewBox="0 0 16 16" aria-hidden="true"><path d="M13 8a5 5 0 1 1-1.6-3.7M13 3v3h-3"/></svg><span class="lbl">Reload</span></button>
+  <button type="button" id="open" title="Open in canvas" aria-label="Open in canvas"><svg class="ico" viewBox="0 0 16 16" aria-hidden="true"><path d="M9 3h4v4M13 3 7.5 8.5M11 9.5V13H3V5h3.5"/></svg><span class="lbl">Open in canvas</span></button>
 </div>
 <div class="stage">
   <iframe id="frame" hidden allow="clipboard-read; clipboard-write" referrerpolicy="origin"></iframe>
