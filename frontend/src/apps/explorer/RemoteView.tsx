@@ -583,7 +583,8 @@ export function RemoteView({ location, home }: { location: string; home: string 
   // no live lookup, and an address that is both an object and a prefix opens
   // as the folder it was clicked as. No hint (pasted, reloaded, bookmarked):
   // the address as is, and the server decides.
-  const [statUrl] = useState(() => (navHintIsDir() === true ? asPrefix(location) : location));
+  const [navIsDir] = useState(() => navHintIsDir() === true);
+  const [statUrl] = useState(() => (navIsDir ? asPrefix(location) : location));
   useEffect(() => {
     const c = new AbortController();
     // A re-stat after a download keeps the progress card up until the answer
@@ -607,7 +608,16 @@ export function RemoteView({ location, home }: { location: string; home: string 
   useDocumentTitle(renderedTitle || name);
 
   let content: ReactNode;
-  if (state.status === "loading") {
+  if (state.status === "loading" && navIsDir) {
+    // Reached as a folder: mount the folder view now, as StatView's
+    // LoadingScaffold does for a local folder, so its search field (in the
+    // crumb bar's slot) and rows don't blink out for the length of the stat
+    // on every folder-to-folder step. Same element position as the resolved
+    // `dir` branch below, so the stat landing flips `provisional` in place
+    // instead of remounting. Provisional: a stale hint (the address is a
+    // file) must not paint "Failed to list" before the stat says so.
+    content = <Listing fsPath={location} provisional barChrome />;
+  } else if (state.status === "loading") {
     content = (
       <div className="preview-body">
         <div className="preview-resolving">
