@@ -17,8 +17,8 @@ options:
 settings:
   base:
     SWIFT_VERSION: "5.10"
-    MARKETING_VERSION: "0.2.0"
-    CURRENT_PROJECT_VERSION: "5"
+    MARKETING_VERSION: "0.3.0"
+    CURRENT_PROJECT_VERSION: "6"
     # The Fused developer team (Apple Development identity in the keychain):
     # signs simulator and device builds alike; the App Group entitlement the
     # widget needs is provisioned against it.
