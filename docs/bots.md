@@ -1987,7 +1987,72 @@ disable, run now and delete stay the user's: `APP_GUIDE` says so, and the
 BOT MANAGEMENT paragraph of `SUPER_PROMPT` keeps other bots' routines out of
 Super Bot's hands.
 
-**Always ask.** `tools.ALWAYS_ASK = frozenset(MANAGE_TOOLS + ROUTINE_TOOLS + ("marketplace_install",))`.
+**Claude tasks: `task_start` and five more (`tools.TASK_TOOLS`, `bots/tasktools.py`, 2026-11-25).**
+Owner's ask: "bots can create and manage other tasks", for regular bots and
+experts alike (the expert side is docs/experts.md §16; the tool definitions,
+the listing and the calls are one module, `tasktools.py`, shared by both). A
+task is one Claude Code session in a folder, the rows of the Tasks page,
+reached through the server's own `/api/tasks` routes (`bot._tasks_api`, the
+door `build` already used). Every bot gets, on both engines:
+
+| tool | does | card |
+| --- | --- | --- |
+| `task_start {title, prompt, folder?}` | `POST /api/tasks/create` with the bot's id as `bot` | ALWAYS_ASK |
+| `task_list {query?, archived?}` | the rows it may see: id, title, status, folder, last reply | none |
+| `task_read {task, last?}` | the newest turns (`/export?format=json`), 6000 chars | none |
+| `task_send {task, text}` | `POST /api/tasks/<key>/send` | Approvals setting; always on someone else's task |
+| `task_stop {task}` | `POST /api/tasks/<key>/cancel` | same |
+| `task_archive {task}` | `POST /api/tasks/archive` | same |
+
+- **Reach** (owner's pick of three): a bot sees and manages only the tasks
+  it started; Super Bot sees and manages every task on the machine. "Started"
+  is the row's `bot` tag (the server checks it names a bot) or the bot's own
+  record (`Bot.task_entry_ids`: `meta["tasks"]` and `meta["builds"]`, so a
+  bot can follow up on its own build too). `tools._task_own` is the one
+  reading; a task outside a bot's reach answers "no task with id" exactly as
+  a missing one does. Super Bot's listing marks each row `yours`, `started
+  by <bot>` or `the user's` (`bot.task_owner_words`), and a send / stop /
+  archive on a task it did not start is `must_ask`: a card under "Never
+  ask" too.
+- **The id** the model names a task by is the entry id when the row has one
+  (it survives the rekey from `pending:<entry>` to the session id), else the
+  key; `tasktools.match` accepts either.
+- **`task_start`**: `tasktools.start_check` validates without writing
+  (prompt required, at most 12000 characters; the folder must exist; no
+  `folder` is the bot's own `files_dir`, so what the task writes there the
+  bot can `readfile`). The card (`tasktools.start_preview`) shows the title,
+  the folder, how it will run and the prompt (first 1200 characters). The
+  permission mode is not the model's to pick: `tools._task_mode` reads the
+  bot's Builds setting as `build` does (`BUILD_MODES`: scoped asks before
+  risky steps, full runs unattended; a phone-started Super Bot task is
+  always scoped). Refused from a routine-started run like `routine_add`,
+  and one start per instruction (`call_key` on the validated fields). The
+  task is tagged `bot`, so it runs on Claude (D17) and shows in the bot
+  panel's task rows and on the bots Tasks page.
+- **Hearing back.** `Bot.task_start` records `{kind: "task", entry_id, key,
+  name, dir, mode, created_at, via}` in `meta["tasks"]` (last 40) and hands
+  it to the build watcher (`_watch_build`, told apart by `kind`): a `done`
+  event when the task settles ("The task … finished" and the start of its
+  last reply), and the stall notices of `_surface_build_stall` reworded
+  ("The task … is waiting for your OK to run …", "Answer Claude under
+  Tasks"). Both are `source: "build"` so every existing consumer holds (a
+  hand-off does not take it for the target's result, the thread does not
+  treat it as a live question), and carry `task: {name, dir, entry_id,
+  key}`; the stall's `build` ref has `kind: "task"`, which is all the card
+  reads to say Task instead of Build. `past_conversation` labels them TASK
+  NOTICE: another session's words are data. A `task_send` into a settled
+  task of the bot's own re-arms the watcher (`Bot.task_rewatch`). Watchers
+  resume at load like builds'. `meta["tasks"]` is kept apart from
+  `meta["builds"]` on purpose: a build's folder is an app the bot owns
+  (`apptools.is_owned`: its scripts run without a card), a task's folder is
+  the user's project.
+- **Reads are web text at one remove**: `task_list` / `task_read` flip
+  Super Bot's `web_touched` like `bot_chat` (agent_engine `_act`).
+- Not there: delete and erase, answering a task's permission card (the
+  user's, under Tasks), choosing the model or agent of a new task (the
+  Preferences default), scheduling a task for later.
+
+**Always ask.** `tools.ALWAYS_ASK = frozenset(MANAGE_TOOLS + ROUTINE_TOOLS + ("marketplace_install", "task_start"))`.
 `agent_engine._act` raises the card when `risk()` is non-empty and (the
 name is in `ALWAYS_ASK` or `effective_approval != "auto"`), so a Super Bot
 on "Never ask" still asks, and a phone-started task asks as it always did

@@ -19,8 +19,9 @@ def test_main_and_breakout_get_the_services_and_no_rules():
         sp = launch.spec(f"{s.id}:{kind}", s.home)
         json.dumps(sp)  # the run dir stores it
         assert sp["kind"] == kind and sp["policy_env"] == {}
-        assert "deny" not in sp and "ask" not in sp
-        assert set(sp["mcp_servers"]) == {"expert_services"}
+        assert "deny" not in sp and sp["ask"] == ["mcp__expert_tasks__task_start"]  # each new task is the user's to approve
+        assert set(sp["mcp_servers"]) == {"expert_services", "expert_tasks"}
+        assert sp["mcp_servers"]["expert_tasks"]["args"][4:] == [f"api/experts/{s.id}/expert_tasks", "expert_tasks"]
         entry = sp["mcp_servers"]["expert_services"]
         assert "botmcp" in os.path.basename(entry["args"][0]) and entry["timeout"] > 60_000
         token = entry["args"][3]
@@ -32,7 +33,8 @@ def test_main_and_breakout_get_the_services_and_no_rules():
 def test_a_learning_run_has_the_chat_s_tools_and_nobody_to_ask():
     s = make_expert()
     sp, main = launch.spec(f"{s.id}:update", s.home), launch.spec(f"{s.id}:main", s.home)
-    assert set(sp["mcp_servers"]) == set(main["mcp_servers"])
+    # … but not the task tools: nobody is there to approve a start
+    assert set(sp["mcp_servers"]) == set(main["mcp_servers"]) - {"expert_tasks"} and "ask" not in sp
     assert sp["policy_env"] == {"FUSED_EXPERT_UNATTENDED": "1"}  # a card would wait for nobody: refused at once
 
 
