@@ -154,11 +154,37 @@ export function ItemList({ items, cap, moreHref, variant }: { items: WidgetItem[
   );
 }
 
+/** Columns of the `.hw-icons` grid inside `ref`, re-read when it resizes. */
+function useGridCols(ref: React.RefObject<HTMLDivElement | null>): number {
+  const [cols, setCols] = useState(1);
+  useEffect(() => {
+    const wrap = ref.current;
+    if (!wrap) return;
+    const read = () => {
+      const grid = wrap.querySelector<HTMLElement>(".hw-icons");
+      const c = grid ? getComputedStyle(grid).gridTemplateColumns.split(" ").filter(Boolean).length : 1;
+      setCols(Math.max(1, c));
+    };
+    read();
+    if (typeof ResizeObserver === "undefined") return;
+    const ro = new ResizeObserver(read);
+    ro.observe(wrap);
+    return () => ro.disconnect();
+  }, [ref]);
+  return cols;
+}
+
+/** Icon tiles, as many whole rows as the tile's real height holds (measured
+    like ItemList; `cap` is only the first-paint guess). */
 export function ItemIcons({ items, cap, moreHref }: { items: WidgetItem[]; cap: number; moreHref?: string }) {
-  const shown = items.slice(0, cap);
+  const { ref, n, moreFits } = useFitCount(items.length, cap, ".hw-tile", ".hw-icons");
+  const cols = useGridCols(ref);
+  // With tiles hidden, show whole rows only: a half row above "+N more" reads as the end.
+  const whole = n < items.length && cols > 1 ? Math.max(cols, n - (n % cols)) : n;
+  const shown = items.slice(0, Math.min(whole, items.length));
   const more = items.length - shown.length;
   return (
-    <div className="hw-list-wrap">
+    <div ref={ref} className="hw-list-wrap">
       <div className="hw-icons">
         {shown.map((it) => (
           <ItemLink key={it.key} item={it} className="hw-tile">
@@ -167,7 +193,7 @@ export function ItemIcons({ items, cap, moreHref }: { items: WidgetItem[]; cap: 
           </ItemLink>
         ))}
       </div>
-      <MoreLine count={more} href={moreHref} />
+      <MoreLine count={moreFits ? more : 0} href={moreHref} />
     </div>
   );
 }

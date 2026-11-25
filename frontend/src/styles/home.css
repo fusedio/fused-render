@@ -1119,6 +1119,10 @@ button.hw-row:hover {
   align-content: start;
 }
 
+/* Measured icon tiles (ItemIcons): the grid is as tall as its rows, so the
+   fit can compare them with the room the tile has. */
+.hw-list-wrap > .hw-icons { height: auto; }
+
 .hw-icons.is-strip {
   grid-template-columns: none;
   grid-auto-flow: column;
