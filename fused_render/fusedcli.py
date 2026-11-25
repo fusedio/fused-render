@@ -238,10 +238,46 @@ def workbench_env() -> str:
         return pinned
     from fused_render.shell import prefs
 
-    stored = prefs.read_prefs().get("workbench_env")
-    if stored in WORKBENCH_ENV_CHOICES:
+    stored_prefs = prefs.read_prefs()
+    enabled = _enabled_envs_from(stored_prefs)
+    stored = stored_prefs.get("workbench_env")
+    if stored in enabled:
         return stored
-    return DEFAULT_WORKBENCH_ENV
+    if DEFAULT_WORKBENCH_ENV in enabled:
+        return DEFAULT_WORKBENCH_ENV
+    return enabled[0]
+
+
+def _enabled_envs_from(stored_prefs: dict) -> tuple[str, ...]:
+    """The enabled environments a prefs dict names, in WORKBENCH_ENV_CHOICES
+    order and never empty. With no `workbench_envs_enabled` stored it is the
+    default env plus whatever `workbench_env` the user had already chosen, so
+    an install from before the toggles keeps the environment it was using."""
+    raw = stored_prefs.get("workbench_envs_enabled")
+    if isinstance(raw, list):
+        picked = {e for e in raw if e in WORKBENCH_ENV_CHOICES}
+    else:
+        picked = {DEFAULT_WORKBENCH_ENV}
+        if stored_prefs.get("workbench_env") in WORKBENCH_ENV_CHOICES:
+            picked.add(stored_prefs["workbench_env"])
+    if not picked:
+        picked = {DEFAULT_WORKBENCH_ENV}
+    return tuple(e for e in WORKBENCH_ENV_CHOICES if e in picked)
+
+
+def enabled_workbench_envs() -> tuple[str, ...]:
+    """The environments the user has turned on (Preferences > Accounts >
+    Fused Workbench): what the canvas catalog's environment picker offers and
+    what the default environment is chosen from. It gates nothing else — a
+    clone of an environment turned off keeps syncing. Under a
+    FUSED_RENDER_WORKBENCH_ENV pin it is the pinned env alone (empty when the
+    pin is outside WORKBENCH_ENV_CHOICES)."""
+    pinned = os.environ.get(WORKBENCH_ENV_VAR)
+    if pinned:
+        return (pinned,) if pinned in WORKBENCH_ENV_CHOICES else ()
+    from fused_render.shell import prefs
+
+    return _enabled_envs_from(prefs.read_prefs())
 
 
 def set_fused_env(child: dict[str, str], env: str) -> None:

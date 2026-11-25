@@ -571,24 +571,34 @@ const ENTRIES = [
   },
 
   // ── Accounts ─────────────────────────────────────────────────────────────
+  // One row per Fused environment (settings/accounts.tsx): the switch turns
+  // it on, and an environment that is on carries its own sign-in underneath.
   {
-    id: "fused-account",
+    id: "workbench-unstable",
     needs: "fused",
     group: "integrations",
-    section: "Sign-ins",
-    label: "Fused account",
-    description: "Used by Share and Canvases. Signing in opens fused.io in your browser.",
-    keywords: "fused login sign in log out account workbench",
+    section: "Fused Workbench",
+    label: "Unstable",
+    description: "Fused's unstable environment. While it is on, the Canvases page offers it and you can sign in to it here.",
+    keywords: "fused login sign in log out account workbench environment unstable canvases env",
   },
   {
-    id: "workbench-env",
+    id: "workbench-prod",
     needs: "fused",
     group: "integrations",
-    section: "Sign-ins",
-    label: "Default environment",
-    description: "The canvas catalog opens on this environment; `fused` in chats outside a canvas clone and share uploads target it. Canvases keep the environment they were cloned from.",
-    keywords: "default environment unstable prod production staging workbench canvases fused env",
-    child: true,
+    section: "Fused Workbench",
+    label: "Production",
+    description: "Hosted Fused. Used by Share and Canvases. Signing in opens fused.io in your browser.",
+    keywords: "fused login sign in log out account workbench environment prod production canvases env default",
+  },
+  {
+    id: "workbench-custom",
+    needs: "fused",
+    group: "integrations",
+    section: "Fused Workbench",
+    label: "Custom",
+    description: "Your own Fused deployment, read from ~/.fused/settings.toml. Add its config first, then sign in.",
+    keywords: "fused login sign in log out account workbench environment custom deployment settings.toml base_url config env",
   },
   {
     id: "huggingface",

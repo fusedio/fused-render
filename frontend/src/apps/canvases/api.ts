@@ -40,6 +40,10 @@ export interface CanvasesStatus {
    *  tab from there would hit real prod), and the catalog disables its
    *  environment dropdown. */
   locked: boolean;
+  /** The environments turned on in Preferences (Accounts > Fused Workbench):
+   *  the catalog's picker offers only these, and is not drawn for one.
+   *  OPTIONAL: an older server answers without it. */
+  enabled_envs?: string[];
   /** Per environment: its workbench web origin, the origin the workspace
    *  frames (the same, or — custom env with the embed proxy on — the
    *  loopback proxy in front of it), its clone folder

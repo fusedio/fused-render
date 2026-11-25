@@ -50,7 +50,12 @@ import {
 import { LanControl, LanRemoteControl } from "./lan";
 import { ConnectionsPointer } from "../Connections";
 import { ClaudeCliMissing } from "./claude";
-import { FusedAccountControl, HuggingFaceControl, WorkbenchEnvControl } from "./accounts";
+import {
+  HuggingFaceControl,
+  WorkbenchCustomControl,
+  WorkbenchProdControl,
+  WorkbenchUnstableControl,
+} from "./accounts";
 import {
   CallLogControl,
   CallParamsControl,
@@ -106,8 +111,9 @@ export const CONTROLS: Record<SettingId, ComponentType<PrefControlProps>> = {
   lan: LanControl,
   "lan-remote": LanRemoteControl,
   connections: ConnectionsPointer,
-  "fused-account": FusedAccountControl,
-  "workbench-env": WorkbenchEnvControl,
+  "workbench-unstable": WorkbenchUnstableControl,
+  "workbench-prod": WorkbenchProdControl,
+  "workbench-custom": WorkbenchCustomControl,
   huggingface: HuggingFaceControl,
   "call-log": CallLogControl,
   "call-params": CallParamsControl,

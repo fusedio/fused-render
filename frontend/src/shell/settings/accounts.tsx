@@ -7,9 +7,8 @@
 // device-code flow), the provider stores the result, and these rows only read
 // "signed in / as whom". Each POLLS only while a login it started is in flight
 // — the wait is a person finishing a browser round trip — and is otherwise idle.
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState, useSyncExternalStore } from "react";
 import {
-  ENV_NAMES,
   WORKBENCH_ENVS,
   cancelLogin,
   loginOutcome,
@@ -21,27 +20,205 @@ import {
   type CanvasesStatus,
   type WorkbenchEnv,
 } from "@apps/canvases/api";
+import { FusedSettingsModal } from "@apps/canvases/FusedSettingsModal";
 import {
   cancelHfLogin,
   getHfAuth,
   hfLogout,
-  putWorkbenchEnv,
+  putWorkbenchEnvsEnabled,
   startHfLogin,
   type HfAuth,
 } from "@platform/lib/api";
 import { ErrorBanner } from "@platform/ui/ErrorBanner";
 import { Button } from "@platform/shadcn/ui/button";
-import { SettingRow, SettingSelect } from "./SettingRow";
+import { RowSwitch, SettingRow } from "./SettingRow";
 
 const FUSED_LOGIN_POLL_MS = 1500;
 
-// The Fused account: the `fused login` provider Share and Canvases run on
-// (fused_render/canvases.py owns the routes). It used to be a tab of its own;
-// before THAT, the only sign-in UI sat on the Canvases page behind that
-// feature's flag (D427), so with the flag off there was no way to see which
-// account this machine was on, or leave it. Log out also stops canvas sync —
-// said in the button's title, the one consequence a reader would not expect.
-export function FusedAccountControl() {
+// FUSED WORKBENCH: one row per environment (Unstable, Production, Custom),
+// each a switch. An environment that is on shows its own sign-in line under
+// the switch; Custom shows its config line first, and its sign-in unlocks
+// once ~/.fused/settings.toml names a deployment. The switches write
+// `workbench_envs_enabled` (PUT /api/prefs): the canvas catalog's environment
+// picker offers only the environments turned on, and is not drawn when there
+// is one. Turning an environment off signs nothing out and stops no sync.
+//
+// The three rows are three components (the registry draws one per id), so
+// what they share lives in a small module store: the env-less status (which
+// are on, the pin, the CLI, custom's config) and a counter bumped when any
+// row's sign-in state changes — prod and unstable share one `fused login`
+// store, so signing in on one row is news for the other.
+interface WorkbenchShared {
+  status: CanvasesStatus | null;
+  error: string | null;
+  authGen: number;
+}
+let workbenchShared: WorkbenchShared = { status: null, error: null, authGen: 0 };
+const workbenchListeners = new Set<() => void>();
+let workbenchLoading: Promise<void> | null = null;
+
+function setWorkbenchShared(patch: Partial<WorkbenchShared>) {
+  workbenchShared = { ...workbenchShared, ...patch };
+  workbenchListeners.forEach((fn) => fn());
+}
+
+function reloadWorkbenchShared(): Promise<void> {
+  if (workbenchLoading) return workbenchLoading;
+  const p = getCanvasesStatus()
+    .then((status) => setWorkbenchShared({ status, error: null }))
+    .catch((e: Error) => setWorkbenchShared({ error: e.message }))
+    .finally(() => {
+      if (workbenchLoading === p) workbenchLoading = null;
+    });
+  workbenchLoading = p;
+  return p;
+}
+
+const subscribeWorkbench = (fn: () => void) => {
+  workbenchListeners.add(fn);
+  return () => {
+    workbenchListeners.delete(fn);
+  };
+};
+
+function useWorkbenchShared(): WorkbenchShared {
+  const shared = useSyncExternalStore(subscribeWorkbench, () => workbenchShared);
+  useEffect(() => {
+    // Every mount re-reads: the page may have been away while a pin, the
+    // config file or another window's toggle changed the answer.
+    void reloadWorkbenchShared();
+  }, []);
+  return shared;
+}
+
+/** The environments turned on, as the server resolved them. An older server
+ *  answers without the list: every environment counts as on then. */
+const enabledEnvsOf = (s: CanvasesStatus): WorkbenchEnv[] =>
+  s.enabled_envs ? s.enabled_envs.filter(isWorkbenchEnv) : [...WORKBENCH_ENVS];
+
+const hostOf = (url: string): string => {
+  try {
+    return new URL(url).host || url;
+  } catch {
+    return url;
+  }
+};
+
+function WorkbenchEnvRow({ env }: { env: WorkbenchEnv }) {
+  const { status, error: loadError } = useWorkbenchShared();
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [editing, setEditing] = useState(false);
+  const id = `workbench-${env}`;
+
+  const enabled = status ? enabledEnvsOf(status) : [];
+  const on = enabled.includes(env);
+  const pinned = status?.locked === true;
+  const lastOn = on && enabled.length === 1;
+  const configured = env !== "custom" || status?.envs?.custom?.available !== false;
+
+  const onToggle = async (next: boolean) => {
+    if (!status || busy) return;
+    setBusy(true);
+    setError(null);
+    try {
+      const want = WORKBENCH_ENVS.filter((e) => (e === env ? next : enabled.includes(e)));
+      await putWorkbenchEnvsEnabled(want);
+      await reloadWorkbenchShared();
+    } catch (e) {
+      setError((e as Error).message);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <SettingRow
+      id={id}
+      off={!!status && !on}
+      status={
+        !status ? (
+          loadError ? undefined : "Checking…"
+        ) : pinned && on ? (
+          <>
+            Pinned to <b>{status.workbench_env}</b> by <code>FUSED_RENDER_WORKBENCH_ENV</code>.
+          </>
+        ) : env === "custom" ? (
+          "Your own Fused deployment"
+        ) : (
+          hostOf(status.envs?.[env]?.base_url ?? "")
+        )
+      }
+      control={
+        status ? (
+          <RowSwitch
+            id={id}
+            checked={on}
+            disabled={busy || pinned || lastOn}
+            title={
+              pinned
+                ? "Pinned by FUSED_RENDER_WORKBENCH_ENV"
+                : lastOn
+                  ? "At least one environment stays on"
+                  : undefined
+            }
+            onChange={(v) => void onToggle(v)}
+          />
+        ) : undefined
+      }
+    >
+      {(error || loadError) && <ErrorBanner>{error || loadError}</ErrorBanner>}
+      {status && on && !status.cli_found && (
+        <div className="settings-subrow">
+          <span className="settings-subrow-main">
+            The fused CLI is not available in this server&rsquo;s environment. Install it with{" "}
+            <code>pip install &quot;fused-render[fused]&quot;</code> or set <code>FUSED_RENDER_FUSED_BIN</code>.
+          </span>
+        </div>
+      )}
+      {status && on && status.cli_found && env === "custom" && (
+        <div className="settings-subrow">
+          <span className="settings-subrow-main">
+            {configured ? (
+              <span className="settings-dot settings-dot-ok">
+                Config points at <code>{hostOf(status.envs.custom.base_url)}</code>
+              </span>
+            ) : (
+              <span className="settings-dot settings-dot-idle">
+                No config yet. Needs a <code>base_url</code> in <code>{status.settings_path}</code>
+              </span>
+            )}
+          </span>
+          <Button variant={configured ? "outline" : "accent"} size="sm" onClick={() => setEditing(true)}>
+            {configured ? "Edit config" : "Add config"}
+          </Button>
+        </div>
+      )}
+      {status && on && status.cli_found && <WorkbenchEnvSignIn env={env} locked={!configured} />}
+      {editing && (
+        <FusedSettingsModal
+          onClose={() => setEditing(false)}
+          onSaved={() => {
+            setEditing(false);
+            // The deployment may have changed under a signed-in line: custom's
+            // `[auth]` can name another credentials file.
+            void reloadWorkbenchShared().then(() =>
+              setWorkbenchShared({ authGen: workbenchShared.authGen + 1 }),
+            );
+          }}
+        />
+      )}
+    </SettingRow>
+  );
+}
+
+// One environment's sign-in line: the `fused login` store that environment
+// reads (prod and unstable share one; custom has its own `[auth]`). Log out
+// also stops canvas sync — said in the button's title, the one consequence a
+// reader would not expect. `locked` is custom with no config: a sign-in then
+// would be a hosted-prod sign-in under another name, so the button waits.
+function WorkbenchEnvSignIn({ env, locked }: { env: WorkbenchEnv; locked: boolean }) {
+  const { authGen } = useSyncExternalStore(subscribeWorkbench, () => workbenchShared);
   const [status, setStatus] = useState<CanvasesStatus | null>(null);
   const [handle, setHandle] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
@@ -52,17 +229,15 @@ export function FusedAccountControl() {
   const aliveRef = useRef(true);
 
   const refresh = useCallback(async () => {
-    let s = await getCanvasesStatus();
+    let s = await getCanvasesStatus(env);
     if (!aliveRef.current) return s;
-    if (s.logged_in) {
+    if (s.logged_in && !locked) {
       // `logged_in` is the credentials FILE existing; whoami tells a live
       // store from a dead one. A 401 is DOWNGRADED to signed-out before
-      // anything is shown or published — the Canvases page's verdict — so the
-      // row offers Sign in rather than a Log out that would change nothing.
-      // No env: the server answers in the auth env, which is all a
-      // signed-in-as line needs.
+      // anything is shown — the Canvases page's verdict — so the line offers
+      // Sign in rather than a Log out that would change nothing.
       try {
-        const who = await getWhoami();
+        const who = await getWhoami(env);
         if (!aliveRef.current) return s;
         setHandle(who.handle);
       } catch (e) {
@@ -80,42 +255,38 @@ export function FusedAccountControl() {
     }
     setStatus(s);
     return s;
-  }, []);
+  }, [env, locked]);
 
+  // Also re-read when another row's sign-in changed (`authGen`).
   useEffect(() => {
     aliveRef.current = true;
     refresh().catch((e) => aliveRef.current && setError((e as Error).message));
     return () => {
       aliveRef.current = false;
     };
-  }, [refresh]);
+  }, [refresh, authGen]);
+
+  const announce = () => setWorkbenchShared({ authGen: workbenchShared.authGen + 1 });
 
   // Ends when the credentials file's stamp changes (a completed login), or
   // when the browser child exits without one (closed tab, denied).
   useEffect(() => {
     if (!loggingIn) return;
     let cancelled = false;
-    // Set once the completed login is seen, so ticks landing while `refresh`
-    // asks whoami neither re-run it nor fall into the "child gone" branch.
+    // Set once the completed login is seen, so later ticks neither re-run
+    // the completion nor fall into the "child gone" branch.
     let completing = false;
-    const id = window.setInterval(() => {
+    const timer = window.setInterval(() => {
       if (completing) return;
-      void getCanvasesStatus()
+      void getCanvasesStatus(env)
         .then((s) => {
           if (cancelled || completing) return;
-          // The raw tick is NOT stored or published: `logged_in` here is only
-          // the file existing, and a cancelled re-login after a whoami 401 must
-          // not bring back a Log out for a store already refused.
           if (s.logged_in && s.creds_stamp !== loginStampRef.current) {
-            // `loggingIn` drops only AFTER `refresh` wrote the vouched status:
-            // dropping it first showed an enabled Sign in for the round trip.
             completing = true;
             setError(null);
-            refresh()
-              .catch((e) => !cancelled && setError((e as Error).message))
-              .finally(() => {
-                if (!cancelled) setLoggingIn(false);
-              });
+            setLoggingIn(false);
+            // Every sign-in line re-reads, this one included.
+            announce();
           } else if (!s.login_in_flight) {
             setLoggingIn(false);
             setError(loginOutcome(loginStartedRef.current));
@@ -125,9 +296,9 @@ export function FusedAccountControl() {
     }, FUSED_LOGIN_POLL_MS);
     return () => {
       cancelled = true;
-      window.clearInterval(id);
+      window.clearInterval(timer);
     };
-  }, [loggingIn, refresh]);
+  }, [loggingIn, env]);
 
   const act = async (fn: () => Promise<unknown>) => {
     setBusy(true);
@@ -144,7 +315,7 @@ export function FusedAccountControl() {
   const onLogin = () =>
     act(async () => {
       loginStampRef.current = status?.creds_stamp ?? null;
-      await startLogin();
+      await startLogin(env);
       loginStartedRef.current = Date.now();
       setLoggingIn(true);
     });
@@ -159,36 +330,30 @@ export function FusedAccountControl() {
 
   const onLogout = () =>
     act(async () => {
-      await logout();
-      await refresh();
+      await logout(env);
+      announce();
     });
 
-  const noCli = status && !status.cli_found;
+  const signedIn = !!status?.logged_in && !locked;
   return (
-    <SettingRow
-      id="fused-account"
-      status={
-        !status ? (
-          error ? undefined : "Checking…"
-        ) : noCli ? (
-          <>
-            The fused CLI is not available in this server&rsquo;s environment. Install it with{" "}
-            <code>pip install &quot;fused-render[fused]&quot;</code> or set <code>FUSED_RENDER_FUSED_BIN</code>.
-          </>
-        ) : loggingIn ? (
-          "Complete the sign-in in the browser window that just opened."
-        ) : status.logged_in ? (
-          <span className="settings-dot settings-dot-ok">Signed in{handle ? <> as <b>{handle}</b></> : null}</span>
-        ) : (
-          "Not signed in."
-        )
-      }
-      control={
-        !status || noCli ? undefined : loggingIn ? (
+    <>
+      <div className="settings-subrow">
+        <span className="settings-subrow-main">
+          {!status ? (
+            error ? null : "Checking…"
+          ) : loggingIn ? (
+            "Complete the sign-in in the browser window that just opened."
+          ) : signedIn ? (
+            <span className="settings-dot settings-dot-ok">Signed in{handle ? <> as <b>{handle}</b></> : null}</span>
+          ) : (
+            <span className="settings-dot settings-dot-idle">Not signed in</span>
+          )}
+        </span>
+        {!status ? null : loggingIn ? (
           <Button variant="outline" size="sm" disabled={busy} onClick={() => void onCancel()}>
             Cancel
           </Button>
-        ) : status.logged_in ? (
+        ) : signedIn ? (
           <Button
             variant="destructive"
             size="sm"
@@ -199,95 +364,25 @@ export function FusedAccountControl() {
             Log out
           </Button>
         ) : (
-          <Button variant="accent" size="sm" disabled={busy} onClick={() => void onLogin()}>
-            Sign in to Fused
+          <Button
+            variant={locked ? "outline" : "accent"}
+            size="sm"
+            disabled={busy || locked}
+            title={locked ? "Add the config first" : undefined}
+            onClick={() => void onLogin()}
+          >
+            Sign in
           </Button>
-        )
-      }
-    >
+        )}
+      </div>
       {error && <ErrorBanner>{error}</ErrorBanner>}
-    </SettingRow>
+    </>
   );
 }
 
-// The DEFAULT Fused environment (fusedcli.workbench_env): where the canvas
-// catalog opens, what `fused` in a chat outside a canvas clone targets, and
-// where share uploads go. A plain PUT /api/prefs: nothing has to stop first,
-// because canvases no longer follow it — each keeps the env it was cloned
-// from (its clone lives under ~/Fused/canvas/<env>), so a prod and an
-// unstable canvas sync side by side whatever this says. Locked, with the
-// reason, while FUSED_RENDER_WORKBENCH_ENV pins it (the server 423s a write).
-export function WorkbenchEnvControl() {
-  const [status, setStatus] = useState<CanvasesStatus | null>(null);
-  const [busy, setBusy] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-
-  useEffect(() => {
-    let alive = true;
-    void getCanvasesStatus()
-      .then((s) => alive && setStatus(s))
-      .catch((e) => alive && setError((e as Error).message));
-    return () => {
-      alive = false;
-    };
-  }, []);
-
-  const onPick = async (env: WorkbenchEnv) => {
-    if (!status || env === status.workbench_env) return;
-    setBusy(true);
-    setError(null);
-    try {
-      await putWorkbenchEnv(env);
-      // Re-read rather than patch: the status is what the server resolved.
-      setStatus(await getCanvasesStatus());
-    } catch (e) {
-      setError((e as Error).message);
-    } finally {
-      setBusy(false);
-    }
-  };
-
-  const current = status?.workbench_env ?? "";
-  // A pin outside the choices (a hand-set env var) still shows as itself.
-  const known = isWorkbenchEnv(current);
-  return (
-    <SettingRow
-      id="workbench-env"
-      status={
-        // Only what needs saying: a pin. The per-environment canvas counts
-        // and folders were dropped (2026-11-20).
-        !status ? (
-          error ? undefined : "Checking…"
-        ) : status.locked ? (
-          <>
-            Pinned to <b>{current}</b> by <code>FUSED_RENDER_WORKBENCH_ENV</code>.
-          </>
-        ) : undefined
-      }
-      control={
-        !status ? undefined : (
-          <SettingSelect
-            id="workbench-env"
-            value={known ? current : ""}
-            options={[
-              ...(known ? [] : [{ key: "", label: current }]),
-              ...WORKBENCH_ENVS.map((e) => ({
-                key: e,
-                label: ENV_NAMES[e].label,
-              })),
-            ]}
-            disabled={busy || status.locked}
-            onChange={(v) => {
-              if (isWorkbenchEnv(v)) void onPick(v);
-            }}
-          />
-        )
-      }
-    >
-      {error && <ErrorBanner>{error}</ErrorBanner>}
-    </SettingRow>
-  );
-}
+export const WorkbenchUnstableControl = () => <WorkbenchEnvRow env="unstable" />;
+export const WorkbenchProdControl = () => <WorkbenchEnvRow env="prod" />;
+export const WorkbenchCustomControl = () => <WorkbenchEnvRow env="custom" />;
 
 // Hugging Face (server/routers/hf_auth.py, D402): huggingface_hub's own
 // device-code login. Someone who needs a specific fine-grained token exports

@@ -177,6 +177,7 @@ from fused_render.fusedcli import (
     cli_error,
     fused_cli,
     set_fused_env,
+    enabled_workbench_envs,
     workbench_env,
     workbench_env_locked,
 )
@@ -1156,6 +1157,9 @@ def api_canvases_status(env: str = ""):
         # environment picker, since `_require_env` refuses the other env.
         "workbench_env": workbench_env(),
         "locked": workbench_env_locked(),
+        # The environments turned on in Preferences: the catalog's picker
+        # offers only these, and hides itself when there is one.
+        "enabled_envs": list(enabled_workbench_envs()),
         # Clone counts are a local listdir, no CLI — informational on the
         # Preferences row. `available` is false only for custom whose
         # settings file names no `base_url` (`fused_settings_configured`):

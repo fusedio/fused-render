@@ -1747,7 +1747,7 @@ export interface Prefs {
   // pref: written by PUT /api/prefs `{workbench_env}` (putWorkbenchEnv).
   // `locked` = FUSED_RENDER_WORKBENCH_ENV pins it (the PUT answers 423).
   // OPTIONAL: an older server answers without it.
-  workbench?: { env: string; locked: boolean; choices: string[] };
+  workbench?: { env: string; locked: boolean; choices: string[]; enabled?: string[] };
   // WHICH AGENTS MAY RUN CHATS AND TASKS (docs/COPILOT_BACKEND.md D17):
   // `claude_enabled` (default on) / `copilot_enabled` / `codex_enabled` /
   // `gemini_enabled` / `opencode_enabled` / `cursor_enabled` (default off,
@@ -2090,6 +2090,13 @@ export function putCanvasesEmbedProxy(enabled: boolean): Promise<Prefs> {
  *  it. The server re-exports the `fused` wrapper so its default follows. */
 export function putWorkbenchEnv(env: "unstable" | "prod" | "custom"): Promise<Prefs> {
   return putJson<Prefs>("/api/prefs", { workbench_env: env });
+}
+
+/** Which Fused environments are turned on (`prefs.workbench.enabled`): the
+ *  canvas catalog's picker offers these. 400 for an empty list or a name
+ *  outside the choices, 423 under a FUSED_RENDER_WORKBENCH_ENV pin. */
+export function putWorkbenchEnvsEnabled(envs: ("unstable" | "prod" | "custom")[]): Promise<Prefs> {
+  return putJson<Prefs>("/api/prefs", { workbench_envs_enabled: envs });
 }
 
 /** The launcher's panel shortcut, as a `hotkey.py` spec (`"alt+space"`,

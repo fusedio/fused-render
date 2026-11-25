@@ -1135,6 +1135,9 @@ def _workbench_state() -> dict:
         "env": fusedcli.workbench_env(),
         "locked": fusedcli.workbench_env_locked(),
         "choices": list(fusedcli.WORKBENCH_ENV_CHOICES),
+        # The environments turned on (PUT `workbench_envs_enabled`): the
+        # catalog's picker offers these and the default is one of them.
+        "enabled": list(fusedcli.enabled_workbench_envs()),
     }
 
 
@@ -1886,6 +1889,27 @@ def put_prefs(body: dict = Body(...), x_fused: str | None = Header(default=None)
                     status_code=423)
             prefs["workbench_env"] = value
             changed = True
+        if "workbench_envs_enabled" in body:
+            # Which environments are turned on (fusedcli.enabled_workbench_envs).
+            # Stored in the choices' own order; at least one stays on, since
+            # the default environment is picked from this list.
+            from fused_render import fusedcli
+
+            value = body.get("workbench_envs_enabled")
+            if (not isinstance(value, list) or not value
+                    or any(v not in fusedcli.WORKBENCH_ENV_CHOICES for v in value)):
+                return JSONResponse(
+                    {"error": "'workbench_envs_enabled' must be a non-empty list of: "
+                              + ", ".join(fusedcli.WORKBENCH_ENV_CHOICES)},
+                    status_code=400)
+            if fusedcli.workbench_env_locked():
+                return JSONResponse(
+                    {"error": f"the environment is pinned by {fusedcli.WORKBENCH_ENV_VAR}; "
+                              "unset it to use the preference"},
+                    status_code=423)
+            prefs["workbench_envs_enabled"] = [
+                e for e in fusedcli.WORKBENCH_ENV_CHOICES if e in value]
+            changed = True
         launcher_rebind: str | None = None
         launcher_changed = False
         if "launcher_hotkey" in body:
@@ -1980,7 +2004,7 @@ def put_prefs(body: dict = Body(...), x_fused: str | None = Header(default=None)
                           "'calls_enabled', "
                           "'calls_params', 'calls_retention_days', "
                           "'claude_max_concurrent_sessions', "
-                          "'ai_idle_unload_minutes', 'workbench_env', 'launcher_hotkey' and/or "
+                          "'ai_idle_unload_minutes', 'workbench_env', 'workbench_envs_enabled', 'launcher_hotkey' and/or "
                           "'launcher_row_modifier')"},
                 status_code=400,
             )
@@ -2008,7 +2032,7 @@ def put_prefs(body: dict = Body(...), x_fused: str | None = Header(default=None)
             remote_index.start_background("canvases-enabled")
         except Exception:
             logger.exception("remote index start failed")
-    if "workbench_env" in body:
+    if "workbench_env" in body or "workbench_envs_enabled" in body:
         # AFTER the write: the wrapper bakes workbench_env() in as the
         # FUSED_ENV a session's `fused` defaults to outside a clone, and it
         # reads the stored preference.

@@ -1883,6 +1883,32 @@
   gap: 8px;
 }
 
+/* A line under a row's switch (Fused Workbench: an environment's config and
+   sign-in): what stands on the left, the one action on the right. */
+.settings-subrow {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px 16px;
+  padding-left: 24px;
+}
+
+.settings-subrow-main {
+  flex: 1 1 240px;
+  min-width: 0;
+  color: var(--fg-muted);
+  font-size: 13px;
+}
+
+.settings-subrow-main b {
+  color: var(--fg);
+  font-weight: 500;
+}
+
+.settings-dot-idle::before {
+  background: var(--fg-faint);
+}
+
 .settings-row-extra:empty {
   display: none;
 }
