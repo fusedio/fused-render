@@ -22,6 +22,7 @@
 import { aPinned, addAPin, dropAPin, setAPinned } from "@platform/lib/last-chat";
 import { useSyncExternalStore } from "react";
 import { PeekIntent, type Timers } from "./rail-peek-lib";
+import { railPace } from "./rail-zone";
 import { railExtrasNow } from "./rail-extras-flag";
 
 export interface DoorCardState {
@@ -168,6 +169,7 @@ export function createDoorCardStore(key: string, id: string, pinWord?: string): 
             warm: () => {},
           },
           testTimers,
+          railPace,
         );
       }
       return intent;

@@ -28,6 +28,7 @@ const { setBotsAvailableForTests } = await import("@platform/lib/bots-available"
 const { aPinned, botOpen, favOpen, favPinned, setAPinned, setBotOpen, setFavOpen, setFavPinned } = await import("@platform/lib/last-chat");
 const { dropSharedPrefsRead } = await import("@platform/lib/api");
 const { botCardState, resetBotCardForTests } = await import("./bot-card-store");
+const { resetRailZoneForTests } = await import("./rail-zone");
 const { botsCardState, botsCardStore, registerBotsCard, resetBotsCardForTests } = await import("./bots-peek-store");
 const { registerTasksCard, resetTasksCardForTests, tasksCardState, tasksCardStore } = await import("./tasks-peek-store");
 const { forgetGitCardRail, gitCardIntent, gitCardState, gitCardStore, resetGitCardForTests, setGitCardRail, GIT_CARD_KEY } =
@@ -176,6 +177,7 @@ beforeEach(() => {
   resetListingFeedForTests();
   forgetListing();
   resetBotCardForTests();
+  resetRailZoneForTests();
   resetBotsPulseForTests();
   resetTasksCardForTests();
   resetBotsCardForTests();

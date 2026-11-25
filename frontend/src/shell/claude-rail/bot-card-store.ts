@@ -21,6 +21,7 @@ import { useSyncExternalStore } from "react";
 import { setBotOpen } from "@platform/lib/last-chat";
 import { setBotCard } from "./fav-peek-store";
 import { PeekIntent, type Timers } from "./rail-peek-lib";
+import { railPace } from "./rail-zone";
 import { railExtrasNow } from "./rail-extras-flag";
 
 export interface BotCardState {
@@ -90,6 +91,7 @@ export function botCardIntent(): PeekIntent {
         warm: () => warm(),
       },
       testTimers,
+      railPace,
     );
   }
   return intent;

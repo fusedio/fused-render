@@ -409,6 +409,7 @@ import { chatDraftKey, peekDraftSyncer } from "@platform/lib/drafts";
 import { useRailGit } from "./rail-git";
 import { publishRailGit } from "./rail-git-store";
 import { PLUS_DOOR, PlusPopIntent } from "./plus-pop-lib";
+import { installRailZone, railPace } from "./rail-zone";
 import { publishPlusRender, usePlusCard, usePlusHosted, withdrawPlusRender } from "./plus-card-store";
 import { useLauncherOpen } from "./launcher-open";
 import { RailPeek, type RailPeekHandle, type RailPeekProps } from "./RailPeek";
@@ -1221,10 +1222,13 @@ export function ClaudeRail({
         setPinned(on);
       },
       warm: (key) => setKept((s) => keepAlive(s, key)),
-    });
+    }, undefined, railPace);
   }
   const intent = intentRef.current;
   useEffect(() => () => intent.dispose(), [intent]);
+  // THE RAIL'S COLD AND HOT ZONES (rail-zone-lib): every door's hover waits
+  // on the zone this rail's pointer crossings feed, while any rail stands.
+  useEffect(() => installRailZone(), []);
   useEffect(() => {
     if (!peekKey) setHeld(false);
   }, [peekKey]);
@@ -2379,7 +2383,7 @@ export function ClaudeRail({
         );
       },
       close: () => setCardCloseSignal((n) => n + 1),
-    });
+    }, undefined, railPace);
   }
   const plusIntent = plusIntentRef.current;
   useEffect(() => () => plusIntent.dispose(), [plusIntent]);

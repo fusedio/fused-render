@@ -13,7 +13,9 @@
 //     card waits PEEK_OPEN_MS before it shows, so a pointer crossing the rail
 //     on its way somewhere opens nothing; once up, moving to another ring
 //     swaps the chat after a shorter PEEK_SWAP_MS without closing and
-//     reopening; leaving both the ring and the card gives PEEK_CLOSE_MS of
+//     reopening — on the rail, a POINTER's wait is the zone's instead
+//     (rail-zone-lib, 2026-11-25: longer from outside the rail, none once
+//     the reader is in it); leaving both the ring and the card gives PEEK_CLOSE_MS of
 //     grace, long enough to cross the gap between them; and a card the reader
 //     is USING — one that holds the keyboard focus, because they are typing —
 //     does not close on a pointer leave at all. Escape, a press outside, or
@@ -41,6 +43,7 @@
 //     PEEK_OPEN_MS wait, so the transcript read overlaps the hover delay.
 import type { TaskPulseTask } from "@platform/lib/api";
 import { inFlight, liveJobRow, taskColumn } from "@shell/tasks-lib";
+import { usualPace, type HoverPace } from "./rail-zone-lib";
 
 /** A BLOCKED CHAT (owner, 2026-11-05: "blocked tasks will also be added on
  *  top of favourites, so we know something is blocked — even a non-fav
@@ -457,6 +460,9 @@ export type Via = "pointer" | "focus";
 export class PeekIntent {
   private shown: string | null = null;
   private pendingKey: string | null = null;
+  /** How the pending open came: the keyboard reaching a ring the pointer is
+   *  still waiting on takes the keyboard's own timing. */
+  private pendingVia: Via = "pointer";
   private openTimer = 0;
   private warmTimer = 0;
   private closeTimer = 0;
@@ -482,9 +488,13 @@ export class PeekIntent {
    *  card stays up whatever the pointer and the focus do, until `dismiss`. */
   private pinned = false;
 
+  /** `pace`: how long a POINTER waits on a ring — the rail's cold and hot
+   *  zones (rail-zone-lib); the usual waits (PEEK_OPEN_MS, PEEK_SWAP_MS)
+   *  without one, and always for the keyboard. */
   constructor(
     private readonly sink: IntentSink,
     private readonly timers: Timers = windowTimers,
+    private readonly pace: HoverPace = usualPace,
   ) {}
 
   /** What the card shows now, if anything. */
@@ -522,24 +532,43 @@ export class PeekIntent {
       this.cancelOpen();
       return;
     }
-    if (this.pendingKey === key) return;
+    // The same arrival again waits on the first's clock — except the
+    // keyboard reaching a ring the POINTER is waiting on (a cold rail's
+    // longer wait): it takes its own timing.
+    // The pointer reaching a ring the FOCUS is waiting on: a hot rail shows
+    // it now; a cold one keeps the focus's own (shorter) clock.
+    if (this.pendingKey === key && via === "pointer" && this.pendingVia === "focus") {
+      const usual = this.shown === null ? PEEK_OPEN_MS : PEEK_SWAP_MS;
+      if (this.pace.openMs(usual) > 0) return;
+      this.cancelOpen();
+      this.sink.warm(key);
+      this.set(key);
+      return;
+    }
+    if (this.pendingKey === key && !(via === "focus" && this.pendingVia === "pointer")) return;
     this.cancelOpen();
+    const usual = this.shown === null ? PEEK_OPEN_MS : PEEK_SWAP_MS;
+    const wait = via === "pointer" ? this.pace.openMs(usual) : usual;
+    // A HOT RAIL (rail-zone-lib): the card shows now, mounted first.
+    if (wait <= 0) {
+      this.sink.warm(key);
+      this.set(key);
+      return;
+    }
     this.pendingKey = key;
+    this.pendingVia = via;
     // The mount: at once for the keyboard (a focus is deliberate), after a
     // short dwell for the pointer (a sweep is not).
     if (via === "focus") this.sink.warm(key);
     else this.warmTimer = this.timers.set(() => {
       this.warmTimer = 0;
       this.sink.warm(key);
-    }, PEEK_WARM_MS);
-    this.openTimer = this.timers.set(
-      () => {
-        this.openTimer = 0;
-        this.pendingKey = null;
-        this.set(key);
-      },
-      this.shown === null ? PEEK_OPEN_MS : PEEK_SWAP_MS,
-    );
+    }, Math.min(PEEK_WARM_MS, wait));
+    this.openTimer = this.timers.set(() => {
+      this.openTimer = 0;
+      this.pendingKey = null;
+      this.set(key);
+    }, wait);
   }
 
   /** The pointer (or focus) left the ring it was on. */
@@ -716,6 +745,7 @@ export class PeekIntent {
   private set(key: string | null): void {
     if (this.shown === key) return;
     this.shown = key;
+    if (key !== null) this.pace.shown();
     this.sink.show(key);
   }
 
