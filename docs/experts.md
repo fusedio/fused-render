@@ -495,7 +495,7 @@ is drawn live in the card itself; a whole canvas opens in an overlay. Built in `
 `api/experts/<id>/expert_canvas`, the session token):
 
     canvas_create   name, env?    a new canvas on the user's Fused account and its live clone here; returns the folder
-    show            path, note?   a card in the chat for a canvas or one node of one
+    show            path, note?, live?   a card in the chat for a canvas or one node of one
 
 - `canvas_create` is gated: the user approves each new canvas on the ordinary card, in every permission mode, Auto
   included. `launch.spec` carries the tool in `ask`, which `_claude_argv` writes as an ask rule, and the
@@ -564,6 +564,9 @@ canvas's sync log records.
 - A node card never opens an overlay. Under the head (whose button is "Open in explorer") it has one box of a
   fixed height (380px) that holds either the node's live frame (`/explorer/embed/<path>`, the node's own template,
   D1495) or a "Load live" prompt. The two fill the same box, so loading a card moves nothing.
+  - The expert decides: `show` takes `live` (default true), carried on the card line. With `live: false` the
+    card never loads unasked. `showing-your-work.md` tells the expert to give it for a slow UDF or one that
+    computes a lot of data, since loading a UDF's card runs it on the user's account.
   - Live without being asked: only a card born in a turn that is still running (`SegmentView`'s `live`), and only
     once per window per `show` call. The live state is held by tool_use id outside the component (`held`, `spent`
     in `ViewCard.tsx`), because the transcript remounts the card when its turn settles.

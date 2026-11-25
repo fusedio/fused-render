@@ -31,7 +31,7 @@ logger = logging.getLogger(__name__)
 SERVER = "expert_canvas"
 CREATE = "canvas_create"
 SHOW = "show"
-#: The line a successful `show` ends with: `CARD {"kind", "path", "title", "canvas", "env", "note"}`.
+#: The line a successful `show` ends with: `CARD {"kind", "path", "title", "canvas", "env", "note", "live"}`.
 CARD = "[fused-card] "
 SKILL = os.path.join(os.path.dirname(os.path.abspath(__file__)), "showing-your-work.md")
 #: `canvas_create` asks the user every time, in every permission mode (`launch.spec`'s `ask`; the permission
@@ -58,14 +58,20 @@ TOOLS = {
     },
     SHOW: {
         "description": (
-            "Show the user a canvas or one node of a canvas as a card in the chat; the card opens it live. `path` "
+            "Show the user a canvas or one node of a canvas as a card in the chat. A node's card draws the node "
+            "live in the chat as soon as it appears, which RUNS a UDF; pass `live: false` for a UDF that is slow, "
+            "costly or computes a lot of data, and the card waits for the user to click before anything runs. `path` "
             "is the absolute path of a node's file (`.py` UDF, `.json` widget, `.html`, `.md`) at the root of a "
             "canvas folder under `user/`, or the canvas folder itself. Call it once the files are written and the "
             "canvas validates. Calling it again for the same path after an edit is not needed: the open view "
             "follows the files."),
         "inputSchema": {"type": "object", "required": ["path"], "properties": {
             "path": {"type": "string", "description": "Absolute path of the node file or the canvas folder."},
-            "note": {"type": "string", "description": "One short line shown on the card (what this is)."}}},
+            "note": {"type": "string", "description": "One short line shown on the card (what this is)."},
+            "live": {"type": "boolean", "description": (
+                "Whether a node's card loads (and so runs) by itself when it appears. Default true. Give false "
+                "for a heavy UDF: a long run, a large area or date range, a big table, or anything you did not "
+                "see finish quickly when you ran it.")}}},
     },
 }
 
@@ -236,8 +242,7 @@ def _publish(env: str, name: str) -> None:
 
 
 def _shown(title: str) -> str:
-    return (f"The card for {title} is in the chat; the user opens it to see it live. Say in one line what it shows; "
-            "do not describe how to open it.")
+    return (f"The card for {title} is in the chat. Say in one line what it shows; do not describe how to open it.")
 
 
 def mcp_tools() -> list[dict]:
@@ -275,7 +280,7 @@ def call(spec, name: str, args) -> dict:
                 return _result(text, False)
             _publish(card["env"], card["canvas"])
             said = " ".join(str(args.get("note") or "").split())[:NOTE_MAX]
-            return _result(text + "\n" + CARD + json.dumps({**card, "note": said}), True)
+            return _result(text + "\n" + CARD + json.dumps({**card, "note": said, "live": args.get("live") is not False}), True)
     except Exception as e:  # noqa: BLE001
         return _result(f"error: {e}", False)
     return _result(f"error: no such tool ({name})", False)

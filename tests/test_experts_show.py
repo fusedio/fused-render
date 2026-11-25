@@ -111,7 +111,8 @@ def test_create_then_show_a_node_and_the_canvas(base):
     line = _text(node).splitlines()[-1]
     assert line.startswith(show.CARD)
     assert json.loads(line[len(show.CARD):]) == {"kind": "udf", "path": str(folder / "udf.py"), "title": "udf",
-                                                 "canvas": "Parcels", "env": "prod", "note": "Parcels by county"}
+                                                 "canvas": "Parcels", "env": "prod", "note": "Parcels by county",
+                                                 "live": True}
     whole = show.call(s, "show", {"path": str(folder / "canvas.toml")})
     card = json.loads(_text(whole).splitlines()[-1][len(show.CARD):])
     assert card["kind"] == "canvas" and card["path"] == str(folder) and card["note"] == ""

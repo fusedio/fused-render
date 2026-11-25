@@ -8,7 +8,7 @@ import type { Segment, ToolSegment } from "../protocol/types";
 import { ViewCard } from "../ui/ViewCard";
 import { canvasToolLabel, viewCardOf } from "./view-card";
 
-const payload = { kind: "widget", path: "/c/prod/user/Mine/chart.json", title: "Sales by month", canvas: "Mine", env: "prod", note: "Monthly sales" };
+const payload = { kind: "widget", path: "/c/prod/user/Mine/chart.json", title: "Sales by month", canvas: "Mine", env: "prod", note: "Monthly sales", live: true };
 const tool = (over: Partial<ToolSegment>): ToolSegment =>
   ({ kind: "tool", id: "t1", name: "Bash", input: {}, status: "ok", output: "", images: [], ...over }) as ToolSegment;
 const show = (over: Partial<ToolSegment> = {}) =>
@@ -65,4 +65,9 @@ test("a node card from history asks before it loads; one born in a live turn loa
   expect(fresh).toContain("c-viewcard-box");
   expect(fresh).toContain("<iframe");
   expect(fresh).not.toContain("Load live");
+  // The expert held it back (`show` with live: false): it waits for a click even in a live turn.
+  const heavy = renderToStaticMarkup(<ViewCard view={{ ...payload, live: false }} id="s3" live />);
+  expect(heavy).toContain("Load live");
+  expect(heavy).not.toContain("<iframe");
+  expect(viewCardOf(show({ output: "x\n[fused-card] " + JSON.stringify({ ...payload, live: false }) }))?.live).toBe(false);
 });

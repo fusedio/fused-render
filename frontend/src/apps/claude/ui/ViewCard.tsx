@@ -69,7 +69,10 @@ function CanvasCard({ view }: { view: ViewCardRef }) {
 }
 
 function NodeCard({ view, id, live }: { view: ViewCardRef; id: string; live: boolean }) {
-  const [loaded, setLoaded] = useState(() => (id ? held.has(id) || (live && !spent.has(id)) : live));
+  const [loaded, setLoaded] = useState(() => {
+    const unasked = live && view.live;
+    return id ? held.has(id) || (unasked && !spent.has(id)) : unasked;
+  });
   const box = useRef<HTMLDivElement>(null);
   // Recorded in an effect, not in the initializer above: StrictMode calls an initializer twice.
   useEffect(() => {
@@ -115,7 +118,7 @@ function NodeCard({ view, id, live }: { view: ViewCardRef; id: string; live: boo
               <ViewKindIcon kind={view.kind} size={22} />
             </span>
             <b>Load live</b>
-            <small>This {label} is not running. Click to load it.</small>
+            <small>{view.live ? `This ${label} is not running. Click to load it.` : `Not loaded: this ${label} may take a while to run. Click to load it.`}</small>
           </button>
         )}
       </div>

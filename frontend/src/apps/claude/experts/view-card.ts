@@ -12,6 +12,8 @@ const CARD = "[fused-card] ";
 export interface ViewCardRef extends ViewRef {
   /** The expert's one line about what this is ("" when it gave none). */
   note: string;
+  /** The expert let the card load by itself when it appears; false for work it judged too heavy to run unasked. */
+  live: boolean;
 }
 
 export function viewCardOf(seg: Segment | null | undefined): ViewCardRef | null {
@@ -28,7 +30,7 @@ export function viewCardOf(seg: Segment | null | undefined): ViewCardRef | null 
   const view = viewOf(raw);
   if (!view) return null;
   const note = (raw as { note?: unknown }).note;
-  return { ...view, note: typeof note === "string" ? note : "" };
+  return { ...view, note: typeof note === "string" ? note : "", live: (raw as { live?: unknown }).live !== false };
 }
 
 // `show` calls this window has watched run, by tool_use id. A turn can settle in the same update that settles
