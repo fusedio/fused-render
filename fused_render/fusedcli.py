@@ -230,8 +230,9 @@ def workbench_env() -> str:
     Resolved at CALL time, never cached by a caller: the env var
     (FUSED_RENDER_WORKBENCH_ENV, a process-level pin that also restricts every
     canvases call to this env) wins; else the `workbench_env` preference in
-    prefs.json (PUT /api/prefs, which rewrites the wrapper); else
-    DEFAULT_WORKBENCH_ENV. Lives here rather than in canvases.py because
+    prefs.json (PUT /api/prefs, which rewrites the wrapper) while that
+    environment is turned on (`enabled_workbench_envs`); else
+    DEFAULT_WORKBENCH_ENV if it is on, else the first environment that is. Lives here rather than in canvases.py because
     canvases imports this module, not the other way around."""
     pinned = os.environ.get(WORKBENCH_ENV_VAR)
     if pinned:

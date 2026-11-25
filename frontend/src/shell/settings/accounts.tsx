@@ -52,8 +52,12 @@ interface WorkbenchShared {
   status: CanvasesStatus | null;
   error: string | null;
   authGen: number;
+  /** A switch's write is on the wire. Shared, because each write sends the
+   *  whole list: two rows toggled at once would each send a list without the
+   *  other's change. */
+  toggling: boolean;
 }
-let workbenchShared: WorkbenchShared = { status: null, error: null, authGen: 0 };
+let workbenchShared: WorkbenchShared = { status: null, error: null, authGen: 0, toggling: false };
 const workbenchListeners = new Set<() => void>();
 let workbenchLoading: Promise<void> | null = null;
 
@@ -105,8 +109,7 @@ const hostOf = (url: string): string => {
 };
 
 function WorkbenchEnvRow({ env }: { env: WorkbenchEnv }) {
-  const { status, error: loadError } = useWorkbenchShared();
-  const [busy, setBusy] = useState(false);
+  const { status, error: loadError, toggling: busy } = useWorkbenchShared();
   const [error, setError] = useState<string | null>(null);
   const [editing, setEditing] = useState(false);
   const id = `workbench-${env}`;
@@ -118,8 +121,8 @@ function WorkbenchEnvRow({ env }: { env: WorkbenchEnv }) {
   const configured = env !== "custom" || status?.envs?.custom?.available !== false;
 
   const onToggle = async (next: boolean) => {
-    if (!status || busy) return;
-    setBusy(true);
+    if (!status || workbenchShared.toggling) return;
+    setWorkbenchShared({ toggling: true });
     setError(null);
     try {
       const want = WORKBENCH_ENVS.filter((e) => (e === env ? next : enabled.includes(e)));
@@ -128,9 +131,14 @@ function WorkbenchEnvRow({ env }: { env: WorkbenchEnv }) {
     } catch (e) {
       setError((e as Error).message);
     } finally {
-      setBusy(false);
+      setWorkbenchShared({ toggling: false });
     }
   };
+
+  // FUSED_RENDER_WORKBENCH_ENV pins an environment that is none of the three
+  // (stg, dev, a PR): every switch is off and locked, and the Production row
+  // carries the one sign-in there is, the pinned environment's.
+  const pinnedElsewhere = pinned && enabled.length === 0 && env === "prod";
 
   return (
     <SettingRow
@@ -139,7 +147,7 @@ function WorkbenchEnvRow({ env }: { env: WorkbenchEnv }) {
       status={
         !status ? (
           loadError ? undefined : "Checking…"
-        ) : pinned && on ? (
+        ) : (pinned && on) || pinnedElsewhere ? (
           <>
             Pinned to <b>{status.workbench_env}</b> by <code>FUSED_RENDER_WORKBENCH_ENV</code>.
           </>
@@ -195,6 +203,7 @@ function WorkbenchEnvRow({ env }: { env: WorkbenchEnv }) {
         </div>
       )}
       {status && on && status.cli_found && <WorkbenchEnvSignIn env={env} locked={!configured} />}
+      {status && pinnedElsewhere && status.cli_found && <WorkbenchEnvSignIn env={null} locked={false} />}
       {editing && (
         <FusedSettingsModal
           onClose={() => setEditing(false)}
@@ -217,7 +226,8 @@ function WorkbenchEnvRow({ env }: { env: WorkbenchEnv }) {
 // also stops canvas sync — said in the button's title, the one consequence a
 // reader would not expect. `locked` is custom with no config: a sign-in then
 // would be a hosted-prod sign-in under another name, so the button waits.
-function WorkbenchEnvSignIn({ env, locked }: { env: WorkbenchEnv; locked: boolean }) {
+// `env` null is the env-less login: the server answers in its auth env.
+function WorkbenchEnvSignIn({ env, locked }: { env: WorkbenchEnv | null; locked: boolean }) {
   const { authGen } = useSyncExternalStore(subscribeWorkbench, () => workbenchShared);
   const [status, setStatus] = useState<CanvasesStatus | null>(null);
   const [handle, setHandle] = useState<string | null>(null);
@@ -237,7 +247,7 @@ function WorkbenchEnvSignIn({ env, locked }: { env: WorkbenchEnv; locked: boolea
       // anything is shown — the Canvases page's verdict — so the line offers
       // Sign in rather than a Log out that would change nothing.
       try {
-        const who = await getWhoami(env);
+        const who = await getWhoami(env ?? undefined);
         if (!aliveRef.current) return s;
         setHandle(who.handle);
       } catch (e) {
@@ -282,11 +292,18 @@ function WorkbenchEnvSignIn({ env, locked }: { env: WorkbenchEnv; locked: boolea
         .then((s) => {
           if (cancelled || completing) return;
           if (s.logged_in && s.creds_stamp !== loginStampRef.current) {
+            // `loggingIn` drops only AFTER `refresh` wrote the vouched status:
+            // dropping it first showed an enabled Sign in for the round trip.
             completing = true;
             setError(null);
-            setLoggingIn(false);
-            // Every sign-in line re-reads, this one included.
-            announce();
+            refresh()
+              .catch((e) => !cancelled && setError((e as Error).message))
+              .finally(() => {
+                if (cancelled) return;
+                setLoggingIn(false);
+                // The other sign-in lines re-read too.
+                announce();
+              });
           } else if (!s.login_in_flight) {
             setLoggingIn(false);
             setError(loginOutcome(loginStartedRef.current));
@@ -298,7 +315,7 @@ function WorkbenchEnvSignIn({ env, locked }: { env: WorkbenchEnv; locked: boolea
       cancelled = true;
       window.clearInterval(timer);
     };
-  }, [loggingIn, env]);
+  }, [loggingIn, env, refresh]);
 
   const act = async (fn: () => Promise<unknown>) => {
     setBusy(true);

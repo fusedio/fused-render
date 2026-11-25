@@ -49,8 +49,8 @@ export interface CanvasesStatus {
    *  loopback proxy in front of it), its clone folder
    *  (`~/Fused/canvas/<env>`), how many clones it holds here, and whether it
    *  is configured (false only for custom whose `~/.fused/settings.toml`
-   *  names no `base_url`). The Settings picker disables an unconfigured
-   *  custom; the Canvases page offers it and opens the settings editor. */
+   *  names no `base_url`). Preferences holds its sign-in until it is
+   *  configured; the Canvases page opens the settings editor. */
   envs: Record<
     WorkbenchEnv,
     {

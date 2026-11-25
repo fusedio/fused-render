@@ -9,12 +9,13 @@
 // embedded live workbench). Styling lives in styles/canvases.css.
 //
 // The Environment dropdown picks WHICH environment's canvases are listed; a
-// prod canvas and an unstable one can be open and syncing at once, so this is
-// a view filter, not a switch. Its state is the `?env=` query (browser storage
-// holds no facts, D1386), defaulting to the `workbench_env` preference — the
-// preference is only that default now. FUSED_RENDER_WORKBENCH_ENV pins it
-// (`status.locked`): the dropdown is disabled and the query ignored, since the
-// server 423s any other env.
+// prod canvas and an unstable one can be open and syncing at once, so a pick
+// stops nothing. It offers the environments turned on in Preferences
+// (Accounts > Fused Workbench) and is not drawn when there is one. Its state
+// is the `?env=` query (browser storage holds no facts, D1386), defaulting to
+// the `workbench_env` preference; a pick is also written back as that
+// default. FUSED_RENDER_WORKBENCH_ENV pins it (`status.locked`): the dropdown
+// is disabled and the query ignored, since the server 423s any other env.
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { navigateUrl, replaceSearch } from "@platform/lib/router";
 import { putWorkbenchEnv } from "@platform/lib/api";
