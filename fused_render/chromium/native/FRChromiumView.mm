@@ -103,6 +103,9 @@ enum FRMenuCommand {
 - (CefRefPtr<CefClient>)client;
 - (FRChromiumEngine *)engine;
 - (cef_color_t)backgroundCefColor;
+- (void)requestPointerLockForFrame:(CefRefPtr<CefFrame>)frame;
+- (void)releasePointerLockForFrame:(CefRefPtr<CefFrame>)frame;
+- (void)endPointerLock;
 @end
 
 // A DevTools window CEF opens for Inspect Element: its own top-level window,
@@ -158,6 +161,16 @@ class FRClient : public CefClient,
                                 CefRefPtr<CefFrame> frame,
                                 CefProcessId source_process,
                                 CefRefPtr<CefProcessMessage> message) override {
+    if (message->GetName() == fused::kPointerLockRequest) {
+      // Any frame may hold the lock (a game inside an app's iframe).
+      if (!frame) return true;
+      if (message->GetArgumentList()->GetBool(0)) {
+        [view_ requestPointerLockForFrame:frame];
+      } else {
+        [view_ releasePointerLockForFrame:frame];
+      }
+      return true;
+    }
     if (message->GetName() != fused::kScriptMessage) return false;
     // Only the main frame drives the window chrome (the WebKit bridge
     // checked frameInfo.isMainFrame the same way).
@@ -263,6 +276,13 @@ class FRClient : public CefClient,
     view_.canGoForward = canGoForward;
   }
 
+  void OnLoadStart(CefRefPtr<CefBrowser> browser,
+                   CefRefPtr<CefFrame> frame,
+                   TransitionType transition_type) override {
+    // A new document in the frame that held the pointer lock: the lock ends.
+    [view_ releasePointerLockForFrame:frame];
+  }
+
   void OnLoadEnd(CefRefPtr<CefBrowser> browser,
                  CefRefPtr<CefFrame> frame,
                  int httpStatusCode) override {
@@ -347,6 +367,7 @@ class FRClient : public CefClient,
                                  TerminationStatus status,
                                  int error_code,
                                  const CefString &error_string) override {
+    [view_ endPointerLock];
     id<FRChromiumViewDelegate> d = delegate();
     if ([d respondsToSelector:@selector(chromiumViewRenderProcessDidTerminate:)]) {
       [d chromiumViewRenderProcessDidTerminate:view_];
@@ -770,6 +791,12 @@ class FRClient : public CefClient,
   id _fullscreenObserver;
   id _occlusionObserver;
   BOOL _occluded;  // what the page was last told (syncOcclusion)
+  // Pointer lock (see "pointer lock" below): the frame holding it, nil = none.
+  CefRefPtr<CefFrame> _lockFrame;
+  id _lockMonitor;
+  NSArray *_lockObservers;
+  CGFloat _lockDX, _lockDY;  // movement not yet sent
+  BOOL _lockFlushQueued;
 }
 
 @synthesize URL = _URL;
@@ -812,6 +839,7 @@ class FRClient : public CefClient,
 }
 
 - (void)dealloc {
+  [self endPointerLock];
   if (_fullscreenObserver) [[NSNotificationCenter defaultCenter] removeObserver:_fullscreenObserver];
   if (_occlusionObserver) [[NSNotificationCenter defaultCenter] removeObserver:_occlusionObserver];
   [_engine unregisterView:self];
@@ -939,6 +967,7 @@ class FRClient : public CefClient,
 }
 
 - (void)browserClosed {
+  [self endPointerLock];
   _browser = nullptr;
   _closing = YES;
   [_engine unregisterView:self];
@@ -996,6 +1025,7 @@ class FRClient : public CefClient,
   [self layoutBrowserView];
   [self focusBrowserView];
   [self syncOcclusion];
+  if (!self.window) [self endPointerLock];
 }
 
 // ---- WKWebView-shaped API ----
@@ -1074,12 +1104,137 @@ class FRClient : public CefClient,
     return;
   }
   _closing = YES;
+  [self endPointerLock];
   _client->set_closing_requested();
   _browser->GetHost()->CloseBrowser(true);
 }
 
 - (BOOL)acceptsFirstResponder {
   return NO;  // Chromium's view is the responder (focusBrowserView)
+}
+
+// ---- pointer lock ----
+//
+// CEF cannot grant `requestPointerLock()` to this kind of browser (FRCefApp.cc
+// has the why and the page half). The view does what the lock means: the
+// cursor is hidden and pinned in place, mouse movement is taken off the event
+// stream and sent to the locked frame as deltas, and the lock ends the ways a
+// browser's does — Esc, the window or the app losing focus, the document or
+// the browser going away, or the page asking.
+
+static FRChromiumView *__weak gPointerLockView;  // one cursor, so one lock
+
+- (void)sendPointerLockState:(BOOL)locked toFrame:(CefRefPtr<CefFrame>)frame {
+  if (!frame || !frame->IsValid()) return;
+  CefRefPtr<CefProcessMessage> msg = CefProcessMessage::Create(fused::kPointerLockState);
+  msg->GetArgumentList()->SetBool(0, locked);
+  frame->SendProcessMessage(PID_RENDERER, msg);
+}
+
+- (BOOL)pointerLockHeldByFrame:(CefRefPtr<CefFrame>)frame {
+  return _lockFrame && frame &&
+         _lockFrame->GetIdentifier().ToString() == frame->GetIdentifier().ToString();
+}
+
+- (void)requestPointerLockForFrame:(CefRefPtr<CefFrame>)frame {
+  if (_lockFrame) {
+    [self sendPointerLockState:[self pointerLockHeldByFrame:frame] toFrame:frame];
+    return;
+  }
+  NSWindow *window = self.window;
+  if (_closing || !_browser || !window || !window.isKeyWindow || !NSApp.isActive) {
+    [self sendPointerLockState:NO toFrame:frame];
+    return;
+  }
+  [gPointerLockView endPointerLock];
+  gPointerLockView = self;
+  _lockFrame = frame;
+  _lockDX = _lockDY = 0;
+
+  // The cursor stays where it is, and clicks keep landing there. Taken from
+  // the keyboard it may be anywhere, another app's window included: bring it
+  // over the page first, or the first click would leave the window.
+  NSPoint mouse = [self convertPoint:window.mouseLocationOutsideOfEventStream fromView:nil];
+  if (!NSPointInRect(mouse, self.bounds)) {
+    NSPoint mid = NSMakePoint(NSMidX(self.bounds), NSMidY(self.bounds));
+    NSPoint onScreen = [window convertPointToScreen:[self convertPoint:mid toView:nil]];
+    // Quartz counts down from the top of the primary display.
+    CGFloat top = NSMaxY(NSScreen.screens.firstObject.frame);
+    CGWarpMouseCursorPosition(CGPointMake(onScreen.x, top - onScreen.y));
+  }
+  CGAssociateMouseAndMouseCursorPosition(false);
+  [NSCursor hide];
+
+  __weak FRChromiumView *weakSelf = self;
+  NSEventMask mask = NSEventMaskMouseMoved | NSEventMaskLeftMouseDragged |
+                     NSEventMaskRightMouseDragged | NSEventMaskOtherMouseDragged |
+                     NSEventMaskKeyDown;
+  _lockMonitor = [NSEvent addLocalMonitorForEventsMatchingMask:mask
+                                                       handler:^NSEvent *(NSEvent *event) {
+    FRChromiumView *me = weakSelf;
+    if (!me || !me->_lockFrame) return event;
+    if (event.type == NSEventTypeKeyDown) {
+      if (event.keyCode != 53) return event;
+      // Esc lets go, and the page never sees the key (as in a browser).
+      [me endPointerLock];
+      return nil;
+    }
+    // The pinned cursor still reports how far the mouse went.
+    [me pointerLockMovedByX:event.deltaX y:event.deltaY];
+    return nil;
+  }];
+  void (^lost)(NSNotification *) = ^(NSNotification *note) {
+    [weakSelf endPointerLock];
+  };
+  NSNotificationCenter *center = [NSNotificationCenter defaultCenter];
+  _lockObservers = @[
+    [center addObserverForName:NSWindowDidResignKeyNotification object:window queue:nil usingBlock:lost],
+    [center addObserverForName:NSWindowWillCloseNotification object:window queue:nil usingBlock:lost],
+    [center addObserverForName:NSApplicationDidResignActiveNotification object:nil queue:nil usingBlock:lost],
+  ];
+  [self sendPointerLockState:YES toFrame:frame];
+}
+
+- (void)releasePointerLockForFrame:(CefRefPtr<CefFrame>)frame {
+  if ([self pointerLockHeldByFrame:frame]) [self endPointerLock];
+}
+
+// One message per run-loop turn, however many mouse events it carried.
+- (void)pointerLockMovedByX:(CGFloat)dx y:(CGFloat)dy {
+  _lockDX += dx;
+  _lockDY += dy;
+  if (_lockFlushQueued) return;
+  _lockFlushQueued = YES;
+  dispatch_async(dispatch_get_main_queue(), ^{
+    self->_lockFlushQueued = NO;
+    if (!self->_lockFrame) return;
+    if (!self->_lockFrame->IsValid()) {  // the frame went away without a word
+      [self endPointerLock];
+      return;
+    }
+    CefRefPtr<CefProcessMessage> msg = CefProcessMessage::Create(fused::kPointerLockMove);
+    CefRefPtr<CefListValue> list = msg->GetArgumentList();
+    list->SetDouble(0, self->_lockDX);
+    list->SetDouble(1, self->_lockDY);
+    self->_lockDX = self->_lockDY = 0;
+    self->_lockFrame->SendProcessMessage(PID_RENDERER, msg);
+  });
+}
+
+- (void)endPointerLock {
+  if (!_lockFrame) return;
+  CefRefPtr<CefFrame> frame = _lockFrame;
+  _lockFrame = nullptr;
+  gPointerLockView = nil;  // holding the lock means this view was the one
+  if (_lockMonitor) [NSEvent removeMonitor:_lockMonitor];
+  _lockMonitor = nil;
+  for (id observer in _lockObservers) {
+    [[NSNotificationCenter defaultCenter] removeObserver:observer];
+  }
+  _lockObservers = nil;
+  CGAssociateMouseAndMouseCursorPosition(true);
+  [NSCursor unhide];
+  [self sendPointerLockState:NO toFrame:frame];
 }
 
 @end

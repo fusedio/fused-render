@@ -159,6 +159,10 @@ Not yet exercised:
 
 * ⌘-click / `window.open` popups, downloads, `alert()`/`confirm()`/`prompt()`,
   `<input type=file>`, the right-click menu, ⌘P, `requestFullscreen`;
+* `requestPointerLock` — CEF refuses it for this kind of browser, so the
+  engine provides it: a page shim (`FRCefApp.cc`) plus cursor capture in the
+  view (`FRChromiumView.mm`). Locked `mousemove`/`pointermove` are synthetic
+  (`isTrusted` false);
 * the external message pump under modal panels (the JS and file dialogs are
   answered on the next run-loop turn so the pump never nests; verify no
   input lag);
