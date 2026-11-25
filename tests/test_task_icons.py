@@ -147,23 +147,43 @@ def _faces():
 
 def _star(key, on=True):
     """What the star route does around the store (`api_task_favourite`):
-    a task that BECOMES starred gets a removed icon back."""
+    a task that BECOMES starred gets a removed icon back; one that STOPS
+    being starred keeps the face it wore."""
     was = tasks_store.favourite_of(tasks_store.favourites_state(), key)[0]
     tasks_store.set_favourite(key, on)
     if on and not was:
         tasks_store.clear_icon_off(key)
+    if not on and was:
+        tasks_store.keep_icon(key)
 
 
-def test_an_untouched_task_follows_the_star(state):
+def test_a_star_gives_the_number_face_and_unstar_keeps_it(state):
     """Starred, untouched: the number's face (auto-assigned, as before).
-    Not starred, untouched: the ring. Unstar takes the auto face away."""
+    Never starred, untouched: the ring. Owner, 2026-11-25: unstar no longer
+    takes the face away — it stays, as if picked, until the picker's Remove."""
     numbers = tasks_store.ensure_ids([("s1", P, 1.0), ("s2", P, 2.0)])
     own = tasks_store.icon_slot(numbers["s1"], P)
     assert _faces() == {}
     _star("s1")
     assert _faces() == {"s1": (own, False)}
     _star("s1", False)
+    assert _faces() == {"s1": (own, True)}
+    # Remove still takes it away, and a later star brings it back.
+    tasks_store.set_icon("s1", None)
     assert _faces() == {}
+    _star("s1")
+    assert _faces() == {"s1": (own, False)}
+
+
+def test_keep_icon_leaves_a_pick_a_remove_and_an_unknown_key_alone(state):
+    tasks_store.ensure_ids([("s1", P, 1.0), ("s2", P, 2.0)])
+    tasks_store.set_icon("s1", 42)
+    tasks_store.set_icon("s2", None)
+    assert tasks_store.keep_icon("s1") is False
+    assert tasks_store.keep_icon("s2") is False
+    assert tasks_store.keep_icon("nobody") is False
+    assert tasks_store.task_ids()["s1"]["icon"] == "on"
+    assert tasks_store.task_ids()["s2"]["icon"] == "off"
 
 
 def test_a_picked_icon_is_worn_starred_or_not_and_stays_on_unstar(state):

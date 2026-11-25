@@ -8239,10 +8239,12 @@ def api_task_favourite(patch: FavouritePatch,
     # removed (`icon: "off"`) follows the star again once it BECOMES starred.
     # Only on that flip, read before the write: a second `on: true` from a
     # stale window onto a task already starred must not undo a Remove made
-    # since. An unstar writes nothing to the icon — a face that came with the
-    # star leaves with it, a picked one stays (`tasks_store.worn_icons`).
-    newly_starred = patch.on is True and not tasks_store.favourite_of(
-        tasks_store.favourites_state(), key)[0]
+    # since. AN UNSTAR KEEPS THE FACE (owner, 2026-11-25): a task that STOPS
+    # being starred keeps the icon the star gave it (`tasks_store.keep_icon`);
+    # the picker's Remove is how a face goes.
+    was_starred = tasks_store.favourite_of(tasks_store.favourites_state(), key)[0]
+    newly_starred = patch.on is True and not was_starred
+    newly_unstarred = patch.on is False and was_starred
     # `on=False` (unstar) and `on=None, open=False` (close) only ever remove
     # or close a record: the store alone answers them.
     result = tasks_store.set_favourite(key, patch.on, patch.open,
@@ -8254,6 +8256,11 @@ def api_task_favourite(patch: FavouritePatch,
             # The star stands; the icon simply stays removed until the next
             # star — not worth failing the star over.
             logger.warning("favourite: could not give %s its icon back", key)
+    if newly_unstarred and not result["starred"]:
+        try:
+            tasks_store.keep_icon(key)
+        except OSError:
+            logger.warning("favourite: could not keep %s its icon", key)
     # After both writes, so the repaint the watcher triggers sees the icon too.
     tasks_watch.notify(set(result["changed"]) | {key})
     return {"ok": True, "key": key, "starred": result["starred"],

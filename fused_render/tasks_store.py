@@ -770,8 +770,10 @@ def ensure_ids(items, rekeys=(), reproject=False) -> dict[str, str]:
 #
 # pick -> `icon_slot = N, icon = "on"`; Remove -> `icon = "off"`, the slot
 # dropped; a STAR drops an "off" (`clear_icon_off`: starring gives the icon
-# back); an UNSTAR writes nothing — an icon that only came with the star
-# leaves with it, a picked one ("on") stays (owner's choice, 2026-11-16).
+# back); an UNSTAR KEEPS THE FACE (owner, 2026-11-25: "we will not remove
+# icon when we unfav" — the picker's Remove is the way to drop one now):
+# `keep_icon` stamps "on" on a record with no word, so the face the star
+# gave stays; an "off" stays the ring.
 # Which tasks wear a face is `worn_icons`; a legacy record with a slot and
 # no word stays a ring unstarred and shows that slot starred, as it did.
 #
@@ -919,6 +921,23 @@ def clear_icon_off(key: str) -> bool:
         if not isinstance(raw, dict) or raw.get("icon") != ICON_OFF:
             return False, False
         raw.pop("icon", None)
+        return True, True
+
+    return bool(_update(TASK_IDS_FILE, mutate))
+
+
+def keep_icon(key: str) -> bool:
+    """AN UNSTAR KEEPS THE FACE (owner, 2026-11-25): stamp "on" on a record
+    with no word, so the face it wore starred — the number's own, or a legacy
+    slot — stays once the star goes. Called by the star route when a task
+    STOPS being starred (routers/tasks.py `api_task_favourite`). A pick ("on")
+    and a Remove ("off") are left as they are. True when the record changed."""
+    def mutate(store: dict):
+        raw = store.get(key)
+        if (not isinstance(raw, dict) or raw.get("spent")
+                or raw.get("icon") in (ICON_ON, ICON_OFF)):
+            return False, False
+        raw["icon"] = ICON_ON
         return True, True
 
     return bool(_update(TASK_IDS_FILE, mutate))
