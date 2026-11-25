@@ -175,6 +175,7 @@ from fused_render.fusedcli import (
     WORKBENCH_ENV_VAR,
     child_env,
     cli_error,
+    enabled_workbench_envs,
     fused_cli,
     set_fused_env,
     workbench_env,
@@ -422,8 +423,8 @@ def fused_settings_configured() -> bool:
     just prod under another clone folder. The Canvases page offers custom
     regardless and opens the settings editor when this is false (the empty
     file the editor starts from must NOT count as configured, or dismissing
-    it would leave custom silently equal to prod); the Settings picker
-    offers it too."""
+    it would leave custom silently equal to prod); Preferences holds
+    custom's sign-in until this is true."""
     value = _fused_settings().get("base_url")
     return isinstance(value, str) and bool(value.strip())
 
@@ -1156,11 +1157,14 @@ def api_canvases_status(env: str = ""):
         # environment picker, since `_require_env` refuses the other env.
         "workbench_env": workbench_env(),
         "locked": workbench_env_locked(),
+        # The environments turned on in Preferences: the catalog's picker
+        # offers only these, and hides itself when there is one.
+        "enabled_envs": list(enabled_workbench_envs()),
         # Clone counts are a local listdir, no CLI — informational on the
         # Preferences row. `available` is false only for custom whose
         # settings file names no `base_url` (`fused_settings_configured`):
-        # both pickers still offer it; the Canvases page opens the settings
-        # editor instead of the sign-in.
+        # the Canvases page opens the settings editor instead of the
+        # sign-in, and Preferences holds its sign-in until it is configured.
         "envs": {
             env: {
                 "base_url": workbench_base_url(env),

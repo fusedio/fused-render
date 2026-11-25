@@ -9,14 +9,16 @@
 // embedded live workbench). Styling lives in styles/canvases.css.
 //
 // The Environment dropdown picks WHICH environment's canvases are listed; a
-// prod canvas and an unstable one can be open and syncing at once, so this is
-// a view filter, not a switch. Its state is the `?env=` query (browser storage
-// holds no facts, D1386), defaulting to the `workbench_env` preference — the
-// preference is only that default now. FUSED_RENDER_WORKBENCH_ENV pins it
-// (`status.locked`): the dropdown is disabled and the query ignored, since the
-// server 423s any other env.
+// prod canvas and an unstable one can be open and syncing at once, so a pick
+// stops nothing. It offers the environments turned on in Preferences
+// (Accounts > Fused Workbench) and is not drawn when there is one. Its state
+// is the `?env=` query (browser storage holds no facts, D1386), defaulting to
+// the `workbench_env` preference; a pick is also written back as that
+// default. FUSED_RENDER_WORKBENCH_ENV pins it (`status.locked`): the dropdown
+// is disabled and the query ignored, since the server 423s any other env.
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { navigateUrl, replaceSearch } from "@platform/lib/router";
+import { putWorkbenchEnv } from "@platform/lib/api";
 import { ErrorBanner } from "@platform/ui/ErrorBanner";
 import { Modal } from "@platform/ui/modal/Modal";
 import { Loader2, RefreshCw } from "lucide-react";
@@ -62,6 +64,9 @@ async function startSyncForOpen(env: WorkbenchEnv, name: string): Promise<void> 
     throw e;
   }
 }
+
+/** The default-environment writes a pick makes, one after another. */
+let defaultEnvWrites: Promise<void> = Promise.resolve();
 
 /** The `?env=` the URL carries, if it names an environment; anything else
  *  falls back to the default rather than erroring. */
@@ -137,6 +142,12 @@ export default function Canvases() {
   const [deleteArmed, setDeleteArmed] = useState(false);
   const [deleteBusy, setDeleteBusy] = useState(false);
   const env = status ? effectiveEnv(status, picked) : null;
+  // What the environment picker offers: the environments turned on, and the
+  // one on show even when it is off (a link or the sidebar can name it). An
+  // older server sends no list: every environment then.
+  const envChoices = WORKBENCH_ENVS.filter(
+    (e) => e === env || !status?.enabled_envs || status.enabled_envs.includes(e),
+  );
   // The reference canvases of the env on show: the head's chip, and the
   // notice for clones the folder-layout move left behind.
   const referenceMirror = useReferenceMirror(env, status, setError);
@@ -329,6 +340,16 @@ export default function Canvases() {
     pickedRef.current = next;
     setPicked(next);
     replaceSearch(catalogPath(next));
+    // The pick is also the default from here on (where the catalog opens,
+    // what `fused` outside a clone targets): Preferences no longer has a
+    // picker for it. Best effort — the listing does not wait on it.
+    // Chained, so two quick picks are stored in the order they were made.
+    if (!status?.locked) {
+      defaultEnvWrites = defaultEnvWrites.then(() => putWorkbenchEnv(next)).then(
+        () => undefined,
+        () => undefined,
+      );
+    }
     setCanvases(null);
     setRefreshing(false);
     // Collection ids and signed URLs belong to the environment they came from.
@@ -698,6 +719,10 @@ export default function Canvases() {
               able to switch back. The rest needs that env's login. */}
           {status?.cli_found && env && (
             <div className="canvases-head-actions">
+              {/* Only the environments turned on in Preferences (Accounts >
+                  Fused Workbench), plus the one on show when a link named
+                  another; with one to offer there is nothing to pick. */}
+              {envChoices.length > 1 && (
               <label
                 className="canvases-env"
                 htmlFor="canvases-env"
@@ -716,13 +741,14 @@ export default function Canvases() {
                 >
                   {/* Custom is never disabled here: an unconfigured one opens
                       the settings editor instead (customUnconfigured). */}
-                  {WORKBENCH_ENVS.map((e) => (
+                  {envChoices.map((e) => (
                     <option key={e} value={e}>
                       {ENV_NAMES[e].label}
                     </option>
                   ))}
                 </select>
               </label>
+              )}
               {status.logged_in && !customUnconfigured && (
                 <>
                   <input

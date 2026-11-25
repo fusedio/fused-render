@@ -74,7 +74,12 @@ describe("the registry", () => {
     for (const g of GROUPS) {
       const sections = sectionsOf(rows, g.id);
       if (sections.length < 2) continue;
-      for (const sec of sections) expect([g.id, sec.section, sec.entries.length >= 2]).toEqual([g.id, sec.section, true]);
+      for (const sec of sections) {
+        // Accounts > Sign-ins is Hugging Face alone since the Fused rows got a
+        // section of their own (Fused Workbench): the one accepted exception.
+        if (g.id === "integrations" && sec.section === "Sign-ins") continue;
+        expect([g.id, sec.section, sec.entries.length >= 2]).toEqual([g.id, sec.section, true]);
+      }
     }
   });
 
@@ -309,7 +314,7 @@ describe("device capability gates", () => {
     const tags: Record<DeviceFeature, string[]> = {
       index: ["indexing", "ranked-search", "low-impact", "skipped-folders", "rebuild-index", "index-query"],
       hf: ["huggingface"],
-      fused: ["fused-account", "workbench-env", "canvases", "canvases-embed-proxy", "share-sheet"],
+      fused: ["workbench-unstable", "workbench-prod", "workbench-custom", "canvases", "canvases-embed-proxy", "share-sheet"],
       update: ["auto-update"],
       native_windows: ["native-windows"],
       terminal: ["notify-terminal"],
