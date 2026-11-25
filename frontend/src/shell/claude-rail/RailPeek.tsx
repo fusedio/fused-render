@@ -152,7 +152,7 @@ import {
   taskChatTarget,
 } from "@shell/tasks-lib";
 import { NAV_EVENT, navigateUrl, rewriteLegacyUrl } from "@platform/lib/router";
-import { chipPlace, hasWhereTag, queuedEditHref, railScope, type RailHere, type RailPlace, type RailRow } from "./claude-rail-lib";
+import { chipPlace, hasWhereTag, placeRoot, queuedEditHref, railScope, type RailHere, type RailPlace, type RailRow } from "./claude-rail-lib";
 import { queueCaption } from "@platform/lib/queue";
 import { ForceStartButton } from "@shell/ForceStartButton";
 import { PlaceTags } from "./PlaceTags";
@@ -1690,7 +1690,17 @@ export const RailPeek = forwardRef<RailPeekHandle, RailPeekProps>(function RailP
               // node, the file), which the head joins with a chevron. The
               // name was the favourite window's alone while the head was one
               // row.
-              place={placeEl(head, "place")}
+              // …EXCEPT WINDOW A ON ITS OWN PAGE (Akshil, 2026-11-25: "if I am
+              // in the project it should not show the project in the task
+              // title"): the rail's own card (`onChipLeave` given) drops the
+              // place tag when it names the page the reader stands on, so row
+              // 1 reads `Canvas` / the node / the file alone. The favourite's
+              // window (B) keeps it.
+              place={
+                onChipLeave && pageRoot != null && placeRoot(head.at) === pageRoot
+                  ? null
+                  : placeEl(head, "place")
+              }
               {...(hasWhereTag(head.scope, head.at) ? { where: placeEl(head, "where") } : {})}
               // The pulse's facts in the head's own slots: how many messages
               // (the unread ones turn it to ink) and when it last moved — none

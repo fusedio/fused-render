@@ -6497,8 +6497,8 @@ def test_starring_a_task_puts_the_star_on_the_row_and_the_pulse(client,
 # ------------------------------------------------------------- task icons
 # `POST /api/tasks/icon` and the star (owner, 2026-11-16): the icon and the
 # star are two things — a pick is worn starred or not, Remove gives the ring
-# back starred or not, a star brings a removed icon back, and an unstar takes
-# only a face that came with the star.
+# back starred or not, a star brings a removed icon back, and an unstar keeps
+# whatever face the task wore (2026-11-25).
 
 
 def _icon(client, key, slot):
@@ -6550,12 +6550,17 @@ def test_remove_gives_a_favourite_the_ring_and_a_new_star_brings_it_back(
     assert _face(client, "sess-a") == (own, False)
 
 
-def test_an_auto_icon_leaves_with_the_star(client, projects_dir):
+def test_an_auto_icon_stays_after_unstar(client, projects_dir):
+    """Owner, 2026-11-25: "we will not remove icon when we unfav"."""
     _write_transcript(projects_dir, "sess-a", "/p", [_user("hi", T9)])
     _favourite(client, "sess-a")
-    assert _face(client, "sess-a")[0] is not None
+    own, picked = _face(client, "sess-a")
+    assert own is not None and picked is False
     _favourite(client, "sess-a", on=False)
-    assert _face(client, "sess-a") == (None, False)
+    assert _face(client, "sess-a") == (own, True)
+    # A second unstar from a stale window changes nothing.
+    _favourite(client, "sess-a", on=False)
+    assert _face(client, "sess-a") == (own, True)
 
 
 def test_an_icon_for_a_task_with_no_number_is_a_quiet_409(client):
