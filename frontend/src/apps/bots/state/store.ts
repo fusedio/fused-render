@@ -536,7 +536,8 @@ export const setBuildsChip = (patch: Partial<BuildsChip>): void => commit({ buil
 
 // ------------------------------------------------------------------ experts ----
 // The page lists experts (docs/experts.md) as rows of their own kind: read from /api/experts at most
-// every EXPERTS_MS and right after an expert action, never off the page or on the phone. The bots backend
+// every EXPERTS_MS and right after an expert action, on the page and for the rail's Bots card (the quiet feed), never on
+// the phone. The bots backend
 // does not know them. With the switch off nothing is asked; the first poll waits for the switch, so a fresh load of
 // /bots/<expert> finds its row.
 const EXPERTS_MS = 10_000;
@@ -594,7 +595,9 @@ export async function pollOnce(): Promise<void> {
     const botsOff = page && await readBotsMissing();
     const [r, spec] = await Promise.all([
       botsOff ? NO_BOTS : api.status({ cursors: S.cursors, shot_for: page ? S.sel || "" : "", fast: page && S.fast }),
-      page ? expertBots() : [],
+      // Off the page too, for the rail's Bots card (it lists them and opens their chats, BotChat) — once the shell
+      // knows the switch is on (the rail reads it): this poll never starts the prefs read itself off the page.
+      page || expertsEnabledNow() ? expertBots() : [],
     ]);
     // What landing picks from: the bots, or with none on this server the experts (on a Mac an expert is never
     // landed on by itself, as before).
@@ -808,7 +811,6 @@ export function startStore(): () => void {
     document.removeEventListener("visibilitychange", onVisible);
     if (S.ui.dialog || S.ui.menu) commit({ ui: { dialog: null, menu: null } });  // a route change closes them
     pendingStage = null; if (S.fast) closeStage();  // Stage does not outlive the route (and a queued auto-open must not fire into it)
-    commit({ bots: S.bots.filter((b) => !b.expert) });  // the rail's bot card lists bots only
     window.removeEventListener("popstate", syncFromUrl);
     window.removeEventListener("fused:navigate", syncFromUrl);
     window.removeEventListener("fused:urlchange", syncFromUrl);

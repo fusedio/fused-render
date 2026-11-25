@@ -98,8 +98,7 @@ the Learning tab), `last_update` (when the last learning run ended), and `update
     update     the timer or Learn now (update.start)        home     no (fresh)         Auto
 
 An expert's chat that floats over another page of the window tells the expert what that page is: a breakout card
-(`BreakoutCards.tsx`, always) and `ExpertChat` anywhere off the Bots page (today it is mounted only there, so that
-one says nothing) pass `screenNote` (`platform/lib/screen-context.ts`), `ClaudeChat` puts it in the `terminal_hint`
+(`BreakoutCards.tsx`, always) and `ExpertChat` anywhere off the Bots page (the rail's Bots card) pass `screenNote` (`platform/lib/screen-context.ts`), `ClaudeChat` puts it in the `terminal_hint`
 param as its `screen` field, and `agent._user_screen_block` writes it as a leading `<user-screen>` line (a machinery
 tag, stripped from titles and restored transcripts like `<terminal-hint>`). A location, never contents. See
 docs/bots.md §6 USER'S SCREEN for the bots' side.
@@ -390,8 +389,9 @@ and `expert_canvas` (§14).
 
 **Bots page.** `state/store.ts` reads `/api/experts` with each poll at most every 10 s (`EXPERTS_MS`), and
 right after an expert action (`actExpert`), never on the phone; each row becomes a `Bot` of kind `expert`
-carrying the row (`asBot`), status `running` while `working`. The rail's bot cards and the sidebar pulse leave them
-out. In the list (`BotList.tsx`) a row shows the face, name, EXPERT badge (tooltip "Expert: <about>"), the
+carrying the row (`asBot`), status `running` while `working`. The rail's Bots card (`BotsPeek`) lists them too and
+opens an expert's chat floating over the page (`BotChat` renders `ExpertChat`; the quiet feed reads `/api/experts`
+once the switch is known on). Pinned bot rings and the sidebar pulse leave them out. In the list (`BotList.tsx`) a row shows the face, name, EXPERT badge (tooltip "Expert: <about>"), the
 last reply as one plain line (else `about`), its time, and a dot when `new` (a learning run ended since the Learning
 tab was last opened; opening the chat does not clear it). Pin, hide, mark as read and thread search do not apply.
 
