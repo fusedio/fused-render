@@ -145,6 +145,9 @@ EXPECTED_STARTUP = [
     # The local SQL engine's directories left by dead servers (sql/runner.py
     # `sweep`, SPEC §55), removed on a daemon thread; lean too.
     "_startup_sweep_sql_engine_dirs",
+    # Added 2026-11-25: saved UDF results older than 7 days deleted at
+    # startup and daily (udf/store.py `start_pruner`), a daemon thread.
+    "_startup_udf_cache_prune",
     # Event-loop lag gauge + pool/lane snapshots for the Monitor dashboard.
     "_startup_loop_lag",
     "_startup_resource_trail",

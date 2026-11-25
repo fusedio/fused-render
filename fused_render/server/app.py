@@ -786,6 +786,16 @@ def create_app(start_dir: str, lean: bool = False) -> FastAPI:
         threading.Thread(target=sql_runner.sweep, daemon=True,
                          name="sql-engine-sweep").start()
 
+    # Saved UDF results older than 7 days (udf/store.py `prune`, SPEC §54
+    # SR-3), deleted at startup and then once a day on a daemon thread: the
+    # expiry on read never reaches an entry nobody runs again. Skipped in
+    # `lean`: a short-lived `open` server leaves the sweep to the desktop one.
+    @on_startup
+    async def _startup_udf_cache_prune():
+        from fused_render.udf import store as udf_store
+
+        udf_store.start_pruner()
+
     # The idle-unload reaper (SPEC AI-13): unloads a resident local model once
     # nothing has used it for the configured window (default 5 min, 0 = off).
     # No startup hook for it — `supervisor._start_resident` calls

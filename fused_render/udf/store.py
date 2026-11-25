@@ -25,7 +25,8 @@ TMP_MAX_AGE_S. Every run's body is first written there.
 Rules:
   - only successful runs are put here (the service's rule, not checked here)
   - no size limits: any size is kept and nothing is evicted for space
-  - an entry older than MAX_AGE_S (7 days) is dropped on read
+  - an entry older than MAX_AGE_S (7 days) is dropped on read, and the
+    server's daily `prune` deletes every such entry nobody read again
   - a run of the same key replaces its entry; Preferences → Debugging →
     "Saved UDF cache" (`clear`) empties the home folder and every canvas's
 
@@ -368,6 +369,113 @@ def clear() -> dict:
         except OSError:
             pass
     return cleared
+
+
+def _expired(folder: str, key: str, cutoff: float) -> bool:
+    """Whether `key`'s entry in `folder` is older than `cutoff`: by its
+    `saved_at`, or, when its `.json` is missing or unreadable (half an entry
+    a crash left), by the newest mtime of its two files."""
+    meta = _read_json(os.path.join(folder, key + ".json"))
+    saved_at = meta.get("saved_at") if meta else None
+    if isinstance(saved_at, (int, float)):
+        return saved_at < cutoff
+    newest = None
+    for ext in (".body", ".json"):
+        try:
+            mtime = os.stat(os.path.join(folder, key + ext)).st_mtime
+        except OSError:
+            continue
+        newest = mtime if newest is None else max(newest, mtime)
+    return newest is not None and newest < cutoff
+
+
+def _prune_folder(folder: str, cutoff: float) -> tuple[int, int]:
+    try:
+        names = os.listdir(folder)
+    except OSError:
+        return 0, 0
+    entries = 0
+    freed = 0
+    keys = {n.rsplit(".", 1)[0] for n in names if n.endswith((".body", ".json"))}
+    for key in keys:
+        if not _TOKEN_RE.match(key) or key.startswith("t"):
+            continue
+        # Checked again under the lock: a run of the same key may have
+        # replaced the entry since the listing.
+        with _LOCK:
+            if not _expired(folder, key, cutoff):
+                continue
+            size = 0
+            for ext in (".body", ".json"):
+                try:
+                    size += os.path.getsize(os.path.join(folder, key + ext))
+                except OSError:
+                    pass
+            _remove_entry(folder, key)
+            if _WHERE.get(key) == folder:
+                _WHERE.pop(key, None)
+        entries += 1
+        freed += size
+    # A `.part` a crash left mid-write (`_write_json`, `_move`).
+    for name in names:
+        if name.endswith(".part"):
+            path = os.path.join(folder, name)
+            try:
+                if os.stat(path).st_mtime < cutoff:
+                    os.remove(path)
+            except OSError:
+                pass
+    return entries, freed
+
+
+def prune(max_age_s: float = MAX_AGE_S) -> dict:
+    """Delete every saved result older than `max_age_s`, in the home folder
+    and in every canvas folder, plus stale temporary results. Returns what
+    went, `{entries, bytes}`. Run once a day by the server (`start_pruner`):
+    the expiry in `get` only removes an entry someone asks for again, so
+    without this an entry never read again stays on disk for good."""
+    cutoff = time.time() - max_age_s
+    entries = 0
+    freed = 0
+    for folder in _all_folders():
+        n, size = _prune_folder(folder, cutoff)
+        entries += n
+        freed += size
+    _sweep_tmp()
+    return {"entries": entries, "bytes": freed}
+
+
+PRUNE_INTERVAL_S = 24 * 3600.0
+_PRUNER: threading.Thread | None = None
+_PRUNER_LOCK = threading.Lock()
+
+
+def _prune_loop(interval_s: float) -> None:
+    import logging
+
+    log = logging.getLogger(__name__)
+    while True:
+        try:
+            done = prune()
+            if done["entries"]:
+                log.info("udf cache: pruned %d entries (%d bytes) older than 7 days",
+                         done["entries"], done["bytes"])
+        except Exception:  # noqa: BLE001 - a failed sweep waits for the next day
+            log.exception("udf cache: prune failed")
+        time.sleep(interval_s)
+
+
+def start_pruner(interval_s: float = PRUNE_INTERVAL_S) -> None:
+    """Start the daily prune on a daemon thread, once per process: a sweep
+    now, then one every `interval_s`. Dies with the process, so it needs no
+    shutdown rung."""
+    global _PRUNER
+    with _PRUNER_LOCK:
+        if _PRUNER is not None and _PRUNER.is_alive():
+            return
+        _PRUNER = threading.Thread(target=_prune_loop, args=(interval_s,),
+                                   daemon=True, name="udf-cache-prune")
+        _PRUNER.start()
 
 
 def _sweep_tmp() -> None:
