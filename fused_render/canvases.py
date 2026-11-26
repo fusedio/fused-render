@@ -2515,12 +2515,19 @@ protection described above.
   removing or renaming it in its folder's `childUdfOrder` as well: a stale
   name there is tolerated, but it is a bug to fix. A node in a folder is
   still a root-level file in this folder, never a subdirectory.
-- **Look at the layout before you report it done.** After adding, moving or
-  resizing nodes, or re-arranging folders, call the `canvas_screenshot` tool
-  with `what: "layout"` and fix what is missing, misplaced, overlapping or
-  outside its folder. It draws this folder's `canvas.toml` as it is now, in
-  about a second, so look again after each fix. On a large canvas add
-  `udf: "<folder or node name>"` to frame one part. Do not use
+- **The layout is checked for you, and you look at it before you report.**
+  After any tool call that changed `canvas.toml`'s layout (a node added,
+  deleted, moved or resized, a folder re-arranged, an edge changed),
+  fused-render checks the file and tells you in a "Layout check" note what
+  overlaps, which folder child is outside its folder, and which edge or
+  `childUdfOrder` entry names a node that is gone. It lists what came in
+  during this turn; what the canvas already had is only counted, and is
+  not yours to change unless the user asked. Fix what it lists; a note
+  saying nothing is wrong means exactly that. Then, when you are done
+  changing the layout, call the `canvas_screenshot` tool with
+  `what: "layout"` and look: it draws this folder's `canvas.toml` as it is
+  now, in about a second, so look again after each fix. On a large canvas
+  add `udf: "<folder or node name>"` to frame one part. Do not use
   `what: "canvas"` to check a layout: that is a screenshot of the user's
   canvas page, which shows your edits only after they are published.
 
@@ -9384,6 +9391,14 @@ def api_canvases_agent_hook(body: dict = Body(...), x_fused: str | None = Header
         moved = _forwarded(tool_input.get(key))
         if moved is not None:
             tool_input = {**tool_input, key: moved}
+    # The layout check (SPEC §28 CV-9): whatever changed canvas.toml's layout
+    # since this session's previous tool call (its own edit, a script it ran,
+    # the user's drag), the session is told what now overlaps or points at
+    # nothing. It needs no watcher and no sign-in, only the file; a
+    # reference copy is never edited, so it is never checked.
+    layout = ""
+    if event in ("start", "post") and session_id and not canvas_marker.is_reference(_dir):
+        layout = _layout_note(session_id, _dir, announce=event == "post")
     manager = _sync_manager(env, name, create=False)
     if manager is None and event in ("start", "pre", "post", "stop"):
         # No canvas page is open (never opened, or the idle stop ran): a
@@ -9391,14 +9406,14 @@ def api_canvases_agent_hook(body: dict = Body(...), x_fused: str | None = Header
         # `agent_session_id` keeps it running for as long as the session is up.
         manager = _revive_for_session(env, name, f"{event} hook")
     if manager is None:
-        return {}
+        return _with_layout({}, layout)
     try:
         if event in ("start", "pre", "post"):
             manager.tool_hook(session_id)
         if event == "pre":
             return manager.hook_pre(session_id, tool, tool_input)
         if event == "post":
-            return manager.hook_post(session_id)
+            return _with_layout(manager.hook_post(session_id), layout)
         if event == "stop":
             hooks = manager._tool_hooks.get(session_id, 0) if session_id else None
             threading.Thread(target=_turn_end_quietly, args=(manager, session_id, hooks),
@@ -9406,7 +9421,66 @@ def api_canvases_agent_hook(body: dict = Body(...), x_fused: str | None = Header
             return {}
     except Exception:  # noqa: BLE001 — a hook answer is advice, never a failure
         logger.warning("canvas %s: agent hook failed", _sync_key(env, name), exc_info=True)
-    return {}
+    return _with_layout({}, layout)
+
+
+# What each session last saw of its canvas's layout, by (session, clone):
+# `(fingerprint, problems the canvas had when the turn began)`. A "post"
+# hook compares against the first and lists only what is not in the second.
+# In memory only: after a restart a session's first call sets it again and
+# says nothing.
+_LAYOUT_SEEN_LOCK = threading.Lock()
+_layout_seen: dict[tuple[str, str], tuple[str, frozenset]] = {}
+_LAYOUT_SEEN_MAX = 400
+
+
+def _layout_note(session_id: str, clone_dir: str, announce: bool) -> str:
+    """The layout check's note for this session, or "": canvas.toml's layout
+    is what the session last saw, the file cannot be read, or this call only
+    sets the baseline (`announce` False: a turn's start, and any session's
+    first call). The baseline also keeps the problems the canvas had at that
+    moment, so a note lists what came in during the turn and only counts the
+    rest. Never raises: a hook's answer is advice."""
+    from fused_render import canvas_layout_check as check
+
+    try:
+        mark, doc, error = check.state(os.path.join(clone_dir, "canvas.toml"))
+        if not mark:
+            return ""
+        key = (session_id, clone_dir)
+        with _LAYOUT_SEEN_LOCK:
+            seen = _layout_seen.pop(key, None)
+        try:
+            present = os.listdir(clone_dir)
+        except OSError:
+            present = []
+        baseline = not announce or seen is None
+        if baseline:
+            before = frozenset(check.problems(doc, present)) if doc is not None else \
+                (seen[1] if seen is not None else frozenset())
+        else:
+            before = seen[1]
+        with _LAYOUT_SEEN_LOCK:
+            _layout_seen[key] = (mark, before)
+            while len(_layout_seen) > _LAYOUT_SEEN_MAX:
+                _layout_seen.pop(next(iter(_layout_seen)))
+        if baseline or seen[0] == mark:
+            return ""
+        if doc is None:
+            return check.error_note(error or "")
+        return check.note(doc, present, before)
+    except Exception:  # noqa: BLE001
+        logger.warning("canvas layout check failed for %s", clone_dir, exc_info=True)
+        return ""
+
+
+def _with_layout(answer, layout: str) -> dict:
+    """A "post" answer with the layout note after whatever the sync said."""
+    answer = answer if isinstance(answer, dict) else {}
+    if not layout:
+        return answer
+    said = answer.get("context")
+    return {**answer, "context": (said + "\n\n" + layout) if isinstance(said, str) and said else layout}
 
 
 def _forwarded(path) -> str | None:

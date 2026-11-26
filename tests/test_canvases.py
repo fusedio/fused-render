@@ -3200,7 +3200,8 @@ def test_the_seeded_claude_md_sanctions_the_standard_push():
     # A layout is checked on the picture drawn from canvas.toml (D1512), not
     # on a screenshot of the canvas page.
     assert '`what: "layout"`' in text
-    assert "Look at the layout before you report it done" in text
+    assert "The layout is checked for you, and you look at it before you report" in text
+    assert '"Layout check" note' in text and "deleted, moved or resized" in text
     assert 'Do not use\n  `what: "canvas"` to check a layout' in text
     assert "take one canvas screenshot" not in text
     assert "Publishing your work" not in text and "600000" not in text
