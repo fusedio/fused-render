@@ -271,6 +271,9 @@ export interface ChatMountProps {
   preview?: boolean;
   /** `_noann=1` — no annotate seats, no narrow-view toggle (ClaudeChat). */
   noAnnTools?: boolean;
+  /** The agents this chat's Agent pill may offer, when not every enabled one
+   *  can run it (an expert's chat: Claude or Copilot). Absent = all. */
+  agentChoices?: string[];
   /** The host can photograph its canvas on request (`shots/canvas-shot`):
    *  the Screenshot seat takes that picture (ClaudeChat). */
   canvasShot?: CanvasShot;
@@ -401,6 +404,7 @@ export function ChatMount(props: ChatMountProps) {
         autoFocus={!props.preview && !props.noFocus}
         {...(props.preview ? { preview: true } : {})}
         {...(props.noAnnTools ? { noAnnTools: true } : {})}
+        {...(props.agentChoices ? { agentChoices: props.agentChoices } : {})}
         {...(props.canvasShot ? { canvasShot: props.canvasShot } : {})}
         {...(props.onHidePane ? { onHidePane: props.onHidePane } : {})}
         {...(props.breakout ? { breakout: true } : {})}

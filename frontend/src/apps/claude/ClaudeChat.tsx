@@ -346,6 +346,9 @@ export interface ClaudeChatProps {
    *  `chatViewOnly`). The pane itself stays mounted — it is what files the
    *  chat under its file — but is never on screen. */
   noAnnTools?: boolean;
+  /** The agents the Agent pill may offer here (ChatMount `agentChoices`);
+   *  absent = every enabled one. */
+  agentChoices?: string[];
   /** The host is a canvas page that can photograph its workbench on request
    *  (`shots/canvas-shot`): the Screenshot seat takes THAT picture instead of
    *  a capture of the pane frame, which is cross-origin and blank to us. On a
@@ -4574,9 +4577,10 @@ function ChatBody(props: ChatBodyProps) {
       backend: defaults.backend,
       backendFixed: defaults.backendFixed,
       setBackend: defaults.setBackend,
+      ...(props.agentChoices ? { backendChoices: props.agentChoices } : {}),
       ready: defaults.pillsReady,
     }),
-    [defaults, controller],
+    [defaults, controller, props.agentChoices],
   );
 
   const actions = useMemo(

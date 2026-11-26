@@ -159,3 +159,44 @@ def test_a_run_the_server_lost_is_settled_as_failed(world, monkeypatch):
     update.settle(s)  # gone after a restart: as a failed run
     assert open(os.path.join(s.home, "memory.md")).read() == "" and [n["name"] for n in notes.list(s)] == [note]
     assert chat.load(s.home)["update"] is None
+
+
+def test_a_run_goes_to_the_agent_its_chat_is_on(world, monkeypatch, tmp_path):
+    """A Copilot expert learns on Copilot: its own prompt, its chat's model, and a session id that arrives later
+    (`launch.minted`), which is the one its clean end is matched to."""
+    files, spawns = world
+    agent = SimpleNamespace(
+        EXPERT_BACKENDS=("claude", "copilot"), _backend_enabled=lambda b: True, _default_backend_pref=lambda: "claude",
+        _defaults=lambda file, sid: {"model": "gpt-5.4", "effort": "high", "backend": "copilot" if sid else "claude"})
+    monkeypatch.setattr(claude_spawn, "load_agent", lambda: agent)
+    monkeypatch.setattr(claude_spawn, "spawn_helper",
+                        lambda target, prompt, mode, **kw: spawns.append((prompt, kw)) or {"run_id": "r", "session_id": ""})
+    s = make_expert()
+    chat.record_start(s.id, "main", "main1")
+    files["task1"] = [_row("user", "Fix it"), _row("assistant", "Fixed.")]
+    update.point(s, "task1", str(tmp_path), "task")
+    assert launch.spec(f"{s.id}:update", s.home)["read_dirs"] == [str(tmp_path)]   # where the transcript is
+    assert update.start(s) is True
+    ((prompt, kw),) = spawns
+    assert kw == {"model": "gpt-5.4", "effort": "high", "expert": f"{s.id}:update", "backend": "copilot"}
+    assert "Agent with model haiku" not in prompt and "one after another" in prompt
+    assert chat.load(s.home)["update"]["session"] == ""
+    launch.minted(f"{s.id}:update", "learn-c")
+    files["learn-c"] = [_row("user", prompt), _row("assistant", "I added that parquet wins.")]
+    history.turn_ended(s.home, "learn-c")
+    assert notes.list(s) == [] and chat.load(s.home)["update"] is None
+
+
+def test_a_run_falls_to_an_agent_that_is_on_with_its_own_model(world, monkeypatch):
+    """The chat was on Copilot and Copilot is switched off since: the run is Claude's, on Claude's default."""
+    _, spawns = world
+    agent = SimpleNamespace(
+        EXPERT_BACKENDS=("claude", "copilot"), _backend_enabled=lambda b: b == "claude",
+        _default_backend_pref=lambda: "claude",
+        _defaults=lambda file, sid: {"model": "gpt-5.4", "effort": "high", "backend": "copilot"})
+    monkeypatch.setattr(claude_spawn, "load_agent", lambda: agent)
+    s = make_expert()
+    chat.record_start(s.id, "main", "main1")
+    notes.add(s, "t", 'Note from task "x"', "x")
+    assert update.start(s) is True
+    assert spawns[0][3] == {"model": update.DEFAULT_MODEL, "effort": "", "expert": f"{s.id}:update"}

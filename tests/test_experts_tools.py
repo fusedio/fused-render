@@ -158,3 +158,32 @@ def test_an_update_refuses_at_once_and_parks_nothing(approve, monkeypatch, tmp_p
     out = approve("Bash")
     assert out["behavior"] == "deny" and "Nobody" in out["message"]
     assert os.listdir(tmp_path) == []
+
+
+# ------------------------------------------------------ another agent's task ---
+def test_a_copilot_task_pulls_a_skill_by_name_not_by_path(client, used, canvas, monkeypatch):
+    """Copilot's reads are fenced to its own folders, so the guidance names no file: the skill comes through
+    the same tool."""
+    from fused_render.experts import tools
+
+    monkeypatch.setattr(tools, "caller", lambda run_id: {"run_id": run_id, "session_id": "sess-1",
+                                                         "backend": "copilot", "target": "/proj"})
+    text = _post(client, "pull", {"run_id": "run1", "expert": "canvas"})[1]["text"]
+    assert '- sync: Fixing a stalled sync (call expert_pull with expert "Canvas" and skill "sync")' in text
+    assert canvas.home not in text and "--- skills (pull one by name to follow it) ---" in text
+    status, body = _post(client, "pull", {"run_id": "run1", "expert": "canvas", "skill": "sync"})
+    assert status == 200 and "Steps." in body["text"] and body["text"].endswith("--- end ---")
+    status, body = _post(client, "pull", {"run_id": "run1", "expert": "canvas", "skill": "nope"})
+    assert status == 404 and body["error"].endswith("Its skills: sync.")
+    assert len(used) == 3   # each call keeps the task in the expert's inbox
+
+
+def test_under_no_approve_the_breakout_tool_is_not_there(monkeypatch):
+    """A Copilot task's server has no approval tool, and `expert_breakout` is a card: pull and note only."""
+    ps = _ps()
+    monkeypatch.setenv("FUSED_RENDER_EXPERT_ORIGIN", "http://127.0.0.1:1")
+    monkeypatch.setattr(ps, "NO_APPROVE", True)
+    names = [t["name"] for t in ps._dispatch("tools/list", {})["tools"] if t["name"].startswith("expert_")]
+    assert names == ["expert_pull", "expert_note"]
+    with pytest.raises(LookupError):
+        ps._dispatch("tools/call", {"name": "expert_breakout", "arguments": {"expert": "x", "reason": "y"}})

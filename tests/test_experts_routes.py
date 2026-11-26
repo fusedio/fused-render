@@ -59,7 +59,8 @@ def test_chat_clear_seen_and_the_rows_last_message(client, monkeypatch, tmp_path
     path.write_text(json.dumps({"type": "assistant", "timestamp": "2020-01-01T10:00:00Z",
                                 "message": {"content": [{"type": "text", "text": "Hello."}]}}) + "\n")
     monkeypatch.setattr(chat, "transcript", lambda target, sid: str(path))
-    assert req(client, "GET", f"/api/experts/{s.id}/chat") == (200, {"session_id": None, "folded": []})
+    assert req(client, "GET", f"/api/experts/{s.id}/chat") == (
+        200, {"session_id": None, "folded": [], "backend": "claude", "backends": ["claude", "copilot"]})
     chat.record_start(s.id, "main", "m1")
     (row,) = req(client, "GET", "/api/experts")[1]
     assert row["last"] == {"text": "Hello.", "at": row["last"]["at"]} and row["last"]["at"] > 0 and not row["new"]

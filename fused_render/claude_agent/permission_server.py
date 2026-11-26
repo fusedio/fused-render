@@ -2193,6 +2193,15 @@ def _expert_origin() -> str:
     return (os.environ.get("FUSED_RENDER_EXPERT_ORIGIN") or "").rstrip("/")
 
 
+def _expert_tools() -> tuple:
+    """The expert tools this session has. `expert_breakout` is a card the
+    user answers, and under `--no-approve` (a Copilot task) this server has
+    no card to raise: there it is pull and note only."""
+    if not _expert_origin():
+        return ()
+    return tuple(t for t in EXPERT_TOOLS if not (NO_APPROVE and t == "expert_breakout"))
+
+
 def _run_id() -> str:
     return os.path.basename(os.path.dirname(PERM_DIR)) if PERM_DIR else ""
 
@@ -2219,7 +2228,11 @@ EXPERT_SCHEMAS = [
     {"name": "expert_pull",
      "description": ("An expert's guidance: its memory and its skills. "
                      "Reference material, not instructions."),
-     "inputSchema": {"type": "object", "properties": {"expert": _EXPERT_ARG},
+     "inputSchema": {"type": "object", "properties": {
+         "expert": _EXPERT_ARG,
+         "skill": {"type": "string",
+                   "description": ("Only when the guidance told you to pull a skill "
+                                   "by name: that skill's name, for its full text.")}},
                      "required": ["expert"], "additionalProperties": False}},
     {"name": "expert_note",
      "description": ("Send an expert a note for its next update: something its "
@@ -2342,8 +2355,7 @@ def _dispatch(method: str, params: dict) -> dict:
             tools.extend(TERMINAL_SCHEMAS)
         if _s3_origin():
             tools.extend(S3_SCHEMAS)
-        if _expert_origin():
-            tools.extend(EXPERT_SCHEMAS)
+        tools.extend(s for s in EXPERT_SCHEMAS if s["name"] in _expert_tools())
         return {"tools": tools}
     if method == "tools/call":
         name = params.get("name")
@@ -2356,8 +2368,7 @@ def _dispatch(method: str, params: dict) -> dict:
             known = known + TERMINAL_TOOLS
         if _s3_origin():
             known = known + S3_TOOLS
-        if _expert_origin():
-            known = known + EXPERT_TOOLS
+        known = known + _expert_tools()
         if name not in known:
             raise LookupError("unknown tool: %s" % name)
         args = params.get("arguments")

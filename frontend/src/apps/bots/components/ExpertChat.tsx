@@ -1,6 +1,7 @@
 // An expert's chat (docs/experts.md): the task chat (ChatMount) on its home, every start keyed
 // `<id>:main` so the server knows it is this expert's main chat. Clear (the header's, or `/clear`) folds the
-// current session away and remounts with none. Earlier chats sit above it as a cleared bot thread shows them
+// current session away and remounts with none; the Agent pill is free again then (Claude or Copilot), and fixed
+// once the new chat has a turn. Earlier chats sit above it as a cleared bot thread shows them
 // (Thread.tsx ClearMark): a "Context cleared" rule with "Show earlier conversation", which opens them read-only.
 import { Fragment, useCallback, useEffect, useState, type MutableRefObject } from "react";
 import type { Expert } from "@platform/lib/experts";
@@ -14,6 +15,8 @@ import { actExpert, errMsg, showBanner } from "../state/store";
 import { MdDoc } from "./MdDoc";
 
 type Line = { role: string; text: string };
+/** The agents that can run an expert's chat, for a server that does not say (docs/experts.md §17). */
+const EXPERT_AGENTS = ["claude", "copilot"];
 
 /** The page behind the chat, when it floats over one: on the Bots page itself the chat IS the page. */
 const screenNote = (): string => (isBotsPath(location.pathname) ? "" : screenContext());
@@ -63,7 +66,7 @@ export function ExpertChat({ s, clearRef }: { s: Expert; clearRef: MutableRefObj
         </div>
       ) : null}
       {chat ? (
-        <ChatMount key={epoch} file={s.home} backend="claude" {...(chat.session_id ? { sessionId: chat.session_id } : {})}
+        <ChatMount key={epoch} file={s.home} backend={chat.backend || "claude"} agentChoices={chat.backends || EXPERT_AGENTS} {...(chat.session_id ? { sessionId: chat.session_id } : {})}
           extraParams={{ expert: `${s.id}:main` }} permission="auto" onClear={clear} chatOnly peek noAnnTools paramsSource="memory" screenNote={screenNote} />
       ) : null}
     </>

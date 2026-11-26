@@ -572,7 +572,9 @@ export interface ExpertEntry { name: string; text: string; at: number; kind: "no
 export interface ExpertChange { sha: string; at: number; label: string; read: number; changed: boolean }
 /** One Claude Code skill of its home: `text` is the whole SKILL.md, `body` the part after the frontmatter. */
 export interface ExpertSkill { name: string; description: string; text: string; body: string }
-export interface ExpertChat { session_id: string | null; folded: { session_id: string; at: number }[] }
+/** `backend`: the agent the main chat runs on (for one yet to start, the one its pill opens on); `backends`: the
+ *  agents that can run an expert's chat. */
+export interface ExpertChat { session_id: string | null; folded: { session_id: string; at: number }[]; backend?: string; backends?: string[] }
 /** /api/experts/<id>/… (fused_render/experts/routes.py). */
 export const expertApi = {
   create: (body: ExpertBody) => post<Expert>("/api/experts", body, "new expert"),

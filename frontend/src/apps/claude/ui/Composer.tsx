@@ -54,7 +54,7 @@ import {
 import { MODEL_LABELS, PERMISSION_SHORT } from "./composer-defaults";
 import { ContextMeter } from "./ContextMeter";
 import { contextInput, warnLine } from "./context-window";
-import { AgentSelect } from "./AgentSelect";
+import { AgentSelect, offeredAgents } from "./AgentSelect";
 import { EffortSelect } from "./EffortSelect";
 import { ModelSelect } from "./ModelSelect";
 import { PermissionSelect } from "./PermissionSelect";
@@ -105,6 +105,8 @@ export interface ComposerControls {
   backend?: string;
   backendFixed?: boolean;
   setBackend?(value: string): void;
+  /** The agents the pill may offer; absent = every enabled one. */
+  backendChoices?: string[];
   setModel(value: string): void;
   setEffort(value: string): void;
   setPermission(value: PermissionMode): void;
@@ -2653,11 +2655,12 @@ export function ComposerCard({
           {/* THE AGENT PILL LEADS (D18), and only while there is a choice: with
               one agent switched on the word is said by the header, the
               placeholder and every card instead. */}
-          {controls.setBackend && agents.backends.length >= 2 ? (
+          {controls.setBackend && offeredAgents(agents.backends.map((b) => b.id), controls.backendChoices).length >= 2 ? (
             <AgentSelect
               value={controls.backend || agents.default}
               onChange={controls.setBackend}
               fixed={!!controls.backendFixed}
+              {...(controls.backendChoices ? { only: controls.backendChoices } : {})}
             />
           ) : null}
           <ModelSelect
