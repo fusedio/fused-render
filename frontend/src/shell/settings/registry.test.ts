@@ -142,12 +142,24 @@ describe("visibility", () => {
   });
 
 
-  test("the embed proxy switch appears only while Canvases is on", () => {
+  test("the embed proxy switch appears only while Workbench and On-prem are on", () => {
+    const ids = (enabled: boolean, envs: string[]) =>
+      visibleSettings(
+        ctx({}, { canvases: { enabled }, workbench: { env: "prod", locked: false, choices: [], enabled: envs } } as Partial<Prefs>),
+      ).map((s) => s.id);
+    expect(visibleSettings(ctx()).map((s) => s.id)).not.toContain("canvases-embed-proxy");
+    expect(ids(false, ["prod", "custom"])).not.toContain("canvases-embed-proxy");
+    expect(ids(true, ["prod"])).not.toContain("canvases-embed-proxy");
+    expect(ids(true, ["prod", "custom"])).toContain("canvases-embed-proxy");
+  });
+
+  test("the environment rows wait for Fused Workbench, and Unstable has none", () => {
     const ids = (enabled: boolean) =>
       visibleSettings(ctx({}, { canvases: { enabled } } as Partial<Prefs>)).map((s) => s.id);
-    expect(visibleSettings(ctx()).map((s) => s.id)).not.toContain("canvases-embed-proxy");
-    expect(ids(false)).not.toContain("canvases-embed-proxy");
-    expect(ids(true)).toContain("canvases-embed-proxy");
+    expect(ids(false)).toContain("canvases");
+    expect(ids(false)).not.toContain("workbench-prod");
+    expect(ids(true)).toEqual(expect.arrayContaining(["canvases", "workbench-prod", "workbench-custom"]));
+    expect(SETTINGS.map((s) => s.id as string)).not.toContain("workbench-unstable");
   });
 
   test("the default-agent picker appears only with two or more agents on", () => {
@@ -193,7 +205,7 @@ describe("visibility", () => {
     const on = ctx({}, { chromium_windows: { available: true, enabled: false } } as unknown as Partial<Prefs>);
     const secs = sectionsOf(visibleSettings(on), "features");
     expect(secs.map((s) => s.section)).toEqual(["Other"]);
-    expect(secs[0].entries.map((e) => e.id)).toEqual(["rail-extras", "canvases", "experts", "chromium-windows"]);
+    expect(secs[0].entries.map((e) => e.id)).toEqual(["rail-extras", "experts", "chromium-windows"]);
     // Without the capability the Chromium row is simply missing.
     expect(sectionsOf(visibleSettings(ctx()), "features").map((s) => s.section)).toEqual(["Other"]);
   });

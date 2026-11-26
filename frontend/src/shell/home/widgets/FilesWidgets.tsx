@@ -74,7 +74,7 @@ function LocalFilesBody({ widget, home }: { widget: Widget; home: string }) {
     with it off the tile says so instead of fetching. */
 export function S3FilesWidget({ widget }: { widget: Widget }) {
   const on = useCanvasesFeature();
-  return <div className="hw-body">{on ? <S3Body widget={widget} /> : <EmptyLine>Turn on Canvases in Preferences to browse S3 files.</EmptyLine>}</div>;
+  return <div className="hw-body">{on ? <S3Body widget={widget} /> : <EmptyLine>Turn on Fused Workbench in Preferences to browse S3 files.</EmptyLine>}</div>;
 }
 
 function S3Body({ widget }: { widget: Widget }) {

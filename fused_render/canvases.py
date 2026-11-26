@@ -1764,9 +1764,14 @@ def record_staff_email(email: object) -> None:
     if not isinstance(email, str) or not email:
         return
     from fused_render import fusedcli
+
+    _set_staff(fusedcli.is_staff_email(email))
+
+
+def _set_staff(staff: bool) -> None:
+    from fused_render import fusedcli
     from fused_render.shell import prefs
 
-    staff = fusedcli.is_staff_email(email)
     if (prefs.read_prefs().get(fusedcli.STAFF_PREF_KEY) is True) == staff:
         return
     prefs.write_pref(fusedcli.STAFF_PREF_KEY, staff)
@@ -1776,8 +1781,21 @@ def record_staff_email(email: object) -> None:
         logger.exception("re-exporting the fused wrapper after a staff verdict failed")
 
 
+def _forget_staff(store: str) -> None:
+    """FAIL CLOSED: the verdict belongs to one hosted sign-in, so a logout of
+    the hosted store, or a sign-in starting on it, drops it. Only a whoami for
+    the login that follows can set it again — never a slow or failed one
+    leaving the previous account's verdict standing for a new one."""
+    if store == credentials_file("prod"):
+        _set_staff(False)
+
+
 _staff_check_lock = threading.Lock()
 _staff_check_running = False
+# When the last background run started: a whoami that fails (offline, a dead
+# token) is never cached, so without this every status read would spawn
+# another CLI interpreter. One try per short-cache window.
+_staff_check_last = 0.0
 
 
 def _kick_staff_check() -> None:
@@ -1786,7 +1804,7 @@ def _kick_staff_check() -> None:
     anyone opening a page that asks whoami itself. Cheap when the cache holds
     an answer (an hour), never blocks the status read, one run at a time.
     Nothing to do while Workbench is off, signed out, or pinned."""
-    global _staff_check_running
+    global _staff_check_running, _staff_check_last
     from fused_render.shell import prefs
 
     if workbench_env_locked() or not prefs.canvases_enabled() or not _logged_in("prod"):
@@ -1798,9 +1816,11 @@ def _kick_staff_check() -> None:
     if fused_cli() is None:
         return
     with _staff_check_lock:
-        if _staff_check_running:
+        now = time.monotonic()
+        if _staff_check_running or now - _staff_check_last < _CLI_CACHE_TTL_S:
             return
         _staff_check_running = True
+        _staff_check_last = now
 
     def run() -> None:
         global _staff_check_running
@@ -1880,6 +1900,7 @@ def api_canvases_login(env: str = "", x_fused: str | None = Header(default=None)
             except OSError as e:
                 return _error(f"could not run the fused CLI ({cli.command[0]}): {e}")
             _cli_cache_clear()
+            _forget_staff(store)
             login = _ActiveLogin(proc=proc, started_at=time.time(), store=store)
             _active_login = login
             threading.Thread(target=_watch_login, args=(login,), daemon=True).start()
@@ -3126,6 +3147,7 @@ def api_canvases_logout(env: str = "", x_fused: str | None = Header(default=None
             manager.resume(rebaseline=False)
         return err
     _cli_cache_clear()
+    _forget_staff(store)
     with _SYNC_LOCK:
         signed_out = on_store()
         for key, _ in signed_out:

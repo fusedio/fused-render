@@ -271,8 +271,9 @@ engines in AI Models) are in the list too, as a row that takes you there.
 | Heading | Page | What is in it |
 |---|---|---|
 | **App** | **General** | Appearance and colour theme · native windows · the launcher's shortcuts (macOS) · automatic update downloads · the process Monitor · Reader |
-| | **Accounts** | Fused account · default environment · Hugging Face |
-| | **Experimental flags** (beta) | Canvases (and, under it, loading a custom deployment's workbench through a local proxy; `canvases_embed_proxy_enabled` under `[render]` in `~/.fused/settings.toml` overrides that switch) · Marketplace · Chromium engine for windows. All off by default |
+| | **Accounts** | Hugging Face |
+| | **Fused Workbench** | Enable Fused Workbench (which is also Canvases; off by default) · Fused hosted and On-prem, each a switch with its sign-in · under On-prem, loading its workbench through a local proxy (`canvases_embed_proxy_enabled` under `[render]` in `~/.fused/settings.toml` overrides that switch). Unstable has no switch: it is on by itself for an `@fused.io` account signed in to Fused hosted |
+| | **Experimental flags** (beta) | Rail extras · Expert bots · Chromium engine for windows. All off by default |
 | **Agents** | **Coding agents** | Which coding agents (Claude Code, GitHub Copilot CLI, OpenAI Codex CLI, Google Gemini CLI) run chats and tasks, each with its health, and the default for new ones |
 | | **Chats & tasks** | One task at a time per folder (beta) · chat recap · stable AI titles · lean Claude sessions · default approvals for new chats · concurrent Claude sessions · notifications for terminal sessions |
 | | **Claude Code** | The `settings.json` keys that shape the Claude sessions this app runs |

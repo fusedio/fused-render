@@ -198,7 +198,7 @@ async def api_remote_index_search(request: Request, q: str = Query(default=""),
     if _require_fused(x_fused) is not None:
         return _error("missing or invalid X-Fused header", "forbidden", 403)
     if not canvases_enabled():
-        return _error("the Fused integration is off — turn on Canvases in Preferences",
+        return _error("the Fused integration is off — turn on Fused Workbench in Preferences",
                       "disabled", 403)
     has_q, has_path = bool(q.strip()), bool(path.strip())
     if has_q == has_path:
