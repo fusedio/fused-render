@@ -7,17 +7,12 @@
 // non-empty query), so everything here hangs off that one selector. What is
 // worth pinning down:
 //
-//   HOW the history arrows are removed. `visibility: hidden` or `opacity: 0`
-//   keeps the element's box — the arrows are 28px each — so the field would
-//   stop short of where they were, i.e. a hole. In a flex row `display: none`
-//   takes the item out of the layout entirely, gap included, which is what
-//   "expand completely" needs. This is NOT the column-shedding case
-//   (column-shedding.test.ts): there the shed element had to STAY rendered
-//   because a table column under `table-layout: fixed` survives its header
-//   being hidden and WebKit then split the remainder between two width-less
-//   columns. A flex item has no such ghost.
+//   That the field, not the bar around it, does the growing. The bar used to
+//   carry its own ‹ › history arrows, which stood down here too; they are gone
+//   (the titlebar holds the one global pair), so the field opens at the bar's
+//   left edge already and only the grow rules below remain.
 //
-// The star used to stand down here too, alongside the arrows — it sat outside
+// The star used to stand down here too — it sat outside
 // the field, on the bar's own left/outer zone. It now lives INSIDE the field
 // (Listing.tsx renders it as the box's own trailing affordance, past the
 // count/spinner pin — see explorer.css), so it grows and shrinks with the box
@@ -62,42 +57,23 @@ test("the searching state is expressed in CSS at all", () => {
   expect(rules.length).toBeGreaterThanOrEqual(3);
 });
 
-test("the bar stands down the history arrows for the search box", () => {
-  // `.crumb-nav` is what is still holding the box off the left edge — the star
-  // no longer is (see below). There is no `.crumbs` entry here any more: a
-  // claimed folder never renders a `.crumbs` element at all (Breadcrumb.tsx:
-  // `claimed ? null : <div className="crumbs">`), so there is nothing under
-  // that class for a searching rule to stand down. The path `···` needs no
-  // rule either, for the same reason it never did — it is the bar's
-  // right-click menu now (Breadcrumb's onBarContextMenu), not markup in the
-  // bar.
-  const rule = ruleFor(".crumb-nav");
-  expect(rule, "no searching rule for .crumb-nav").toBeDefined();
-  expect(rule!.decls).toMatch(/display:\s*none/);
+test("the bar has no history arrows of its own — the titlebar holds the global pair", () => {
+  expect(BREADCRUMB).not.toMatch(/goBack|goForward|crumb-nav/);
+  expect(CSS).not.toMatch(/\.crumb-nav\b/);
 });
 
-test("the arrows are removed from the layout, not merely made invisible", () => {
-  // Each is a 28px square; visibility/opacity would keep both boxes and leave
-  // the field starting in from a 56px hole where they were.
-  const decls = ruleFor(".crumb-nav")!.decls;
-  expect(decls).not.toMatch(/visibility:\s*hidden/);
-  expect(decls).not.toMatch(/opacity:\s*0/);
-});
-
-test("the path zone runs arrows, path, star — the order the unclaimed bar still keeps", () => {
+test("the path zone runs path, then star — the order the unclaimed bar keeps", () => {
   // Only the UNCLAIMED bar (a file view, or StaticBreadcrumb's own label row)
-  // still has this trio: over a claimed folder there is no `.crumbs` at all
-  // (the star lives inside the field there instead — see the header). For the
-  // trio that remains, the ordering is what the star's negative margin is
-  // aimed at (`margin-left` tightens last-crumb/★) and what the auto margin
-  // that eats the bar's slack rides on as the zone's true tail
-  // (`.crumbs:has(.path-crumb) ~ .bookmark-star-btn`, explorer.css). Flip any
-  // of the three and the bar silently regrows a gap no rule here would catch.
-  const nav = BREADCRUMB.indexOf("<CrumbNav />");
+  // still has this pair: over a claimed folder there is no `.crumbs` at all
+  // (the star lives inside the field there instead — see the header). The
+  // ordering is what the star's negative margin is aimed at (`margin-left`
+  // tightens last-crumb/★) and what the auto margin that eats the bar's slack
+  // rides on as the zone's true tail (`.crumbs:has(.path-crumb) ~
+  // .bookmark-star-btn`, explorer.css). Flip the two and the bar silently
+  // regrows a gap no rule here would catch.
   const crumbs = BREADCRUMB.indexOf('<div className="crumbs"');
   const star = BREADCRUMB.indexOf('<BookmarkStar id="bookmark-btn"');
-  expect(nav).toBeGreaterThan(-1);
-  expect(crumbs).toBeGreaterThan(nav);
+  expect(crumbs).toBeGreaterThan(-1);
   expect(star).toBeGreaterThan(crumbs);
 });
 
