@@ -53,4 +53,12 @@ if __name__ == "__main__":
         raise_request_timeout()
     except Exception:  # noqa: BLE001 - the timeout bump must never block the real CLI
         pass
+    # `fused workbench login` / `fused cloud login` open the browser themselves. Under WSL the stock open ends
+    # in `explorer.exe <url>`, which shows the Documents folder for a sign-in address (_wsl.py).
+    try:
+        from fused_render import _wsl
+
+        _wsl.use_windows_browser()
+    except Exception:  # noqa: BLE001 - never block the real CLI
+        pass
     main()
