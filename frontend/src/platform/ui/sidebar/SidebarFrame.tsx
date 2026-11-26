@@ -159,6 +159,7 @@ export function NavItem({
   trailing,
   active,
   title,
+  onClick,
 }: {
   href: string;
   label: string;
@@ -178,6 +179,10 @@ export function NavItem({
       whole family of routes (the global sidebar's Explorer row is active on
       every fs-path/panel/tab route, not just /explorer itself). */
   active?: boolean;
+  /** Overrides the click instead of navigating to `href` — the rail item's
+      `onClick`, for a row that summons something rather than going to a page
+      (the Search row's launcher panel). */
+  onClick?: () => void;
 }) {
   return (
     <a
@@ -187,7 +192,8 @@ export function NavItem({
       className={"sidebar-item" + ((active ?? location.pathname === href) ? " active" : "")}
       onClick={(e) => {
         e.preventDefault();
-        navigateUrl(href);
+        if (onClick) onClick();
+        else navigateUrl(href);
       }}
     >
       <span className="icon">

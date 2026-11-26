@@ -23,8 +23,9 @@
 //     timing (`HoverPace` is asked for pointer arrivals only).
 
 /** In the zone this long, the rail is hot (a cold ring's card waits out
- *  what is left of it). */
-export const RAIL_COLD_OPEN_MS = 300;
+ *  what is left of it). 500 ms (owner, 2026-11-26: "increase from 300 to
+ *  500"). */
+export const RAIL_COLD_OPEN_MS = 500;
 /** A hot ring's card: no wait. */
 export const RAIL_HOT_OPEN_MS = 0;
 /** Off the zone this long, a hot rail is cold again. */

@@ -11,13 +11,15 @@
 // (SidebarFrame) and explorer-owned sections (Bookmarks), which only
 // the shell is allowed to import together (scripts/check-boundaries.mjs).
 import { useEffect, useRef, useState } from "react";
-import { Sparkles, Store } from "lucide-react";
+import { Search, Sparkles, Store } from "lucide-react";
 import { ClaudeMark } from "@platform/ui/ClaudeMark";
 import { CanvasIcon } from "@platform/ui/NodeTypeIcons";
 import { SidebarFrame, NavItem } from "@platform/ui/sidebar/SidebarFrame";
 import { setSidebarSectionOpen } from "@platform/ui/sidebar/sidebar-accordion";
 import type { SidebarRailItem } from "@platform/ui/sidebar/SidebarFrame";
-import { botsAvailable, type Config } from "@platform/lib/api";
+import { botsAvailable, showLauncher, type Config } from "@platform/lib/api";
+import { useLauncherAvailable } from "@platform/lib/bots-available";
+import { useLauncherOpen } from "@shell/claude-rail/launcher-open";
 import { navigateUrl } from "@platform/lib/router";
 import { isBrowserHandledClick } from "@platform/lib/appEntry";
 import { TOURS, startTour } from "@platform/lib/tours";
@@ -110,6 +112,8 @@ const SKILLS_ICON = <Sparkles size={16} strokeWidth={2} aria-hidden="true" />;
 
 // A shop front (lucide Store) for the Marketplace: where community apps are
 // browsed and installed, sized like the lucide Tasks glyph above.
+// The app's launcher (the ⌥Space search panel over the apps and bots).
+const SEARCH_ICON = <Search size={16} strokeWidth={2} aria-hidden="true" />;
 const MARKETPLACE_ICON = <Store size={16} strokeWidth={1.9} aria-hidden="true" />;
 
 // Connected nodes: a canvas is a graph of UDFs.
@@ -484,6 +488,17 @@ export default function GlobalSidebar({ config }: { config: Config }) {
   // highlighting both the row and the thing you opened read as two selections.
   const pathname = location.pathname;
   const homeActive = pathname === "/home";
+  // THE SEARCH ROW (owner, 2026-11-26: "move it on left side below home"):
+  // the launcher panel, once the Claude rail's top door. Only where the app
+  // has one (the Mac desktop app); lit while the panel stands
+  // (`useLauncherOpen`). Where the shortcut opens it; a miss (the panel went
+  // with the preference) is nothing to show.
+  const searchAvailable = useLauncherAvailable(true);
+  const launcher = useLauncherOpen();
+  const openSearch = () => {
+    launcher.opened();
+    showLauncher().catch(() => launcher.failed());
+  };
   const tasksActive = pathname === "/tasks";
   // PREFIX, unlike Canvases above: /ai-models/<tab> is the same page seen
   // through a different tab, not a second destination, so every one of the five
@@ -778,6 +793,9 @@ export default function GlobalSidebar({ config }: { config: Config }) {
   const rail: SidebarRailItem[] = [
     // Same gate and same order as the expanded rows below.
     { key: "home", label: "Home", icon: HOME_ICON, href: "/home", active: homeActive },
+    ...(searchAvailable
+      ? [{ key: "search", label: "Search", icon: SEARCH_ICON, href: "#", active: launcher.open, onClick: openSearch }]
+      : []),
     // No Canvases entry (owner, 2026-10-20): the Canvases SECTION below lists
     // the canvases, and its "+ Canvas" row is the door to the catalog.
     {
@@ -851,6 +869,16 @@ export default function GlobalSidebar({ config }: { config: Config }) {
       >
         <div className="sidebar-section sidebar-group">
           <NavItem href="/home" id="home-link" label="Home" icon={HOME_ICON} active={homeActive} />
+          {searchAvailable && (
+            <NavItem
+              href="#"
+              id="search-link"
+              label="Search"
+              icon={SEARCH_ICON}
+              active={launcher.open}
+              onClick={openSearch}
+            />
+          )}
           {/* No Canvases row (owner, 2026-10-20): the Canvases section below
               is the listing, its "+ Canvas" row the way to the catalog. */}
           <NavItem
