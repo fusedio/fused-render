@@ -143,7 +143,7 @@ export function QuestionCard({ row, onAnswer, onDismiss }: QuestionCardProps) {
   // `questions` array changes length (T rebuilds the card per id) left these
   // short, and `picked[i]` came back undefined for the questions past the end.
   const agent = useAgent();
-  /** THE ANSWER SO FAR OUTLIVES THE CARD (questionDrafts.ts). Walking to
+  /** THE ANSWER SO FAR OUTLIVES THE CARD (questionDrafts.ts, in memory). Walking to
    *  another task and back unmounts the chat, and every pick, typed line and
    *  skip used to go with it — the reader answered the whole card again
    *  (Akshil, 2026-11-26). Read once, at mount; the effect below writes back. */
@@ -199,10 +199,11 @@ export function QuestionCard({ row, onAnswer, onDismiss }: QuestionCardProps) {
   const posting = sent && !sendError && !resolved;
 
   // Write the draft back on every change, and drop it once a verdict has
-  // landed. A HELD answer (queued, not yet seen by the model) keeps it: if the
-  // queue drops that answer the card comes back, and so should the picks.
+  // landed. A HELD answer (queued, not yet seen by the model) keeps it — a
+  // queued click sets `decision` too (`resolveLocally`), so `held` is checked
+  // first: if the queue drops that answer the card comes back with its picks.
   useEffect(() => {
-    if (row.decision) {
+    if (row.decision && !held) {
       clearQuestionDraft(row.id);
       return;
     }
@@ -216,7 +217,7 @@ export function QuestionCard({ row, onAnswer, onDismiss }: QuestionCardProps) {
       skipped,
       active,
     });
-  }, [row.id, row.decision, resolved, answerable, questions.length, picked, otherOpen, otherText, skipped, active]);
+  }, [row.id, row.decision, held, resolved, answerable, questions.length, picked, otherOpen, otherText, skipped, active]);
 
   const typedOf = (i: number) => (otherOpen[i] ? (otherText[i] || "").trim() : "");
   const labelsOf = (i: number) => {

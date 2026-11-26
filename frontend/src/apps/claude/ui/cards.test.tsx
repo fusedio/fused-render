@@ -576,6 +576,23 @@ test("an answered card drops its draft: the same request asked again starts clea
   expect(textOf(withClass(again, "qsend-left")[0])).toBe("0 of 2 done");
 });
 
+test("a HELD answer keeps its draft: a dropped queued answer brings the picks back", () => {
+  const ask = (over: Partial<PermissionRow>) => (
+    <QuestionCard row={row({ tool: ASK, input: twoQ, ...over })} onAnswer={async () => {}} onDismiss={() => {}} />
+  );
+  const first = mount(ask({}));
+  act(() => {
+    instances(first, Checkbox)[0].props.onCheckedChange(true);
+  });
+  // A queued click sets `decision` and `queuedAhead` together (resolveLocally).
+  act(() => first.update(ask({ decision: "allow", queuedAhead: "another task" })));
+  act(() => first.unmount());
+  mounted.splice(mounted.indexOf(first), 1);
+
+  const again = mount(ask({}));
+  expect(textOf(withClass(again, "qsend-left")[0])).toBe("1 of 2 done");
+});
+
 /** A keydown as the card root's capture handler sees it, from a focused tick. */
 function arrow(key: string, spy: { stopped: boolean; prevented: boolean }): Props {
   return fakeEvent({
