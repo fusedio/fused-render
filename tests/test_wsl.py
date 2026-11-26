@@ -72,6 +72,28 @@ def test_a_browser_the_person_chose_stays_in_charge(monkeypatch, registry):
     assert _wsl.BROWSER_NAME not in webbrowser._browsers
 
 
+@pytest.mark.parametrize("value,chosen", [
+    ("", False), ("explorer.exe", False), ("/mnt/c/Windows/explorer.exe %s", False), ("Explorer.EXE", False),
+    ("wslview", True), ("/usr/bin/firefox %s", True), ("explorer.exe:wslview", True),
+])
+def test_explorer_as_browser_does_not_count_as_a_choice(value, chosen):
+    assert _wsl.browser_chosen({"BROWSER": value}) is chosen
+
+
+def test_explorer_as_browser_still_takes_the_windows_route(monkeypatch, registry):
+    monkeypatch.setattr(_wsl, "is_wsl", lambda: True)
+    monkeypatch.setenv("BROWSER", "explorer.exe")
+    assert _wsl.use_windows_browser() is True
+    assert webbrowser._tryorder[0] == _wsl.BROWSER_NAME
+
+
+def test_the_fused_cli_shim_registers_the_windows_browser():
+    import pathlib
+
+    shim = pathlib.Path(_wsl.__file__).with_name("_fused_cli.py").read_text()
+    assert shim.index("use_windows_browser()") < shim.rindex("main()")
+
+
 def test_nothing_changes_off_wsl(monkeypatch, registry):
     monkeypatch.setattr(_wsl, "is_wsl", lambda: False)
     assert _wsl.use_windows_browser() is False

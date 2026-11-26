@@ -187,7 +187,7 @@ def _xdg_open(target: str, activation_token: str | None = None) -> None:
     # query (_wsl.py): a web address goes to the Windows default browser directly. Paths still take xdg-open.
     from fused_render import _wsl
 
-    if _wsl.is_wsl() and not os.environ.get("BROWSER") and _wsl.open_url(target):
+    if _wsl.is_wsl() and not _wsl.browser_chosen() and _wsl.open_url(target):
         return
     env = None
     if activation_token:

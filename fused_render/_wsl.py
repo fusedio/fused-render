@@ -68,6 +68,15 @@ def open_url(url) -> bool:
     return True
 
 
+def browser_chosen(env=None) -> bool:
+    """A `BROWSER` the person set that should stay in charge. One that names only `explorer.exe` does not
+    count: it is the very route that shows the Documents folder for a sign-in address."""
+    value = (os.environ if env is None else env).get("BROWSER") or ""
+    names = [entry.split()[0].replace("\\", "/").rsplit("/", 1)[-1].lower()
+             for entry in value.split(os.pathsep) if entry.strip()]
+    return any(name not in ("explorer.exe", "explorer") for name in names)
+
+
 class _WindowsBrowser(webbrowser.BaseBrowser):
     def open(self, url, new=0, autoraise=True):
         return open_url(url)
@@ -75,10 +84,10 @@ class _WindowsBrowser(webbrowser.BaseBrowser):
 
 def use_windows_browser() -> bool:
     """Under WSL, make every `webbrowser.open` in this process try the Windows default browser first (what it
-    cannot take falls through to the usual xdg-open). A `BROWSER` the person set stays in charge. Safe to call
-    more than once. True when it is in place."""
+    cannot take falls through to the usual xdg-open). A `BROWSER` the person set stays in charge, unless it
+    is `explorer.exe` (browser_chosen). Safe to call more than once. True when it is in place."""
     global _registered
-    if not is_wsl() or os.environ.get("BROWSER"):
+    if not is_wsl() or browser_chosen():
         return False
     if _registered:
         return True
