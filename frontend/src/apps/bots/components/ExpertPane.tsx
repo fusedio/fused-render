@@ -1,7 +1,7 @@
 // An expert's preview column (docs/experts.md): no browser, so in place of the screenshot, live view and info
 // it shows three tabs in the Browser | Terminal strip's style:
 //   Memory    memory.md rendered, with Edit opening the file in the explorer.
-//   Skills    each skill's name and description; a row opens to its text. Read-only: the user asks the expert.
+//   Skills    each skill's name and description; a row opens to its text. Read-only here: Settings › Skills edits them.
 //   Learning  Waiting: the inbox (a note opens to its text, a conversation to one sentence; Delete is the one way to
 //             remove an entry), with Learn now. Learned: its history, newest first; a learning run opens to what it
 //             read, its reply and its diff, any other change to its diff. Opening the tab clears the row's dot.
@@ -10,7 +10,7 @@
 import { useEffect, useId, useState, type ReactNode } from "react";
 import { spaLinkProps } from "@platform/lib/router";
 import type { Expert } from "@platform/lib/experts";
-import { expertApi, type ExpertChange, type ExpertEntry } from "../lib/api";
+import { expertApi, type ExpertChange, type ExpertEntry, type ExpertSkill } from "../lib/api";
 import { fmtWhen, fmtWhenShort } from "../lib/format";
 import { agoShort } from "../lib/memdiff";
 import { actExpert, errMsg } from "../state/store";
@@ -23,7 +23,7 @@ const KIND: Record<string, string> = { note: "Note", task: "Task", breakout: "Br
 
 type Data = {
   memory: string;
-  skills: { name: string; description: string; text: string }[];
+  skills: ExpertSkill[];
   notes: ExpertEntry[];
 };
 type Detail = { sha: string; diff: string; reply?: string; read?: { kind: string; title: string }[]; err?: string };
@@ -102,7 +102,7 @@ export function ExpertPane({ s }: { s: Expert }) {
               </Row>
             ))}
           </ul>
-        ) : <p className="xp-empty">No skills yet. To add or change one, tell the expert in its chat.</p>) : <>
+        ) : <p className="xp-empty">No skills yet. Add one in its Settings, or tell the expert in its chat.</p>) : <>
           <p className="xp-none muted">It learns from notes, breakouts, tasks that use it and its own chat. They wait here until it next learns from them, once a day.</p>
           <div className="xp-chbox">
             <p className="xp-lbl xp-line">Waiting · {waiting.length}
