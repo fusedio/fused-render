@@ -1712,6 +1712,48 @@ def api_canvases_node(path: str = ""):
     return out
 
 
+@router.post("/api/canvases/layout-shot")
+def api_canvases_layout_shot(body: dict = Body(default={}),
+                             x_fused: str | None = Header(default=None)):
+    """A picture of a canvas's LAYOUT as its `canvas.toml` on disk describes
+    it (SPEC §28 CV-8): the canvas view (templates/canvas/) drawn in a
+    headless browser, the whole canvas fitted, or framed on the node or
+    folder `focus` names. Nothing is run and no canvas page is needed, so it
+    shows an edit that has not been published yet.
+
+    Body `{path, focus?}`: `path` is a canvas folder or its `canvas.toml`.
+    Answers `{image: <base64 PNG>, mime, width, height, nodes, folders,
+    edges, focus}`, or `{error, no_browser?}` with 422 for a canvas that
+    cannot be drawn (no file, a parse error, an unknown `focus`, no browser
+    installed). Starts a process: D36 guard."""
+    guard = _require_fused(x_fused)
+    if guard is not None:
+        return guard
+    path = body.get("path") if isinstance(body, dict) else None
+    focus = body.get("focus") if isinstance(body, dict) else None
+    if not isinstance(path, str) or not path or not os.path.isabs(os.path.expanduser(path)):
+        return _error("'path' must be an absolute path")
+    if focus is not None and not isinstance(focus, str):
+        return _error("'focus' must be a string")
+    path = os.path.expanduser(path)
+    toml_path = path if os.path.basename(path) == "canvas.toml" \
+        else os.path.join(path, "canvas.toml")
+
+    import base64
+
+    from fused_render import canvas_layout_shot
+    from fused_render._branch import branch_port
+    from fused_render.server import templates as _server_templates
+
+    origin = os.environ.get("FUSED_RENDER_ORIGIN") or "http://127.0.0.1:%d" % branch_port()
+    template = os.path.join(_server_templates.TEMPLATES_DIR, "canvas", "template.html")
+    result = canvas_layout_shot.shot(toml_path, origin, template, (focus or "").strip())
+    if "error" in result:
+        return JSONResponse(result, status_code=422)
+    png = result.pop("png")
+    return {"image": base64.b64encode(png).decode("ascii"), "mime": "image/png", **result}
+
+
 @router.get("/api/canvases/whoami")
 def api_canvases_whoami(env: str = "", x_fused: str | None = Header(default=None)):
     # EXECUTES a control-plane call — D36 guard, like account's probe=1.
@@ -2437,7 +2479,12 @@ edit files; you never run a sync command.
 - **Verify your work** with the `canvas_screenshot` tool and
   `fused workbench canvas validate .` — an invalid canvas is not published,
   and its errors reach the user. If a publish failed, the canvas view shows
-  why; fix the files and the next publish ships the fix.
+  why; fix the files and the next publish ships the fix. The tool takes
+  three pictures: `what: "layout"` is where everything SITS (nodes, folders,
+  edges, drawn from this folder's `canvas.toml` as it is now: no open canvas
+  needed, this turn's edits included, nothing run); `what: "udf"` and
+  `what: "canvas"` are what a node's OUTPUT looks like on the user's canvas
+  page.
 
 ## Running the fused CLI
 
@@ -2467,10 +2514,15 @@ protection described above.
   converting its coordinates too. Deleting or renaming a node means
   removing or renaming it in its folder's `childUdfOrder` as well: a stale
   name there is tolerated, but it is a bug to fix. A node in a folder is
-  still a root-level file in this folder, never a subdirectory. After
-  re-arranging folders or moving nodes, take one canvas screenshot (the
-  `canvas_screenshot` tool, `what: "canvas"`) and fix what is missing,
-  misplaced or overlapping before you report the layout done.
+  still a root-level file in this folder, never a subdirectory.
+- **Look at the layout before you report it done.** After adding, moving or
+  resizing nodes, or re-arranging folders, call the `canvas_screenshot` tool
+  with `what: "layout"` and fix what is missing, misplaced, overlapping or
+  outside its folder. It draws this folder's `canvas.toml` as it is now, in
+  about a second, so look again after each fix. On a large canvas add
+  `udf: "<folder or node name>"` to frame one part. Do not use
+  `what: "canvas"` to check a layout: that is a screenshot of the user's
+  canvas page, which shows your edits only after they are published.
 
 ## The user edits this canvas live, beside you
 

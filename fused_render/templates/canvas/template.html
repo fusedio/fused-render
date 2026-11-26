@@ -89,6 +89,8 @@
     --tag-shadow-blur: max(2px, calc(4px * var(--zf)));
   }
   .stage.dragging { cursor: grabbing; }
+  /* Picture mode (`shot=1`, CV-8): the page is photographed, not used. */
+  .stage.shot .controls { display: none; }
   .stage > svg.bg { position: absolute; inset: 0; width: 100%; height: 100%; pointer-events: none; }
   .stage > svg.defs { position: absolute; width: 0; height: 0; }
   /* The world holds everything in canvas units; the camera is one transform. */
@@ -449,6 +451,13 @@
   // A drive root keeps its slash: bare "C:" is cwd-relative.
   if (/^[A-Za-z]:$/.test(fileDir)) fileDir += "/";
   var folderName = (fileDir.split("/").pop() || "canvas");
+  // Picture mode (CV-8): `shot=1` is fused-render photographing this page for
+  // an agent checking a layout — the whole canvas, fitted, whatever camera
+  // the file or the URL holds. `focus=<name>` frames one node or folder
+  // instead (in picture mode, and on a plain open that carries no camera).
+  var shotMode = fused.params.get("shot") === "1";
+  var focusName = fused.params.get("focus") || "";
+  if (shotMode) stage.classList.add("shot");
 
   // Header renders immediately from the path, BEFORE the reader runs — so a
   // reader error (which surfaces via the runtime's traceback overlay, SPEC §28)
@@ -583,6 +592,9 @@
     data = await fused.runPython("./reader.py", { file: file });
   } finally {
     loadingEl.hidden = true;
+    // For whoever photographs this page (CV-8): "failed" unless the code
+    // below runs to its end and says "ready".
+    document.documentElement.setAttribute("data-cv", "failed");
   }
   data = data || {};
   var nodes = Array.isArray(data.nodes) ? data.nodes : [];
@@ -960,6 +972,35 @@
     if (!b) return { tx: (stage.clientWidth || 1) / 2, ty: (stage.clientHeight || 1) / 2, zoom: 1 };
     return camForBounds(b, 0.1);
   }
+  // A frame for a picture: fixed screen margins instead of a share of the
+  // view, so what hangs outside a box is in the picture too — a folder's
+  // name and a node's title above it, a description below — and never past
+  // 100%, so a small canvas is not blown up.
+  var FRAME = { left: 40, right: 40, top: 110, bottom: 80 };
+  function camForFrame(b) {
+    var w = stage.clientWidth || 1, h = stage.clientHeight || 1;
+    var iw = Math.max(1, w - FRAME.left - FRAME.right), ih = Math.max(1, h - FRAME.top - FRAME.bottom);
+    var bw = Math.max(1, b.maxX - b.minX), bh = Math.max(1, b.maxY - b.minY);
+    var zoom = Math.max(MIN_ZOOM, Math.min(iw / bw, ih / bh, 1));
+    return {
+      zoom: zoom,
+      tx: FRAME.left + (iw - bw * zoom) / 2 - b.minX * zoom,
+      ty: FRAME.top + (ih - bh * zoom) / 2 - b.minY * zoom,
+    };
+  }
+  // The box of everything `focus` names: a node's udfName, or a folder's
+  // udfName or folderName (a folder's children are inside its box).
+  function focusBounds() {
+    if (!focusName) return null;
+    var hit = all.filter(function (n) { return n.udfName === focusName || n.folderName === focusName; });
+    if (!hit.length) return null;
+    var minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+    hit.forEach(function (n) {
+      minX = Math.min(minX, n.ax); minY = Math.min(minY, n.ay);
+      maxX = Math.max(maxX, n.ax + n.width); maxY = Math.max(maxY, n.ay + n.height);
+    });
+    return { minX: minX, minY: minY, maxX: maxX, maxY: maxY };
+  }
 
   // Fit animates 600ms with a cubic ease-out (instant under
   // prefers-reduced-motion).
@@ -993,10 +1034,15 @@
     var px0 = num(fused.params.get("cx"));
     var py0 = num(fused.params.get("cy"));
     var pz0 = num(fused.params.get("z"));
-    if (px0 !== null && py0 !== null && pz0 !== null && pz0 > 0) {
+    if (!shotMode && px0 !== null && py0 !== null && pz0 !== null && pz0 > 0) {
       cam = { tx: px0, ty: py0, zoom: clampZoom(pz0) };
       return;
     }
+    // A named node or folder, framed; a picture with none named shows the
+    // whole canvas rather than the part that was last on screen.
+    var fb = focusBounds();
+    if (fb) { cam = camForFrame(fb); return; }
+    if (shotMode) { var ab = bounds(); cam = ab ? camForFrame(ab) : fitCam(); return; }
     // Then the part of the canvas that was on screen when it was saved: the
     // bounds hold whatever the size of this pane, which x/y/zoom do not.
     if (viewportBounds) { cam = camForBounds(viewportBounds, 0); return; }
@@ -1181,10 +1227,24 @@
   // ---- boot -------------------------------------------------------------
   initCamera();
   draw();
-  // The title and name fonts settle after the first paint; the folder names
-  // are cut to width again once they have.
-  if (document.fonts && document.fonts.ready) {
-    document.fonts.ready.then(function () { tagFontPx = null; fitTags(); });
+  // The title and name typeface loads after the first paint; the folder
+  // names are cut to width again once it is in, and only then is the page
+  // "ready" for a picture (CV-8). Two seconds is the longest it waits for a
+  // typeface: the canvas is drawn either way.
+  var settled = false;
+  function settle() {
+    if (settled) return;
+    settled = true;
+    tagFontPx = null;
+    fitTags();
+    document.documentElement.setAttribute("data-cv", "ready");
+  }
+  if (document.fonts && document.fonts.load) {
+    Promise.all([document.fonts.load('300 16px "Work Sans"'),
+                 document.fonts.load('500 16px "Work Sans"')]).then(settle, settle);
+    setTimeout(settle, 2000);
+  } else {
+    settle();
   }
 })();
 </script>

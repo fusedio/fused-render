@@ -2337,6 +2337,46 @@ offer it — a plain `.toml` never shows the mode at all.
   sibling files as links that open `/view/<abs sibling path>` in a **new tab**
   (no in-shell navigation, v0). Clicking a folder or its name shows its name,
   size and child list; clicking empty space clears.
+- **CV-8** **A picture of the layout, for an agent (D1512).** An agent that
+  has added, moved or resized nodes, or re-arranged folders, looks at the
+  result through this view, not through a screenshot of the canvas page:
+  the `canvas_screenshot` tool's `what: "layout"`. The picture is the
+  `canvas.toml` on disk at that moment, so it needs no open canvas page, asks
+  the user nothing, runs no node, and shows an edit that has not been
+  published yet.
+  - **Picture mode.** `shot=1` on the view's URL: the whole canvas fitted
+    inside fixed screen margins (so a folder's name and a node's title above
+    the topmost box, and a description below the lowest, are in the picture),
+    never past 100%, the controls hidden, and the camera in the file or the
+    URL ignored. `focus=<name>` frames one node (its `udfName`) or folder
+    (its `udfName` or `folderName`) the same way; without `shot` it applies
+    to an open that carries no camera.
+  - **The page says when it is drawn.** Its root element carries
+    `data-cv="failed"` once the reader has answered and `data-cv="ready"`
+    once the canvas is built and Work Sans is in (2 s at most for the
+    typeface).
+  - **`POST /api/canvases/layout-shot`** `{path, focus?}` (X-Fused guard;
+    `path` a canvas folder or its `canvas.toml`) → `{image: <base64 PNG>,
+    mime, width, height, nodes, folders, edges, focus}`, or 422 `{error,
+    no_browser?}`: no file, a file that does not parse or is not a canvas, a
+    `focus` naming nothing (the names are listed), no browser, a browser
+    that failed. `canvas_layout_shot.py` starts one headless Chrome (the
+    browser the Bots look for; 1568 x 980 at scale 1; a profile of its own in
+    a temp folder), loads the view, polls `data-cv` over DevTools, takes the
+    PNG and ends the browser; 30 s at most, two at a time. Spawned without
+    a fork (`close_fds=False`, no new session).
+  - **The tool.** `canvas_screenshot` takes `what: "layout" | "canvas" |
+    "udf"`; with `"layout"`, `udf` names the node or folder to frame. The
+    permission server calls the route on `FUSED_RENDER_CANVAS_ORIGIN` (stamped
+    for a canvas session beside the clone) with the session's clone, and
+    returns the image with a note saying what it is (drawn from the file, no
+    output, nothing run) and the canvas's node, folder and edge counts. No
+    request is parked for a page and no open-canvas ask is raised. With no
+    browser installed the sentence says to use `what: "canvas"`.
+  - **Told to the agent.** The clone's seeded `CLAUDE.md` and the tool's
+    description say: `what: "layout"` for where things sit, after any layout
+    edit and before reporting it done; `what: "canvas"` and `"udf"` for what
+    a node's output looks like on the user's canvas page.
 - **CV-7** Dark, in the workbench's colours; no network (the page loads only
   the app's own `marked`, `canvas-node.js` and font), ES2020, and — like every
   template — no runtime script tag (`window.fused` is injected).

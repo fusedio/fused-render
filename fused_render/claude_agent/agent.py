@@ -3009,6 +3009,9 @@ def _write_mcp_config(run_dir: str, pane: bool = True, approve: bool = True,
         server_env["FUSED_RENDER_CANVAS_CLONE"] = canvas["clone"]
         server_env["FUSED_RENDER_CANVAS_NODE"] = canvas.get("node") or ""
         server_env["FUSED_RENDER_CANVAS_PAGES"] = _canvas_pages_dir()
+        # Where `what: "layout"` asks for its picture (the server draws the
+        # canvas.toml view itself, D1512); named here to reach the child.
+        server_env["FUSED_RENDER_CANVAS_ORIGIN"] = _origin() or ""
     allow_path = _chat_allow_path(chat_id)
     if allow_path and approve:
         # The chat's "Always approve" store (`_chat_allow_path`). An env var,

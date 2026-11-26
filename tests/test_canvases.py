@@ -3197,6 +3197,12 @@ def test_the_seeded_claude_md_sanctions_the_standard_push():
     assert "when your turn ends" in text
     assert "merged into this folder automatically" in text
     assert "`canvas_screenshot` tool" in text and "fused workbench canvas validate ." in text
+    # A layout is checked on the picture drawn from canvas.toml (D1512), not
+    # on a screenshot of the canvas page.
+    assert '`what: "layout"`' in text
+    assert "Look at the layout before you report it done" in text
+    assert 'Do not use\n  `what: "canvas"` to check a layout' in text
+    assert "take one canvas screenshot" not in text
     assert "Publishing your work" not in text and "600000" not in text
     # And the bundled-CLI rule (A4d).
     assert "pip install fused" in text
