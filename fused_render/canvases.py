@@ -1712,6 +1712,7 @@ def _whoami_result(env: str):
     on (`record_staff_email`)."""
 
     def compute():
+        sig_before = _creds_sig(env)
         proc, err = _run_cli(["workbench", "--format", "json", "whoami"], WHOAMI_TIMEOUT, env)
         if err is not None:
             return _err_of(err)
@@ -1738,7 +1739,10 @@ def _whoami_result(env: str):
         # `/user/self` carries the account email (the fused SDK's own context
         # reads `whoami()["email"]`). Shown on the Preferences sign-in line.
         email = data.get("email") if isinstance(data.get("email"), str) else None
-        if env in _HOSTED_ENVS:
+        # Only when the sign-in did not change under the run (a logout, or a
+        # login finishing): the answer would be the previous account's, and
+        # its verdict must not outlive it (CodeRabbit, PR #2476).
+        if env in _HOSTED_ENVS and _creds_sig(env) == sig_before:
             record_staff_email(email)
         return ("ok", {"handle": handle, "email": email, "raw": data})
 

@@ -162,6 +162,12 @@ function PreferencesPage({ claudeConfig }: { claudeConfig: boolean | null }) {
   // (the hotkey recorder suspends the global shortcuts for as long as it runs)
   // must not be torn down by an unrelated re-render of this page.
   const setPrefs = useCallback((p: Prefs) => {
+    // An answer older than the one on show (a slow PUT landing after a newer
+    // one — an environment switch overtaken by Fused Workbench off) is
+    // dropped, or it would put the older switch back (CodeRabbit, PR #2476).
+    if (typeof p.revision === "number" && typeof lastPrefs?.revision === "number" && p.revision < lastPrefs.revision) {
+      return;
+    }
     writeGen += 1;
     lastPrefs = p;
     setPrefsState(p);
