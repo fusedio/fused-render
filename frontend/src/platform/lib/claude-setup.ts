@@ -59,6 +59,8 @@ const INSTALL_POLL_MS = 1200;
     with a browser window, so a faster tick would only spend requests watching
     someone read a consent screen. */
 const LOGIN_POLL_MS = 2000;
+/** Every this many login polls (10 s), re-measure health while a sign-in waits. */
+const LOGIN_HEALTH_EVERY = 5;
 
 export interface ClaudeSetup {
   health: ClaudeHealth | null;
@@ -220,7 +222,31 @@ export function useAgentSetup(backend: string, watching: boolean): ClaudeSetup {
   useEffect(() => {
     if (!login?.in_flight) return;
     let alive = true;
+    let ticks = 0;
     const timer = window.setInterval(() => {
+      // SIGNED IN SOME OTHER WAY while this sign-in waits — `claude` then
+      // `/login` in the terminal drawer, which is what a person does when the
+      // browser never opened. The waiting child knows nothing of it and would
+      // hold the row at "Working…" until its watchdog, ten minutes on, over a
+      // CLI that is already signed in. So re-measure now and then, quietly (no
+      // `busy`), and call the child off once the answer is yes.
+      ticks += 1;
+      if (ticks % LOGIN_HEALTH_EVERY === 0) {
+        refreshAgentHealth(backend).then(
+          (h) => {
+            if (!alive || h.signed_in !== true) return;
+            cached.set(backend, h);
+            setHealth(h);
+            cancelAgentLogin(backend).then(
+              (rec) => alive && setLogin(rec),
+              () => alive && setLogin(null),
+            );
+          },
+          () => {
+            /* A failed probe is not a finding. */
+          },
+        );
+      }
       getAgentLogin(backend).then(
         (next) => {
           if (!alive) return;
