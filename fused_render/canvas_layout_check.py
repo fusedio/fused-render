@@ -26,6 +26,7 @@ Pure functions over the parsed file; standard library only.
 """
 from __future__ import annotations
 
+import collections
 import hashlib
 import json
 import math
@@ -43,6 +44,14 @@ FOLDER_SIZE = (1500, 115)
 TOLERANCE = 1.0
 #: How many problems a note spells out before it counts the rest.
 MAX_LINES = 12
+#: The check's own budget. A canvas.toml under the size guard can still hold
+#: thousands of boxes at one spot: every pair of them overlaps, and listing
+#: millions of sentences would stall the hook that asked. Past either limit
+#: the check stops and SAYS it stopped; it never reports such a canvas clean.
+MAX_PAIRS = 2_000_000
+MAX_PROBLEMS = 500
+INCOMPLETE = ("the layout check stopped early: this canvas has too many boxes or "
+              "problems to go through, so there may be more than is listed here")
 
 
 def _num(value, default=0.0):
@@ -68,8 +77,12 @@ def fingerprint(doc) -> str:
     """What the layout IS: every row's name, kind, place, size and children,
     and the edges. A title, a description or a colour changing does not move
     it, so those edits raise no layout note."""
+    # `textBoxColor` only as present-or-not: a row with no size and no source
+    # file is a note (350 x 250) when it carries one and a UDF (700 x 500)
+    # when it does not, so adding or dropping it moves a box's edges.
     rows = [[r.get("udfName"), r.get("type"), r.get("x"), r.get("y"), r.get("width"),
-             r.get("height"), r.get("childUdfOrder"), r.get("folderName")] for r in _rows(doc)]
+             r.get("height"), r.get("childUdfOrder"), r.get("folderName"),
+             isinstance(r.get("textBoxColor"), str)] for r in _rows(doc)]
     blob = json.dumps([rows, _edges(doc)], sort_keys=True, default=str)
     return hashlib.sha1(blob.encode("utf-8")).hexdigest()
 
@@ -203,15 +216,21 @@ def problems(doc, present=()) -> list:
         + [dict(n, what="node") for n in nodes if n["parent"] is None]
     groups = [top] + [[dict(n, what="node") for n in nodes if n["parent"] == i]
                       for i in range(len(folders))]
+    pairs = 0
     for index, group in enumerate(groups):
         where = "" if index == 0 else " inside folder `%s`" % folders[index - 1]["name"]
         for i, a in enumerate(group):
+            pairs += len(group) - i - 1
+            if pairs > MAX_PAIRS or len(out) >= MAX_PROBLEMS:
+                return out[:MAX_PROBLEMS] + [INCOMPLETE]
             for b in group[i + 1:]:
                 shared = _overlap(a, b)
                 if shared:
                     out.append("%s `%s` and %s `%s` overlap%s by %s x %s px"
                                % (a["what"], a["name"], b["what"], b["name"], where,
                                   _px(shared[0]), _px(shared[1])))
+    if len(out) > MAX_PROBLEMS:
+        return out[:MAX_PROBLEMS] + [INCOMPLETE]
     return out
 
 
@@ -229,8 +248,15 @@ def note(doc, present=(), before=()) -> str:
     problems the canvas already had when the turn began: those are not the
     session's to fix unasked, so they are counted, never listed."""
     found = problems(doc, present)
-    before = set(before or ())
-    fresh = [line for line in found if line not in before]
+    # Counted, not a set: two pairs of nodes can share their names and so
+    # their sentence, and the second pair is new even when the first is old.
+    left = collections.Counter(before or ())
+    fresh = []
+    for line in found:
+        if line != INCOMPLETE and left[line] > 0:
+            left[line] -= 1
+        else:
+            fresh.append(line)
     older = len(found) - len(fresh)
     nodes, folders, edges = counts(doc)
     size = "%d node%s, %d folder%s, %d edge%s" % (

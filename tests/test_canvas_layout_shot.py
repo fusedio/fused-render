@@ -79,6 +79,51 @@ def test_a_canvas_that_cannot_be_read_is_a_sentence(tmp_path, canvas):
     assert "doc" in shot_mod.read_canvas(str(canvas / "canvas.toml"))
 
 
+def test_a_folder_name_counts_on_a_folder_row_only():
+    # The view knows a plain node by its udfName alone: a stray `folderName`
+    # on one must not pass as something a picture can be framed on.
+    doc = {"canvas": {"nodes": [{"udfName": "actual", "folderName": "extra"}]}}
+    assert shot_mod.names_in(doc) == ["actual"]
+
+
+def test_text_that_is_not_utf8_does_not_parse(tmp_path):
+    bad = tmp_path / "canvas.toml"
+    bad.write_bytes(b'type = "canvas"\nname = "\xff\xfe"\n')
+    assert "does not parse" in shot_mod.read_canvas(str(bad))["error"]
+
+
+def test_a_node_list_that_is_no_list_is_an_empty_canvas(tmp_path, monkeypatch):
+    path = tmp_path / "canvas.toml"
+    path.write_text('type = "canvas"\n[canvas]\nnodes = 1\nedges = 2\n')
+    monkeypatch.setattr(shot_mod, "_find_chrome", lambda: "/bin/chrome")
+    monkeypatch.setattr(shot_mod, "_render", lambda chrome, url, deadline: PNG)
+    out = shot_mod.shot(str(path), "http://h", "/t.html")
+    assert (out["nodes"], out["folders"], out["edges"]) == (0, 0, 0)
+
+
+def test_the_wait_for_a_slot_is_inside_the_budget(canvas, monkeypatch):
+    # Both slots taken: the caller is told so instead of queueing past its
+    # own caller's patience, and a slot is not leaked either way.
+    monkeypatch.setattr(shot_mod, "_find_chrome", lambda: "/bin/chrome")
+    monkeypatch.setattr(shot_mod, "_SLOTS", shot_mod.threading.BoundedSemaphore(1))
+    monkeypatch.setattr(shot_mod, "MIN_DRAW_S", 0.0)
+    seen = []
+    monkeypatch.setattr(shot_mod, "_render",
+                        lambda chrome, url, deadline: seen.append(deadline) or PNG)
+    assert shot_mod._SLOTS.acquire()
+    started = shot_mod.time.monotonic()
+    out = shot_mod.shot(str(canvas / "canvas.toml"), "http://h", "/t.html", timeout=0.3)
+    assert "try again" in out["error"] and seen == []
+    assert shot_mod.time.monotonic() - started < 2
+    shot_mod._SLOTS.release()
+    # Free again: the picture is drawn, against a deadline set BEFORE the wait.
+    before = shot_mod.time.monotonic()
+    assert shot_mod.shot(str(canvas / "canvas.toml"), "http://h", "/t.html", timeout=5)["png"] == PNG
+    assert before + 4.5 < seen[0] <= shot_mod.time.monotonic() + 5
+    assert shot_mod._SLOTS.acquire(blocking=False)      # released after the draw
+    shot_mod._SLOTS.release()
+
+
 def test_the_page_asked_for_is_the_canvas_view_in_picture_mode():
     url = shot_mod.view_url("http://127.0.0.1:1777/", "/t/canvas/template.html",
                             "/c/My canvas/canvas.toml", focus="A & B")
@@ -234,6 +279,17 @@ def test_a_page_that_fails_or_never_finishes_is_a_sentence(monkeypatch):
     assert ws.closed
 
 
+def test_a_browser_gone_before_its_socket_opens_is_a_sentence(monkeypatch):
+    from fused_render.bots import browser
+
+    def refuse(url, timeout=30):
+        raise ConnectionRefusedError("refused")
+    monkeypatch.setattr(shot_mod, "_page_socket", lambda port, deadline: "ws://127.0.0.1:1/x")
+    monkeypatch.setattr(browser, "WS", refuse)
+    with pytest.raises(shot_mod._Failed, match="could not be reached"):
+        shot_mod._capture(1, "http://h", shot_mod.time.monotonic() + 5)
+
+
 def test_no_browser_installed_is_a_sentence_and_a_flag(canvas, monkeypatch):
     monkeypatch.setattr(shot_mod, "_find_chrome", lambda: None)
     out = shot_mod.shot(str(canvas / "canvas.toml"), "http://h", "/t.html")
@@ -342,3 +398,18 @@ def test_the_canvas_view_has_a_picture_mode():
     assert 'setAttribute("data-cv", "failed")' in html
     assert 'setAttribute("data-cv", "ready")' in html
     assert shot_mod.READY_ATTR == "data-cv"
+    # "failed" is said by a failure only (an unhandled rejection or error),
+    # never on the way to "ready": the typeface can take up to two seconds
+    # after a good read, and a poll in that window must see nothing yet.
+    read = html[html.index('data = await fused.runPython("./reader.py"'):]
+    after_read = read[:read.index("data = data || {};")]
+    assert "data-cv" not in after_read
+    assert 'window.addEventListener("unhandledrejection", markFailed);' in html
+    assert html.count('setAttribute("data-cv", "failed")') == 1
+    # A frame holds all of what it names: no lower zoom limit of the
+    # interactive range, the descriptions under its nodes measured in, and a
+    # note's pictures waited for (and never lazy).
+    assert "Math.max(FRAME_MIN_ZOOM, Math.min(iw / bw, ih / bh, 1))" in html
+    assert "camForFrame(withDescriptions(fb))" in html and "camForFrame(withDescriptions(ab))" in html
+    assert 'e.setAttribute("loading", shotMode ? "eager" : "lazy");' in html
+    assert 'world.querySelectorAll("img")' in html

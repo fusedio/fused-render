@@ -47,6 +47,9 @@ MAX_TOML_BYTES = 2 * 1024 * 1024
 #: Never more than this many Chromes at once: a model that asks for five
 #: pictures in one turn gets them one after another.
 _SLOTS = threading.BoundedSemaphore(2)
+#: A picture that could not start with at least this much of its time left
+#: is not started: the wait for a slot ends in a sentence instead.
+MIN_DRAW_S = 10.0
 #: The page's own signal (templates/canvas/template.html): the attribute on
 #: its root element, and the two values it takes.
 READY_ATTR = "data-cv"
@@ -65,7 +68,10 @@ def names_in(doc: dict) -> list:
     for row in rows if isinstance(rows, list) else []:
         if not isinstance(row, dict):
             continue
-        for key in ("udfName", "folderName"):
+        # `folderName` counts on a folder row only: the view knows no other
+        # row by it, and a name it cannot find is a picture of the wrong thing.
+        keys = ("udfName", "folderName") if row.get("type") == "udf-folder" else ("udfName",)
+        for key in keys:
             name = row.get(key)
             if isinstance(name, str) and name and name not in out:
                 out.append(name)
@@ -85,7 +91,9 @@ def read_canvas(toml_path: str) -> dict:
         return {"error": "this folder has no canvas.toml"}
     except OSError as exc:
         return {"error": "canvas.toml could not be read (%s)" % (exc.strerror or exc)}
-    except tomllib.TOMLDecodeError as exc:
+    except (tomllib.TOMLDecodeError, UnicodeDecodeError) as exc:
+        # tomllib decodes the bytes itself: text that is not UTF-8 is a file
+        # that does not parse, like any other.
         return {"error": "canvas.toml does not parse: %s" % exc}
     if not isinstance(doc, dict) or doc.get("type") != "canvas":
         return {"error": 'canvas.toml is not a canvas (no top-level type = "canvas")'}
@@ -174,7 +182,13 @@ def _capture(port: int, url: str, deadline: float) -> bytes:
     canvas is drawn, and take the picture."""
     from fused_render.bots import browser
 
-    ws = browser.WS(_page_socket(port, deadline), timeout=max(1.0, deadline - time.monotonic()))
+    socket_url = _page_socket(port, deadline)
+    try:
+        # The socket is opened here: a browser that went away since it listed
+        # its page fails in the constructor.
+        ws = browser.WS(socket_url, timeout=max(1.0, deadline - time.monotonic()))
+    except Exception as exc:  # noqa: BLE001 — refused, reset, a failed handshake
+        raise _Failed("the browser could not be reached (%s)" % exc) from None
     try:
         ws.call("Page.enable")
         ws.call("Page.navigate", url=url)
@@ -210,12 +224,12 @@ def _capture(port: int, url: str, deadline: float) -> bytes:
     return png
 
 
-def _render(chrome: str, url: str, timeout: float) -> bytes:
-    """One Chrome, one picture of `url`, nothing left behind. Raises
-    `_Failed` with the sentence."""
+def _render(chrome: str, url: str, deadline: float) -> bytes:
+    """One Chrome, one picture of `url`, nothing left behind, done by
+    `deadline` (a `time.monotonic()` instant). Raises `_Failed` with the
+    sentence."""
     work = tempfile.mkdtemp(prefix="fused-render-layout-")
     profile = os.path.join(work, "profile")
-    deadline = time.monotonic() + timeout
     proc = None
     try:
         try:
@@ -255,14 +269,22 @@ def shot(toml_path: str, origin: str, template: str, focus: str = "",
     if not chrome:
         return {"error": NO_BROWSER, "no_browser": True}
     canvas = doc.get("canvas") if isinstance(doc.get("canvas"), dict) else {}
-    rows = [r for r in (canvas.get("nodes") or []) if isinstance(r, dict)]
+    nodes = canvas.get("nodes")
+    rows = [r for r in nodes if isinstance(r, dict)] if isinstance(nodes, list) else []
     folders = sum(1 for r in rows if r.get("type") == "udf-folder")
     edges = canvas.get("edges")
+    # One budget for the wait and the draw: a caller that waited for a slot
+    # has that much less time left to draw in, so it never outlives the limit
+    # its own caller set.
+    deadline = time.monotonic() + timeout
+    if not _SLOTS.acquire(timeout=max(0.0, timeout - MIN_DRAW_S)):
+        return {"error": "two other layout pictures are being drawn; try again in a moment"}
     try:
-        with _SLOTS:
-            png = _render(chrome, view_url(origin, template, toml_path, focus), timeout)
+        png = _render(chrome, view_url(origin, template, toml_path, focus), deadline)
     except _Failed as exc:
         return {"error": str(exc)}
+    finally:
+        _SLOTS.release()
     width, height = png_size(png)
     return {"png": png, "width": width, "height": height,
             "nodes": len(rows) - folders, "folders": folders,

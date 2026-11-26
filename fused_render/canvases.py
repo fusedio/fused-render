@@ -9396,9 +9396,12 @@ def api_canvases_agent_hook(body: dict = Body(...), x_fused: str | None = Header
     # the user's drag), the session is told what now overlaps or points at
     # nothing. It needs no watcher and no sign-in, only the file; a
     # reference copy is never edited, so it is never checked.
+    # It is the SESSION's canvas that is checked (its working directory),
+    # not whichever clone the tool call happened to name a file in.
     layout = ""
-    if event in ("start", "post") and session_id and not canvas_marker.is_reference(_dir):
-        layout = _layout_note(session_id, _dir, announce=event == "post")
+    own = _clone_for_session(body.get("cwd")) if session_id and event in ("start", "post") else None
+    if own is not None and not canvas_marker.is_reference(own[2]):
+        layout = _layout_note(session_id, own[2], announce=event == "post")
     manager = _sync_manager(env, name, create=False)
     if manager is None and event in ("start", "pre", "post", "stop"):
         # No canvas page is open (never opened, or the idle stop ran): a
@@ -9430,7 +9433,7 @@ def api_canvases_agent_hook(body: dict = Body(...), x_fused: str | None = Header
 # In memory only: after a restart a session's first call sets it again and
 # says nothing.
 _LAYOUT_SEEN_LOCK = threading.Lock()
-_layout_seen: dict[tuple[str, str], tuple[str, frozenset]] = {}
+_layout_seen: dict[tuple[str, str], tuple[str, tuple]] = {}
 _LAYOUT_SEEN_MAX = 400
 
 
@@ -9448,19 +9451,22 @@ def _layout_note(session_id: str, clone_dir: str, announce: bool) -> str:
         if not mark:
             return ""
         key = (session_id, clone_dir)
+        # Read, not taken out: a second call for the same session that
+        # overlaps this one must find the same baseline, not none.
         with _LAYOUT_SEEN_LOCK:
-            seen = _layout_seen.pop(key, None)
+            seen = _layout_seen.get(key)
         try:
             present = os.listdir(clone_dir)
         except OSError:
             present = []
         baseline = not announce or seen is None
         if baseline:
-            before = frozenset(check.problems(doc, present)) if doc is not None else \
-                (seen[1] if seen is not None else frozenset())
+            before = tuple(check.problems(doc, present)) if doc is not None else \
+                (seen[1] if seen is not None else ())
         else:
             before = seen[1]
         with _LAYOUT_SEEN_LOCK:
+            _layout_seen.pop(key, None)  # re-inserted last: the oldest go first
             _layout_seen[key] = (mark, before)
             while len(_layout_seen) > _LAYOUT_SEEN_MAX:
                 _layout_seen.pop(next(iter(_layout_seen)))

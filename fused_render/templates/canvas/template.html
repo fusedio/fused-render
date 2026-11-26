@@ -551,7 +551,9 @@
         if (!/^https?:/i.test(s) && !/^data:image\/(?:png|jpe?g|gif|webp);/i.test(s)) return;
         e.setAttribute("src", s);
         e.setAttribute("alt", n.getAttribute("alt") || "");
-        e.setAttribute("loading", "lazy");
+        // A picture is taken once, of the whole canvas: nothing in it may
+        // still be waiting to scroll into view.
+        e.setAttribute("loading", shotMode ? "eager" : "lazy");
         e.setAttribute("referrerpolicy", "no-referrer");
         e.setAttribute("draggable", "false");
       } else if (tag === "INPUT") {
@@ -587,14 +589,24 @@
   // try/finally, no catch: a reader rejection still needs the placeholder
   // gone. The rejection itself propagates untouched to the runtime's
   // unhandledrejection overlay (SPEC §28). Header is already painted.
+  // For whoever photographs this page (CV-8), its root element says where
+  // it is: nothing while the canvas is being read and drawn, "ready" once it
+  // is drawn and its typeface is in, "failed" when it could not be read or
+  // drawn. A reader rejection and an exception anywhere below both leave
+  // this function as an unhandled rejection, which is what says "failed";
+  // a canvas that is merely still loading never does.
+  function markFailed() {
+    if (document.documentElement.getAttribute("data-cv") !== "ready") {
+      document.documentElement.setAttribute("data-cv", "failed");
+    }
+  }
+  window.addEventListener("unhandledrejection", markFailed);
+  window.addEventListener("error", markFailed);
   var data;
   try {
     data = await fused.runPython("./reader.py", { file: file });
   } finally {
     loadingEl.hidden = true;
-    // For whoever photographs this page (CV-8): "failed" unless the code
-    // below runs to its end and says "ready".
-    document.documentElement.setAttribute("data-cv", "failed");
   }
   data = data || {};
   var nodes = Array.isArray(data.nodes) ? data.nodes : [];
@@ -804,6 +816,7 @@
         markdownInto(dp, n.description);
         desc.appendChild(dp);
         frame.appendChild(desc);
+        n._desc = desc;
       }
     }
     node.appendChild(frame);
@@ -976,17 +989,34 @@
   // view, so what hangs outside a box is in the picture too — a folder's
   // name and a node's title above it, a description below — and never past
   // 100%, so a small canvas is not blown up.
-  var FRAME = { left: 40, right: 40, top: 110, bottom: 80 };
+  var FRAME = { left: 40, right: 40, top: 110, bottom: 40 };
+  var FRAME_MIN_ZOOM = 0.01;
   function camForFrame(b) {
     var w = stage.clientWidth || 1, h = stage.clientHeight || 1;
     var iw = Math.max(1, w - FRAME.left - FRAME.right), ih = Math.max(1, h - FRAME.top - FRAME.bottom);
     var bw = Math.max(1, b.maxX - b.minX), bh = Math.max(1, b.maxY - b.minY);
-    var zoom = Math.max(MIN_ZOOM, Math.min(iw / bw, ih / bh, 1));
+    // Not held at the zoom range's lower end: a frame is a picture of ALL of
+    // what it names, and a very large canvas would otherwise run off it.
+    var zoom = Math.max(FRAME_MIN_ZOOM, Math.min(iw / bw, ih / bh, 1));
     return {
       zoom: zoom,
       tx: FRAME.left + (iw - bw * zoom) / 2 - b.minX * zoom,
       ty: FRAME.top + (ih - bh * zoom) / 2 - b.minY * zoom,
     };
+  }
+  // A frame's box grown to hold the descriptions hanging under the nodes in
+  // it. A description is as tall as its text wraps (canvas units, whatever
+  // the zoom), which only the laid-out page knows: measured, not guessed.
+  function withDescriptions(b) {
+    var maxY = b.maxY;
+    nodes.forEach(function (n) {
+      if (!n._desc) return;
+      if (n.ax < b.minX - 1 || n.ax + n.width > b.maxX + 1
+          || n.ay < b.minY - 1 || n.ay + n.height > b.maxY + 1) return;
+      // top: 100% of the box inside its 2px border, 4px margin, then the text.
+      maxY = Math.max(maxY, n.ay + n.height - 2 + 4 + n._desc.offsetHeight);
+    });
+    return maxY > b.maxY ? { minX: b.minX, minY: b.minY, maxX: b.maxX, maxY: maxY } : b;
   }
   // The box of everything `focus` names: a node's udfName, or a folder's
   // udfName or folderName (a folder's children are inside its box).
@@ -1041,8 +1071,8 @@
     // A named node or folder, framed; a picture with none named shows the
     // whole canvas rather than the part that was last on screen.
     var fb = focusBounds();
-    if (fb) { cam = camForFrame(fb); return; }
-    if (shotMode) { var ab = bounds(); cam = ab ? camForFrame(ab) : fitCam(); return; }
+    if (fb) { cam = camForFrame(withDescriptions(fb)); return; }
+    if (shotMode) { var ab = bounds(); cam = ab ? camForFrame(withDescriptions(ab)) : fitCam(); return; }
     // Then the part of the canvas that was on screen when it was saved: the
     // bounds hold whatever the size of this pane, which x/y/zoom do not.
     if (viewportBounds) { cam = camForBounds(viewportBounds, 0); return; }
@@ -1239,13 +1269,23 @@
     fitTags();
     document.documentElement.setAttribute("data-cv", "ready");
   }
-  if (document.fonts && document.fonts.load) {
-    Promise.all([document.fonts.load('300 16px "Work Sans"'),
-                 document.fonts.load('500 16px "Work Sans"')]).then(settle, settle);
-    setTimeout(settle, 2000);
-  } else {
-    settle();
+  // A note's pictures count too: one still loading would be a hole in the
+  // picture. Each is waited for until it loads or fails, inside the same two
+  // seconds.
+  function imageDone(img) {
+    return new Promise(function (resolve) {
+      if (img.complete) { resolve(); return; }
+      img.addEventListener("load", resolve, { once: true });
+      img.addEventListener("error", resolve, { once: true });
+    });
   }
+  var waits = Array.prototype.map.call(world.querySelectorAll("img"), imageDone);
+  if (document.fonts && document.fonts.load) {
+    waits.push(document.fonts.load('300 16px "Work Sans"'));
+    waits.push(document.fonts.load('500 16px "Work Sans"'));
+  }
+  Promise.all(waits).then(settle, settle);
+  setTimeout(settle, 2000);
 })();
 </script>
 </body>

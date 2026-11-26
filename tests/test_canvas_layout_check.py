@@ -146,6 +146,48 @@ def test_problems_from_before_the_turn_are_counted_not_listed():
     assert "- node `a` and node `b` overlap by 650 x 400 px" in check.note(worse, before=before)
 
 
+def test_two_pairs_with_one_sentence_are_counted_apart():
+    # Two nodes may share a name; so may two overlapping pairs their
+    # sentence. One such pair was there before, a second is added: one new.
+    pair = _node("a", 0, 0) + _node("b", 100, 100)
+    before = check.problems(_doc(HEAD % "[]" + pair))
+    assert len(before) == 1
+    twice = _doc(HEAD % "[]" + pair + _node("a", 0, 0) + _node("b", 100, 100))
+    found = check.problems(twice)
+    assert found.count(before[0]) >= 2
+    note = check.note(twice, before=before)
+    assert "that came in this turn" in note and "added no problem" not in note
+    assert "1 problem the canvas already had before this turn is unchanged" in note
+
+
+def test_a_canvas_too_big_to_go_through_is_never_called_clean(monkeypatch):
+    # Every pair of boxes at one spot overlaps. Past the budget the check
+    # stops and says so, as a problem that is always listed.
+    monkeypatch.setattr(check, "MAX_PROBLEMS", 10)
+    text = HEAD % "[]" + "".join(_node("n%d" % i, 0, 0) for i in range(30))
+    found = check.problems(_doc(text))
+    assert len(found) == 11 and found[-1] == check.INCOMPLETE
+    note = check.note(_doc(text), before=found)
+    assert "stopped early" in note and "added no problem" not in note
+    monkeypatch.setattr(check, "MAX_PROBLEMS", 500)
+    monkeypatch.setattr(check, "MAX_PAIRS", 5)
+    spread = HEAD % "[]" + "".join(_node("n%d" % i, i * 1000, 0) for i in range(8))
+    assert check.problems(_doc(spread)) == [check.INCOMPLETE]
+
+
+def test_what_makes_a_row_a_note_is_layout():
+    # No size, no source file: `textBoxColor` decides between 350 x 250 and
+    # 700 x 500, so adding or dropping it moves the box. Recolouring does not.
+    def canvas(extra):
+        return _doc(HEAD % "[]" + '[[canvas.nodes]]\nudfName = "a"\nx = 0\ny = 0\n%s\n' % extra
+                    + '[[canvas.nodes]]\nudfName = "b"\nx = 400\ny = 0\n\n')
+    yellow, pink, plain = (canvas('textBoxColor = "#FFF9C4"'), canvas('textBoxColor = "#FCE4EC"'),
+                           canvas(""))
+    assert check.fingerprint(yellow) == check.fingerprint(pink)
+    assert check.fingerprint(yellow) != check.fingerprint(plain)
+    assert check.problems(yellow) == [] and len(check.problems(plain)) == 1
+
+
 def test_the_fingerprint_follows_layout_and_nothing_else():
     base = check.fingerprint(_doc(CLEAN))
     # A title, a description, a colour: not layout.
@@ -282,6 +324,44 @@ def test_a_reference_copy_is_never_checked(client, clone):
     _hook(client, clone, "start")
     (clone / "canvas.toml").write_text(CLEAN.replace("x = 1630", "x = 1000"))
     assert _hook(client, clone, "post") == {}
+
+
+def test_the_canvas_checked_is_the_sessions_own(client, clone, tmp_path):
+    # The session works in `demo`; a tool call names a file in ANOTHER clone.
+    # The note is still about `demo`, and the other clone gets no baseline.
+    other = clone.parent / "other"
+    other.mkdir()
+    (other / "canvas.toml").write_text(CLEAN.replace("x = 1630", "x = 1000"))
+    _hook(client, clone, "start")
+    (clone / "canvas.toml").write_text(CLEAN.replace("x = 1630", "x = 900"))
+    res = client.post("/api/canvases/agent/hook", headers=GUARD, json={
+        "event": "post", "session_id": "s1", "cwd": str(clone), "tool_name": "Read",
+        "tool_input": {"file_path": str(other / "a.py")}})
+    assert "folder `Group` and node `c` overlap by 655 x 500 px" in res.json()["context"]
+    assert all(key[1] == str(clone) for key in canvases_mod._layout_seen)
+    # A session whose working directory is no clone is told nothing.
+    res = client.post("/api/canvases/agent/hook", headers=GUARD, json={
+        "event": "post", "session_id": "s2", "cwd": str(tmp_path), "tool_name": "Edit",
+        "tool_input": {"file_path": str(clone / "canvas.toml")}})
+    assert res.json() == {}
+
+
+def test_an_overlapping_call_keeps_the_baseline(clone, monkeypatch):
+    # While one call for a session is working out its note, a second one for
+    # the same session must still find the baseline (not take it for new).
+    assert canvases_mod._layout_note("s1", str(clone), announce=False) == ""
+    (clone / "canvas.toml").write_text(CLEAN.replace("x = 1630", "x = 1000"))
+    real = check.problems
+    inner = []
+
+    def slow(doc, present=()):
+        if not inner:
+            inner.append(canvases_mod._layout_seen.get(("s1", str(clone))))
+        return real(doc, present)
+    monkeypatch.setattr(check, "problems", slow)
+    note = canvases_mod._layout_note("s1", str(clone), announce=True)
+    assert "overlap" in note
+    assert inner[0] is not None           # still there mid-call
 
 
 def test_the_note_follows_what_the_sync_said():
