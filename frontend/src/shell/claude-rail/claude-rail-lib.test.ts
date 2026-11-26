@@ -495,6 +495,15 @@ describe("railRows on an open file (the folder's list, the file's first; 2026-11
       ["o", true],
     ]);
   });
+  it("a chat of a project BELOW the folder is not on the file page's rail either (first level only, 2026-11-25)", () => {
+    // The file page lists its FOLDER's rail, and that list is first level
+    // only: a nested project's chat is on its own page's rail, not here,
+    // not even faded.
+    const nested = pulse(task({ key: "n", target: `${FOLDER}/sub/x.py`, project: `${FOLDER}/sub`, happened_at: 500 }));
+    const seats = railRows([...all, nested], new Map(), { kind: "file", file: FILE, dir: FOLDER });
+    expect(seats.map((s) => s.pulse.key)).toEqual(["f", "d", "o"]);
+    expect(railRows([...all, nested], new Map(), { kind: "folder", dir: FOLDER }).map((s) => s.pulse.key)).not.toContain("n");
+  });
   it("is the folder page's own list, re-sorted", () => {
     const folder = railRows(all, new Map(), { kind: "folder", dir: FOLDER }).map((s) => s.pulse.key);
     const file = railRows(all, new Map(), { kind: "file", file: FILE, dir: FOLDER }).map((s) => s.pulse.key);
