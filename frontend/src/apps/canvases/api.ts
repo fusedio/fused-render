@@ -40,7 +40,7 @@ export interface CanvasesStatus {
    *  tab from there would hit real prod), and the catalog disables its
    *  environment dropdown. */
   locked: boolean;
-  /** The environments turned on in Preferences (Accounts > Fused Workbench):
+  /** The environments turned on in Preferences (Fused Workbench), plus unstable for staff:
    *  the catalog's picker offers only these, and is not drawn for one.
    *  OPTIONAL: an older server answers without it. */
   enabled_envs?: string[];
@@ -201,8 +201,14 @@ export const deleteFusedSettings = () =>
  *  origin. */
 export type WorkbenchEnv = "unstable" | "prod" | "custom";
 
-/** fusedcli.WORKBENCH_ENV_CHOICES, in the server's order. */
-export const WORKBENCH_ENVS: readonly WorkbenchEnv[] = ["unstable", "prod", "custom"];
+/** fusedcli.WORKBENCH_ENV_CHOICES, in picker order: the two a person turns on
+ *  first, then unstable — which has no switch and only ever shows up for a
+ *  Fused employee signed in to hosted Fused (fusedcli._staff_unstable). */
+export const WORKBENCH_ENVS: readonly WorkbenchEnv[] = ["prod", "custom", "unstable"];
+
+/** fusedcli.USER_WORKBENCH_ENVS: the environments Preferences has a switch
+ *  for, and the only ones `workbench_envs_enabled` may name. */
+export const USER_WORKBENCH_ENVS: readonly WorkbenchEnv[] = ["prod", "custom"];
 
 export const isWorkbenchEnv = (s: unknown): s is WorkbenchEnv =>
   typeof s === "string" && (WORKBENCH_ENVS as readonly string[]).includes(s);
@@ -212,8 +218,8 @@ export const isWorkbenchEnv = (s: unknown): s is WorkbenchEnv =>
  *  tightest, the chip in a narrow sidebar (canvases.css container query). */
 export const ENV_NAMES: Record<WorkbenchEnv, { label: string; tag: string; initial: string }> = {
   unstable: { label: "Unstable", tag: "Unstable", initial: "U" },
-  prod: { label: "Production", tag: "Production", initial: "P" },
-  custom: { label: "Custom ~/.fused/settings.toml", tag: "Custom", initial: "C" },
+  prod: { label: "Fused hosted", tag: "Fused hosted", initial: "F" },
+  custom: { label: "On-prem ~/.fused/settings.toml", tag: "On-prem", initial: "O" },
 };
 
 /** A canvas workspace route: the env is a path segment because it is one on
@@ -351,7 +357,7 @@ export const getCanvasesStatus = (env?: WorkbenchEnv | null) =>
  *  that only needs "who is signed in" (Settings, Share) omits it and the
  *  server answers in the auth env. */
 export const getWhoami = (env?: WorkbenchEnv) =>
-  getJson<{ handle: string | null }>(
+  getJson<{ handle: string | null; email?: string | null }>(
     env ? `/api/canvases/whoami?env=${env}` : "/api/canvases/whoami",
     GUARD,
   );

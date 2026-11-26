@@ -54,7 +54,7 @@ describe("the registry", () => {
     const seen = GROUPS.map((g) => order.indexOf(g.nav));
     expect([...seen].sort((a, b) => a - b)).toEqual(seen);
     expect(navSections(GROUPS).map((s) => [s.section.id, s.groups.map((g) => g.id)])).toEqual([
-      ["app", ["general", "integrations", "connections", "features"]],
+      ["app", ["general", "integrations", "workbench", "connections", "features"]],
       ["agents", ["ai", "tasks", "claude-cli"]],
       ["apps", ["apps", "indexing", "lan"]],
       ["developer", ["advanced"]],
@@ -314,7 +314,7 @@ describe("device capability gates", () => {
     const tags: Record<DeviceFeature, string[]> = {
       index: ["indexing", "ranked-search", "low-impact", "skipped-folders", "rebuild-index", "index-query"],
       hf: ["huggingface"],
-      fused: ["workbench-unstable", "workbench-prod", "workbench-custom", "canvases", "canvases-embed-proxy", "share-sheet"],
+      fused: ["workbench-prod", "workbench-custom", "canvases", "canvases-embed-proxy", "share-sheet"],
       update: ["auto-update"],
       native_windows: ["native-windows"],
       terminal: ["notify-terminal"],
