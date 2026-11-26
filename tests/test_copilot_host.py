@@ -1012,7 +1012,7 @@ CANVAS_CREATE = "expert_canvas-canvas_create"
 
 
 def test_an_unattended_run_refuses_a_card_at_once(start):
-    """A learning run (docs/experts.md §16): nobody is there, so a request
+    """A learning run (docs/experts.md §17): nobody is there, so a request
     Copilot still raises is refused without a card."""
     s = start(cli_mode="auto", fake_args=["--perm"], expert={"ask": [], "unattended": True})
     s.say("learn")

@@ -874,10 +874,10 @@ describe("ClaudeRail's Git door (owner, 2026-11-10)", () => {
     expect(door.props.title).toBeUndefined();
     expect(door.props["data-hint-side"]).toBe("left");
     expect(door.props["data-hint"]).toBe("Git — on feature · 0 ahead · 2 behind main · 1 to push · 2 to pull");
-    expect(door.props["aria-label"]).toBe("Git, on feature, 1 to push, 2 to pull, updates on the remote");
-    // Green on top (2 behind main), the push dot bottom-right.
+    expect(door.props["aria-label"]).toBe("Git, on feature, 1 to push, 2 to pull");
+    // One dot (owner, 2026-11-24): push (yellow) outranks pull (green).
     const dots = door.findAll((n) => typeof n.props?.className === "string" && n.props.className.startsWith("sidebar-rail-dot"));
-    expect(dots.map((d) => d.props.className)).toEqual(["sidebar-rail-dot is-unread", "sidebar-rail-dot is-push is-second"]);
+    expect(dots.map((d) => d.props.className)).toEqual(["sidebar-rail-dot is-push"]);
     const facts = railGitOf(favPeekState().rail);
     expect(facts?.repo.branch).toBe("feature");
     facts?.onOpenGit?.();

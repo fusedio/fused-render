@@ -1,4 +1,4 @@
-"""Experts on GitHub Copilot (docs/experts.md §16): agent.py's Copilot seams and the experts package's half.
+"""Experts on GitHub Copilot (docs/experts.md §17): agent.py's Copilot seams and the experts package's half.
 
 A Copilot task gets pull and note (never the breakout tool); an expert's own session on Copilot gets its
 charter with the memory inlined, its skills, its launch spec's servers, and a host request saying which tools

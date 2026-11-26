@@ -10,11 +10,12 @@ Provider note: canvas commands authenticate with `fused login`
 (~/.fused/credentials, Auth0 PKCE) — a DIFFERENT provider from the fused
 CLI's own `fused cloud login` store (~/.openfused). Same CLI binary (the
 `fused` package resolved by fusedcli.fused_cli()), different credential
-stores; this module owns the `fused login` side. Unlike `cloud login
---no-browser`, plain `fused login` never prints its authorize URL — it opens
-the browser itself and blocks on a localhost callback — so the login endpoint
-here spawns the child and the client simply polls status until the
-credentials file appears.
+stores; this module owns the `fused login` side. `fused login` opens the
+browser itself and blocks on a localhost callback, so the login endpoint here
+spawns the child and the client polls status until the credentials file
+appears. Our own driver (_fused_login.py) also prints its authorize URL, which
+status serves as `login_url` for a machine where that browser open does
+nothing (WSL, ssh); the CLI's own login prints none.
 
 Sync model — the host is one more workbench tab. One watcher thread per
 synced canvas fingerprints the clone folder (path/mtime/size walk) once a
@@ -1045,6 +1046,11 @@ class _ActiveLogin:
     # and unstable share one, custom's may be its own (D1412). Reuse, status
     # and logout match on it, never on "a login is running".
     store: str
+    # The authorize URL the driver printed (`_fused_login.URL_LINE_PREFIX`),
+    # once it has: the page offers it as a link, for a machine where the
+    # child's own `webbrowser.open` opens nothing (WSL, ssh, a container).
+    # None for an external CLI, whose login never prints one.
+    url: str | None = None
 
 
 _LOGIN_LOCK = threading.Lock()
@@ -1065,6 +1071,30 @@ def _reap_login() -> _ActiveLogin | None:
         if login is not None and login.proc.poll() is not None:
             _active_login = login = None
         return login
+
+
+_LOGIN_URL_PREFIX = b"FUSED_LOGIN_URL "  # _fused_login.URL_LINE_PREFIX
+
+
+def _drain_login(login: _ActiveLogin) -> None:
+    """Read the driver's stdout to EOF, keeping the authorize URL line. To EOF
+    on purpose: a pipe nobody reads would block the child on a later print."""
+    stream = login.proc.stdout
+    if stream is None:
+        return
+    try:
+        for raw in stream:
+            if raw.startswith(_LOGIN_URL_PREFIX):
+                url = raw[len(_LOGIN_URL_PREFIX):].decode("utf-8", "replace").strip()
+                if url.startswith(("https://", "http://")):
+                    login.url = url
+    except (OSError, ValueError):
+        pass  # a killed child closes the pipe under us
+    finally:
+        try:
+            stream.close()
+        except OSError:
+            pass
 
 
 def _watch_login(login: _ActiveLogin) -> None:
@@ -1140,6 +1170,10 @@ def api_canvases_status(env: str = ""):
     # frames a canvas reads status first, so the proxy is up (or retargeted
     # after a settings.toml edit) by the time `embed_url` below is used.
     _apply_embed_proxy()
+    # Unstable joins `enabled_envs` for a Fused employee's hosted sign-in; the
+    # verdict needs a whoami, run in the background when none is cached.
+    _kick_staff_check()
+    login = _login_for(credentials_file(auth_env))
     return {
         "cli_found": cli is not None,
         "logged_in": _logged_in(auth_env),
@@ -1151,7 +1185,10 @@ def api_canvases_status(env: str = ""):
         "creds_stamp": stamp,
         # Only a login writing THIS store: another env's sign-in in the
         # browser is not one this answer's `logged_in` will flip on.
-        "login_in_flight": _login_for(credentials_file(auth_env)) is not None,
+        "login_in_flight": login is not None,
+        # The sign-in page's address while that login waits, for the page's
+        # "browser did not open?" link; null until the child has printed it.
+        "login_url": login.url if login is not None else None,
         # The DEFAULT environment (the catalog's initial pick), and whether
         # FUSED_RENDER_WORKBENCH_ENV pins it — the catalog then disables its
         # environment picker, since `_require_env` refuses the other env.
@@ -1695,7 +1732,21 @@ def api_canvases_whoami(env: str = "", x_fused: str | None = Header(default=None
         if bad is not None:
             return bad
 
+    result = _whoami_result(env)
+    if result[0] == "err":
+        return _error(result[1], result[2])
+    return result[1]
+
+
+def _whoami_result(env: str):
+    """`fused workbench whoami` for `env`, through the CLI cache: `("ok",
+    {handle, email, raw})` or `("err", message, status)`. An answer for a
+    hosted env (prod/unstable, one shared `fused login` store) also records
+    whether that sign-in is a Fused employee's, which is what turns unstable
+    on (`record_staff_email`)."""
+
     def compute():
+        sig_before = _creds_sig(env)
         proc, err = _run_cli(["workbench", "--format", "json", "whoami"], WHOAMI_TIMEOUT, env)
         if err is not None:
             return _err_of(err)
@@ -1719,17 +1770,107 @@ def api_canvases_whoami(env: str = "", x_fused: str | None = Header(default=None
             ),
             None,
         )
-        return ("ok", {"handle": handle, "raw": data})
+        # `/user/self` carries the account email (the fused SDK's own context
+        # reads `whoami()["email"]`). Shown on the Preferences sign-in line.
+        email = data.get("email") if isinstance(data.get("email"), str) else None
+        # Only when the sign-in did not change under the run (a logout, or a
+        # login finishing): the answer would be the previous account's, and
+        # its verdict must not outlive it (CodeRabbit, PR #2476).
+        if env in _HOSTED_ENVS and _creds_sig(env) == sig_before:
+            record_staff_email(email)
+        return ("ok", {"handle": handle, "email": email, "raw": data})
 
     # An hour only for an answer WITH a handle; a logged-out "no handle" keeps
     # the short default so a login lands within a minute.
-    result = _cached_cli(
+    return _cached_cli(
         "whoami", env, compute,
         lambda payload: _WHOAMI_CACHE_TTL_S if payload.get("handle") else _CLI_CACHE_TTL_S,
     )
-    if result[0] == "err":
-        return _error(result[1], result[2])
-    return result[1]
+
+
+# The envs whose sign-in is hosted Fused's one shared `fused login` store.
+_HOSTED_ENVS = ("prod", "unstable")
+
+
+def record_staff_email(email: object) -> None:
+    """Store whether the hosted sign-in belongs to a Fused employee
+    (`fusedcli.is_staff_email`) — the verdict `fusedcli._staff_unstable`
+    reads. Written only when it changes; the CLI wrapper is re-exported then,
+    since the default environment it bakes in may move with it. A whoami that
+    named no email leaves the last verdict alone rather than revoking it on a
+    payload hiccup."""
+    if not isinstance(email, str) or not email:
+        return
+    from fused_render import fusedcli
+
+    _set_staff(fusedcli.is_staff_email(email))
+
+
+def _set_staff(staff: bool) -> None:
+    from fused_render import fusedcli
+    from fused_render.shell import prefs
+
+    if (prefs.read_prefs().get(fusedcli.STAFF_PREF_KEY) is True) == staff:
+        return
+    prefs.write_pref(fusedcli.STAFF_PREF_KEY, staff)
+    try:
+        fusedcli.export_fused_cli_env()
+    except Exception:  # noqa: BLE001 — the verdict is stored; the wrapper catches up later
+        logger.exception("re-exporting the fused wrapper after a staff verdict failed")
+
+
+def _forget_staff(store: str) -> None:
+    """FAIL CLOSED: the verdict belongs to one hosted sign-in, so a logout of
+    the hosted store, or a sign-in starting on it, drops it. Only a whoami for
+    the login that follows can set it again — never a slow or failed one
+    leaving the previous account's verdict standing for a new one."""
+    if store == credentials_file("prod"):
+        _set_staff(False)
+
+
+_staff_check_lock = threading.Lock()
+_staff_check_running = False
+# When the last background run started: a whoami that fails (offline, a dead
+# token) is never cached, so without this every status read would spawn
+# another CLI interpreter. One try per short-cache window.
+_staff_check_last = 0.0
+
+
+def _kick_staff_check() -> None:
+    """Ask the hosted whoami in the background when no answer for the current
+    hosted sign-in is cached, so a Fused employee's unstable shows up without
+    anyone opening a page that asks whoami itself. Cheap when the cache holds
+    an answer (an hour), never blocks the status read, one run at a time.
+    Nothing to do while Workbench is off, signed out, or pinned."""
+    global _staff_check_running, _staff_check_last
+    from fused_render.shell import prefs
+
+    if workbench_env_locked() or not prefs.canvases_enabled() or not _logged_in("prod"):
+        return
+    with _CLI_CACHE_LOCK:
+        hit = _cli_cache.get(("whoami", "prod", _creds_sig("prod")))
+    if hit is not None and hit[0] > time.monotonic():
+        return
+    if fused_cli() is None:
+        return
+    with _staff_check_lock:
+        now = time.monotonic()
+        if _staff_check_running or now - _staff_check_last < _CLI_CACHE_TTL_S:
+            return
+        _staff_check_running = True
+        _staff_check_last = now
+
+    def run() -> None:
+        global _staff_check_running
+        try:
+            _whoami_result("prod")
+        except Exception:  # noqa: BLE001 — a background probe must never raise
+            logger.exception("background whoami for the staff check failed")
+        finally:
+            with _staff_check_lock:
+                _staff_check_running = False
+
+    threading.Thread(target=run, name="fused-staff-check", daemon=True).start()
 
 
 def _optional_env(env: str) -> tuple[str | None, JSONResponse | None]:
@@ -1783,23 +1924,28 @@ def api_canvases_login(env: str = "", x_fused: str | None = Header(default=None)
                 driver = os.path.join(os.path.dirname(__file__), "_fused_login.py")
                 command = [cli.command[0], driver]
             try:
-                # Unlike `cloud login --no-browser`, plain `fused login` opens
-                # the browser itself (webbrowser.open) and never prints the
-                # authorize URL — so there is nothing to capture; the client
-                # polls /api/canvases/status until logged_in flips.
+                # The child opens the browser itself (webbrowser.open); the
+                # client polls /api/canvases/status until logged_in flips. Our
+                # driver also PRINTS the authorize URL, read by `_drain_login`
+                # and offered on the page as `login_url` for a machine where
+                # that open does nothing (WSL). The CLI's own login prints
+                # none, so an external CLI keeps DEVNULL.
                 proc = subprocess.Popen(
                     command,
                     stdin=subprocess.DEVNULL,
-                    stdout=subprocess.DEVNULL,
+                    stdout=subprocess.DEVNULL if cli.external else subprocess.PIPE,
                     stderr=subprocess.DEVNULL,
                     env=child,
                 )
             except OSError as e:
                 return _error(f"could not run the fused CLI ({cli.command[0]}): {e}")
             _cli_cache_clear()
+            _forget_staff(store)
             login = _ActiveLogin(proc=proc, started_at=time.time(), store=store)
             _active_login = login
             threading.Thread(target=_watch_login, args=(login,), daemon=True).start()
+            if proc.stdout is not None:
+                threading.Thread(target=_drain_login, args=(login,), daemon=True).start()
     return {"ok": True, "login_in_flight": True}
 
 
@@ -3043,6 +3189,7 @@ def api_canvases_logout(env: str = "", x_fused: str | None = Header(default=None
             manager.resume(rebaseline=False)
         return err
     _cli_cache_clear()
+    _forget_staff(store)
     with _SYNC_LOCK:
         signed_out = on_store()
         for key, _ in signed_out:

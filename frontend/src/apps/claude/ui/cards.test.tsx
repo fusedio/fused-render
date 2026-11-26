@@ -16,6 +16,7 @@ import { OpenCanvasCard } from "./OpenCanvasCard";
 import { PermCard } from "./PermCard";
 import { PlanCard } from "./PlanCard";
 import { QuestionCard, tabTitle } from "./QuestionCard";
+import { resetQuestionDraftsForTests } from "./questionDrafts";
 import type { PermissionRow } from "../protocol/types";
 
 const mounted: Array<ReturnType<typeof create>> = [];
@@ -29,6 +30,8 @@ function mount(el: React.ReactElement): ReturnType<typeof create> {
 }
 afterEach(() => {
   for (const r of mounted.splice(0)) act(() => r.unmount());
+  // Every row here is "req-1": a draft one test left must not answer the next.
+  resetQuestionDraftsForTests();
 });
 
 type Json = ReactTestRendererJSON;
@@ -535,6 +538,126 @@ test("a multi-question card walks the reader through it: Next, then Send (R2-5)"
   press(r, "Send answer");
   await act(async () => {});
   expect(sent).toEqual([["req-1", { "A?": ["a1"], "B?": ["b1"] }, {}]]);
+});
+
+test("leaving and coming back keeps the answers so far and the open question", () => {
+  const card = () => (
+    <QuestionCard row={row({ tool: ASK, input: twoQ })} onAnswer={async () => {}} onDismiss={() => {}} />
+  );
+  const first = mount(card());
+  act(() => {
+    instances(first, Checkbox)[0].props.onCheckedChange(true);
+  });
+  press(first, "Next");
+  expect(activeTab(first)).toBe(1);
+  // Walking to another task unmounts the chat.
+  act(() => first.unmount());
+  mounted.splice(mounted.indexOf(first), 1);
+
+  const back = mount(card());
+  expect(activeTab(back)).toBe(1);
+  expect(String(withClass(back, "qtab")[0].props.className)).toContain("is-done");
+  expect(textOf(withClass(back, "qsend-left")[0])).toBe("1 of 2 done");
+});
+
+test("an answered card drops its draft: the same request asked again starts clean", () => {
+  const ask = (decision: PermissionRow["decision"]) => (
+    <QuestionCard row={row({ tool: ASK, input: twoQ, decision })} onAnswer={async () => {}} onDismiss={() => {}} />
+  );
+  const first = mount(ask(""));
+  act(() => {
+    instances(first, Checkbox)[0].props.onCheckedChange(true);
+  });
+  act(() => first.update(ask("allow")));
+  act(() => first.unmount());
+  mounted.splice(mounted.indexOf(first), 1);
+
+  const again = mount(ask(""));
+  expect(textOf(withClass(again, "qsend-left")[0])).toBe("0 of 2 done");
+});
+
+test("a HELD answer keeps its draft: a dropped queued answer brings the picks back", () => {
+  const ask = (over: Partial<PermissionRow>) => (
+    <QuestionCard row={row({ tool: ASK, input: twoQ, ...over })} onAnswer={async () => {}} onDismiss={() => {}} />
+  );
+  const first = mount(ask({}));
+  act(() => {
+    instances(first, Checkbox)[0].props.onCheckedChange(true);
+  });
+  // A queued click sets `decision` and `queuedAhead` together (resolveLocally).
+  act(() => first.update(ask({ decision: "allow", queuedAhead: "another task" })));
+  act(() => first.unmount());
+  mounted.splice(mounted.indexOf(first), 1);
+
+  const again = mount(ask({}));
+  expect(textOf(withClass(again, "qsend-left")[0])).toBe("1 of 2 done");
+});
+
+/** A keydown as the card root's capture handler sees it, from a focused tick. */
+function arrow(key: string, spy: { stopped: boolean; prevented: boolean }): Props {
+  return fakeEvent({
+    key,
+    target: { tagName: "BUTTON", closest: () => null },
+    nativeEvent: { isComposing: false },
+    preventDefault() {
+      spy.prevented = true;
+    },
+    stopPropagation() {
+      spy.stopped = true;
+    },
+  });
+}
+
+function cardRoot(r: ReturnType<typeof create>): Props {
+  return withClass(r, "ask")[0].props as Props;
+}
+
+test("arrow keys on the card are the card's: ←/→ walk the questions and nothing leaks to the task list", () => {
+  const r = mount(
+    <QuestionCard row={row({ tool: ASK, input: twoQ })} onAnswer={async () => {}} onDismiss={() => {}} />,
+  );
+  const right = { stopped: false, prevented: false };
+  act(() => cardRoot(r).onKeyDownCapture(arrow("ArrowRight", right)));
+  expect(activeTab(r)).toBe(1);
+  expect(right).toEqual({ stopped: true, prevented: true });
+  // The last question is an end, not a wrap.
+  act(() => cardRoot(r).onKeyDownCapture(arrow("ArrowRight", { stopped: false, prevented: false })));
+  expect(activeTab(r)).toBe(1);
+  act(() => cardRoot(r).onKeyDownCapture(arrow("ArrowLeft", { stopped: false, prevented: false })));
+  expect(activeTab(r)).toBe(0);
+  // ↑/↓ are taken too — they used to open the previous/next TASK.
+  const down = { stopped: false, prevented: false };
+  act(() => cardRoot(r).onKeyDownCapture(arrow("ArrowDown", down)));
+  expect(down).toEqual({ stopped: true, prevented: true });
+});
+
+test("a typed answer keeps its own arrow keys, and an answered card claims none", () => {
+  const live = mount(
+    <QuestionCard row={row({ tool: ASK, input: twoQ })} onAnswer={async () => {}} onDismiss={() => {}} />,
+  );
+  const inField = { stopped: false, prevented: false };
+  act(() =>
+    cardRoot(live).onKeyDownCapture(
+      fakeEvent({
+        ...arrow("ArrowDown", inField),
+        target: { tagName: "TEXTAREA", selectionStart: 0, selectionEnd: 0, closest: () => null },
+      }),
+    ),
+  );
+  expect(inField).toEqual({ stopped: false, prevented: false });
+  expect(cardRoot(live)["data-q-live"]).toBe("");
+
+  const done = mount(
+    <QuestionCard
+      row={row({ tool: ASK, input: twoQ, decision: "allow" })}
+      onAnswer={async () => {}}
+      onDismiss={() => {}}
+    />,
+  );
+  expect(cardRoot(done)["data-q-live"]).toBeUndefined();
+  const spent = { stopped: false, prevented: false };
+  act(() => cardRoot(done).onKeyDownCapture(arrow("ArrowDown", spent)));
+  expect(spent).toEqual({ stopped: false, prevented: false });
 });
 
 test("Skip sends NO key for that question, and moves on (R2-5)", async () => {

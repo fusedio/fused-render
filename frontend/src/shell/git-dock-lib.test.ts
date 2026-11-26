@@ -2,7 +2,7 @@
 // dot we have for git should still pop up no matter what") and its words.
 import { describe, expect, test } from "bun:test";
 import type { RailGitRepo } from "@platform/lib/api";
-import { gitBranch, gitChipDot, gitCounts, gitDoorDots, gitDoorTitle, gitPullCount, gitPushCount, gitSyncWords } from "./git-dock-lib";
+import { gitBranch, gitChipDot, gitCounts, gitDoorDot, gitDoorTitle, gitPullCount, gitPushCount, gitSyncWords } from "./git-dock-lib";
 
 function repo(over: Partial<RailGitRepo> = {}): RailGitRepo {
   return {
@@ -58,7 +58,7 @@ describe("the Git door's push / pull (owner, 2026-11-10)", () => {
   test("only the default branch behind (upstream even, or none): the green dot and its words agree (CodeRabbit on #2236)", () => {
     for (const upstream of [{ ahead: 0, behind: 0 }, null]) {
       const r = repo({ branch: "main", ahead: 0, behind: 3, upstream });
-      expect(gitDoorDots({ checking: false, checked: null, repo: r }).top).toBe("unread");
+      expect(gitDoorDot({ checking: false, checked: null, repo: r })).toBe("unread");
       expect(gitSyncWords(r)).toEqual(["3 to pull"]);
     }
   });
@@ -75,17 +75,19 @@ describe("the Git door's push / pull (owner, 2026-11-10)", () => {
     expect(gitPullCount(repo({ upstream: null, behind: 2 }))).toBe(2);
     expect(gitPullCount(repo({ upstream: { ahead: 0, behind: 0 }, behind: 0 }))).toBe(0);
   });
-  test("top dot: red > yellow > green > blue; second dot blue only when the top is not push", () => {
+  test("one dot (owner, 2026-11-24): red > checking yellow > push yellow > green pull", () => {
     const quiet = repo({ ahead: 0, behind: 0, upstream: { ahead: 0, behind: 0 } });
-    expect(gitDoorDots({ checking: false, checked: null, repo: quiet })).toEqual({ top: null, second: null });
+    expect(gitDoorDot({ checking: false, checked: null, repo: quiet })).toBeNull();
     const push = repo({ ahead: 0, behind: 0, upstream: { ahead: 1, behind: 0 } });
-    expect(gitDoorDots({ checking: false, checked: true, repo: push })).toEqual({ top: "push", second: null });
-    expect(gitDoorDots({ checking: true, checked: true, repo: push })).toEqual({ top: "running", second: "push" });
-    expect(gitDoorDots({ checking: false, checked: false, repo: push })).toEqual({ top: "attention", second: "push" });
+    expect(gitDoorDot({ checking: false, checked: true, repo: push })).toBe("push");
+    expect(gitDoorDot({ checking: true, checked: true, repo: push })).toBe("running");
+    expect(gitDoorDot({ checking: false, checked: false, repo: push })).toBe("attention");
+    // A failed check stays red while a re-check is out.
+    expect(gitDoorDot({ checking: true, checked: false, repo: push })).toBe("attention");
     const both = repo({ ahead: 0, behind: 0, upstream: { ahead: 1, behind: 2 } });
-    expect(gitDoorDots({ checking: false, checked: null, repo: both })).toEqual({ top: "unread", second: "push" });
+    expect(gitDoorDot({ checking: false, checked: null, repo: both })).toBe("push");
     const pull = repo({ ahead: 0, behind: 3, upstream: null, branch: "main" });
-    expect(gitDoorDots({ checking: false, checked: null, repo: pull })).toEqual({ top: "unread", second: null });
+    expect(gitDoorDot({ checking: false, checked: null, repo: pull })).toBe("unread");
   });
   test("the words and the tooltip", () => {
     expect(gitSyncWords(repo({ upstream: { ahead: 2, behind: 1 }, behind: 0 }))).toEqual(["2 to push", "1 to pull"]);

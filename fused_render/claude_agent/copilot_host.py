@@ -671,7 +671,7 @@ class _Host:
         self.notice_pending = False   # D18 notice owed to out.jsonl's first turn
         self.tools = {}               # toolCallId -> (name, input)
         self._ids = itertools.count(1)
-        # An expert's own session (docs/experts.md §16; agent.py `_start`):
+        # An expert's own session (docs/experts.md §17; agent.py `_start`):
         # `ask` are the tools that raise the user's card in EVERY mode, in
         # Copilot's spelling (`<server>-<tool>`), and `unattended` is a
         # learning run, where nobody is there to answer one.

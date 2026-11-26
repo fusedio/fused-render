@@ -159,7 +159,8 @@ async def api_claude_doctor(x_fused: str | None = Header(default=None)):
 # The third repair, and the one that needed a second door rather than more code:
 # `/login` is a TUI slash command, but `claude auth login` opens the browser and
 # completes on its own loopback callback, so the app can start a real sign-in
-# without ever handling an OAuth code. See fused_render/claude_login.py.
+# without handling an OAuth code — except in the paste fallback (`login/code`),
+# for a machine whose browser the CLI cannot open. See fused_render/claude_login.py.
 #
 # These are separate endpoints rather than a third `/api/claude/install` action
 # because this one waits on a person: it needs a cancel, and it must not occupy
@@ -194,6 +195,25 @@ async def api_claude_login_status():
     from fused_render import claude_login
 
     return claude_login.status()
+
+
+@router.post("/api/claude/login/code")
+async def api_claude_login_code(body: dict = Body(default={}),
+                                x_fused: str | None = Header(default=None)):
+    """The paste fallback: the code the sign-in page showed, for a machine
+    whose browser the CLI could not open (WSL, ssh). Guarded: it writes to a
+    process that is one step from a credential store."""
+    guard = _require_fused(x_fused)
+    if guard is not None:
+        return guard
+    from fused_render import claude_login
+
+    code = body.get("code") if isinstance(body, dict) else None
+    try:
+        return await run_in_threadpool(
+            claude_login.submit_code, code if isinstance(code, str) else "")
+    except claude_login.LoginError as e:
+        return _error(str(e), status=409)
 
 
 @router.post("/api/claude/login/cancel")

@@ -15,7 +15,7 @@ import { actExpert, errMsg, showBanner } from "../state/store";
 import { MdDoc } from "./MdDoc";
 
 type Line = { role: string; text: string };
-/** The agents that can run an expert's chat, for a server that does not say (docs/experts.md §16). */
+/** The agents that can run an expert's chat, for a server that does not say (docs/experts.md §17). */
 const EXPERT_AGENTS = ["claude", "copilot"];
 
 /** The page behind the chat, when it floats over one: on the Bots page itself the chat IS the page. */

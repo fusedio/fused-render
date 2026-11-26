@@ -13,19 +13,21 @@
 // adds (D407). The typed text rides a SEPARATE `custom` record rather than
 // being smuggled in as a label, so `answers` stays strictly "a string the
 // request itself offered".
-import { useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 
 import { Button } from "@platform/shadcn/ui/button";
 import { Checkbox } from "@platform/shadcn/ui/checkbox";
 import { RadioGroup, RadioGroupItem } from "@platform/shadcn/ui/radio-group";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@platform/shadcn/ui/tabs";
 import { cn } from "@platform/lib/utils";
+import { isOverlayOpen } from "@platform/lib/ui-overlay";
 
 import type { ChatController } from "../protocol/controller-api";
 import { OTHER_MAX_H, questionModel, questionOptions } from "../protocol/summaries";
 import type { PermissionRow, Question, QuestionOption } from "../protocol/types";
 import { unansweredCardText, unansweredReasonOf } from "../protocol/unanswered";
 import { CollapsiblePre } from "./CollapsiblePre";
+import { clearQuestionDraft, readQuestionDraft, writeQuestionDraft } from "./questionDrafts";
 /** THE QUEUE'S LATCH, shared with the approval card rather than re-derived here
  *  (project queue, prefs `queue.enabled`). A question goes through the very same
  *  door — `answerQuestion` calls the controller's one `decide`, which posts to
@@ -141,19 +143,33 @@ export function QuestionCard({ row, onAnswer, onDismiss }: QuestionCardProps) {
   // `questions` array changes length (T rebuilds the card per id) left these
   // short, and `picked[i]` came back undefined for the questions past the end.
   const agent = useAgent();
-  const [picked, setPicked] = useState<string[][]>(() => questions.map(() => []));
-  const [otherOpen, setOtherOpen] = useState<boolean[]>(() => questions.map(() => false));
-  const [otherText, setOtherText] = useState<string[]>(() => questions.map(() => ""));
+  /** THE ANSWER SO FAR OUTLIVES THE CARD (questionDrafts.ts, in memory). Walking to
+   *  another task and back unmounts the chat, and every pick, typed line and
+   *  skip used to go with it — the reader answered the whole card again
+   *  (Akshil, 2026-11-26). Read once, at mount; the effect below writes back. */
+  const [saved] = useState(() => readQuestionDraft(row.id, questions.length));
+  const [picked, setPicked] = useState<string[][]>(
+    () => saved?.picked ?? questions.map(() => []),
+  );
+  const [otherOpen, setOtherOpen] = useState<boolean[]>(
+    () => saved?.otherOpen ?? questions.map(() => false),
+  );
+  const [otherText, setOtherText] = useState<string[]>(
+    () => saved?.otherText ?? questions.map(() => ""),
+  );
   /** SKIPPED, per question (R2-5). A question the reader has decided not to
    *  answer, which is a THIRD state — not "answered" and not "still to do" —
    *  and the only one of the three the wire can express directly: agent.py's
    *  `_answers_from` documents an omitted question as allowed ("the CLI reads
    *  it as unanswered, which is true"), so a skip sends no key for it rather
    *  than a placeholder string the model would read as an answer. */
-  const [skipped, setSkipped] = useState<boolean[]>(() => questions.map(() => false));
+  const [skipped, setSkipped] = useState<boolean[]>(
+    () => saved?.skipped ?? questions.map(() => false),
+  );
   /** Which question the tab bar is showing (#20). Index, not the question text:
    *  a model-authored question is arbitrary bytes and two of them can be equal. */
-  const [active, setActive] = useState(0);
+  const [active, setActive] = useState(() => saved?.active ?? 0);
+  const rootRef = useRef<HTMLDivElement | null>(null);
   const [sent, setSent] = useState(false);
   const [threw, setThrew] = useState("");
   const [invalid, setInvalid] = useState("");
@@ -181,6 +197,28 @@ export function QuestionCard({ row, onAnswer, onDismiss }: QuestionCardProps) {
   // `row.sendError` (T:14108-14112). See PermCard's fuller note.
   const sendError = row.sendError || (threw ? "Could not send that: " + threw : "");
   const posting = sent && !sendError && !resolved;
+
+  // Write the draft back on every change, and drop it once a verdict has
+  // landed. A HELD answer (queued, not yet seen by the model) keeps it — a
+  // queued click sets `decision` too (`resolveLocally`), so `held` is checked
+  // first: if the queue drops that answer the card comes back with its picks.
+  useEffect(() => {
+    if (row.decision && !held) {
+      clearQuestionDraft(row.id);
+      return;
+    }
+    if (resolved) return;
+    if (!answerable) return;
+    writeQuestionDraft(row.id, {
+      n: questions.length,
+      picked,
+      otherOpen,
+      otherText,
+      skipped,
+      active,
+    });
+  }, [row.id, row.decision, held, resolved, answerable, questions.length, picked, otherOpen, otherText, skipped, active]);
+
   const typedOf = (i: number) => (otherOpen[i] ? (otherText[i] || "").trim() : "");
   const labelsOf = (i: number) => {
     const own = typedOf(i);
@@ -391,6 +429,148 @@ export function QuestionCard({ row, onAnswer, onDismiss }: QuestionCardProps) {
     ev.stopPropagation();
   }
 
+  /* ── ARROW KEYS ARE THE CARD'S (Akshil, 2026-11-26) ──────────────────────
+     ↑/↓ walk the options of the question on screen, ←/→ walk the questions.
+     They used to fall through to the task list's walker (TaskPeek, the
+     sidebar), so reaching for the next option opened the next TASK instead.
+     Two ways in: focus anywhere on the card (handled in the root's CAPTURE
+     phase, ahead of the controls' own roving keys, and stopped there so no
+     document listener sees it), and focus NOWHERE (on <body>) while this card
+     is the first live one on screen — the case the press most often came from,
+     since nothing on the card had been clicked yet. */
+  const live = answerable && !resolved && !posting;
+
+  /** Question `at`'s option rows, Other last (default: the one on screen).
+   *  base-ui keeps a visited tab panel mounted and `hidden`, so the block is
+   *  picked by its index, never by "the rows that are in the card". */
+  function optionRows(at = active): HTMLElement[] {
+    const block = rootRef.current?.querySelector(`.qblock[data-q-index="${at}"]`);
+    return block ? Array.from(block.querySelectorAll<HTMLElement>(".qopts .qopt")) : [];
+  }
+
+  /** The focusable control a row stands for: the row itself when it is a
+   *  button (one-shot), else its tick, else (an open one-shot Other) its box. */
+  function controlOf(rowEl: HTMLElement): HTMLElement | null {
+    if (rowEl.tagName === "BUTTON") return rowEl;
+    return rowEl.querySelector<HTMLElement>('[role="radio"], [role="checkbox"], textarea');
+  }
+
+  /** The row to start from when focus is not on one: what is already chosen,
+   *  else the first (↓) or last (↑) row. */
+  function entryRow(rows: HTMLElement[], delta: number): number {
+    const chosen = rows.findIndex(
+      (r) => r.classList.contains("typing") || !!r.querySelector('[aria-checked="true"], [data-checked]'),
+    );
+    return chosen >= 0 ? chosen : delta > 0 ? 0 : rows.length - 1;
+  }
+
+  function stepOption(delta: number, from: Element | null): void {
+    const rows = optionRows();
+    if (!rows.length) return;
+    const at = from ? rows.findIndex((r) => r.contains(from)) : -1;
+    // The ends stop rather than wrap, like the task list's own walk.
+    const to = at < 0 ? entryRow(rows, delta) : Math.min(rows.length - 1, Math.max(0, at + delta));
+    if (to === at) return;
+    const control = controlOf(rows[to]);
+    if (!control) return;
+    control.focus();
+    // A single-choice question picks as focus moves, as any radio group does;
+    // a multi-choice tick waits for Space and a one-shot button for Enter,
+    // since either of those SENDS or commits more than a highlight.
+    // Coming IN (focus was not on a row) only focuses: the first press must
+    // not answer with an option the reader has not looked at yet.
+    if (
+      at >= 0 &&
+      control.getAttribute("role") === "radio" &&
+      control.getAttribute("aria-checked") !== "true"
+    ) {
+      control.click();
+    }
+  }
+
+  function stepQuestion(delta: number, from: Element | null): void {
+    const to = Math.min(questions.length - 1, Math.max(0, active + delta));
+    if (to === active) return;
+    setInvalid("");
+    setActive(to);
+    const onTab = !!from?.closest('[role="tab"]');
+    // A panel visited for the first time mounts a frame or two after the tab
+    // changes, so the focus is retried for a few frames rather than dropped.
+    const land = (tries: number) => {
+      const root = rootRef.current;
+      if (!root) return;
+      if (onTab) {
+        root.querySelectorAll<HTMLElement>('[role="tab"]')[to]?.focus();
+        return;
+      }
+      // Into the new question's options, on what it already has chosen — a
+      // focus, never a pick, so stepping past a question cannot answer it.
+      const rows = optionRows(to);
+      if (rows.length) controlOf(rows[entryRow(rows, 1)])?.focus();
+      else if (tries > 0) afterPaint(() => land(tries - 1));
+    };
+    afterPaint(() => land(4));
+  }
+
+  /** One arrow press, from `from` (null: focus is nowhere). True when the card
+   *  took it. */
+  function arrowKey(key: string, from: HTMLElement | null): boolean {
+    const vertical = key === "ArrowDown" || key === "ArrowUp";
+    const horizontal = key === "ArrowLeft" || key === "ArrowRight";
+    if (!vertical && !horizontal) return false;
+    const delta = key === "ArrowDown" || key === "ArrowRight" ? 1 : -1;
+    if (from && (from.tagName === "TEXTAREA" || from.tagName === "INPUT")) {
+      // A typed answer keeps its caret keys — except ↑ from its very start,
+      // which is the way back up to the options.
+      const field = from as HTMLTextAreaElement;
+      if (key !== "ArrowUp" || field.selectionStart !== 0 || field.selectionEnd !== 0) return false;
+      stepOption(-1, from);
+      return true;
+    }
+    if (vertical) {
+      stepOption(delta, from);
+      return true;
+    }
+    if (tabbed) {
+      stepQuestion(delta, from);
+      return true;
+    }
+    // One question: ←/→ have nothing to walk. Kept from the radio group's own
+    // sideways roving when focus is on the card, left alone when it is not.
+    return from !== null;
+  }
+
+  function onCardKeys(ev: React.KeyboardEvent<HTMLDivElement>) {
+    if (!live) return;
+    if (ev.metaKey || ev.ctrlKey || ev.altKey || ev.shiftKey) return;
+    // Safari sends an IME keydown with `isComposing` false and keyCode 229.
+    if (ev.nativeEvent.isComposing || ev.nativeEvent.keyCode === 229) return;
+    if (!arrowKey(ev.key, ev.target as HTMLElement)) return;
+    ev.preventDefault();
+    ev.stopPropagation();
+  }
+
+  const arrowKeyRef = useRef(arrowKey);
+  arrowKeyRef.current = arrowKey;
+  useEffect(() => {
+    if (!live) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.defaultPrevented || e.isComposing || e.keyCode === 229) return;
+      if (e.metaKey || e.ctrlKey || e.altKey || e.shiftKey) return;
+      if (!e.key.startsWith("Arrow")) return;
+      const el = document.activeElement;
+      if (el && el !== document.body && el !== document.documentElement) return;
+      if (isOverlayOpen()) return;
+      if (firstLiveQuestionCard() !== rootRef.current) return;
+      if (!arrowKeyRef.current(e.key, null)) return;
+      e.preventDefault();
+      // CAPTURE on the document, so the walkers listening below it never hear it.
+      e.stopPropagation();
+    };
+    document.addEventListener("keydown", onKey, true);
+    return () => document.removeEventListener("keydown", onKey, true);
+  }, [live]);
+
   /* ONE ELEMENT PER QUESTION, built up front so the tab bar below and the
      untabbed single-question path render the SAME block rather than two
      near-copies of it. A plain map, not a hook: nothing in here is stateful. */
@@ -529,7 +709,7 @@ export function QuestionCard({ row, onAnswer, onDismiss }: QuestionCardProps) {
             </>
           );
           return (
-            <div key={i} className="qblock">
+            <div key={i} className="qblock" data-q-index={i}>
               {typeof q.header === "string" && q.header ? (
                 <div className="qhead">{q.header}</div>
               ) : null}
@@ -585,7 +765,13 @@ export function QuestionCard({ row, onAnswer, onDismiss }: QuestionCardProps) {
   });
 
   return (
-    <div className={cn("turn", "perm", "ask", resolved && "resolved")} data-perm-id={row.id}>
+    <div
+      ref={rootRef}
+      className={cn("turn", "perm", "ask", resolved && "resolved")}
+      data-perm-id={row.id}
+      data-q-live={live ? "" : undefined}
+      onKeyDownCapture={onCardKeys}
+    >
       <div className="perm-head">{resolved ? `${agent.label} asked you` : `${agent.label} is asking you`}</div>
       {answerable ? (
         <div className={cn("qscroll", tabbed && "is-tabbed")}>
@@ -690,6 +876,19 @@ export function QuestionCard({ row, onAnswer, onDismiss }: QuestionCardProps) {
       <div className={cn("perm-status", status.cls)}>{status.node}</div>
     </div>
   );
+}
+
+/** The question card that bare arrows (focus on <body>) belong to: the first
+ *  live one in the document that is on screen and not put away (`inert`). Two
+ *  mounts of one chat — the pane and a rail card — must not both step. */
+function firstLiveQuestionCard(): Element | null {
+  for (const el of Array.from(document.querySelectorAll<HTMLElement>("[data-q-live]"))) {
+    if (el.closest("[inert]")) continue;
+    const r = el.getBoundingClientRect();
+    if (!r.width || !r.height || r.bottom <= 0 || r.top >= window.innerHeight) continue;
+    return el;
+  }
+  return null;
 }
 
 /** R2-6 — one question's outcome on a resolved card: what was chosen, or the

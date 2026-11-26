@@ -2850,7 +2850,7 @@ EXPERT_TOOLS = ("expert_pull", "expert_note", "expert_breakout")
 _EXPERT_SPEC_FILE = "expert.json"
 _EXPERTS_FILE = "experts.on"
 # The agents that can run an expert's own session, and whose tasks get the
-# task tools (docs/experts.md §16). A breakout stays Claude's alone, so a
+# task tools (docs/experts.md §17). A breakout stays Claude's alone, so a
 # Copilot task is offered pull and note and never `expert_breakout`.
 EXPERT_BACKENDS = ("claude", "copilot")
 _MCP_NAME_RE = re.compile(r"mcp__([A-Za-z0-9]+(?:_[A-Za-z0-9]+)*)__")
@@ -5961,7 +5961,7 @@ def _copilot_plugin_dir(run_dir: str, file: str, pane: bool, s3: bool = False) -
     # announcing a name the roster does not carry is the exact failure D235
     # exists to prevent.
     #
-    # An expert's own session (docs/experts.md §16): Copilot loads neither
+    # An expert's own session (docs/experts.md §17): Copilot loads neither
     # CLAUDE.md's `@memory.md` import nor the home's `.claude/skills`, so the
     # charter with the memory rides in front of the body and the skills are
     # linked below. A task with the expert tools gets their paragraph.
@@ -6058,7 +6058,7 @@ def _copilot_argv(run_dir: str, pane: bool, cli_mode: str | None,
     s3 = _s3_tools_supported()
     cmd += ["--plugin-dir", _copilot_plugin_dir(run_dir, file, pane, s3),
             "--agent", "fused:fused"]
-    # Experts (docs/experts.md §16): an expert's own session carries its
+    # Experts (docs/experts.md §17): an expert's own session carries its
     # launch spec's servers; a task may get pull and note instead. The
     # spec's `policy_env` names nothing here: this server has no approval
     # tool under `--no-approve`, so the host refuses for an unattended run

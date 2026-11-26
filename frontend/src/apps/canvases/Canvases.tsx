@@ -11,7 +11,7 @@
 // The Environment dropdown picks WHICH environment's canvases are listed; a
 // prod canvas and an unstable one can be open and syncing at once, so a pick
 // stops nothing. It offers the environments turned on in Preferences
-// (Accounts > Fused Workbench) and is not drawn when there is one. Its state
+// (Fused Workbench) and is not drawn when there is one. Its state
 // is the `?env=` query (browser storage holds no facts, D1386), defaulting to
 // the `workbench_env` preference; a pick is also written back as that
 // default. FUSED_RENDER_WORKBENCH_ENV pins it (`status.locked`): the dropdown
@@ -719,8 +719,8 @@ export default function Canvases() {
               able to switch back. The rest needs that env's login. */}
           {status?.cli_found && env && (
             <div className="canvases-head-actions">
-              {/* Only the environments turned on in Preferences (Accounts >
-                  Fused Workbench), plus the one on show when a link named
+              {/* Only the environments turned on in Preferences (Fused Workbench),
+                  plus the one on show when a link named
                   another; with one to offer there is nothing to pick. */}
               {envChoices.length > 1 && (
               <label
@@ -831,6 +831,15 @@ export default function Canvases() {
                 </button>
                 <span className="canvases-sub">
                   Complete the sign-in in the browser window that just opened.
+                  {status.login_url && (
+                    <>
+                      {" "}No window?{" "}
+                      <a href={status.login_url} target="_blank" rel="noreferrer">
+                        Open the sign-in page
+                      </a>
+                      .
+                    </>
+                  )}
                 </span>
               </>
             )}

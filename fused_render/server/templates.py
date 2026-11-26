@@ -407,7 +407,7 @@ def _conditions_payload(path: str):
             from fused_render.shell import prefs
 
             if not prefs.canvases_enabled():
-                return _error("the Fused integration is off — turn on Canvases in Preferences", status=403)
+                return _error("the Fused integration is off — turn on Fused Workbench in Preferences", status=403)
             bucket, key = remote_access.parse_url(path)
             target = remote_access.sign_read_url(bucket, key).url
             entries = remote_templates(key.rsplit("/", 1)[-1])

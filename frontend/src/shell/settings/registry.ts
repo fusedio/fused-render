@@ -36,6 +36,7 @@ export type GroupId =
   | "lan"
   | "connections"
   | "integrations"
+  | "workbench"
   | "advanced";
 
 // THE NAV IS SECTIONED BY WHAT THE SETTING CHANGES: the app itself, the
@@ -73,6 +74,12 @@ export interface SettingsGroup {
 export const GROUPS: readonly SettingsGroup[] = [
   { id: "general", nav: "app", label: "General" },
   { id: "integrations", nav: "app", label: "Accounts" },
+  // FUSED WORKBENCH (owner, 2026-11-26): everything about the Fused Workbench
+  // integration on one page — the switch (which is also Canvases), the two
+  // environments a person can sign in to, and the on-prem proxy. It used to be
+  // spread over Experimental flags (Canvases, the proxy) and Accounts (one row
+  // per environment, Unstable included). Unstable has no row anywhere now.
+  { id: "workbench", nav: "app", label: "Fused Workbench" },
   {
     id: "connections",
     nav: "app",
@@ -475,27 +482,6 @@ const ENTRIES = [
     description: "Three rail additions: a file's other views (Code, Reader and so on) show as icons above Git, hover to preview, click to keep open; a button at the rail's top left widens it into a list with titles, and its inner edge drags to resize; a pinned rail window keeps its exact place and size while other chats open in a second window, up to four at once.",
     keywords: "rail extras mode view preview code reader door icon file git expand widen wide width resize titles drag pin pinned window float move four windows",
   },
-  {
-    id: "canvases",
-    needs: "fused",
-    group: "features",
-    section: "Other",
-    label: "Canvases",
-    description: "Your Fused Workbench canvases, opened locally with the live workbench embedded. Shows in the sidebar once you're signed in to Fused.",
-    keywords: "canvas workbench udf fused",
-  },
-  {
-    id: "canvases-embed-proxy",
-    needs: "fused",
-    group: "features",
-    section: "Other",
-    label: "Load a custom deployment's workbench through a local proxy",
-    description: "For a custom deployment in ~/.fused/settings.toml whose workbench needs a browser login: it loads through a local proxy that adds your Fused token. Prod and Unstable are unaffected. canvases_embed_proxy_enabled under [render] in that file overrides this.",
-    keywords: "proxy embed custom deployment settings.toml render workbench login gateway bearer token",
-    child: true,
-    // Only means something while Canvases is offered at all.
-    available: ({ prefs }) => prefs.canvases?.enabled === true,
-  },
   // EXPERTS (docs/experts.md): a kind of bot on the Bots page, and
   // the task tools and the breakout's "With". Off by default; off, nothing of
   // it exists.
@@ -570,36 +556,62 @@ const ENTRIES = [
     keywords: "connect connection oauth mcp sign in login api key notion github slack service tools",
   },
 
-  // ── Accounts ─────────────────────────────────────────────────────────────
-  // One row per Fused environment (settings/accounts.tsx): the switch turns
-  // it on, and an environment that is on carries its own sign-in underneath.
+  // ── Fused Workbench ──────────────────────────────────────────────────────
+  // ONE SWITCH (owner, 2026-11-26): turning Fused Workbench on is turning
+  // Canvases on — the row keeps the `canvases` id and the `canvases_enabled`
+  // pref, so an install that had the old Experimental flag on has Workbench
+  // on. Everything below it waits for it.
   {
-    id: "workbench-unstable",
+    id: "canvases",
     needs: "fused",
-    group: "integrations",
+    group: "workbench",
     section: "Fused Workbench",
-    label: "Unstable",
-    description: "Fused's unstable environment. While it is on, the Canvases page offers it and you can sign in to it here.",
-    keywords: "fused login sign in log out account workbench environment unstable canvases env",
+    label: "Enable Fused Workbench",
+    description: "Adds Canvases to the sidebar — your Fused Workbench canvases, opened locally with the live workbench embedded — and the environments below to sign in to.",
+    keywords: "fused workbench canvas canvases udf enable turn on integration sidebar",
   },
+  // One row per environment a person can turn on (settings/accounts.tsx): the
+  // switch turns it on, and an environment that is on carries its own sign-in
+  // underneath. Unstable is not here: it turns on by itself for a Fused
+  // employee signed in to Fused hosted (fusedcli._staff_unstable), and is
+  // never drawn.
   {
     id: "workbench-prod",
     needs: "fused",
-    group: "integrations",
-    section: "Fused Workbench",
-    label: "Production",
-    description: "Hosted Fused. Used by Share and Canvases. Signing in opens fused.io in your browser.",
-    keywords: "fused login sign in log out account workbench environment prod production canvases env default",
+    group: "workbench",
+    section: "Environments",
+    label: "Fused hosted",
+    description: "Fused at fused.io. Used by Share and Canvases. Signing in opens fused.io in your browser.",
+    keywords: "fused login sign in log out account workbench environment hosted prod production fused.io cloud canvases env default",
+    parent: { id: "canvases", on: (prefs) => prefs.canvases?.enabled === true },
   },
   {
     id: "workbench-custom",
     needs: "fused",
-    group: "integrations",
-    section: "Fused Workbench",
-    label: "Custom",
+    group: "workbench",
+    section: "Environments",
+    label: "On-prem",
     description: "Your own Fused deployment, read from ~/.fused/settings.toml. Add its config first, then sign in.",
-    keywords: "fused login sign in log out account workbench environment custom deployment settings.toml base_url config env",
+    keywords: "fused login sign in log out account workbench environment on-prem onprem self-hosted custom deployment settings.toml base_url config env",
+    parent: { id: "canvases", on: (prefs) => prefs.canvases?.enabled === true },
   },
+  {
+    id: "canvases-embed-proxy",
+    needs: "fused",
+    group: "workbench",
+    section: "Environments",
+    label: "Sign in to the workbench through a local proxy",
+    description: "For an on-prem deployment whose workbench needs a browser login: it loads through a local proxy that adds your Fused token. Fused hosted is unaffected. canvases_embed_proxy_enabled under [render] in ~/.fused/settings.toml overrides this.",
+    keywords: "proxy embed custom on-prem deployment settings.toml render workbench login gateway bearer token",
+    child: true,
+    // Only means something for On-prem, and only while it is on.
+    parent: {
+      id: "workbench-custom",
+      on: (prefs) => prefs.canvases?.enabled === true && (prefs.workbench?.enabled ?? []).includes("custom"),
+    },
+  },
+
+  // ── Accounts ─────────────────────────────────────────────────────────────
   {
     id: "huggingface",
     needs: "hf",

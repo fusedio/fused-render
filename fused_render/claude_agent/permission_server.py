@@ -927,8 +927,8 @@ def _handle_approve(args: dict) -> dict:
                       "message": "Nobody is here to approve this; it is refused."})
     # An expert breakout asks every time: it is how the user opens one, so
     # the chat's "Always approve" never answers for it.
-    # Nor for an expert's new canvas: each one is the user's to approve.
-    if (tool_name not in (EXPERT_BREAKOUT, EXPERT_CANVAS_CREATE)
+    # Nor for an expert's new canvas or new task: each one is the user's to approve.
+    if (tool_name not in (EXPERT_BREAKOUT, EXPERT_CANVAS_CREATE, EXPERT_TASK_START)
             and _chat_allows(tool_name, tool_input)):
         return _text(_permission_result(tool_name, tool_input,
                                         {"decision": "allow", "scope": "once"}))
@@ -2184,6 +2184,9 @@ EXPERT_BREAKOUT = "mcp__fused_render__expert_breakout"
 # An expert's own `canvas_create` (experts/show.py), on its session's
 # `expert_canvas` server: it makes a canvas on the user's Fused account.
 EXPERT_CANVAS_CREATE = "mcp__expert_canvas__canvas_create"
+# An expert's own `task_start` (experts/tasks.py), on its session's
+# `expert_tasks` server: a new Claude Code session in a folder.
+EXPERT_TASK_START = "mcp__expert_tasks__task_start"
 
 
 def _expert_origin() -> str:

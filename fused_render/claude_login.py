@@ -18,15 +18,23 @@ type `/login` — really is the only route through that door.
 
 Same authorization behind both: identical `state`, identical `code_challenge`,
 two redirect targets, whichever completes first. On a desktop app with the user's
-browser on the same machine the loopback path is the normal one — so THE APP
-NEVER HANDLES AN OAUTH CODE. That is the whole reason this module is small.
+browser on the same machine the loopback path is the normal one, and on it the
+app never handles an OAuth code. That is the whole reason this module is small.
 
 **Do not read the printed URL and open it.** It is the paste URL; opening it
 forces the user into the manual flow for no reason. The loopback URL is never
-printed — the child hands it straight to the browser — so there is nothing here
-worth capturing, and the child opens the browser itself, which is the one thing
+printed — the child hands it straight to the browser, which is the one thing
 that works on both platforms (`BROWSER` is a POSIX convention; macOS shells out
 to `open` and ignores it).
+
+**But it IS offered, as the fallback it was printed to be.** Under WSL, over
+ssh or in a container the child's browser open does nothing, and the row then
+sat at "finish in the browser window that just opened" for ten minutes with no
+window and no address. So the drain keeps the printed URL (`_Login.url`), the
+record carries it while the sign-in is in flight, and the page shows it as a
+"browser did not open?" link beside a box for the code that page hands out —
+`submit_code` writes that code to the child's stdin, the prompt it has been
+waiting at all along. In memory only, like the tail.
 
 **Why this is not a third `claude_install` action.** Those two are machine time:
 they run to completion on their own, so the record is progress and the endpoint
@@ -103,6 +111,15 @@ _READ_CHUNK = 2048
 #: `Opening browser to sign in…` as the reason the sign-in failed.
 _PROMPT_RE = re.compile(r"Paste code here[^\n>]*>\s*")
 
+#: The printed sign-in address. The CLI wraps it in an OSC 8 terminal hyperlink
+#: (`ESC ] 8 ;; URL BEL URL ESC ] 8 ;; BEL`), so the match stops at the first
+#: control character as well as at whitespace.
+_URL_RE = re.compile(r"https://[^\s\x00-\x1f\x7f]+")
+
+#: The longest code `submit_code` will pass on. The real ones are well under
+#: 200 characters; this only keeps a wrong paste (a whole page) off the pipe.
+_CODE_MAX = 2048
+
 
 class LoginError(RuntimeError):
     """A refusal with a sentence the strip can show as-is."""
@@ -116,11 +133,13 @@ class _Login:
     #: written to disk, which is the one place this module diverges from
     #: claude_install deliberately. That module publishes every line into the
     #: shared job registry because a verbatim installer error is the point. The
-    #: same lines here carry the authorize URL's `state` and `code_challenge`,
-    #: and phase 2 (the paste fallback) will put a live OAuth code on this
-    #: stream. So the tail stays in memory, dies with the process, and leaves it
-    #: only as the one derived sentence in `error`.
+    #: same lines here carry the authorize URL's `state` and `code_challenge`.
+    #: So the tail stays in memory, dies with the process, and leaves it only
+    #: as the one derived sentence in `error` (and `url`, while in flight).
     tail: collections.deque
+    #: The sign-in address the child printed for a browser that did not open,
+    #: once it has. Served only while the sign-in is in flight (`_record`).
+    url: Optional[str] = None
     error: Optional[str] = None
     timed_out: bool = False
     canceled: bool = False
@@ -192,6 +211,14 @@ def _drain(login: _Login) -> None:
             if not raw:
                 break
             buffer += decoder.decode(raw)
+            if login.url is None:
+                # Looked for in the whole pending text, not per finished line:
+                # nothing guarantees the line it sits on ends before the prompt.
+                found = _URL_RE.search(buffer)
+                # Only once the address is complete — a chunk edge can fall
+                # inside it, and half a URL is a link that goes nowhere.
+                if found is not None and found.end() < len(buffer):
+                    login.url = found.group(0)
             # Split on newlines but KEEP the trailing fragment: that fragment is
             # usually the paste prompt, which never gets a newline of its own.
             *lines, buffer = buffer.split("\n")
@@ -300,9 +327,13 @@ def _record(login: Optional[_Login]) -> dict:
     the strip acts on.
     """
     if login is None:
-        return {"in_flight": False, "started_at": None, "error": None}
-    return {"in_flight": login.alive(), "started_at": login.started_at,
-            "error": login.error}
+        return {"in_flight": False, "started_at": None, "error": None, "url": None}
+    alive = login.alive()
+    return {"in_flight": alive, "started_at": login.started_at,
+            "error": login.error,
+            # Only while it can still be finished: the address dies with the
+            # child that is listening for its answer.
+            "url": login.url if alive else None}
 
 
 def status() -> dict:
@@ -372,6 +403,30 @@ def cancel() -> dict:
     if not login.settled.wait(CANCEL_GRACE_S):
         logger.warning("the Claude Code sign-in child did not stop when asked")
     return {**_record(login), "canceled": True}
+
+
+def submit_code(code: str) -> dict:
+    """Hand the child the code its sign-in page showed (the paste fallback).
+
+    The child has been sitting at `Paste code here if prompted >` since it
+    started; this is the answer to that prompt. Nothing is concluded here: a
+    wrong code makes the child exit with its own sentence, which the worker
+    turns into `error`, and a right one makes it exit cleanly into the re-probe.
+    The code is written to the pipe and kept nowhere.
+    """
+    code = (code or "").strip()
+    if not code or len(code) > _CODE_MAX or any(c.isspace() for c in code):
+        raise LoginError("paste the code from the sign-in page")
+    login = _live()
+    if login is None or login.proc.stdin is None:
+        raise LoginError("no Claude Code sign-in is waiting for a code — start it again")
+    try:
+        login.proc.stdin.write(code + "\n")
+        login.proc.stdin.flush()
+    except (OSError, ValueError) as exc:
+        raise LoginError("the sign-in ended before the code could be sent — "
+                         "start it again") from exc
+    return _record(login)
 
 
 def reset() -> None:

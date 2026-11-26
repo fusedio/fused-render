@@ -33,7 +33,9 @@ export interface Handoff {
   notes?: string[];
 }
 /** The `build` stamp on a build watcher's "stuck" notice: the Claude task (its key opens it under Builds) and what it waits on. */
-export interface BuildRef { name: string; dir: string; key: string; entry_id: string; reason: "permission" | "question" | "failed" | "usage_limit" | string; tool?: string; summary?: string }
+export interface BuildRef { name: string; dir: string; key: string; entry_id: string; reason: "permission" | "question" | "failed" | "usage_limit" | string; tool?: string; summary?: string;
+  /** "task": a Claude task the bot started with `task_start`, not an app build (the card reads Task, not Build). */
+  kind?: "task" }
 /** The `handoff` stamp on Super Bot's hand-off lines ("Asked …", "… needs you at the laptop", the result). */
 export interface HandoffRef { id: string; target: string; target_name: string; task?: string; state: HandoffState; task_dir?: string }
 
@@ -405,7 +407,7 @@ export class ApiError extends Error {
  *  holds the workspace claim. The page offers to take it over (POST /api/bots/workspace/take). */
 export function isWorkspaceBusy(e: unknown): e is ApiError { return e instanceof ApiError && e.status === 409 && e.body?.reason === "workspace_busy"; }
 
-type Method = "GET" | "POST" | "PATCH" | "DELETE";
+type Method = "GET" | "POST" | "PATCH" | "PUT" | "DELETE";
 export async function request<T>(method: Method, url: string, body?: unknown, label?: string): Promise<T> {
   const t0 = performance.now(), name = label || url.replace(/^\/api\/(bots\/)?/, "").split("?")[0] || "status";
   inflight++;
@@ -568,6 +570,8 @@ export interface ExpertBody { name: string; about: string; folder: string; face:
 export interface ExpertEntry { name: string; text: string; at: number; kind: "note" | "task" | "breakout" | "chat"; title: string }
 /** A commit of its history: a learning run ("Update"; `read` entries) or a change to memory or skills. */
 export interface ExpertChange { sha: string; at: number; label: string; read: number; changed: boolean }
+/** One Claude Code skill of its home: `text` is the whole SKILL.md, `body` the part after the frontmatter. */
+export interface ExpertSkill { name: string; description: string; text: string; body: string }
 /** `backend`: the agent the main chat runs on (for one yet to start, the one its pill opens on); `backends`: the
  *  agents that can run an expert's chat. */
 export interface ExpertChat { session_id: string | null; folded: { session_id: string; at: number }[]; backend?: string; backends?: string[] }
@@ -584,7 +588,11 @@ export const expertApi = {
   /** Pin to the top of the Bots list, or unpin. */
   pin: (id: string, pinned: boolean) => post<Ok>(`${sid(id)}/pin`, { pinned }, "pin"),
   memory: (id: string) => get<{ text: string }>(`${sid(id)}/memory`, "expert memory"),
-  skills: (id: string) => get<{ skills: { name: string; description: string; text: string }[] }>(`${sid(id)}/skills`, "expert skills"),
+  skills: (id: string) => get<{ skills: ExpertSkill[] }>(`${sid(id)}/skills`, "expert skills"),
+  /** Settings › Skills. `new`: a skill of that name must not exist yet. An edit keeps the skill's other frontmatter. */
+  saveSkill: (id: string, name: string, body: { description: string; body: string; new?: boolean }) =>
+    request<{ skills: ExpertSkill[] }>("PUT", `${sid(id)}/skills/${encodeURIComponent(name)}`, body, "expert skill"),
+  deleteSkill: (id: string, name: string) => request<{ skills: ExpertSkill[] }>("DELETE", `${sid(id)}/skills/${encodeURIComponent(name)}`, undefined, "delete skill"),
   notes: (id: string) => get<{ notes: ExpertEntry[] }>(`${sid(id)}/notes`, "expert notes"),
   deleteNote: (id: string, name: string) => request<Ok>("DELETE", `${sid(id)}/notes/${encodeURIComponent(name)}`, undefined, "delete note"),
   changes: (id: string) => get<{ changes: ExpertChange[] }>(`${sid(id)}/changes`, "expert changes"),

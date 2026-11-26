@@ -231,11 +231,11 @@ function BuildCard({ e, open }: { e: BotEvent; open: boolean }) {
     : b.reason === "question" && b.summary ? `Claude asks: ${b.summary}` : e.text;
   return (
     <div className={`handoff-card build ${open ? st.cls : "settled"}`} data-seq={e.seq} title={fmtWhen(e.ts)}>
-      <div className="hd"><span className="ttl">Build · {b.name}</span><span className={`pill ${open ? st.cls : "cancelled"}`}>{open ? st.pill : "resolved"}</span></div>
+      <div className="hd"><span className="ttl">{b.kind === "task" ? "Task" : "Build"} · {b.name}</span><span className={`pill ${open ? st.cls : "cancelled"}`}>{open ? st.pill : "resolved"}</span></div>
       <HtmlMsg className="msg md" title={fmtWhen(e.ts)} html={md(what)} />
       <div className="ft">
         <button className={open && st.cls === "blocked" ? "primary" : undefined} disabled={!b.key}
-          title={b.dir || undefined} onClick={() => openBuilds(b.key)}>{open && st.cls === "blocked" ? "Answer in Builds" : "Open in Builds"}</button>
+          title={b.dir || undefined} onClick={() => openBuilds(b.key)}>{b.kind === "task" ? (open && st.cls === "blocked" ? "Answer in Tasks" : "Open in Tasks") : open && st.cls === "blocked" ? "Answer in Builds" : "Open in Builds"}</button>
       </div>
     </div>
   );

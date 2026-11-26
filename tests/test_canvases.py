@@ -996,11 +996,43 @@ def test_stale_credentials_map_to_401(harness):
     assert "Re-authenticate" in res.json()["error"]
 
 
+def test_staff_email_is_an_exact_domain_match():
+    for email in ("a@fused.io", "A@Fused.IO"):
+        assert fusedcli_mod.is_staff_email(email)
+    for email in ("a@notfused.io", "a@fused.io.evil.com", "a@sub.fused.io", "@fused.io", "a@b@fused.io", None):
+        assert not fusedcli_mod.is_staff_email(email)
+
+
+def test_unstable_is_never_a_user_pick_and_joins_for_staff(monkeypatch, tmp_path):
+    creds = tmp_path / "credentials"
+    monkeypatch.setenv("FUSED_RENDER_FUSED_CREDENTIALS", str(creds))
+    assert fusedcli_mod._enabled_envs_from({"workbench_envs_enabled": ["unstable"]}) == ("prod",)
+    assert fusedcli_mod._enabled_envs_from({"workbench_env": "unstable"}) == ("prod",)
+    staff = {"workbench_envs_enabled": ["prod"], fusedcli_mod.STAFF_PREF_KEY: True}
+    # Signed out: the verdict alone turns nothing on.
+    assert fusedcli_mod._enabled_envs_from(staff) == ("prod",)
+    creds.write_text("{}")
+    assert fusedcli_mod._enabled_envs_from(staff) == ("unstable", "prod")
+
+
 def test_whoami_extracts_handle(harness):
     harness.set_scenario({"whoami": {"username": "vasu"}})
     res = harness.client.get("/api/canvases/whoami?env=unstable", headers=GUARD)
     assert res.status_code == 200
     assert res.json()["handle"] == "vasu"
+
+
+def test_hosted_whoami_records_the_staff_verdict_and_logout_drops_it(harness):
+    from fused_render.shell import prefs
+
+    harness.log_in()
+    harness.set_scenario({"whoami": {"handle": "v", "email": "v@fused.io"}})
+    res = harness.client.get("/api/canvases/whoami?env=prod", headers=GUARD)
+    assert res.json()["email"] == "v@fused.io"
+    assert prefs.read_prefs().get(fusedcli_mod.STAFF_PREF_KEY) is True
+    assert harness.client.post("/api/canvases/logout", headers=GUARD).status_code == 200
+    # Fail closed: a new login is not staff until its own whoami says so.
+    assert prefs.read_prefs().get(fusedcli_mod.STAFF_PREF_KEY) is False
 
 
 def _spawns(harness, word):
@@ -3682,11 +3714,13 @@ def test_the_default_environment_is_an_ordinary_preference(harness, tmp_path, mo
     exported = []
     monkeypatch.setattr(fusedcli_mod, "export_fused_cli_env", lambda: exported.append(1))
 
-    # ENV differs from the built-in default (OTHER_ENV): the PUT must move it.
-    res = harness.client.put("/api/prefs", json={"workbench_env": ENV}, headers=GUARD)
+    # "custom" differs from the built-in default (OTHER_ENV): the PUT must move
+    # it. Not ENV: unstable is no default a person can pick (it is on only
+    # for staff — fusedcli._staff_unstable).
+    res = harness.client.put("/api/prefs", json={"workbench_env": "custom"}, headers=GUARD)
     assert res.status_code == 200, res.text
-    assert res.json()["workbench"]["env"] == ENV
-    assert harness.client.get("/api/canvases/status").json()["workbench_env"] == ENV
+    assert res.json()["workbench"]["env"] == "custom"
+    assert harness.client.get("/api/canvases/status").json()["workbench_env"] == "custom"
     assert exported == [1]
     assert _manager() is manager and not manager.stop_event.is_set()
 

@@ -31,6 +31,14 @@ from urllib.parse import parse_qs, urlencode, urlparse
 # same deadline, so a longer wait here would never be observed.
 CALLBACK_TIMEOUT_S = 300
 
+# The stdout line that carries the authorize URL to the server (canvases.py
+# reads it and hands it to the page as `login_url`). `webbrowser.open` below is
+# best effort: under WSL, over ssh or in a container it opens nothing and says
+# so to nobody, and the page — which IS in a browser that works — is then the
+# only place a person can be given the address. The URL holds the PKCE
+# challenge, never the verifier.
+URL_LINE_PREFIX = "FUSED_LOGIN_URL "
+
 
 def main() -> int:
     import fused
@@ -114,12 +122,16 @@ def main() -> int:
     deadline = time.time() + CALLBACK_TIMEOUT_S
 
     print(f"Waiting for browser sign-in on {redirect_uri} ...", flush=True)
+    print(f"{URL_LINE_PREFIX}{authorize_url}", flush=True)
     # Under WSL the stock open ends in `explorer.exe <url>`, which shows the Documents folder for an address
     # with a query like this one (_wsl.py); this routes it to the Windows default browser instead.
     from fused_render import _wsl
 
     _wsl.use_windows_browser()
-    webbrowser.open(authorize_url)
+    try:
+        webbrowser.open(authorize_url)
+    except Exception:  # noqa: BLE001 - no browser here; the page offers the link
+        pass
     while code is None and denied is None and time.time() < deadline:
         server.handle_request()
     server.server_close()

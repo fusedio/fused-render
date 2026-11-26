@@ -11,7 +11,7 @@ with it. It shows on the Bots page as a row of its own kind (badge EXPERT), but 
 it: the page reads `/api/experts` and makes the rows itself (§11). Its home is an ordinary Claude Code project,
 and every conversation with it is an ordinary Claude Code session in that folder, run by the task chat engine
 (`claude_agent/agent.py`). GitHub Copilot can run it too, and Copilot tasks can call it; this page describes
-Claude, and §16 says what differs. fused writes none of its memory: the expert edits its own files with Claude Code's
+Claude, and §17 says what differs. fused writes none of its memory: the expert edits its own files with Claude Code's
 tools, and the app only commits what changed (§7).
 
 Three things reach it: the user, in its main chat (§3); tasks, through three tools (§4); and a learning run (the
@@ -111,7 +111,7 @@ before the other started the session would otherwise start a second one and fold
 All three are `agent._start` with `expert="<id>:<kind>"`. The page sends `<id>:main` or `<id>:breakout` as an
 extra start field (`ChatMount extraParams`, carried on every start and send by the run controller); `agent.main`
 drops a `:update` key from a page, so only the server starts an update (`claude_spawn.spawn_helper(...,
-expert=)`). `_start` then requires Claude or Copilot (`agent.EXPERT_BACKENDS`, §16) and no fork, calls `launch.spec(key, file)`, and refuses
+expert=)`). `_start` then requires Claude or Copilot (`agent.EXPERT_BACKENDS`, §17) and no fork, calls `launch.spec(key, file)`, and refuses
 the start when it answers an error (`bad_key`, `no_expert`, `wrong_folder`: the target must be the home itself).
 A breakout start passes the plain breakout's checks first, then runs as an ordinary session: not research-only, not
 pinned to Ask mode.
@@ -372,7 +372,12 @@ last reply, or after Clear the last folded chat's, so the row keeps its place; o
     POST   /api/experts/{id}/chat/clear       the same object, after folding the main chat
     POST   /api/experts/{id}/seen             {"ok": true}; sets `seen` to now (the Learning tab opened)
     GET    /api/experts/{id}/memory           {"text"}
-    GET    /api/experts/{id}/skills           {"skills": [{name, description, text}]}
+    GET    /api/experts/{id}/skills           {"skills": [{name, description, text, body}]}
+    PUT    /api/experts/{id}/skills/{name} {description, body, new?}
+                                                  the same object; Settings › Skills. `new`: the name is a free slug.
+                                                  An edit changes only the `description` line and the body. Commits
+                                                  "You edited the skill <name>"; 400 a bad name or text, 409 learning
+    DELETE /api/experts/{id}/skills/{name}    the same object; removes the skill's folder; 409 while learning
     GET    /api/experts/{id}/notes            {"notes": [{name, text, at, kind, title}]}, oldest first
     DELETE /api/experts/{id}/notes/{name}     {"ok": true}; 404 "no such note"
     GET    /api/experts/{id}/changes          {"changes": [{sha, at, label, read, changed}]}; commits hand edits first
@@ -430,7 +435,7 @@ false`; a failed config read counts as bots being there) drive it:
   which loads them read-only. A learning run never shows here; while one runs, a send answers "The expert is
   learning; send this when it has finished."
 - **The pane** (`ExpertPane.tsx`, in the preview column): tabs Memory (rendered `memory.md`, its path, and Edit,
-  which opens the file in the explorer), Skills (name and description; a row opens to the text; read-only) and
+  which opens the file in the explorer), Skills (name and description; a row opens to the text; read-only here, edited in Settings › Skills) and
   Learning ("Learning · n" while entries wait). Learning: one sentence on what it learns from; **Waiting · n** with
   **Learn now** (disabled with nothing waiting or while learning) and "Learning now…" or "Last learned <when>.";
   the entries newest first as kind, title and age, a note opening to its text, a conversation to "It will read this
@@ -480,8 +485,8 @@ That is the only one; `FUSED_RENDER_EXPERT_ORIGIN` (§4) and `FUSED_EXPERT_UNATT
 - No enforced limit on the inbox or on `memory.md`, and no compaction by the app: the rule of about 200 lines is
   prompt text. A learning run reads transcripts as they are, so a
   long task costs a reader more (it is told to search, not read whole).
-- No export, clone or import of an expert; no editing skills from the pane (ask the expert).
-- Only Claude and Copilot run an expert, and only their tasks get its tools (§16); no other agent does. A
+- No export, clone or import of an expert; skills are edited in its Settings (`ExpertSkillsSection.tsx`: add, edit, delete, each saved at once) or by asking the expert, not from the pane.
+- Only Claude and Copilot run an expert, and only their tasks get its tools (§17); no other agent does. A
   breakout, an expert's included, is Claude's alone, and plain breakouts get no tools.
 
 ## 14. Showing work in the chat
@@ -603,7 +608,40 @@ The stamp `<home>/experts_migration.json` is written even when there was nothing
 run later against experts in use; the moved root also carries `.state/migrated-from-specialists`, which stops a
 run under another app home on the same workspace from deleting it. A run that raised is not stamped and is tried again on the next start.
 
-## 16. Experts on GitHub Copilot
+## 16. Starting and managing tasks
+
+An expert starts Claude tasks and manages the ones it started (owner, 2026-11-25; the bots' side is
+docs/bots.md §12, and the tool definitions, the listing and the calls are the shared `bots/tasktools.py`).
+
+- **The server.** A main chat and a breakout get a third session MCP server, `expert_tasks` (`experts/tasks.py`,
+  mounted by `launch.session_servers(task_tools=True)`, served through the same session door as §8), with
+  `task_start`, `task_list`, `task_read`, `task_send`, `task_stop` and `task_archive`. A learning run does not
+  get it: nobody is there to approve a start. `launch.spec`'s `append` gains one sentence saying the tools exist
+  (`tasks.NOTE`).
+- **Reach.** Only the tasks this expert started: `.expert/state.json` `tasks`
+  (`[{entry_id, key, title, dir, at, session?, done_at?}]`, last 40), matched to the listing by entry id or by
+  the session the task minted (a retry of a failed task gets a fresh entry in the same conversation). Any other task
+  reads as not there. An expert's own sessions are not tasks (§1) and never show up here.
+- **`task_start`** asks the user every time, in every permission mode: it is in `launch.spec`'s `ask`, and
+  `permission_server.EXPERT_TASK_START` keeps the chat's "Always approve" from answering it (as for
+  `canvas_create`). The new task runs in mode `default` (it asks before risky steps) whatever the expert's own
+  chat runs in. It works in `folder`, else the expert's project folder (the manifest's `folder`), else a
+  scratch folder of its own (`<workspace>/tasks/<slug of the title>`). The tasks API already refuses a task inside an expert's home
+  (`schedule_api.expert_home_refusal`). The other five go through the session's permission mode like any tool.
+- **Hearing back.** `tasks.watch` follows each started task (and each follow-up the expert sent) until it
+  settles, polling the listing every 15 s for at most 3 h, and tells the expert: once per distinct stall (a
+  permission card, a question, the usage limit) and once when it ends, with the start of its last reply.
+  `tasks._tell` puts that as one message into the main chat's live session (`agent._live_host` + `agent._send`,
+  the path a page's `fused.tasks.send` takes), marked "[Task update from the app, not typed by the user]". With
+  no live session (the chat is closed and reaped, a learning run holds the home) the note waits in the state
+  (`task_notes`, last 20) and is put at the top of the answer of the expert's next task tool call, `task_start`
+  included (`tasks._news`). Watchers do
+  not survive a restart: the next tool call catches up (`tasks._catch_up`: an ended task is reported then, one
+  still going is watched again).
+- Not there: a tag on the task row saying which expert started it (the Tasks page shows it as any task), seeing
+  or touching tasks it did not start, delete and erase, a wake-up of a closed main chat when a task ends.
+
+## 17. Experts on GitHub Copilot
 
 Added 2026-11-26 (DECISIONS D1511). Two agents can run an expert's own sessions and call the task tools: Claude
 and Copilot (`agent.EXPERT_BACKENDS`). Everything above describes Claude; this section is what Copilot does
@@ -634,7 +672,7 @@ host's request and in `launch.json`):
 
 - *Unattended* (a learning run): any `session/request_permission` is refused at once with no card. The run is
   in Auto, which is `allow_all` on, so few arrive.
-- *Tools that always ask* (`canvas_create`): Copilot has no "ask for this one" rule under `allow_all`. While the
+- *Tools that always ask* (`canvas_create`, and `task_start` of §16): Copilot has no "ask for this one" rule under `allow_all`. While the
   session has such a tool, Auto keeps `allow_all` **off** and the host answers every other request `allow_once`
   itself, with no card; the tool's own request raises the card, and its answer is always once (never "always",
   never the switch to stop asking). The tool is recognised by `<server>-<tool>` or the bare tool name in the

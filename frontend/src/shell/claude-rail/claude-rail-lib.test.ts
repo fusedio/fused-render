@@ -105,7 +105,7 @@ describe("onRail", () => {
       .toEqual({ kind: "whole", word: "Canvas" });
   });
 
-  it("a FOLDER's rail holds what its pane's Recent list holds: the folder, anything under it, its project", () => {
+  it("a FOLDER's rail holds what its pane's Recent list holds: the folder and its project, first level only", () => {
     const FOLDER: RailPlace = { kind: "folder", dir: "/home/me/apps/demo", sessionless: true };
     const onFolder = pulse(task({ key: "a", project: "/home/me/apps/demo", target: "/home/me/apps/demo" }));
     const onFile = pulse(task({ key: "b", project: "/home/me/apps/demo", target: "/home/me/apps/demo/src/app.py" }));
@@ -118,6 +118,23 @@ describe("onRail", () => {
     // `demo2` is not under `demo`: a prefix match on the bare string would say it was.
     expect(onRail(sibling, FOLDER)).toBe(false);
     expect(onRail(archived, FOLDER)).toBe(false);
+    // FIRST LEVEL ONLY (2026-11-25): a project or a canvas below the folder
+    // has its own page; a chat of a project ABOVE, about a file down here,
+    // is that project's.
+    const nested = pulse(task({ key: "f", project: "/home/me/apps/demo/sub", target: "/home/me/apps/demo/sub/x.py" }));
+    const nestedCanvas = pulse(
+      task({
+        key: "g",
+        project: "/home/me/apps/demo/canvas/prod/user/c1",
+        target: "/home/me/apps/demo/canvas/prod/user/c1",
+        canvas: { env: "prod", name: "c1", file: "" },
+      }),
+    );
+    const fromAbove = pulse(task({ key: "h", project: "/home/me/apps", target: "/home/me/apps/demo/main.py" }));
+    expect(onRail(nested, FOLDER)).toBe(false);
+    expect(onRail(nestedCanvas, FOLDER)).toBe(false);
+    expect(onRail(fromAbove, FOLDER)).toBe(false);
+    expect(onRail(onFolder, { ...FOLDER, dir: "/home/me/apps/demo/" })).toBe(true);
     // The card's chip: the file under the folder, else the whole, by the place's word.
     expect(railScope(onFile, FOLDER)).toEqual({ kind: "file", name: "src/app.py", file: "/home/me/apps/demo/src/app.py" });
     expect(railScope(onFolder, FOLDER)).toEqual({ kind: "whole", word: "Folder" });
@@ -462,7 +479,10 @@ describe("the list (the two sections are independent, 2026-11-05)", () => {
 describe("railRows on an open file (the folder's list, the file's first; 2026-11-16)", () => {
   const FOLDER = "/home/me/proj";
   const FILE = `${FOLDER}/a.py`;
-  const onFile = pulse(task({ key: "f", target: FILE, project: "", happened_at: 100 }));
+  // The file's chat names its folder as its project, as the server stamps
+  // every row: the folder's list is first level only (2026-11-25), and a
+  // file chat is on it through its project.
+  const onFile = pulse(task({ key: "f", target: FILE, project: FOLDER, happened_at: 100 }));
   const onFolder = pulse(task({ key: "d", target: FOLDER, project: FOLDER, happened_at: 300 }));
   const onOther = pulse(task({ key: "o", target: `${FOLDER}/sub/b.py`, project: FOLDER, happened_at: 200 }));
   const elsewhere = pulse(task({ key: "x", target: "/home/me/else/c.py", project: "/home/me/else", happened_at: 400 }));
@@ -474,6 +494,15 @@ describe("railRows on an open file (the folder's list, the file's first; 2026-11
       ["d", true],
       ["o", true],
     ]);
+  });
+  it("a chat of a project BELOW the folder is not on the file page's rail either (first level only, 2026-11-25)", () => {
+    // The file page lists its FOLDER's rail, and that list is first level
+    // only: a nested project's chat is on its own page's rail, not here,
+    // not even faded.
+    const nested = pulse(task({ key: "n", target: `${FOLDER}/sub/x.py`, project: `${FOLDER}/sub`, happened_at: 500 }));
+    const seats = railRows([...all, nested], new Map(), { kind: "file", file: FILE, dir: FOLDER });
+    expect(seats.map((s) => s.pulse.key)).toEqual(["f", "d", "o"]);
+    expect(railRows([...all, nested], new Map(), { kind: "folder", dir: FOLDER }).map((s) => s.pulse.key)).not.toContain("n");
   });
   it("is the folder page's own list, re-sorted", () => {
     const folder = railRows(all, new Map(), { kind: "folder", dir: FOLDER }).map((s) => s.pulse.key);
@@ -685,6 +714,23 @@ describe("chipPlace / chipDoor (the where-chip's door)", () => {
     expect(chipPlace(there, PLACE)).toEqual({ kind: "canvas", env: "prod", name: "other", dir: OTHER });
     const folder = pulse(task({ key: "c", canvas: null, project: "/apps/x", target: "/apps/x/main.py" }));
     expect(chipPlace(folder, PLACE)).toEqual({ kind: "folder", dir: "/apps/x", word: "Folder" });
+  });
+
+  it("a favourite from a canvas or project BELOW the rail's folder says its own place, not the way down", () => {
+    // The folder's list is first level only (2026-11-25), so a row from below
+    // is not the rail's: its card reads `demo › Canvas`, `pinlib` — never
+    // `me › canvases/demo`.
+    const HOME: RailPlace = { kind: "folder", dir: "/home/me" };
+    const labels = (t: TaskPulseTask) => {
+      const at = chipPlace(t, HOME);
+      return placeTags(railScope(t, at), at, { pageRoot: placeRoot(HOME), here: false }).map((x) => x.label);
+    };
+    const canvas = pulse(task({ key: "a", project: DIR, target: DIR, canvas: { env: "unstable", name: "demo", file: "" } }));
+    expect(onRail(canvas, HOME)).toBe(false);
+    expect(labels(canvas)).toEqual(["demo", "Canvas"]);
+    const proj = pulse(task({ key: "b", canvas: null, project: "/home/me/app/pinlib", target: "/home/me/app/pinlib" }));
+    expect(onRail(proj, HOME)).toBe(false);
+    expect(labels(proj)).toEqual(["pinlib"]);
   });
 
   it("a node on another canvas (or no canvas page) navigates to that canvas with the node selected", () => {

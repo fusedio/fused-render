@@ -10,13 +10,13 @@ the answer to the run dir, and `_claude_argv` folds it into the CLI's argv:
                 would raise a card, since nobody is there to answer it
     workbench_skills  a main chat with the canvas tools only: hand the session the `workbench` plugin's format
                 skills (canvas.toml, UDFs, JSON-UI widgets), as a canvas task gets them
-    ask         a main chat with the canvas tools only: the tools that raise the approval card in every mode
-                (`canvas_create`, show.py)
+    ask         the tools that raise the approval card in every mode: `canvas_create` (show.py, a main chat with
+                the canvas tools) and `task_start` (tasks.py, a main chat or a breakout)
     read_dirs   the update only: the folders holding the transcripts it is pointed at, for an agent whose
                 reads are fenced to granted folders (Copilot's `--add-dir`; Claude's Auto needs none)
 
 The spec is the same whichever agent runs the session (Claude or Copilot, `agent.EXPERT_BACKENDS`); what each
-makes of it is in docs/experts.md §16.
+makes of it is in docs/experts.md §17.
 
 Apart from `ask`, nothing in it limits the session: the expert runs free under its permission mode (the
 owner's decision). While a
@@ -30,7 +30,7 @@ import secrets
 import threading
 import time
 
-from fused_render.experts import chat, flag, history, paths, services, show, store, update
+from fused_render.experts import chat, flag, history, paths, services, show, store, tasks, update
 from fused_render.experts import home as hm
 
 KINDS = ("main", "breakout", "update")
@@ -65,10 +65,10 @@ def check_token(spec_id: str, token: str) -> bool:
 
 
 # ------------------------------------------------------------------ servers ---
-def session_servers(spec: store.Expert, canvas: bool = False) -> dict:
+def session_servers(spec: store.Expert, canvas: bool = False, task_tools: bool = False) -> dict:
     """`{name: mcp entry}`, one per services server: the bots' stdio pipe (`bots/botmcp.py`) pointed at
     `/api/experts/<id>/<server>/` (routes.py). `canvas` adds the main chat's `expert_canvas` server
-    (show.py)."""
+    (show.py); `task_tools` the `expert_tasks` server of a main chat or breakout (tasks.py)."""
     from fused_render.bots import paths as bpaths
     from fused_render.claude_agent import agent_module
 
@@ -82,7 +82,8 @@ def session_servers(spec: store.Expert, canvas: bool = False) -> dict:
                      "args": [script, bpaths.server_origin_quiet(), spec.id, token,
                               f"api/experts/{spec.id}/{server}", server],
                      "env": {"PYTHONUTF8": "1"}, "timeout": timeout, **agent._ALWAYS_LOAD_KEYS["claude"]}
-            for server in services.SERVERS + ((show.SERVER,) if canvas else ())}
+            for server in services.SERVERS + ((show.SERVER,) if canvas else ())
+            + ((tasks.SERVER,) if task_tools else ())}
 
 
 def minted(key: str, session_id: str) -> None:
@@ -129,8 +130,11 @@ def spec(key: str, file: str) -> dict:
     history.commit_edits(s.home)
     canvas = kind == "main" and show.on()  # the main chat only: a breakout and a learning run show nothing
     skills = canvas and show.skills()
-    return {"kind": kind, "mcp_servers": session_servers(s, canvas),
-            "append": APPEND[kind] + (" " + show.note(skills) if canvas else ""),
+    # A main chat and a breakout start and manage Claude tasks (tasks.py); a learning run does not: nobody is
+    # there to approve a start.
+    ask = (show.ASK if canvas else []) + ([] if run else tasks.ASK)
+    return {"kind": kind, "mcp_servers": session_servers(s, canvas, task_tools=not run),
+            "append": APPEND[kind] + (" " + show.note(skills) if canvas else "") + ("" if run else " " + tasks.NOTE),
             "policy_env": {"FUSED_EXPERT_UNATTENDED": "1"} if run else {},
             **({"read_dirs": _transcript_dirs(s.home)} if run else {}),
-            **({"ask": show.ASK} if canvas else {}), **({"workbench_skills": True} if skills else {})}
+            **({"ask": ask} if ask else {}), **({"workbench_skills": True} if skills else {})}

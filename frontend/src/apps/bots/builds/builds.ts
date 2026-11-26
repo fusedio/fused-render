@@ -89,8 +89,10 @@ const panelShown = onTasksPage;
 // record made EVERY session row a build, and the panel showed the whole task list.
 const sameEntry = (b: BuildRow, t: TaskRow): boolean => !!t.entry_id && b.entryId === t.entry_id;
 // A row tagged with a bot id (`bot`, the server's answer since the bot's create carried it; the server refuses a tag
-// that names no bot) is a build by definition: a bot's only road into the tasks API is `build`. Older rows carry no
-// tag and match the two heuristics, or the bot's own record of them (`botEntryIds`, below).
+// that names no bot) is the bots' to list: a build, or (since 2026-11-25) a Claude task a bot started with `task_start`.
+// Both belong on the bots' Tasks page and in the bot's panel, so the one test serves both; a `task_start` row is
+// adopted into builds.json like any other (name = its title, no dir), which is only this page's list of what to show.
+// Older rows carry no tag and match the two heuristics, or the bot's own record of them (`botEntryIds`, below).
 export const isBuild = (t: TaskRow): boolean =>
   !!t.bot || (!!t.entry_id && botEntryIds.has(t.entry_id)) || builds.some((b) => sameEntry(b, t))
   || marked(t.title) || (t.messages || []).some((m) => marked(m.body));

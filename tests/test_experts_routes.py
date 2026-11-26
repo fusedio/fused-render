@@ -83,7 +83,20 @@ def test_memory_skills_and_notes(client):
     assert req(client, "GET", f"/api/experts/{s.id}/memory") == (200, {"text": "We use parquet.\n"})
     _, out = req(client, "GET", f"/api/experts/{s.id}/skills")
     assert out["skills"] == [{"name": "toml", "description": "Writing canvas.toml",
-                              "text": hm.skill_text("toml", "Writing canvas.toml", "Body.")}]
+                              "text": hm.skill_text("toml", "Writing canvas.toml", "Body."), "body": "Body."}]
+    # Settings › Skills: an edit keeps other frontmatter keys; a new one needs a free slug; delete removes the folder.
+    hm.write_text(hm.skill_path(s.home, "toml"), "---\nname: toml\ndescription: old\nallowed-tools: Read\n---\n\nBody.\n")
+    url = f"/api/experts/{s.id}/skills"
+    code, out = req(client, "PUT", f"{url}/toml", {"description": 'When "toml"', "body": "New."})
+    assert code == 200 and out["skills"][0]["text"] == "---\nname: toml\ndescription: \"When 'toml'\"\nallowed-tools: Read\n---\n\nNew.\n"
+    assert req(client, "PUT", f"{url}/toml", {"description": "d", "body": "", "new": True})[0] == 400
+    assert req(client, "PUT", f"{url}/Bad_Name", {"description": "d", "body": "", "new": True})[0] == 400
+    assert req(client, "PUT", f"{url}/gone", {"description": "d", "body": ""})[0] == 400
+    code, out = req(client, "PUT", f"{url}/layout", {"description": "Laying out", "body": "Steps.", "new": True})
+    assert code == 200 and [k["name"] for k in out["skills"]] == ["layout", "toml"] and out["skills"][0]["body"] == "Steps."
+    assert req(client, "DELETE", f"{url}/%2e%2e")[0] in (400, 404, 405)
+    code, out = req(client, "DELETE", f"{url}/toml")
+    assert code == 200 and [k["name"] for k in out["skills"]] == ["layout"]
     name = notes.add(s, "task1", 'Note from task "Sync"', "Use parquet.")
     _, out = req(client, "GET", f"/api/experts/{s.id}/notes")
     assert [(n["name"], n["kind"], n["title"]) for n in out["notes"]] == [(name, "note", "Sync")]

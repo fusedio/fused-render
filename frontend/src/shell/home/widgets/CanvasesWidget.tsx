@@ -28,7 +28,7 @@ export function CanvasesWidget({ widget }: { widget: Widget }) {
   const on = useCanvasesFeature();
   return (
     <div className="hw-body">
-      {on ? <CanvasesBody widget={widget} /> : <EmptyLine>Turn on Canvases in Preferences to see your canvases here.</EmptyLine>}
+      {on ? <CanvasesBody widget={widget} /> : <EmptyLine>Turn on Fused Workbench in Preferences to see your canvases here.</EmptyLine>}
     </div>
   );
 }

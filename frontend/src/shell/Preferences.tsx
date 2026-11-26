@@ -69,10 +69,17 @@ import { CONTROLS } from "./settings/controls";
 import { rowId, SettingsViewContext, type SettingsView } from "./settings/SettingRow";
 import { IndexStateProvider } from "./settings/indexing";
 import Connections from "./Connections";
+import { CanvasGlyph } from "@apps/canvases/glyph";
 
 /** The Claude Code group wears the Claude mark, not a terminal prompt: a `>_` reads as "developer only" to the people this page is for. The mark fills its 512 box edge to edge while lucide's 24-unit icons carry ~2px of padding, so it is drawn at 0.85 to look optically equal; the button's `[&_svg:not([class*='size-'])]:size-4` CSS sets the 16px box (it beats the width/height attributes). */
 function ClaudeNavIcon(props: SVGProps<SVGSVGElement>) {
   return <ClaudeMark {...props} className="scale-[0.85]" />;
+}
+
+/** Fused Workbench wears the Canvases glyph (connected nodes) — the switch on
+ *  that page is what puts Canvases in the sidebar. */
+function WorkbenchNavIcon() {
+  return <CanvasGlyph />;
 }
 
 const GROUP_ICONS: Record<GroupId, ComponentType<SVGProps<SVGSVGElement>>> = {
@@ -86,6 +93,7 @@ const GROUP_ICONS: Record<GroupId, ComponentType<SVGProps<SVGSVGElement>>> = {
   lan: Wifi,
   connections: Cable,
   integrations: Plug,
+  workbench: WorkbenchNavIcon,
   advanced: Wrench,
 };
 
@@ -154,6 +162,12 @@ function PreferencesPage({ claudeConfig }: { claudeConfig: boolean | null }) {
   // (the hotkey recorder suspends the global shortcuts for as long as it runs)
   // must not be torn down by an unrelated re-render of this page.
   const setPrefs = useCallback((p: Prefs) => {
+    // An answer older than the one on show (a slow PUT landing after a newer
+    // one — an environment switch overtaken by Fused Workbench off) is
+    // dropped, or it would put the older switch back (CodeRabbit, PR #2476).
+    if (typeof p.revision === "number" && typeof lastPrefs?.revision === "number" && p.revision < lastPrefs.revision) {
+      return;
+    }
     writeGen += 1;
     lastPrefs = p;
     setPrefsState(p);

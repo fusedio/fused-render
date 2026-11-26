@@ -262,7 +262,7 @@ import {
   tasksPulseLoaded,
 } from "@shell/tasksPulse";
 import { BOTS_ICON, GIT_ICON, TASKS_ICON } from "@shell/nav-icons";
-import { GIT_DOT_WORDS, gitBranch, gitDoorDots, gitDoorTitle, gitSyncWords } from "@shell/git-dock-lib";
+import { GIT_DOT_WORDS, gitBranch, gitDoorDot, gitDoorTitle, gitSyncWords } from "@shell/git-dock-lib";
 import { pulseTitle } from "@shell/tasks-lib";
 import { isBotsPath } from "@apps/bots/routes";
 import {
@@ -3769,12 +3769,12 @@ export function ClaudeRail({
       if (e.detail === 0) cardFocusSoon(store.id, () => store.focusCard());
     }
   };
-  const gitDots = gitRepo ? gitDoorDots({ checking: railGit.checking, checked: railGit.checked, repo: gitRepo }) : null;
+  const gitDot = gitRepo ? gitDoorDot({ checking: railGit.checking, checked: railGit.checked, repo: gitRepo }) : null;
   const gitLabel = gitRepo
     ? [
         `Git, on ${gitBranch(gitRepo)}`,
         ...gitSyncWords(gitRepo),
-        ...(gitDots?.top && gitDots.top !== "push" ? [GIT_DOT_WORDS[gitDots.top]] : []),
+        ...(gitDot && gitDot !== "push" ? [GIT_DOT_WORDS[gitDot]] : []),
       ].join(", ")
     : "Git";
 
@@ -4864,7 +4864,7 @@ export function ClaudeRail({
           // THE GIT DOOR (owner, 2026-11-10): under the rings, past a hairline
           // always drawn while it stands (it parts Git from the nav doors when
           // there are no rings), one seat — the Git card's door (GitPeek),
-          // wearing the push / pull dots (git-dock-lib `gitDoorDots`).
+          // wearing one status dot (git-dock-lib `gitDoorDot`).
           // Under the mode doors it is in their group: their hairline is the
           // group's, and it draws none of its own.
           <>
@@ -4900,8 +4900,7 @@ export function ClaudeRail({
                 {seatBody(
                   <>
                     {GIT_ICON}
-                    {gitDots?.top && <span className={`sidebar-rail-dot is-${gitDots.top}`} aria-hidden="true" />}
-                    {gitDots?.second && <span className={`sidebar-rail-dot is-${gitDots.second} is-second`} aria-hidden="true" />}
+                    {gitDot && <span className={`sidebar-rail-dot is-${gitDot}`} aria-hidden="true" />}
                     {pinMark(gitUp && gitCard.held)}
                   </>,
                   `Git · ${gitBranch(gitRepo)}`,
