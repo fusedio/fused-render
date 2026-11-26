@@ -55,18 +55,20 @@ def test_only_the_main_chat_gets_the_canvas_server(base, monkeypatch):
     from fused_render.shell import prefs
     s = make_expert()
     main = launch.spec(f"{s.id}:main", s.home)
-    assert set(main["mcp_servers"]) == {"expert_services", show.SERVER}
+    assert set(main["mcp_servers"]) == {"expert_services", "expert_tasks", show.SERVER}
     assert main["mcp_servers"][show.SERVER]["args"][4:] == [f"api/experts/{s.id}/{show.SERVER}", show.SERVER]
     assert "mcp__expert_canvas__show" in main["append"] and show.SKILL in main["append"]
-    assert main["ask"] == ["mcp__expert_canvas__canvas_create"]  # each new canvas is the user's to approve
+    assert main["ask"] == ["mcp__expert_canvas__canvas_create", "mcp__expert_tasks__task_start"]  # each one is the user's to approve
+    task_ask = ["mcp__expert_tasks__task_start"]  # the task tools (tasks.py): a main chat and a breakout, never a learning run
     for kind in ("breakout", "update"):
         sp = launch.spec(f"{s.id}:{kind}", s.home)
-        assert set(sp["mcp_servers"]) == {"expert_services"} and "canvas" not in sp["append"]
-        assert "ask" not in sp
+        assert set(sp["mcp_servers"]) - {"expert_tasks"} == {"expert_services"} and "canvas" not in sp["append"]
+        assert sp.get("ask", task_ask) == task_ask
     monkeypatch.setattr(prefs, "canvases_enabled", lambda: False)
     off = launch.spec(f"{s.id}:main", s.home)
-    assert set(off["mcp_servers"]) == {"expert_services"} and off["append"] == launch.APPEND["main"]
-    assert "ask" not in off
+    assert set(off["mcp_servers"]) == {"expert_services", "expert_tasks"}
+    assert off["append"].startswith(launch.APPEND["main"]) and "canvas" not in off["append"]
+    assert off["ask"] == task_ask
     assert _text(show.call(s, "show", {"path": "/x"})).startswith("error: canvases are not available")
 
 

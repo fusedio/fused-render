@@ -60,7 +60,7 @@ import re
 import time
 from urllib.parse import urlparse
 
-from fused_render.bots import apptools
+from fused_render.bots import apptools, tasktools
 from fused_render.bots.channels import base as chan
 
 # Element refs the model may use look like sb12 (browser.py stamps them).
@@ -381,7 +381,17 @@ _DQUOTE_CHARS = _PLAIN_CHARS | frozenset("'<>|&;(){}*?[]#^")
 # A bot scheduling its own future runs (`routine_add`, docs §12) is ALWAYS_ASK too: a standing task is the
 # user's call every time, never approved forever, under "Never ask" too.
 ROUTINE_TOOLS = ("routine_add",)
-ALWAYS_ASK = frozenset(MANAGE_TOOLS + ROUTINE_TOOLS + ("marketplace_install",))
+# Claude tasks (docs §12, bots/tasktools.py): every bot starts tasks and manages the ones it started; Super Bot
+# manages every task. Starting one is ALWAYS_ASK (a full Claude Code session in a folder is the user's call every
+# time); the reads raise no card; a send / stop / archive follows the bot's Approvals setting on the bot's own
+# tasks and always asks on anyone else's (must_ask).
+TASK_TOOLS = tasktools.TOOLS
+TASK_READ_TOOLS = tasktools.READ_TOOLS
+TASK_WRITE_TOOLS = tasktools.WRITE_TOOLS
+TASK_FOLDER_NOTE = "Without `folder` it gets a new folder of its own under the user's Fused workspace (tasks/<title>)."
+TOOL_SPECS.update(tasktools.specs(False, TASK_FOLDER_NOTE))
+_SUPER_TASK_SPECS = tasktools.specs(True, TASK_FOLDER_NOTE)
+ALWAYS_ASK = frozenset(MANAGE_TOOLS + ROUTINE_TOOLS + ("marketplace_install", tasktools.START))
 
 ALL_TOOLS = tuple(TOOL_SPECS)
 
@@ -628,6 +638,10 @@ def must_ask(bot, act: str, d: dict) -> bool:
     access to a signed-in service only from the user's yes, whatever its approval setting says."""
     if act in ALWAYS_ASK or act == "terminal_run":
         return True
+    if act in TASK_WRITE_TOOLS:
+        # Someone else's task (Super Bot's reach): the user's yes every time, under "Never ask" too.
+        row, _, mine = _task_target(bot, d)
+        return row is not None and not mine
     if act == "tool":
         app, name, _ = apptools.tool_ref(d or {})
         rec = apptools.find(apptools.registry(), app, name)
@@ -742,7 +756,8 @@ def roster(bot) -> list[dict]:
     if not folders:
         names.remove("ls")
         names.remove("find")
-    out = [{"name": n, "description": TOOL_SPECS[n]["description"], "inputSchema": TOOL_SPECS[n]["inputSchema"]}
+    specs = {**TOOL_SPECS, **_SUPER_TASK_SPECS} if is_super(bot) else TOOL_SPECS  # Super Bot's task tools say "every task"
+    out = [{"name": n, "description": specs[n]["description"], "inputSchema": specs[n]["inputSchema"]}
            for n in names]
     if is_super(bot):
         out.append({"name": PERMISSION_TOOL, **PERMISSION_SPEC})
@@ -935,7 +950,7 @@ def text_unchanged(change: str) -> bool:
 UI_CAP = 160        # the action chip's one line
 DETAIL_CAP = 1500   # the raw result behind the chip's disclosure
 # Tools whose raw result is the point (a text, a value, a page): it always rides as detail.
-_DETAIL_ALWAYS = frozenset({"read", "readfile", "ls", "find", "tool", "py", "observe", "texts"})
+_DETAIL_ALWAYS = frozenset({"read", "readfile", "ls", "find", "tool", "py", "observe", "texts", "task_list", "task_read"})
 _NOW_DONE = re.compile(r"\s*Now `done`.*\Z", re.S)
 
 
@@ -1000,6 +1015,15 @@ def ui_summary(name: str, result: str, change: str = "", obs: dict | None = None
         return f"{m.group(1)} hits" if m else _clip(_first_line(raw))
     if name == "screenshot":
         return "captured"
+    if name == tasktools.START and raw.startswith("ok"):
+        # The result's tail ("Tell the user…") is written to the model; the chip names the task.
+        m = re.search(r'"([^"]+)"', label or "")
+        return _clip("task started" + (f" · {m.group(1)}" if m else ""))
+    if name == tasktools.LIST and not raw.startswith("error"):
+        m = re.match(r"(\d+) tasks?", raw)
+        return f"{m.group(1)} task{'s' if m.group(1) != '1' else ''}" if m else "no tasks"
+    if name == tasktools.READ and not raw.startswith("error"):
+        return _clip(_first_line(raw).split(" Its newest turns", 1)[0])
     if name == "routine_add" and raw.startswith("ok"):
         # The result's tail ("Tell the user it is set…") is written to the model; the chip gets the schedule.
         return _clip("routine saved · " + (label[len("add routine "):] if label.startswith("add routine ") else label or ""))
@@ -1072,7 +1096,7 @@ def ui_detail(name: str, result: str, summary: str, change: str = "") -> str | N
     raw = (result or "").strip()
     if name == "show":
         return None
-    if name in SUPER_TOOLS + ROUTINE_TOOLS and name not in READ_TOOLS and not raw.startswith("error"):
+    if name in SUPER_TOOLS + ROUTINE_TOOLS + (tasktools.START,) and name not in READ_TOOLS and not raw.startswith("error"):
         return None  # the chip says it all; the rest is written to the model (a bot_chat read stays expandable)
     if name == "build":
         raw = _NOW_DONE.sub("", raw).strip()
@@ -1210,6 +1234,8 @@ def describe(bot, act: str, d: dict, obs: dict) -> str:
         return _manage_preview(bot, act, d)
     if act == "routine_add":
         return _routine_preview(d)
+    if act in TASK_TOOLS:
+        return _task_preview(bot, act, d)
     return f"{act} {what}".strip()
 
 
@@ -1296,9 +1322,148 @@ def _manage_preview(bot, act: str, d: dict) -> str:
     return f"change bot \"{who}\": " + "; ".join(parts)
 
 
+# ------------------------------------------------------------ Claude tasks ---
+TASK_ROWS_TTL_S = 3  # one tool call reads the listing for its card, its key and its run: fetch it once
+
+
+def _task_rows(bot, fresh: bool = False) -> list:
+    """The task rows this bot may see (its own; every row for Super Bot), cached for a few seconds on the bot."""
+    hit = getattr(bot, "_task_rows_cache", None)
+    if not fresh and hit and time.time() - hit[0] < TASK_ROWS_TTL_S:
+        return hit[1]
+    got = tasktools.rows("" if is_super(bot) else bot.id)
+    bot._task_rows_cache = (time.time(), got)
+    return got
+
+
+def _task_own(bot):
+    """`own(row)`: this bot started that task: the row's `bot` tag (the server's answer), or the bot's own record
+    of it (a build or a task from before a restart re-read the tag)."""
+    ids = _call0(bot.task_entry_ids, set()) or set()
+    return lambda row: row.get("bot") == bot.id or (bool(row.get("entry_id")) and row["entry_id"] in ids)
+
+
+def _task_ref(d: dict) -> str:
+    """The task a call names, from either engine (the steps engine's JSON carries it in `value` or `name`)."""
+    d = d or {}
+    return str(d.get("task") or d.get("value") or d.get("name") or "").strip()
+
+
+def _task_target(bot, d: dict):
+    """`(row, error, mine)` for the task a send / stop / archive names. Never raises."""
+    try:
+        row, err = tasktools.find(_task_rows(bot), _task_ref(d), _task_own(bot), is_super(bot))
+    except RuntimeError as e:
+        return None, f"error: {e}", False
+    return row, err, bool(row is not None and _task_own(bot)(row))
+
+
+def _task_mode(bot) -> str:
+    """How a task this bot starts runs: the bot's Builds setting, as a build's does (asks before risky steps
+    unless the user gave it full access; a phone-started Super Bot task always asks)."""
+    from fused_render.bots import bot as botmod
+    return botmod.BUILD_MODES.get(effective_build_access(bot), "default")
+
+
+def _task_start_fields(bot, d: dict):
+    d = d or {}
+    # Either engine: the steps engine's JSON carries the title in `name`, the prompt in `text`, the folder in `file`.
+    return tasktools.start_check(d)
+
+
+def _task_preview(bot, act: str, d: dict) -> str:
+    """The card / chip line of a task tool. On an error the preview carries it (no card: risk() returns "")."""
+    if act == tasktools.START:
+        fields, err = _task_start_fields(bot, d)
+        return f"start a task ({err})" if err else tasktools.start_preview(fields, _task_mode(bot))
+    if act == tasktools.LIST:
+        q = " ".join(str((d or {}).get("query") or "").split())
+        return "list tasks" + (f" matching \"{q[:60]}\"" if q else "")
+    row = _task_target(bot, d)[0]
+    if act == tasktools.READ:
+        return "read the task " + (tasktools._name(row) if row else f"\"{_task_ref(d)[:60]}\"")
+    return tasktools.write_words(act, row, {**(d or {}), "task": _task_ref(d)})
+
+
+_TASK_RISK = {
+    tasktools.SEND: "It sends this message into that task's conversation; Claude acts on it there.",
+    tasktools.STOP: "It stops Claude's work in that task; the conversation stays.",
+    tasktools.ARCHIVE: "It files that task away and calls off anything it still has queued; you can unarchive it under Tasks.",
+}
+
+
+def _task_risk(bot, act: str, d: dict) -> str:
+    """Why a task tool asks, or "" (the reads never ask; a call that will fail gets no card, nor does a scheduled
+    run's task_start or its write to someone else's task: nobody is at the card, execute() refuses those)."""
+    if act == tasktools.START:
+        _, err = _task_start_fields(bot, d)
+        if err or routine_run(bot):
+            return ""
+        return ("It starts a separate Claude Code session in that folder with the prompt above. That session can read "
+                "and change files there on its own; you follow it, and answer what it asks, under Tasks.")
+    if act not in TASK_WRITE_TOOLS:
+        return ""
+    row, err, mine = _task_target(bot, d)
+    # What the gate judged, for _task_exec: it runs the write only on this same task. A target the gate could not
+    # resolve (the listing failed, or the task was not there yet) records nothing, so a later read that does find
+    # it cannot run a write nobody was asked about.
+    bot._task_gated = None if err else (act, tasktools.task_id(row), mine)
+    if err or (not mine and routine_run(bot)):
+        return ""
+    return ("" if mine else "This bot did not start that task. ") + _TASK_RISK[act]
+
+
+def _task_exec(bot, act: str, d: dict) -> tuple[str, str]:
+    """Run one task tool (docs §12). Never raises."""
+    label = _task_preview(bot, act, d)
+    unattended = ("error: a scheduled run cannot do this (its approval card would wait on nobody); say so in your "
+                  "result, and the user can ask for it in chat")
+    try:
+        if act == tasktools.START:
+            fields, err = _task_start_fields(bot, d)
+            if err:
+                return "start a task", err
+            if routine_run(bot):
+                return "start a task", unattended
+            td = bot.task_start(fields, _task_mode(bot))
+            bot._task_rows_cache = None
+            return label, (f"ok, task started with id {td['entry_id'] or td['key']} in {home_rel(fields['folder'])}. It works "
+                           "on its own from here; this chat is told when it finishes or needs the user. Tell the user "
+                           "it is started and that they can follow it under Tasks, in one line; do not wait for it.")
+        if act == tasktools.LIST:
+            from fused_render.bots import bot as botmod
+            return label, tasktools.list_text(_task_rows(bot, fresh=True), _task_own(bot), is_super(bot),
+                                              query=d.get("query") or "", archived=d.get("archived") is True,
+                                              who=botmod.task_owner_words)
+        _task_rows(bot, fresh=True)
+        row, err, mine = _task_target(bot, d)
+        if err:
+            return label, err
+        if act == tasktools.READ:
+            return label, tasktools.read_text(row, d.get("last"))
+        if not mine and routine_run(bot):
+            return label, unattended
+        gated, bot._task_gated = getattr(bot, "_task_gated", None), None
+        if gated != (act, tasktools.task_id(row), mine):
+            # The approval check (risk / must_ask) did not see this task as it is now: never run on a guess.
+            return label, "error: the task list changed while this was being checked; nothing was done. Call it again."
+        if act == tasktools.SEND:
+            out = tasktools.send(row, d.get("text"))
+            if out.startswith("ok") and mine:
+                bot.task_rewatch(row)  # the chat hears when this follow-up's turn ends too
+        else:
+            out = tasktools.stop(row) if act == tasktools.STOP else tasktools.archive(row)
+        bot._task_rows_cache = None
+        return label, out
+    except RuntimeError as e:
+        return label, f"error: {e}"
+
+
 def risk(bot, act: str, d: dict, obs: dict) -> str:
     """Why this action needs approval, or '' when it does not (OpenBot `_risk`)."""
     d = d or {}
+    if act in TASK_TOOLS:
+        return _task_risk(bot, act, d)
     if act == "upload":
         return f"It sends the local file \"{d.get('file') or d.get('text') or ''}\" to this site."
     if act in MANAGE_TOOLS:
@@ -1421,6 +1586,10 @@ def call_key(bot, act: str, d: dict):
         ref = [{k: v for k, v in (fields or args).items() if k != "anchor" and v not in (None, "")}]
     elif act == "marketplace_install":
         ref = [_market_target(d)[0]]
+    elif act == tasktools.START:
+        # The validated task, not the raw call (see routine_add): one start per instruction, never a twin session.
+        fields, _ = _task_start_fields(bot, d)
+        ref = [fields or {k: d[k] for k in sorted(d) if k != "thought"}]
     elif act == "py":
         app_dir, file, args = bot.py_ref(d)
         if not app_dir or not file:
@@ -1888,6 +2057,8 @@ def execute(bot, act: str, d: dict, obs: dict) -> tuple[str, str]:
             return botmod.manage_settings(bot, d.get("bot") or "", {k: v for k, v in d.items() if k != "bot"})
         if act == "routine_add":
             return _routine_add(bot, d)
+        if act in TASK_TOOLS:
+            return _task_exec(bot, act, d)
         if act == "ls":
             return bot.list_dir(d.get("path") or d.get("file") or "")
         if act == "find":

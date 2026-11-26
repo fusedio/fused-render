@@ -13,7 +13,7 @@ from fastapi import APIRouter, Body, Header, Query
 from fastapi.responses import JSONResponse
 
 from fused_render.server.common import _error, _require_fused
-from fused_render.experts import chat, history, launch, notes, services, show, store, update
+from fused_render.experts import chat, history, launch, notes, services, show, store, tasks, update
 from fused_render.experts import home as hm
 
 router = APIRouter()
@@ -241,7 +241,7 @@ def _session(spec_id: str, token: str, server: str):
     s = _spec(spec_id)
     if not launch.check_token(spec_id, token):
         return s, _error("bad or expired session token", 403)
-    if server not in services.SERVERS + (show.SERVER,):
+    if server not in services.SERVERS + (show.SERVER, tasks.SERVER):
         raise ValueError("unknown server")
     return s, None
 
@@ -249,8 +249,12 @@ def _session(spec_id: str, token: str, server: str):
 @router.get(P + "/{spec_id}/{server}/tools")
 @_handled
 def experts_session_tools(spec_id: str, server: str, token: str = Query("")):
-    _, refused = _session(spec_id, token, server)
-    return refused or {"tools": show.mcp_tools() if server == show.SERVER else services.mcp_tools(server)}
+    s, refused = _session(spec_id, token, server)
+    if refused:
+        return refused
+    if server == tasks.SERVER:
+        return {"tools": tasks.mcp_tools(s)}
+    return {"tools": show.mcp_tools() if server == show.SERVER else services.mcp_tools(server)}
 
 
 @router.post(P + "/{spec_id}/{server}/tool")
@@ -264,4 +268,6 @@ def experts_session_tool(spec_id: str, server: str, body: dict = Body(...),
     if refused:
         return refused
     name = str(body.get("name") or "")
+    if server == tasks.SERVER:
+        return tasks.call(s, name, args)
     return show.call(s, name, args) if server == show.SERVER else services.call(s, server, name, args)

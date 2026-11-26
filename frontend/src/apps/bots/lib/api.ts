@@ -33,7 +33,9 @@ export interface Handoff {
   notes?: string[];
 }
 /** The `build` stamp on a build watcher's "stuck" notice: the Claude task (its key opens it under Builds) and what it waits on. */
-export interface BuildRef { name: string; dir: string; key: string; entry_id: string; reason: "permission" | "question" | "failed" | "usage_limit" | string; tool?: string; summary?: string }
+export interface BuildRef { name: string; dir: string; key: string; entry_id: string; reason: "permission" | "question" | "failed" | "usage_limit" | string; tool?: string; summary?: string;
+  /** "task": a Claude task the bot started with `task_start`, not an app build (the card reads Task, not Build). */
+  kind?: "task" }
 /** The `handoff` stamp on Super Bot's hand-off lines ("Asked …", "… needs you at the laptop", the result). */
 export interface HandoffRef { id: string; target: string; target_name: string; task?: string; state: HandoffState; task_dir?: string }
 

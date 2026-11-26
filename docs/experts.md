@@ -605,3 +605,36 @@ switch is read and before seeding) moves a machine across once:
 The stamp `<home>/experts_migration.json` is written even when there was nothing to move, so the delete can never
 run later against experts in use; the moved root also carries `.state/migrated-from-specialists`, which stops a
 run under another app home on the same workspace from deleting it. A run that raised is not stamped and is tried again on the next start.
+
+## 16. Starting and managing tasks
+
+An expert starts Claude tasks and manages the ones it started (owner, 2026-11-25; the bots' side is
+docs/bots.md §12, and the tool definitions, the listing and the calls are the shared `bots/tasktools.py`).
+
+- **The server.** A main chat and a breakout get a third session MCP server, `expert_tasks` (`experts/tasks.py`,
+  mounted by `launch.session_servers(task_tools=True)`, served through the same session door as §8), with
+  `task_start`, `task_list`, `task_read`, `task_send`, `task_stop` and `task_archive`. A learning run does not
+  get it: nobody is there to approve a start. `launch.spec`'s `append` gains one sentence saying the tools exist
+  (`tasks.NOTE`).
+- **Reach.** Only the tasks this expert started: `.expert/state.json` `tasks`
+  (`[{entry_id, key, title, dir, at, session?, done_at?}]`, last 40), matched to the listing by entry id or by
+  the session the task minted (a retry of a failed task gets a fresh entry in the same conversation). Any other task
+  reads as not there. An expert's own sessions are not tasks (§1) and never show up here.
+- **`task_start`** asks the user every time, in every permission mode: it is in `launch.spec`'s `ask`, and
+  `permission_server.EXPERT_TASK_START` keeps the chat's "Always approve" from answering it (as for
+  `canvas_create`). The new task runs in mode `default` (it asks before risky steps) whatever the expert's own
+  chat runs in. It works in `folder`, else the expert's project folder (the manifest's `folder`), else a
+  scratch folder of its own (`<workspace>/tasks/<slug of the title>`). The tasks API already refuses a task inside an expert's home
+  (`schedule_api.expert_home_refusal`). The other five go through the session's permission mode like any tool.
+- **Hearing back.** `tasks.watch` follows each started task (and each follow-up the expert sent) until it
+  settles, polling the listing every 15 s for at most 3 h, and tells the expert: once per distinct stall (a
+  permission card, a question, the usage limit) and once when it ends, with the start of its last reply.
+  `tasks._tell` puts that as one message into the main chat's live session (`agent._live_host` + `agent._send`,
+  the path a page's `fused.tasks.send` takes), marked "[Task update from the app, not typed by the user]". With
+  no live session (the chat is closed and reaped, a learning run holds the home) the note waits in the state
+  (`task_notes`, last 20) and is put at the top of the answer of the expert's next task tool call, `task_start`
+  included (`tasks._news`). Watchers do
+  not survive a restart: the next tool call catches up (`tasks._catch_up`: an ended task is reported then, one
+  still going is watched again).
+- Not there: a tag on the task row saying which expert started it (the Tasks page shows it as any task), seeing
+  or touching tasks it did not start, delete and erase, a wake-up of a closed main chat when a task ends.
