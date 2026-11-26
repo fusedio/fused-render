@@ -99,13 +99,19 @@ function trimSlash(p: string): string {
   return p.replace(/\/+$/, "");
 }
 
-/** The folder's own rule (ClaudeChat `here`, the pane's Recent list): the
- *  row's target is the folder, or lies under it, or its project is the
- *  folder. */
+/** The folder's own rule, the pane's Recent list's exactly (apps/claude
+ *  `list-rows.taskInPane`): the row's target is the folder, or its project
+ *  is the folder — every chat of THIS project, whichever file it is about.
+ *
+ *  FIRST LEVEL ONLY (Akshil, 2026-11-25: "the same tasks we have in the
+ *  sidebar we show in the rail, so first level only"). The rail also took
+ *  every row whose target lay anywhere UNDER the folder, so a rail on
+ *  `~/Fused` held the chats of each canvas and app below it, which the pane
+ *  beside it never listed. A project or canvas below has its own page, and
+ *  its chats are on that page's rail. */
 function inFolder(t: Pick<TaskPulseTask, "target" | "project">, dir: string): boolean {
   const d = trimSlash(dir);
-  const target = t.target || "";
-  return target === d || target.startsWith(d + "/") || t.project === d;
+  return trimSlash(t.target || "") === d || trimSlash(t.project || "") === d;
 }
 
 /** Is this row one of the rail's: a row on THIS canvas — on the selected
