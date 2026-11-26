@@ -166,6 +166,35 @@ def experts_skills(spec_id: str):
     return {"skills": hm.skills(_spec(spec_id).home)}
 
 
+def _skill_write(spec_id: str, name: str, fn) -> dict:
+    """One Settings edit of a skill, committed by itself (only that skill's folder, so an open session's own edits
+    stay for its turn's commit). Refused during a learning run: a failed run puts skills back to the last commit."""
+    home = _spec(spec_id).home
+    if update.learning(home):
+        raise update.Busy("The expert is learning; try again when it has finished.")
+    name = fn(home)
+    history.commit(home, f"You edited the skill {name}", (os.path.join(".claude", "skills", name),))
+    return {"skills": hm.skills(home)}
+
+
+@router.put(P + "/{spec_id}/skills/{name}")
+@_handled
+def experts_skill_save(spec_id: str, name: str, body: dict = Body(...), x_fused: str | None = Header(default=None)):
+    """`{description, body, new?}`: write a skill from the Settings form; `new` refuses a taken or bad name."""
+    if guard := _require_fused(x_fused):
+        return guard
+    return _skill_write(spec_id, name, lambda home: hm.skill_save(
+        home, name, str(body.get("description") or ""), str(body.get("body") or ""), bool(body.get("new"))))
+
+
+@router.delete(P + "/{spec_id}/skills/{name}")
+@_handled
+def experts_skill_delete(spec_id: str, name: str, x_fused: str | None = Header(default=None)):
+    if guard := _require_fused(x_fused):
+        return guard
+    return _skill_write(spec_id, name, lambda home: hm.skill_delete(home, name) or name.strip())
+
+
 @router.get(P + "/{spec_id}/notes")
 @_handled
 def experts_notes(spec_id: str):

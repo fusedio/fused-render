@@ -1,6 +1,8 @@
 // An expert's one form (docs/experts.md), for "+ New bot" › Expert and for its Settings…: the face,
 // the name, what it knows, and an optional folder it helps in by itself. The New bot form's shell and
 // layout (CreateBot.tsx). Save closes only when the server took it; a refusal (a name taken) shows in the banner.
+// An existing expert's Settings also has the bots' section rail (BotSettings.tsx): General (the form) and Skills
+// (ExpertSkillsSection.tsx, whose edits save at once, outside Save).
 import { useMemo, useRef, useState } from "react";
 import { cn } from "@platform/lib/utils";
 import type { Expert } from "@platform/lib/experts";
@@ -13,6 +15,8 @@ import { Face } from "../components/Face";
 import { expertApi, type Face as FaceT } from "../lib/api";
 import { faceOf } from "../lib/face";
 import { actExpert, select } from "../state/store";
+import { askConfirm } from "./ask";
+import { ExpertSkillsSection } from "./ExpertSkillsSection";
 import { FacePopover } from "./FacePopover";
 import { DIALOG_CLASS, DIALOG_SIZE, FOOTER_CLASS, HEADER_CLASS } from "./shell";
 
@@ -41,6 +45,12 @@ export function ExpertDialog({ s, onClose, onBack }: ExpertDialogProps) {
   };
   // The avatar popover's outside press must not also close the dialog (CreateBot.tsx `busy`).
   const busy = useRef(false);
+  const [tab, setTab] = useState<"general" | "skills">("general");
+  /** askConfirm with the dialog held open while it is up (the Skills section's delete). */
+  const confirm = async (title: string, text: string) => {
+    busy.current = true;
+    try { return await askConfirm(title, text); } finally { busy.current = false; }
+  };
   const holdFor = (open: boolean) => { if (open) busy.current = true; else window.setTimeout(() => { busy.current = false; }, 0); };
 
   return (
@@ -50,8 +60,24 @@ export function ExpertDialog({ s, onClose, onBack }: ExpertDialogProps) {
           <DialogTitle>{s ? `${s.name} settings` : "New expert"}</DialogTitle>
           <DialogDescription>An expert knows one subject, remembers what you teach it in its chat, and helps your tasks with it.</DialogDescription>
         </DialogHeader>
-        <div className="flex min-h-0 flex-1 gap-8 px-6 pb-5">
-          <aside className="flex w-64 shrink-0 flex-col items-center gap-5 self-start">
+        <div className={cn("flex min-h-0 flex-1 px-6 pb-5", s ? "gap-6" : "gap-8")}>
+          {s ? (
+            <nav className="-ml-2.5 flex w-36 shrink-0 flex-col gap-0.5 self-start" aria-label="Settings sections">
+              {([["general", "General"], ["skills", "Skills"]] as const).map(([t, l]) => (
+                <button key={t} type="button" aria-current={tab === t ? "page" : undefined} onClick={() => setTab(t)}
+                  className={cn("flex h-8 w-full cursor-pointer appearance-none items-center rounded-md border-0 bg-transparent px-2.5 text-sm outline-none transition-colors focus-visible:ring-3 focus-visible:ring-ring/50",
+                    tab === t ? "bg-foreground/[0.08] font-medium text-foreground" : "text-muted-foreground hover:bg-foreground/[0.04] hover:text-foreground")}>
+                  {l}
+                </button>
+              ))}
+            </nav>
+          ) : null}
+          {s && tab === "skills" ? (
+            <div className="min-h-0 min-w-0 flex-1 overflow-x-hidden overflow-y-auto" data-sec="skills">
+              <ExpertSkillsSection s={s} confirm={confirm} />
+            </div>
+          ) : <>
+          <aside className={cn("flex shrink-0 flex-col items-center gap-5 self-start", s ? "w-40" : "w-64")}>
             <FacePopover subject={subject} onPick={setFace} onOpenChange={holdFor} className="w-fit flex-col gap-2" title="Edit avatar">
               <span className="size-28 [&>svg]:block [&>svg]:size-full"><Face b={subject} /></span>
               <span className="text-xs text-muted-foreground group-hover:text-foreground">Edit avatar</span>
@@ -73,6 +99,7 @@ export function ExpertDialog({ s, onClose, onBack }: ExpertDialogProps) {
               <FieldDescription>A task working in this folder gets its guidance by itself.</FieldDescription>
             </Field>
           </FieldGroup>
+          </>}
         </div>
         <DialogFooter className={FOOTER_CLASS}>
           <Button variant="outline" onClick={onBack || onClose}>Cancel</Button>

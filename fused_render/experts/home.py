@@ -9,6 +9,8 @@ from __future__ import annotations
 
 import json
 import os
+import re
+import shutil
 import tempfile
 
 from fused_render.experts import paths
@@ -108,6 +110,11 @@ def ensure_settings(home: str) -> None:
 
 
 # ------------------------------------------------------------------- skills ---
+#: What the Settings form may write (`skill_save`): a new skill's folder name, and the text sizes.
+SKILL_NAME = re.compile(r"[a-z0-9][a-z0-9-]{0,63}")
+SKILL_DESC_CAP = 1024
+SKILL_BODY_CAP = 40_000
+
 def skill_path(home: str, name: str) -> str:
     return os.path.join(home, ".claude", "skills", name, "SKILL.md")
 
@@ -130,8 +137,75 @@ def skill_text(name: str, description: str, body: str) -> str:
     return f'---\nname: {name}\ndescription: "{desc}"\n---\n\n{body.strip()}\n'
 
 
+def skill_body(text: str) -> str:
+    """A skill's text after its frontmatter block."""
+    if not text.startswith("---"):
+        return text.strip()
+    end = text.find("\n---", 3)
+    return text[text.find("\n", end + 1) + 1:].strip() if end > 0 and "\n" in text[end + 1:] else ""
+
+
+def _own_skill(home: str, name: str) -> str:
+    """The folder of an existing skill; `ValueError` unless `name` is a real folder directly in `.claude/skills`
+    (the name comes from a request and becomes a path)."""
+    root = os.path.join(home, ".claude", "skills")
+    folder = os.path.join(root, name)
+    try:
+        listed = name in os.listdir(root)
+    except OSError:
+        listed = False
+    if not listed or os.path.islink(folder) or not os.path.isdir(folder):
+        raise ValueError("There is no such skill.")
+    return folder
+
+
+def skill_save(home: str, name: str, description: str, body: str, new: bool) -> str:
+    """Write one skill from the Settings form and return its name. `new`: the name must be a free slug. Otherwise the
+    skill exists, and only its `description` line and its body change, so frontmatter keys a session wrote stay."""
+    name = (name or "").strip()
+    description = " ".join((description or "").split())
+    if not description:
+        raise ValueError("Say when to use this skill: the expert picks a skill by its description.")
+    if len(description) > SKILL_DESC_CAP or len(body or "") > SKILL_BODY_CAP:
+        raise ValueError(f"A skill holds at most {SKILL_DESC_CAP} characters of description and {SKILL_BODY_CAP} of instructions.")
+    if new:
+        if not SKILL_NAME.fullmatch(name):
+            raise ValueError("A skill's name is lowercase letters, digits and dashes, starting with a letter or digit.")
+        if os.path.lexists(os.path.join(home, ".claude", "skills", name)):
+            raise ValueError("A skill with this name already exists. Edit that one, or use another name.")
+        write_text(skill_path(home, name), skill_text(name, description, body or ""))
+        return name
+    _own_skill(home, name)
+    path = skill_path(home, name)
+    if os.path.islink(path):
+        raise ValueError("There is no such skill.")
+    old = read_text(path)
+    end = old.find("\n---", 3) if old.startswith("---") else -1
+    if end < 0:
+        write_text(path, skill_text(name, description, body or ""))
+        return name
+    line = 'description: "' + description.replace('"', "'") + '"'
+    lines, seen, skip = [], False, False
+    for ln in old[3:end].strip("\n").splitlines():
+        if skip and ln[:1] in (" ", "\t"):  # the rest of a folded or block description
+            continue
+        skip = ln.partition(":")[0].strip() == "description" and ln[:1] not in (" ", "\t")
+        if skip:
+            seen = True
+        lines.append(line if skip else ln)
+    if not seen:
+        lines.append(line)
+    write_text(path, "---\n" + "\n".join(lines) + "\n---\n\n" + (body or "").strip() + "\n")
+    return name
+
+
+def skill_delete(home: str, name: str) -> None:
+    """Remove a skill's whole folder."""
+    shutil.rmtree(_own_skill(home, (name or "").strip()))
+
+
 def skills(home: str) -> list[dict]:
-    """`[{name, description, text}]`, by name."""
+    """`[{name, description, text, body}]`, by name; `body` is the text after the frontmatter."""
     try:
         names = sorted(os.listdir(os.path.join(home, ".claude", "skills")))
     except OSError:
@@ -140,5 +214,6 @@ def skills(home: str) -> list[dict]:
     for n in names:
         text = read_text(skill_path(home, n), None)
         if text is not None:
-            out.append({"name": n, "description": frontmatter(text).get("description", ""), "text": text})
+            out.append({"name": n, "description": frontmatter(text).get("description", ""), "text": text,
+                        "body": skill_body(text)})
     return out
