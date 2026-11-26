@@ -1018,6 +1018,13 @@ def _run_cli(args: list[str], timeout: float,
             errors="replace",
             timeout=timeout,
             env=_cli_env(cli, env),
+            # posix_spawn, never fork()+exec: a fork of this process dies
+            # before exec (rc -11, no output) once libproj is loaded in it,
+            # and every command here then reads as "fused whoami failed" /
+            # "fused canvas list failed" with nothing to go on. Same rule and
+            # reason as claude_health.SUBPROCESS_KWARGS and the token shim
+            # below. Holds because no `cwd` is passed.
+            close_fds=False,
         )
     except subprocess.TimeoutExpired:
         return None, _error(f"`{label}` timed out after {int(timeout)}s", 502)

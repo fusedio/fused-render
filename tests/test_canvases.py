@@ -3748,3 +3748,28 @@ def test_a_fix_session_is_always_lean(harness, monkeypatch):
     assert res.status_code == 200
     assert seen["isolate_mcp"] is True
     _stop_sync("alpha")
+
+
+def test_the_fused_cli_is_spawned_not_forked(monkeypatch):
+    """`_run_cli` passes what lets CPython use posix_spawn (`close_fds=False`,
+    no `cwd`, no new session): a fork() of the server dies before exec once
+    libproj is loaded in it, and the command then fails with no output
+    ("fused whoami failed")."""
+    seen = {}
+
+    def run(argv, **kwargs):
+        seen.update(kwargs)
+        return subprocess.CompletedProcess(argv, 0, stdout="{}", stderr="")
+
+    monkeypatch.setattr(canvases_mod.subprocess, "run", run)
+    from fused_render.fusedcli import FusedCli
+
+    monkeypatch.setattr(canvases_mod, "fused_cli",
+                        lambda: FusedCli(command=["fused"], external=True))
+    monkeypatch.setattr(canvases_mod, "_cli_env", lambda cli, env: {})
+    proc, err = canvases_mod._run_cli(["workbench", "--format", "json", "whoami"], 5, "prod")
+    assert err is None and proc.returncode == 0
+    assert seen["close_fds"] is False
+    for key in ("cwd", "start_new_session", "preexec_fn", "process_group", "pass_fds"):
+        assert key not in seen
+
