@@ -11,6 +11,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { refreshAgentBackends } from "./agent-backends";
 import {
   cancelAgentLogin,
+  submitAgentLoginCode,
   getAgentHealth,
   getAgentInstall,
   getAgentLogin,
@@ -58,6 +59,8 @@ const INSTALL_POLL_MS = 1200;
     with a browser window, so a faster tick would only spend requests watching
     someone read a consent screen. */
 const LOGIN_POLL_MS = 2000;
+/** Every this many login polls (10 s), re-measure health while a sign-in waits. */
+const LOGIN_HEALTH_EVERY = 5;
 
 export interface ClaudeSetup {
   health: ClaudeHealth | null;
@@ -79,6 +82,8 @@ export interface ClaudeSetup {
   load: (force: boolean) => void;
   act: (issue: ClaudeIssue) => void;
   cancelLogin: () => void;
+  /** The paste fallback: send the code the sign-in page showed. */
+  submitLoginCode: (code: string) => void;
 }
 
 /**
@@ -217,7 +222,31 @@ export function useAgentSetup(backend: string, watching: boolean): ClaudeSetup {
   useEffect(() => {
     if (!login?.in_flight) return;
     let alive = true;
+    let ticks = 0;
     const timer = window.setInterval(() => {
+      // SIGNED IN SOME OTHER WAY while this sign-in waits — `claude` then
+      // `/login` in the terminal drawer, which is what a person does when the
+      // browser never opened. The waiting child knows nothing of it and would
+      // hold the row at "Working…" until its watchdog, ten minutes on, over a
+      // CLI that is already signed in. So re-measure now and then, quietly (no
+      // `busy`), and call the child off once the answer is yes.
+      ticks += 1;
+      if (ticks % LOGIN_HEALTH_EVERY === 0) {
+        refreshAgentHealth(backend).then(
+          (h) => {
+            if (!alive || h.signed_in !== true) return;
+            cached.set(backend, h);
+            setHealth(h);
+            cancelAgentLogin(backend).then(
+              (rec) => alive && setLogin(rec),
+              () => alive && setLogin(null),
+            );
+          },
+          () => {
+            /* A failed probe is not a finding. */
+          },
+        );
+      }
       getAgentLogin(backend).then(
         (next) => {
           if (!alive) return;
@@ -315,6 +344,17 @@ export function useAgentSetup(backend: string, watching: boolean): ClaudeSetup {
     );
   }, [backend]);
 
+  // The code from the sign-in page, for a browser the CLI could not open. The
+  // child settles the record either way (signed in, or its own refusal), and
+  // the poll above picks that up — nothing is concluded from this answer.
+  const submitLoginCode = useCallback((code: string) => {
+    setActionError(null);
+    submitAgentLoginCode(backend, code).then(
+      (rec) => setLogin(rec),
+      (e) => setActionError(String(e?.message || e)),
+    );
+  }, [backend]);
+
   useEffect(() => {
     if (!watching) return;
     const onFocus = () => {
@@ -362,5 +402,6 @@ export function useAgentSetup(backend: string, watching: boolean): ClaudeSetup {
     load,
     act,
     cancelLogin,
+    submitLoginCode,
   };
 }

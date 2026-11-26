@@ -661,7 +661,8 @@ export function linkClaudePath(): Promise<{
 
     There is no `output` here, unlike the install record. The child's lines carry
     the authorize URL's `state` and `code_challenge`, so the server keeps its
-    tail in memory and surfaces only the one derived sentence in `error`. */
+    tail in memory and surfaces only the one derived sentence in `error` — and,
+    while the sign-in is open, the fallback address in `url`. */
 export interface ClaudeLoginStatus {
   in_flight: boolean;
   started_at: number | null;
@@ -673,11 +674,16 @@ export interface ClaudeLoginStatus {
    *  must never show it otherwise. Absent for Claude, whose browser sign-in
    *  needs no code. */
   detail?: { code: string; url: string } | null;
+  /** Claude only, and only while `in_flight`: the sign-in address the CLI
+   *  printed for a browser it could not open (WSL, ssh). That page hands out a
+   *  code, which goes back through `submitAgentLoginCode`. */
+  url?: string | null;
 }
 
 /** Start a browser sign-in. The CLI opens the page and completes on its own
-    loopback callback — no code is pasted, and none reaches the app. Rejects with
-    the server's sentence when one is already waiting. */
+    loopback callback — normally no code is pasted (the fallback for a browser
+    that did not open is `submitAgentLoginCode`). Rejects with the server's
+    sentence when one is already waiting. */
 export function startClaudeLogin(): Promise<ClaudeLoginStatus> {
   return postJson<ClaudeLoginStatus>("/api/claude/login", {});
 }
@@ -752,6 +758,11 @@ export function getAgentLogin(backend: string): Promise<ClaudeLoginStatus> {
 export function cancelAgentLogin(backend: string): Promise<ClaudeLoginStatus & { canceled: boolean }> {
   return postJson<ClaudeLoginStatus & { canceled: boolean }>(
     agentRoute(backend, "login/cancel"), {});
+}
+
+/** The paste fallback of a Claude sign-in: the code its sign-in page showed. */
+export function submitAgentLoginCode(backend: string, code: string): Promise<ClaudeLoginStatus> {
+  return postJson<ClaudeLoginStatus>(agentRoute(backend, "login/code"), { code });
 }
 
 // -- The agent catalog (GET /api/agent-backends, D11) -------------------------
