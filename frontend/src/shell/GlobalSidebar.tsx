@@ -794,7 +794,7 @@ export default function GlobalSidebar({ config }: { config: Config }) {
     // Same gate and same order as the expanded rows below.
     { key: "home", label: "Home", icon: HOME_ICON, href: "/home", active: homeActive },
     ...(searchAvailable
-      ? [{ key: "search", label: "Search", icon: SEARCH_ICON, href: "#", active: launcher.open, onClick: openSearch }]
+      ? [{ key: "search", label: "Search", icon: SEARCH_ICON, active: launcher.open, onClick: openSearch }]
       : []),
     // No Canvases entry (owner, 2026-10-20): the Canvases SECTION below lists
     // the canvases, and its "+ Canvas" row is the door to the catalog.
@@ -871,7 +871,6 @@ export default function GlobalSidebar({ config }: { config: Config }) {
           <NavItem href="/home" id="home-link" label="Home" icon={HOME_ICON} active={homeActive} />
           {searchAvailable && (
             <NavItem
-              href="#"
               id="search-link"
               label="Search"
               icon={SEARCH_ICON}
