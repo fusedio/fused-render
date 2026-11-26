@@ -1,7 +1,7 @@
 // Crumb bar, in three zones left to right:
 //
-//   path    ‹ › history arrows, then the crumbs (or the editable path field),
-//           then the ★ bookmark button
+//   path    the crumbs (or the editable path field), then the ★ bookmark
+//           button
 //   mode    the `#topbar-mode-slot` portal target — Preview renders the view's
 //           conditional primary action, the shared mode control and the preview
 //           sidebar's toggle into it
@@ -9,14 +9,11 @@
 //           listing or a plain file's own field — it portals in here, so its
 //           column has one header strip instead of two (search-slot.ts)
 //
-// THE PATH ZONE'S TWO ENDS CHANGED PLACES, and the arrows are why. The ★ opened
-// the bar for a long time, which put the one control that acts on the WHOLE view
-// in the slot every browser, file manager and IDE reserves for going back — so
-// the muscle-memory click at the bar's left edge hit a bookmark toggle. Back and
-// forward now hold that slot, and the star moved to where its own subject ends:
-// immediately after the last crumb, reading as "this path, starred", which is
-// also how a browser's location bar arranges it. Nothing about the star's
-// behaviour moved with it (BookmarkStar below is unchanged); only its seat.
+// The star sits where its own subject ends: immediately after the last crumb,
+// reading as "this path, starred", which is how a browser's location bar
+// arranges it. The bar has no ‹ › history arrows of its own — the window's
+// titlebar carries the one global pair, and a second pair here was a
+// duplicate answer to "where was I".
 //
 // The Finder and split glyphs used to live INSIDE the crumb strip, welded to
 // the last path segment: the path zone was not only the path, and "open in
@@ -48,11 +45,8 @@ import {
 import {
   useUrlVersion,
   useBookmarksVersion,
-  useNavReach,
   notifyBookmarksChanged,
 } from "@platform/lib/hooks";
-import { goBack, goForward } from "@platform/lib/nav-history";
-import Chevron from "@platform/ui/Chevron";
 import { urlScheme, fileUrlToPath } from "@platform/lib/path-url";
 import { canonicalRemoteUrl, isRemoteLocation } from "@platform/lib/remote";
 import { remoteCrumbs } from "@apps/explorer/listing/remote-crumbs";
@@ -321,56 +315,7 @@ function BarSearchSlot() {
 // chrome-level readout lingered in the corner with no way to dismiss it, and
 // the row marking is where the user is already looking.
 
-// ‹ › HISTORY ARROWS, first thing in the bar — the slot every browser and file
-// manager puts them in, which is the whole reason they are here rather than
-// anywhere else in the chrome.
-//
-// They traverse the BROWSER'S session history, not a stack of this app's own
-// (lib/nav-history argues that at length): the shell never reloads, so every hop
-// it has made is already an entry, and a private stack beside the real one would
-// be a second answer to "where was I". Which also means the arrows are correct
-// over every view the bar appears on — a folder, a file preview, a layout mode —
-// without any of them telling this component anything.
-//
-// DISABLED ONLY WHEN THE ENGINE SAYS SO. `navigation.canGoBack/canGoForward` is
-// a fact about the real entry list where it exists (Chromium) and simply absent
-// where it does not (the menubar pin's WKWebView), and an unknown answer leaves
-// the button live. A dead-looking control that was wrong teaches the user the
-// control is broken; a live one that no-ops costs a click.
-//
-// `.bar-ctl-icon`, so they sit on the same 28px square recipe as every other
-// glyph button in these bars, in a `.crumb-nav` group whose 2px internal gap
-// (matching `.bar-zone`) is what makes the pair read as one control.
-function CrumbNav() {
-  const reach = useNavReach();
-  return (
-    <div className="crumb-nav">
-      <button
-        type="button"
-        className="bar-ctl bar-ctl-icon crumb-nav-btn"
-        title="Back"
-        aria-label="Back"
-        disabled={!reach.back}
-        onClick={goBack}
-      >
-        <Chevron dir="left" />
-      </button>
-      <button
-        type="button"
-        className="bar-ctl bar-ctl-icon crumb-nav-btn"
-        title="Forward"
-        aria-label="Forward"
-        disabled={!reach.forward}
-        onClick={goForward}
-      >
-        <Chevron dir="right" />
-      </button>
-    </div>
-  );
-}
-
-// ★ bookmark button, at the tail of the path (see the header — it used to open
-// the bar, and the history arrows hold that slot now). Filled (foreground, not accent —
+// ★ bookmark button, at the tail of the path (see the header). Filled (foreground, not accent —
 // see explorer.css) only when a bookmark matches the current view exactly
 // (same pathname AND
 // same params, via sameSearch) — a param change empties the star, so the user
@@ -898,7 +843,6 @@ export function Breadcrumb({
 
   return (
     <>
-      <CrumbNav />
       {claimed ? null : editing ? (
         <input
           className="crumb-edit"
@@ -940,8 +884,8 @@ export function Breadcrumb({
           this renders an empty, layout-inert slot (BarSearchSlot), so this
           placement costs that case nothing. */}
       <BarSearchSlot />
-      {/* After the path, not before it: the star's subject is the path, and the
-          bar's opening slot belongs to the history arrows (see the header). It
+      {/* After the path, not before it: the star's subject is the path (see
+          the header). It
           rides OUTSIDE `.crumbs` deliberately — that strip is a scroll container
           for the path alone, and a star inside it would scroll away with the
           crumbs on a long path, which is the one place it is most wanted.
@@ -975,10 +919,7 @@ export function Breadcrumb({
 export function StaticBreadcrumb({ label }: { label: string }) {
   return (
     <>
-      {/* Same three-part opening as the path bar — arrows, subject, star. These
-          routes are navigated to like any other, so their history arrows are
-          neither special-cased nor omitted. */}
-      <CrumbNav />
+      {/* Same opening as the path bar — subject, then star. */}
       <div className="crumbs">
         <span className="current">{label}</span>
       </div>

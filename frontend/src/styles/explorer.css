@@ -49,18 +49,6 @@
   box-sizing: border-box;
 }
 
-/* ‹ › history arrows, first in the bar — the slot browsers and file managers
-   reserve for them, which the ★ used to occupy (Breadcrumb.tsx says why they
-   traded places). Nothing of their own beyond the grouping: both buttons ride
-   the shared `.bar-ctl-icon` recipe further down, and the 2px gap is the same
-   one `.bar-zone` uses to make a run of glyph buttons read as one control. */
-.crumb-nav {
-  flex: 0 0 auto;
-  display: flex;
-  align-items: center;
-  gap: 2px;
-}
-
 /* ★ bookmark button, at the tail of the path. A quiet control — the app's
    token pair for a button that rests visible and steps up on hover
    (`--ctl-quiet-bg`/`--ctl-quiet-bg-hover`, tokens.css) — so the resting pill
@@ -201,7 +189,7 @@
 
    `:has(.path-crumb)` covers the PATH strip and `:has(.current)` the layout
    modes' static label bar (StaticBreadcrumb) — same shape, same claimant: the
-   static bar renders arrows, label and star as the same opening trio, and
+   static bar renders label and star as the same opening pair, and
    without its own claim the `space-between` slack opened up INSIDE that trio
    (label floating mid-bar, star flung to the far right). What both exclude is
    edit mode, whose field is neither a crumb nor a label and eats the width
@@ -1484,8 +1472,8 @@ table.listing-table tr.skel-row:hover {
      a plain file's — no sibling `.crumbs` strip competes for the row
      (Breadcrumb.tsx renders none while claimed), so the field grows to fill
      the space a crumb strip would otherwise hold, right where one would sit
-     (Breadcrumb.tsx portals this slot immediately after the crumb-nav
-     arrows, ahead of the star). */
+     (Breadcrumb.tsx portals this slot at the bar's opening, ahead of the
+     star). */
   flex: 1 1 auto;
   min-width: 0;
   justify-content: flex-start;
@@ -1546,34 +1534,9 @@ table.listing-table tr.skel-row:hover {
    purpose, and its own visibility is Listing.tsx's `query === ""` React
    conditional, not CSS. A `:has(.listing-search.searching) .crumbs` rule
    would not match anything here: the two conditions it would name (claimed
-   field, `.crumbs` present) are mutually exclusive.
+   field, `.crumbs` present) are mutually exclusive. */
 
-   The history arrows still get out of the way below, for the reason the path
-   would have: */
-/* …and so do the history arrows, for the same reason the path did — they hold
-   the field off the left edge, and a search box that spans the bar is what
-   someone typing a query is asking for. They come straight back on Esc or an
-   emptied query, so nothing is lost, only deferred.
-
-   The star does not join them any more: it moved off the bar's left/outer
-   zone and into the field itself (Listing.tsx renders it as the box's own
-   trailing affordance, past the count/spinner pin above), so it has nothing
-   left to stand down FROM — it grows and shrinks with the box it now lives
-   inside, same as the count chip beside it.
-
-   `display: none`, not visibility/opacity: the arrows are 28px each, and
-   hiding them while keeping the box would leave the field starting in from a
-   gap. A flex item removed this way takes its `gap` share with it, so there
-   is nothing left behind. (This is the opposite of the table-column case in
-   listing/column-shedding.test.ts, where the shed element had to stay
-   rendered — a table column under `table-layout: fixed` outlives its hidden
-   header.) */
-#breadcrumb:has(.listing-search.searching) .crumb-nav,
-#breadcrumb:has(.listing-search.expanded) .crumb-nav {
-  display: none;
-}
-
-/* Both halves of that: the ROW has to grow (idle it is `0 1 auto`, sized to
+/* While searching, the field spans the bar. Both halves: the ROW has to grow (idle it is `0 1 auto`, sized to
    its box) and so does the BOX (idle `0 1 200px`). Only then does the field
    actually span the strip rather than sitting at its resting width with the
    freed-up crumb width as dead space beside it. */
