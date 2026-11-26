@@ -2245,8 +2245,9 @@ offer it — a plain `.toml` never shows the mode at all.
   (title defaults to udfName, visible defaults true — the §28 defaults). Edges
   are `[src, dst]` name pairs; malformed nodes/edges are **skipped, never
   fatal**. `siblings` maps each node's udfName → the sibling file extensions
-  (`.py`/`.json`/`.md`/`.html`) present next to the toml, from one
-  `os.listdir`. **Where things are (D1511).** A row's `x`/`y` is the React
+  (`.py`/`.json`/`.md`/`.html`) present next to the toml, from one listing of
+  its folder (regular files only: a folder or a pipe of that name is no
+  source). **Where things are (D1511).** A row's `x`/`y` is the React
   Flow node position, which for a node inside a folder is **relative to that
   folder**. The reader resolves it: a folder's `childUdfOrder` names its
   children, each name taking the first node of that name no folder has taken
@@ -2337,6 +2338,95 @@ offer it — a plain `.toml` never shows the mode at all.
   sibling files as links that open `/view/<abs sibling path>` in a **new tab**
   (no in-shell navigation, v0). Clicking a folder or its name shows its name,
   size and child list; clicking empty space clears.
+- **CV-8** **A picture of the layout, for an agent (D1512).** An agent that
+  has added, moved or resized nodes, or re-arranged folders, looks at the
+  result through this view, not through a screenshot of the canvas page:
+  the `canvas_screenshot` tool's `what: "layout"`. The picture is the
+  `canvas.toml` on disk at that moment, so it needs no open canvas page, asks
+  the user nothing, runs no node, and shows an edit that has not been
+  published yet.
+  - **Picture mode.** `shot=1` on the view's URL: the whole canvas fitted
+    inside fixed screen margins (room for a folder's name and a node's title
+    above the topmost box), with the descriptions hanging under its nodes
+    measured into the box that is fitted, never past 100% and not held at
+    the zoom range's lower end (a very large canvas still fits), the controls
+    hidden, a note's images loaded eagerly, and the camera in the file or the
+    URL ignored. `focus=<name>` frames one node (its `udfName`) or folder
+    (its `udfName` or `folderName`) the same way; without `shot` it applies
+    to an open that carries no camera.
+  - **The page says when it is drawn.** Its root element carries no
+    `data-cv` while the canvas is read and drawn, `data-cv="ready"` once it
+    is built and Work Sans and the notes' images are in (2 s at most for
+    those), and `data-cv="failed"` only when the read or the draw failed (an
+    unhandled rejection or error before "ready"). A page still loading never
+    says "failed".
+  - **`POST /api/canvases/layout-shot`** `{path, focus?}` (X-Fused guard;
+    `path` a canvas folder or its `canvas.toml`) → `{image: <base64 PNG>,
+    mime, width, height, nodes, folders, edges, focus}`, or 422 `{error,
+    no_browser?}`: no file, a file that does not parse or is not a canvas, a
+    `focus` naming nothing (the names are listed), no browser, a browser
+    that failed. `canvas_layout_shot.py` starts one headless Chrome (the
+    browser the Bots look for; 1568 x 980 at scale 1; a profile of its own in
+    a temp folder), loads the view, polls `data-cv` over DevTools, takes the
+    PNG and ends the browser; two at a time, and 30 s at most INCLUDING the
+    wait for one of the two (a request that cannot start with 10 s left is
+    answered "try again" instead). Spawned without a fork (`close_fds=False`,
+    no new session). `focus` may be a row's `udfName`, or the `folderName` of
+    a folder row.
+  - **The tool.** `canvas_screenshot` takes `what: "layout" | "canvas" |
+    "udf"`; with `"layout"`, `udf` names the node or folder to frame. The
+    permission server calls the route on `FUSED_RENDER_CANVAS_ORIGIN` (stamped
+    for a canvas session beside the clone) with the session's clone, and
+    returns the image with a note saying what it is (drawn from the file, no
+    output, nothing run) and the canvas's node, folder and edge counts. No
+    request is parked for a page and no open-canvas ask is raised. With no
+    browser installed the sentence says to use `what: "canvas"`.
+  - **Told to the agent.** The clone's seeded `CLAUDE.md` and the tool's
+    description say: the layout is checked for you after every change
+    (CV-9); `what: "layout"` to look at where things sit, when done changing
+    the layout and before reporting it; `what: "canvas"` and `"udf"` for
+    what a node's output looks like on the user's canvas page.
+- **CV-9** **The layout is checked for the agent, after every change
+  (D1512).** A Claude session in a canvas clone is told what is wrong with
+  the layout without asking: the canvas "post" hook
+  (`POST /api/canvases/agent/hook`, PostToolUse on every tool) compares
+  `canvas.toml`'s layout with what that session last saw, and when it moved
+  (the session's own edit, a script it ran, a node file it deleted with its
+  row, the user's drag) the answer's `context` carries a "Layout check" note
+  after whatever the sync said.
+  - **Whose canvas.** The clone of the session's working directory, whatever
+    file the tool call named; a session whose working directory is no clone
+    gets no note.
+  - **What counts as layout** (`canvas_layout_check.fingerprint`): each row's
+    `udfName`, `type`, `x`, `y`, `width`, `height`, `childUdfOrder`,
+    `folderName`, whether it carries a `textBoxColor` (that makes an unsized
+    row a note, 350 x 250), and the edges. A title, a description or a
+    change of colour raises no note.
+  - **What is found** (`problems`), with the file read as the reader reads it
+    (children by `childUdfOrder`, a child's x/y relative to its folder, the
+    workbench's default sizes): two top-level boxes (nodes, folders) that
+    overlap by more than 1 unit, with the overlap's size; two children of one
+    folder that overlap; a child not inside its folder's box, with how far
+    past which edges; a `childUdfOrder` name that is no node, a node listed
+    by two folders, a folder listed inside a folder; an edge naming something
+    not on the canvas.
+  - **Only what came in this turn is listed.** The "start" hook (and a
+    session's first call) records the problems the canvas already has; a note
+    lists the problems not in that set and counts the rest ("N problems the
+    canvas already had before this turn are unchanged and not listed: leave
+    them unless the user asked"). A problem stays listed on every later
+    change until it is fixed. At most 12 are spelled out. Problems are
+    counted, not kept as a set: a second pair of boxes with the same names
+    as an old pair is new. The check has a budget (2,000,000 pairs, 500
+    problems); past it it stops and says so, and never calls such a canvas
+    clean.
+  - **A clean layout is one line** saying so. Every note ends by naming the
+    picture (`canvas_screenshot`, `what: "layout"`): a hook can hand over
+    text, not an image, so the look stays one tool call.
+  - A file that stops parsing gets a note with the parser's message. A
+    reference copy is never checked. No watcher and no sign-in are needed,
+    and the check never fails a hook. The baseline is held in memory per
+    (session, clone). Claude sessions only: the other agents have no hook.
 - **CV-7** Dark, in the workbench's colours; no network (the page loads only
   the app's own `marked`, `canvas-node.js` and font), ES2020, and — like every
   template — no runtime script tag (`window.fused` is injected).

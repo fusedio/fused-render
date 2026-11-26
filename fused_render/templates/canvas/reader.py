@@ -100,9 +100,18 @@ def main(file: str = "") -> dict:
         canvas = {}
 
     # One listing of the toml's dir: which source file each node has.
+    # Regular files only: a folder called `memo.py` is not a node's source,
+    # and a pipe called `memo.md` must never be opened for a note's text.
     parent_dir = os.path.dirname(os.path.abspath(file))
+    present = set()
     try:
-        present = set(os.listdir(parent_dir))
+        with os.scandir(parent_dir) as entries:
+            for entry in entries:
+                try:
+                    if entry.is_file():
+                        present.add(entry.name)
+                except OSError:
+                    continue
     except OSError:
         present = set()
 
@@ -188,8 +197,12 @@ def main(file: str = "") -> dict:
             if child is None:
                 continue
             child["parent"] = folder_index
-            child["ax"] = folder["ax"] + child["x"]
-            child["ay"] = folder["ay"] + child["y"]
+            # Two huge but finite numbers can add up to infinity, which the
+            # result's JSON encoding refuses: such a child stays where its
+            # own row puts it.
+            ax, ay = folder["ax"] + child["x"], folder["ay"] + child["y"]
+            if math.isfinite(ax) and math.isfinite(ay):
+                child["ax"], child["ay"] = ax, ay
 
     # ---- stacking ----------------------------------------------------------
     # React Flow's own two rules (`updateChildNode`). Folders that hold

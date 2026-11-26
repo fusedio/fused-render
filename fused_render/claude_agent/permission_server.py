@@ -145,6 +145,13 @@ CANVAS_SHOT_MAX_BYTES = int(4.5 * 1024 * 1024)
 CANVAS_CLONE = os.environ.get("FUSED_RENDER_CANVAS_CLONE", "")
 CANVAS_NODE = os.environ.get("FUSED_RENDER_CANVAS_NODE", "")
 CANVAS_PAGES_DIR = os.environ.get("FUSED_RENDER_CANVAS_PAGES", "")
+# The server `what: "layout"` asks for its picture (D1512): it draws the
+# canvas.toml view itself, so that picture needs no page. Stamped by agent.py
+# beside the clone; absent, a layout picture is answered with a sentence.
+CANVAS_ORIGIN = (os.environ.get("FUSED_RENDER_CANVAS_ORIGIN") or "").rstrip("/")
+# One layout picture: a browser start plus the draw (canvas_layout_shot's own
+# limit is 30 s), with room for the HTTP round trip.
+CANVAS_LAYOUT_TIMEOUT = 45.0
 # A page heartbeats every 1 s (3 s hidden); one heard from within this is open.
 CANVAS_PAGE_FRESH = 10.0
 # How long a request waits to hear from a page of its canvas before it decides
@@ -1210,6 +1217,59 @@ def _framing_note(what: str, framing: str, udf: str) -> str:
     return _FRAMING_NOTES.get(framing) or _FRAMING_NOTES["node" if what == "udf" else "graph"]
 
 
+_LAYOUT_NOTE = (
+    "the canvas as canvas.toml on disk lays it out right now, drawn by "
+    "fused-render from the file (not a photo of the workbench): every node's "
+    "box at its position and size with its title and description, notes "
+    "with their text, folders with their names, and edges. A node's output "
+    "is not drawn (grey stand-ins), and nothing was run")
+
+
+def _handle_layout_shot(focus: str) -> dict:
+    """`what: "layout"` (D1512): the canvas.toml view of this session's clone,
+    drawn by the server in a headless browser and handed over as an image
+    block. No page round trip: nothing is asked of the user, and an edit that
+    has not been published yet is in the picture. `focus` frames one node or
+    folder; empty, the whole canvas is fitted.
+
+    Every failure is a sentence, as for the page's pictures; with no browser
+    installed it says to look at the canvas page instead."""
+    if not CANVAS_CLONE or not CANVAS_ORIGIN:
+        return _text({"error": "a layout picture is not available in this session — "
+                               'use what: "canvas" for a screenshot of the canvas page'})
+    body = {"path": CANVAS_CLONE}
+    if focus:
+        body["focus"] = focus
+    try:
+        status, answer = _server_http(CANVAS_ORIGIN, "POST", "/api/canvases/layout-shot",
+                                      body, CANVAS_LAYOUT_TIMEOUT)
+    except OSError as exc:
+        return _text({"error": "the layout could not be drawn (fused-render did not "
+                               "answer: %s)" % (getattr(exc, "reason", None) or exc)})
+    answer = answer if isinstance(answer, dict) else {}
+    image = answer.get("image")
+    if status != 200 or not isinstance(image, str) or not image:
+        error = str(answer.get("error") or "the layout could not be drawn (HTTP %s)" % status)
+        if answer.get("no_browser"):
+            error += ' — use what: "canvas" for a screenshot of the canvas page instead'
+        return _text({"error": error})
+    if len(image) * 3 // 4 > CANVAS_SHOT_MAX_BYTES:
+        return _text({"error": "the layout picture is too large to hand over"})
+    mime = answer.get("mime")
+    if not isinstance(mime, str) or not mime.startswith("image/"):
+        mime = "image/png"
+    shown = answer.get("focus") or None
+    note = {"what": "layout", "udf": shown, "framing": "layout",
+            "note": _LAYOUT_NOTE + ("; framed on \"%s\"" % shown if shown
+                                    else "; the whole canvas, fitted"),
+            "nodes": answer.get("nodes"), "folders": answer.get("folders"),
+            "edges": answer.get("edges")}
+    return {"content": [
+        {"type": "image", "data": image, "mimeType": mime},
+        {"type": "text", "text": json.dumps(note)},
+    ]}
+
+
 def _handle_canvas_shot(args: dict) -> dict:
     """Ask the canvas page for a picture of the workbench — the graph as the
     viewport shows it, or one UDF node's output — and hand the bytes to the
@@ -1228,6 +1288,8 @@ def _handle_canvas_shot(args: dict) -> dict:
     what = args.get("what")
     udf = args.get("udf")
     udf = str(udf).strip() if isinstance(udf, str) and udf.strip() else ""
+    if what == "layout":
+        return _handle_layout_shot(udf)
     if what not in ("canvas", "udf"):
         # Nothing asked for: a node's own chat means its node, a named node
         # means that node, and the canvas chat means the graph.
@@ -2284,11 +2346,22 @@ APP_STATE_SCHEMA = {
 CANVAS_SHOT_SCHEMA = {
     "name": CANVAS_SHOT_TOOL,
     "description": (
-        "Take a screenshot of the Fused canvas the user has open in "
-        "fused-render and look at it: `what: \"canvas\"` is the whole graph as "
-        "their viewport shows it, `what: \"udf\"` is ONE UDF node's rendered "
+        "Look at this Fused canvas. Three pictures. "
+        "`what: \"layout\"` is the canvas LAYOUT as canvas.toml on disk "
+        "describes it right now, drawn by fused-render from the file: every "
+        "node's box at its position and size with its title and description, "
+        "notes, folders and their names, edges; the whole canvas fitted, or "
+        "framed on the node or folder named by `udf`. It needs no open "
+        "canvas, asks the user nothing, runs nothing, takes about a second "
+        "and already shows edits you made this turn: use it to check "
+        "positions, sizes, overlaps, folder contents and edges after you "
+        "add, delete, move or resize nodes or re-arrange folders. It does "
+        "not show a node's output. "
+        "`what: \"canvas\"` is a screenshot of the canvas the user has open "
+        "in fused-render, the whole graph as their viewport shows it, and "
+        "`what: \"udf\"` is ONE UDF node's rendered "
         "output (table, chart, text) — the node named by `udf`, or on a node's "
-        "own chat the node whose file it is on. Call it after you change a UDF "
+        "own chat the node whose file it is on. Call those after you change a UDF "
         "to check that the output looks right, or when the user asks about what "
         "they see. Returns the picture inline, with a note saying what it "
         "really shows (the whole frame when a node could not be cropped). "
@@ -2302,10 +2375,10 @@ CANVAS_SHOT_SCHEMA = {
     "inputSchema": {
         "type": "object",
         "properties": {
-            "what": {"type": "string", "enum": ["canvas", "udf"],
-                     "description": "\"canvas\" for the whole graph, \"udf\" for one node's output. Left out: this chat's node on a node's own chat, else the graph."},
+            "what": {"type": "string", "enum": ["layout", "canvas", "udf"],
+                     "description": "\"layout\" for the layout drawn from canvas.toml (positions, sizes, folders, edges; no output), \"canvas\" for a screenshot of the whole graph on the user's canvas page, \"udf\" for one node's output. Left out: this chat's node on a node's own chat, else the graph."},
             "udf": {"type": "string",
-                    "description": "The UDF (node) name for `what: \"udf\"`; defaults to this chat's node."},
+                    "description": "The UDF (node) name for `what: \"udf\"`; defaults to this chat's node. With `what: \"layout\"`: the node or folder to frame; left out, the whole canvas."},
             "reason": {"type": "string",
                        "description": "Optionally, what you are checking (recorded with the request)."},
         },

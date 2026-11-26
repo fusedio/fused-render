@@ -510,6 +510,43 @@ def test_reader_drops_numbers_that_are_not_finite(reader, tmp_path):
     assert out["viewport"] is None and out["viewportBounds"] is None
 
 
+def test_reader_takes_sources_from_regular_files_only(reader, tmp_path):
+    # A folder named like a source is no source: the note beside it is what
+    # the node is. And a pipe named like a note is never opened.
+    d = tmp_path / "odd"
+    d.mkdir()
+    (d / "canvas.toml").write_text(
+        'type = "canvas"\nversion = 2\n[canvas]\n'
+        '[[canvas.nodes]]\nudfName = "memo"\nx = 0\ny = 0\n'
+        '[[canvas.nodes]]\nudfName = "pipe"\nx = 0\ny = 400\ntextBoxColor = "#FFF9C4"\n')
+    (d / "memo.py").mkdir()
+    (d / "memo.md").write_text("hello\n")
+    if hasattr(os, "mkfifo"):
+        os.mkfifo(d / "pipe.md")
+    out = reader.main(file=str(d / "canvas.toml"))
+    by = {n["udfName"]: n for n in out["nodes"]}
+    assert by["memo"]["kind"] == "note" and by["memo"]["note"] == "hello\n"
+    assert out["siblings"]["memo"] == [".md"]
+    assert by["pipe"]["kind"] == "note" and by["pipe"]["note"] == ""
+    assert "pipe" not in out["siblings"]
+
+
+def test_reader_keeps_a_child_finite_when_the_sum_is_not(reader, tmp_path):
+    import json
+
+    d = tmp_path / "huge"
+    d.mkdir()
+    (d / "canvas.toml").write_text(
+        'type = "canvas"\nversion = 2\n[canvas]\n'
+        '[[canvas.nodes]]\nudfName = "F"\ntype = "udf-folder"\nchildUdfOrder = ["a"]\n'
+        'x = 1e308\ny = 0\n'
+        '[[canvas.nodes]]\nudfName = "a"\nx = 1e308\ny = 5\n')
+    out = reader.main(file=str(d / "canvas.toml"))
+    json.dumps(out, allow_nan=False)
+    assert out["nodes"][0]["parent"] == 0
+    assert (out["nodes"][0]["ax"], out["nodes"][0]["ay"]) == (1e308, 5)
+
+
 def test_reader_kinds_sizes_and_note_text(reader, folders_canvas):
     out = reader.main(file=str(folders_canvas / "canvas.toml"))
     by = {}

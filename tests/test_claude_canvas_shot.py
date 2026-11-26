@@ -88,7 +88,7 @@ def test_the_tool_rides_the_canvas_flag_and_the_flag_alone(run_dir):
         schema = next(t for t in with_canvas.call("tools/list")["result"]["tools"]
                       if t["name"] == "canvas_screenshot")["inputSchema"]
         assert schema.get("required", []) == []          # never blocked on phrasing
-        assert schema["properties"]["what"]["enum"] == ["canvas", "udf"]
+        assert schema["properties"]["what"]["enum"] == ["layout", "canvas", "udf"]
     finally:
         with_canvas.close()
     without = _server(run_dir, canvas=False)
@@ -424,6 +424,8 @@ def test_a_canvas_session_names_its_canvas_and_pages_to_the_server(
     assert server["env"]["FUSED_RENDER_CANVAS_CLONE"] == "/x/prod/user/demo"
     assert server["env"]["FUSED_RENDER_CANVAS_NODE"] == "udf_1"
     assert server["env"]["FUSED_RENDER_CANVAS_PAGES"] == agent._canvas_pages_dir()
+    # Where a layout picture is asked for (D1512): the app's own origin.
+    assert server["env"]["FUSED_RENDER_CANVAS_ORIGIN"] == (agent._origin() or "")
     # ...and the server reads the canvas's (env, name) back off that path:
     # the environment is the segment ABOVE `user/` (D1476), never `user`.
     ps = _load("permission_server")
@@ -1043,3 +1045,141 @@ def test_a_bad_node_name_on_a_heartbeat_is_refused(agent):
     assert out == {"error": "bad canvas page", "rows": []}
     out = agent.main(action="canvas_shot_inbox", state=_page("p", node=7))
     assert out == {"error": "bad canvas page", "rows": []}
+
+
+# ------------------------------------------------- what: "layout" (D1512)
+#
+# The layout picture is drawn by the app's server from canvas.toml, so the
+# tool makes one HTTP call and no page round trip: nothing is parked for a
+# page, nobody is asked to open the canvas.
+
+class _LayoutStub:
+    """Stands in for fused-render's `POST /api/canvases/layout-shot`."""
+
+    def __init__(self):
+        from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+        import threading
+
+        self.requests = []
+        self.status = 200
+        self.answer = {"image": base64.b64encode(PNG).decode("ascii"), "mime": "image/png",
+                       "width": 1568, "height": 980, "nodes": 4, "folders": 1, "edges": 2,
+                       "focus": ""}
+        stub = self
+
+        class H(BaseHTTPRequestHandler):
+            def log_message(self, *a):
+                pass
+
+            def do_POST(self):
+                n = int(self.headers.get("Content-Length") or 0)
+                body = json.loads(self.rfile.read(n) or b"{}")
+                stub.requests.append((self.path, dict(self.headers), body))
+                answer = dict(stub.answer)
+                if stub.status == 200 and body.get("focus"):
+                    answer["focus"] = body["focus"]
+                raw = json.dumps(answer).encode()
+                self.send_response(stub.status)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(raw)))
+                self.end_headers()
+                self.wfile.write(raw)
+
+        self.httpd = ThreadingHTTPServer(("127.0.0.1", 0), H)
+        self.origin = "http://127.0.0.1:%d" % self.httpd.server_address[1]
+        threading.Thread(target=self.httpd.serve_forever, daemon=True).start()
+
+    def close(self):
+        self.httpd.shutdown()
+        self.httpd.server_close()
+
+
+@pytest.fixture
+def layout_stub():
+    s = _LayoutStub()
+    yield s
+    s.close()
+
+
+def _layout_server(run_dir, clone="/x/prod/user/demo", origin=""):
+    args = [sys.executable, os.path.abspath(SERVER), os.path.join(str(run_dir), "perm"),
+            "--canvas-shots=" + os.path.join(str(run_dir), "canvasshot")]
+    s = MCPServer(args, env={"FUSED_RENDER_CANVAS_CLONE": clone,
+                             "FUSED_RENDER_CANVAS_NODE": "",
+                             "FUSED_RENDER_CANVAS_PAGES": "",
+                             "FUSED_RENDER_CANVAS_ORIGIN": origin})
+    s.initialize()
+    return s
+
+
+def test_a_layout_picture_is_one_call_to_the_app_and_no_page(run_dir, layout_stub):
+    server = _layout_server(run_dir, origin=layout_stub.origin + "/")
+    try:
+        res = server.call("tools/call", {"name": "canvas_screenshot",
+                                         "arguments": {"what": "layout"}})["result"]
+    finally:
+        server.close()
+    image, text = res["content"]
+    assert image == {"type": "image", "data": base64.b64encode(PNG).decode("ascii"),
+                     "mimeType": "image/png"}
+    note = json.loads(text["text"])
+    assert note["what"] == "layout" and note["framing"] == "layout" and note["udf"] is None
+    assert "canvas.toml on disk" in note["note"] and "whole canvas" in note["note"]
+    assert "output is not drawn" in note["note"]
+    assert (note["nodes"], note["folders"], note["edges"]) == (4, 1, 2)
+    path, headers, body = layout_stub.requests[0]
+    assert path == "/api/canvases/layout-shot"
+    assert headers.get("X-Fused") == "1"
+    assert body == {"path": "/x/prod/user/demo"}
+    # Nothing was parked for a page, and nobody was asked to open the canvas.
+    assert os.listdir(os.path.join(str(run_dir), "canvasshot")) == []
+    assert os.listdir(os.path.join(str(run_dir), "perm")) == []
+
+
+def test_a_layout_picture_can_be_framed_on_a_folder_or_node(run_dir, layout_stub):
+    server = _layout_server(run_dir, origin=layout_stub.origin)
+    try:
+        res = server.call("tools/call", {"name": "canvas_screenshot", "arguments": {
+            "what": "layout", "udf": " Data loading "}})["result"]
+    finally:
+        server.close()
+    assert layout_stub.requests[0][2] == {"path": "/x/prod/user/demo", "focus": "Data loading"}
+    note = json.loads(res["content"][1]["text"])
+    assert note["udf"] == "Data loading" and 'framed on "Data loading"' in note["note"]
+
+
+def test_a_layout_that_cannot_be_drawn_is_a_sentence(run_dir, layout_stub):
+    layout_stub.status = 422
+    layout_stub.answer = {"error": "canvas.toml does not parse: bad"}
+    server = _layout_server(run_dir, origin=layout_stub.origin)
+    try:
+        res = server.call("tools/call", {"name": "canvas_screenshot",
+                                         "arguments": {"what": "layout"}})["result"]
+        assert json.loads(res["content"][0]["text"]) == {"error": "canvas.toml does not parse: bad"}
+        # No browser on the machine: say what to use instead.
+        layout_stub.answer = {"error": "no browser is installed", "no_browser": True}
+        res = server.call("tools/call", {"name": "canvas_screenshot",
+                                         "arguments": {"what": "layout"}})["result"]
+        error = json.loads(res["content"][0]["text"])["error"]
+        assert error.startswith("no browser is installed") and 'what: "canvas"' in error
+    finally:
+        server.close()
+
+
+def test_a_layout_picture_without_the_app_origin_is_a_sentence(run_dir):
+    # A session started by an app that does not draw layouts, or a server
+    # that is gone: the model is told what it can still use.
+    server = _layout_server(run_dir, origin="")
+    try:
+        res = server.call("tools/call", {"name": "canvas_screenshot",
+                                         "arguments": {"what": "layout"}})["result"]
+        assert 'what: "canvas"' in json.loads(res["content"][0]["text"])["error"]
+    finally:
+        server.close()
+    server = _layout_server(run_dir, origin="http://127.0.0.1:9")  # nothing listens
+    try:
+        res = server.call("tools/call", {"name": "canvas_screenshot",
+                                         "arguments": {"what": "layout"}})["result"]
+        assert "could not be drawn" in json.loads(res["content"][0]["text"])["error"]
+    finally:
+        server.close()
