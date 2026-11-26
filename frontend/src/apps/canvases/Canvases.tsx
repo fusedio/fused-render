@@ -831,6 +831,15 @@ export default function Canvases() {
                 </button>
                 <span className="canvases-sub">
                   Complete the sign-in in the browser window that just opened.
+                  {status.login_url && (
+                    <>
+                      {" "}No window?{" "}
+                      <a href={status.login_url} target="_blank" rel="noreferrer">
+                        Open the sign-in page
+                      </a>
+                      .
+                    </>
+                  )}
                 </span>
               </>
             )}

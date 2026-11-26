@@ -29,6 +29,9 @@ export interface CanvasesStatus {
   /** Credentials-file mtime, or null — changes when a (re-)login completes. */
   creds_stamp: number | null;
   login_in_flight: boolean;
+  /** The sign-in page's address while that login waits (null until the server
+   *  has it): the "browser did not open?" link, for WSL / ssh / a container. */
+  login_url?: string | null;
   /** The DEFAULT environment (fusedcli.workbench_env): the catalog's initial
    *  pick, the `fused` wrapper's env outside a clone, share uploads' target.
    *  Canvases keep the env they were cloned from regardless. A string, not a

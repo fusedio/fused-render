@@ -198,6 +198,10 @@ def export_app_env() -> None:
     # folder for any address with a query (_wsl.py), which is every sign-in address.
     from fused_render import _wsl
     _wsl.use_windows_browser()
+    # The same for the CLIs this server spawns (`claude auth login`, `gh auth login`, …): they open their
+    # sign-in page through xdg-open / $BROWSER, not through this process's `webbrowser`.
+    from fused_render.shell.storage import home_dir
+    _wsl.route_children(os.path.join(home_dir(), "wsl-bin"))
     # MUST stay last: every PATH writer above is a synchronous read-modify-write
     # of os.environ["PATH"], and the probe's background thread does the same.
     # Started earlier, it could overwrite a prepend made after it began.

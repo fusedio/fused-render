@@ -389,6 +389,7 @@ export function ToolsStep({
                     doctor={issue.id === "broken" ? setup.doctor : null}
                     onAct={setup.act}
                     onCancelLogin={setup.cancelLogin}
+                    onSubmitLoginCode={setup.submitLoginCode}
                     busy={setup.acting}
                     actionError={issue.action ? setup.actionError : null}
                     doneNote={issue.id === "not-on-path" ? setup.linkedNote : null}

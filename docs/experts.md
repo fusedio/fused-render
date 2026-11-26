@@ -371,7 +371,12 @@ last reply, or after Clear the last folded chat's, so the row keeps its place; o
     POST   /api/experts/{id}/chat/clear       the same object, after folding the main chat
     POST   /api/experts/{id}/seen             {"ok": true}; sets `seen` to now (the Learning tab opened)
     GET    /api/experts/{id}/memory           {"text"}
-    GET    /api/experts/{id}/skills           {"skills": [{name, description, text}]}
+    GET    /api/experts/{id}/skills           {"skills": [{name, description, text, body}]}
+    PUT    /api/experts/{id}/skills/{name} {description, body, new?}
+                                                  the same object; Settings › Skills. `new`: the name is a free slug.
+                                                  An edit changes only the `description` line and the body. Commits
+                                                  "You edited the skill <name>"; 400 a bad name or text, 409 learning
+    DELETE /api/experts/{id}/skills/{name}    the same object; removes the skill's folder; 409 while learning
     GET    /api/experts/{id}/notes            {"notes": [{name, text, at, kind, title}]}, oldest first
     DELETE /api/experts/{id}/notes/{name}     {"ok": true}; 404 "no such note"
     GET    /api/experts/{id}/changes          {"changes": [{sha, at, label, read, changed}]}; commits hand edits first
@@ -429,7 +434,7 @@ false`; a failed config read counts as bots being there) drive it:
   which loads them read-only. A learning run never shows here; while one runs, a send answers "The expert is
   learning; send this when it has finished."
 - **The pane** (`ExpertPane.tsx`, in the preview column): tabs Memory (rendered `memory.md`, its path, and Edit,
-  which opens the file in the explorer), Skills (name and description; a row opens to the text; read-only) and
+  which opens the file in the explorer), Skills (name and description; a row opens to the text; read-only here, edited in Settings › Skills) and
   Learning ("Learning · n" while entries wait). Learning: one sentence on what it learns from; **Waiting · n** with
   **Learn now** (disabled with nothing waiting or while learning) and "Learning now…" or "Last learned <when>.";
   the entries newest first as kind, title and age, a note opening to its text, a conversation to "It will read this
@@ -479,7 +484,7 @@ That is the only one; `FUSED_RENDER_EXPERT_ORIGIN` (§4) and `FUSED_EXPERT_UNATT
 - No enforced limit on the inbox or on `memory.md`, and no compaction by the app: the rule of about 200 lines is
   prompt text. A learning run reads transcripts as they are, so a
   long task costs a reader more (it is told to search, not read whole).
-- No export, clone or import of an expert; no editing skills from the pane (ask the expert).
+- No export, clone or import of an expert; skills are edited in its Settings (`ExpertSkillsSection.tsx`: add, edit, delete, each saved at once) or by asking the expert, not from the pane.
 - Only Claude runs an expert, and only Claude tasks get its tools; plain breakouts get none.
 
 ## 14. Showing work in the chat
