@@ -719,19 +719,12 @@ a.sidebar-rail-btn {
   background: var(--status-done);
 }
 
-/* THE GIT DOOR'S PUSH DOT (ClaudeRail; owner, 2026-11-10): commits a push
-   would move, in blue — the background-job blue (`--status-background`,
-   tokens.css), not the accent, which is lime in dark and read as the
-   running yellow (QA, 2026-11-10) — and, while the top-right corner says something
-   else (a failed check, a check out, something to pull), the same blue dot
-   in the bottom-right corner (`.is-second`, git-dock-lib `gitDoorDots`). */
+/* THE GIT DOOR'S PUSH DOT (ClaudeRail; owner, 2026-11-24): commits a push
+   would move, in the running yellow (`--status-progress`) — was the
+   background-job blue until 2026-11-24. One dot only now (git-dock-lib
+   `gitDoorDot`): red > checking yellow > push yellow > green. */
 .sidebar-rail-dot.is-push {
-  background: var(--status-background);
-}
-
-.sidebar-rail-dot.is-second {
-  top: auto;
-  bottom: 4px;
+  background: var(--status-progress);
 }
 
 /* AND THE AI MODELS ROW'S, which is another row's fact in the same vocabulary

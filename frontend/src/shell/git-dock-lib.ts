@@ -40,18 +40,17 @@ export function gitPullCount(r: RailGitRepo): number {
 
 export type GitDoorDot = "attention" | "running" | "unread" | "push";
 
-/** THE GIT DOOR'S TWO DOTS (owner, 2026-11-10): the top-right one red (the
- *  last check failed) > yellow (checking) > green (something to pull) > blue
- *  (something to push); a second, bottom-right, blue while there is something
- *  to push and the top one is not already saying so. */
-export function gitDoorDots(s: { checking: boolean; checked: boolean | null; repo: RailGitRepo }): {
-  top: GitDoorDot | null;
-  second: "push" | null;
-} {
-  const push = gitPushCount(s.repo) > 0;
-  const check = gitChipDot({ checking: s.checking, checked: s.checked, behind: gitPullCount(s.repo) });
-  const top: GitDoorDot | null = check ?? (push ? "push" : null);
-  return { top, second: push && top !== "push" ? "push" : null };
+/** THE GIT DOOR'S DOT (owner, 2026-11-24): ONE dot, top-right, by priority —
+ *  red (the last check failed) > yellow (checking) > yellow (something to
+ *  push) > green (something to pull). Push wears the running yellow
+ *  (owner's pick over the old background blue); the bottom-right second
+ *  dot is gone. Null: nothing to say. */
+export function gitDoorDot(s: { checking: boolean; checked: boolean | null; repo: RailGitRepo }): GitDoorDot | null {
+  if (s.checked === false) return "attention";
+  if (s.checking) return "running";
+  if (gitPushCount(s.repo) > 0) return "push";
+  if (gitPullCount(s.repo) > 0) return "unread";
+  return null;
 }
 
 /** The push / pull counts in words, for the door's tooltip and label: what
