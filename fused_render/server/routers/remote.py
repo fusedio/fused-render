@@ -57,7 +57,7 @@ def _gate() -> JSONResponse | None:
     from fused_render.shell import prefs
 
     if not prefs.canvases_enabled():
-        return _fail("disabled", "the Fused integration is off — turn on Canvases in Preferences")
+        return _fail("disabled", "the Fused integration is off — turn on Fused Workbench in Preferences")
     return None
 
 

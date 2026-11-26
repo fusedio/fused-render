@@ -84,7 +84,7 @@ export function FusedSettingsModal({
 
   return (
     <Modal
-      title="Custom Fused environment"
+      title="On-prem Fused environment"
       onClose={onClose}
       busy={busy}
       dirty={dirty}

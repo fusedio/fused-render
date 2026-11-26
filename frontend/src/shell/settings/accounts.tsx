@@ -9,7 +9,7 @@
 // — the wait is a person finishing a browser round trip — and is otherwise idle.
 import { useCallback, useEffect, useRef, useState, useSyncExternalStore } from "react";
 import {
-  WORKBENCH_ENVS,
+  USER_WORKBENCH_ENVS,
   cancelLogin,
   loginOutcome,
   getCanvasesStatus,
@@ -21,22 +21,27 @@ import {
   type WorkbenchEnv,
 } from "@apps/canvases/api";
 import { FusedSettingsModal } from "@apps/canvases/FusedSettingsModal";
+import { publishCanvasesEnabled } from "@apps/canvases/feature-flag";
 import {
   cancelHfLogin,
   getHfAuth,
   hfLogout,
+  putCanvasesEnabled,
   putWorkbenchEnvsEnabled,
   startHfLogin,
   type HfAuth,
 } from "@platform/lib/api";
 import { ErrorBanner } from "@platform/ui/ErrorBanner";
 import { Button } from "@platform/shadcn/ui/button";
-import { RowSwitch, SettingRow } from "./SettingRow";
+import { RowSwitch, SettingRow, type PrefControlProps } from "./SettingRow";
 
 const FUSED_LOGIN_POLL_MS = 1500;
 
-// FUSED WORKBENCH: one row per environment (Unstable, Production, Custom),
-// each a switch. An environment that is on shows its own sign-in line under
+// FUSED WORKBENCH (Preferences > Fused Workbench): one row per environment a
+// person can turn on — Fused hosted (prod) and On-prem (custom) — each a
+// switch. Unstable has no row (owner, 2026-11-26): the server adds it to the
+// enabled list by itself for a Fused employee signed in to Fused hosted
+// (fusedcli._staff_unstable), and only the Canvases picker ever shows it. An environment that is on shows its own sign-in line under
 // the switch; Custom shows its config line first, and its sign-in unlocks
 // once ~/.fused/settings.toml names a deployment. The switches write
 // `workbench_envs_enabled` (PUT /api/prefs): the canvas catalog's environment
@@ -107,10 +112,13 @@ function useWorkbenchShared(): WorkbenchShared {
   return shared;
 }
 
-/** The environments turned on, as the server resolved them. An older server
- *  answers without the list: every environment counts as on then. */
+/** The environments a person turned on, as the server resolved them —
+ *  unstable left out, since it is never theirs to switch. An older server
+ *  answers without the list: both count as on then. */
 const enabledEnvsOf = (s: CanvasesStatus): WorkbenchEnv[] =>
-  s.enabled_envs ? s.enabled_envs.filter(isWorkbenchEnv) : [...WORKBENCH_ENVS];
+  s.enabled_envs
+    ? s.enabled_envs.filter(isWorkbenchEnv).filter((e) => USER_WORKBENCH_ENVS.includes(e))
+    : [...USER_WORKBENCH_ENVS];
 
 const hostOf = (url: string): string => {
   try {
@@ -120,7 +128,7 @@ const hostOf = (url: string): string => {
   }
 };
 
-function WorkbenchEnvRow({ env }: { env: WorkbenchEnv }) {
+function WorkbenchEnvRow({ env, prefs, onChange }: { env: WorkbenchEnv } & PrefControlProps) {
   const { status, error: loadError, toggling: busy } = useWorkbenchShared();
   const [error, setError] = useState<string | null>(null);
   const [editing, setEditing] = useState(false);
@@ -137,8 +145,19 @@ function WorkbenchEnvRow({ env }: { env: WorkbenchEnv }) {
     setWorkbenchShared({ toggling: true });
     setError(null);
     try {
-      const want = WORKBENCH_ENVS.filter((e) => (e === env ? next : enabled.includes(e)));
+      if (!next && lastOn) {
+        // BOTH OFF IS WORKBENCH OFF (owner, 2026-11-26): the last environment
+        // is not switched off — Fused Workbench is, and this environment
+        // stays the one on for when it comes back. The list is never empty.
+        const saved = await putCanvasesEnabled(false);
+        publishCanvasesEnabled(saved.canvases.enabled);
+        onChange(saved);
+        return;
+      }
+      const want = USER_WORKBENCH_ENVS.filter((e) => (e === env ? next : enabled.includes(e)));
       const saved = await putWorkbenchEnvsEnabled(want);
+      // The page's own copy too: the proxy row under On-prem shows with it.
+      onChange(saved);
       // The write's own answer first: if the read below fails, the next
       // switch must still build its list from what is now stored.
       const confirmed = saved.workbench?.enabled;
@@ -181,12 +200,12 @@ function WorkbenchEnvRow({ env }: { env: WorkbenchEnv }) {
           <RowSwitch
             id={id}
             checked={on}
-            disabled={busy || pinned || lastOn}
+            disabled={busy || pinned || !prefs.canvases?.enabled}
             title={
               pinned
                 ? "Pinned by FUSED_RENDER_WORKBENCH_ENV"
                 : lastOn
-                  ? "At least one environment stays on"
+                  ? "Switching this off turns Fused Workbench off"
                   : undefined
             }
             onChange={(v) => void onToggle(v)}
@@ -280,7 +299,9 @@ function WorkbenchEnvSignIn({ env, locked }: { env: WorkbenchEnv | null; locked:
       try {
         const who = await getWhoami(env ?? undefined);
         if (!current()) return s;
-        setHandle(who.handle);
+        // The email when the account has one: it is what decides whether
+        // unstable joins the Canvases picker, so it is what the line shows.
+        setHandle(who.email || who.handle);
       } catch (e) {
         if (!current()) return s;
         setHandle(null);
@@ -454,9 +475,8 @@ function WorkbenchEnvSignIn({ env, locked }: { env: WorkbenchEnv | null; locked:
   );
 }
 
-export const WorkbenchUnstableControl = () => <WorkbenchEnvRow env="unstable" />;
-export const WorkbenchProdControl = () => <WorkbenchEnvRow env="prod" />;
-export const WorkbenchCustomControl = () => <WorkbenchEnvRow env="custom" />;
+export const WorkbenchProdControl = (props: PrefControlProps) => <WorkbenchEnvRow env="prod" {...props} />;
+export const WorkbenchCustomControl = (props: PrefControlProps) => <WorkbenchEnvRow env="custom" {...props} />;
 
 // Hugging Face (server/routers/hf_auth.py, D402): huggingface_hub's own
 // device-code login. Someone who needs a specific fine-grained token exports

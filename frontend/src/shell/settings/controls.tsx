@@ -54,7 +54,6 @@ import {
   HuggingFaceControl,
   WorkbenchCustomControl,
   WorkbenchProdControl,
-  WorkbenchUnstableControl,
 } from "./accounts";
 import {
   CallLogControl,
@@ -111,7 +110,6 @@ export const CONTROLS: Record<SettingId, ComponentType<PrefControlProps>> = {
   lan: LanControl,
   "lan-remote": LanRemoteControl,
   connections: ConnectionsPointer,
-  "workbench-unstable": WorkbenchUnstableControl,
   "workbench-prod": WorkbenchProdControl,
   "workbench-custom": WorkbenchCustomControl,
   huggingface: HuggingFaceControl,

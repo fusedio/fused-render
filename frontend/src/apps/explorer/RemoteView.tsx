@@ -132,7 +132,7 @@ function RemoteErrorBody({ error, onRetry }: { error: RemoteApiError; onRetry?: 
   switch (error.code) {
     case "disabled":
       title = "The canvas integration is off";
-      detail = "Turn on Canvases in Settings to open S3 addresses.";
+      detail = "Turn on Fused Workbench in Preferences to open S3 addresses.";
       action = (
         <Button size="sm" variant="outline" onClick={() => void navigateUrl(SETTINGS_URL)}>
           Open Settings

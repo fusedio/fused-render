@@ -1170,6 +1170,9 @@ def api_canvases_status(env: str = ""):
     # frames a canvas reads status first, so the proxy is up (or retargeted
     # after a settings.toml edit) by the time `embed_url` below is used.
     _apply_embed_proxy()
+    # Unstable joins `enabled_envs` for a Fused employee's hosted sign-in; the
+    # verdict needs a whoami, run in the background when none is cached.
+    _kick_staff_check()
     login = _login_for(credentials_file(auth_env))
     return {
         "cli_found": cli is not None,
@@ -1729,7 +1732,21 @@ def api_canvases_whoami(env: str = "", x_fused: str | None = Header(default=None
         if bad is not None:
             return bad
 
+    result = _whoami_result(env)
+    if result[0] == "err":
+        return _error(result[1], result[2])
+    return result[1]
+
+
+def _whoami_result(env: str):
+    """`fused workbench whoami` for `env`, through the CLI cache: `("ok",
+    {handle, email, raw})` or `("err", message, status)`. An answer for a
+    hosted env (prod/unstable, one shared `fused login` store) also records
+    whether that sign-in is a Fused employee's, which is what turns unstable
+    on (`record_staff_email`)."""
+
     def compute():
+        sig_before = _creds_sig(env)
         proc, err = _run_cli(["workbench", "--format", "json", "whoami"], WHOAMI_TIMEOUT, env)
         if err is not None:
             return _err_of(err)
@@ -1753,17 +1770,107 @@ def api_canvases_whoami(env: str = "", x_fused: str | None = Header(default=None
             ),
             None,
         )
-        return ("ok", {"handle": handle, "raw": data})
+        # `/user/self` carries the account email (the fused SDK's own context
+        # reads `whoami()["email"]`). Shown on the Preferences sign-in line.
+        email = data.get("email") if isinstance(data.get("email"), str) else None
+        # Only when the sign-in did not change under the run (a logout, or a
+        # login finishing): the answer would be the previous account's, and
+        # its verdict must not outlive it (CodeRabbit, PR #2476).
+        if env in _HOSTED_ENVS and _creds_sig(env) == sig_before:
+            record_staff_email(email)
+        return ("ok", {"handle": handle, "email": email, "raw": data})
 
     # An hour only for an answer WITH a handle; a logged-out "no handle" keeps
     # the short default so a login lands within a minute.
-    result = _cached_cli(
+    return _cached_cli(
         "whoami", env, compute,
         lambda payload: _WHOAMI_CACHE_TTL_S if payload.get("handle") else _CLI_CACHE_TTL_S,
     )
-    if result[0] == "err":
-        return _error(result[1], result[2])
-    return result[1]
+
+
+# The envs whose sign-in is hosted Fused's one shared `fused login` store.
+_HOSTED_ENVS = ("prod", "unstable")
+
+
+def record_staff_email(email: object) -> None:
+    """Store whether the hosted sign-in belongs to a Fused employee
+    (`fusedcli.is_staff_email`) — the verdict `fusedcli._staff_unstable`
+    reads. Written only when it changes; the CLI wrapper is re-exported then,
+    since the default environment it bakes in may move with it. A whoami that
+    named no email leaves the last verdict alone rather than revoking it on a
+    payload hiccup."""
+    if not isinstance(email, str) or not email:
+        return
+    from fused_render import fusedcli
+
+    _set_staff(fusedcli.is_staff_email(email))
+
+
+def _set_staff(staff: bool) -> None:
+    from fused_render import fusedcli
+    from fused_render.shell import prefs
+
+    if (prefs.read_prefs().get(fusedcli.STAFF_PREF_KEY) is True) == staff:
+        return
+    prefs.write_pref(fusedcli.STAFF_PREF_KEY, staff)
+    try:
+        fusedcli.export_fused_cli_env()
+    except Exception:  # noqa: BLE001 — the verdict is stored; the wrapper catches up later
+        logger.exception("re-exporting the fused wrapper after a staff verdict failed")
+
+
+def _forget_staff(store: str) -> None:
+    """FAIL CLOSED: the verdict belongs to one hosted sign-in, so a logout of
+    the hosted store, or a sign-in starting on it, drops it. Only a whoami for
+    the login that follows can set it again — never a slow or failed one
+    leaving the previous account's verdict standing for a new one."""
+    if store == credentials_file("prod"):
+        _set_staff(False)
+
+
+_staff_check_lock = threading.Lock()
+_staff_check_running = False
+# When the last background run started: a whoami that fails (offline, a dead
+# token) is never cached, so without this every status read would spawn
+# another CLI interpreter. One try per short-cache window.
+_staff_check_last = 0.0
+
+
+def _kick_staff_check() -> None:
+    """Ask the hosted whoami in the background when no answer for the current
+    hosted sign-in is cached, so a Fused employee's unstable shows up without
+    anyone opening a page that asks whoami itself. Cheap when the cache holds
+    an answer (an hour), never blocks the status read, one run at a time.
+    Nothing to do while Workbench is off, signed out, or pinned."""
+    global _staff_check_running, _staff_check_last
+    from fused_render.shell import prefs
+
+    if workbench_env_locked() or not prefs.canvases_enabled() or not _logged_in("prod"):
+        return
+    with _CLI_CACHE_LOCK:
+        hit = _cli_cache.get(("whoami", "prod", _creds_sig("prod")))
+    if hit is not None and hit[0] > time.monotonic():
+        return
+    if fused_cli() is None:
+        return
+    with _staff_check_lock:
+        now = time.monotonic()
+        if _staff_check_running or now - _staff_check_last < _CLI_CACHE_TTL_S:
+            return
+        _staff_check_running = True
+        _staff_check_last = now
+
+    def run() -> None:
+        global _staff_check_running
+        try:
+            _whoami_result("prod")
+        except Exception:  # noqa: BLE001 — a background probe must never raise
+            logger.exception("background whoami for the staff check failed")
+        finally:
+            with _staff_check_lock:
+                _staff_check_running = False
+
+    threading.Thread(target=run, name="fused-staff-check", daemon=True).start()
 
 
 def _optional_env(env: str) -> tuple[str | None, JSONResponse | None]:
@@ -1833,6 +1940,7 @@ def api_canvases_login(env: str = "", x_fused: str | None = Header(default=None)
             except OSError as e:
                 return _error(f"could not run the fused CLI ({cli.command[0]}): {e}")
             _cli_cache_clear()
+            _forget_staff(store)
             login = _ActiveLogin(proc=proc, started_at=time.time(), store=store)
             _active_login = login
             threading.Thread(target=_watch_login, args=(login,), daemon=True).start()
@@ -3081,6 +3189,7 @@ def api_canvases_logout(env: str = "", x_fused: str | None = Header(default=None
             manager.resume(rebaseline=False)
         return err
     _cli_cache_clear()
+    _forget_staff(store)
     with _SYNC_LOCK:
         signed_out = on_store()
         for key, _ in signed_out:
