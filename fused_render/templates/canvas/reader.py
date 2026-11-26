@@ -36,6 +36,7 @@ Called by `fused.runPython("./reader.py", {file})`.
 # constant lives INSIDE main() and every import is done inside main(). Nothing
 # is referenced at module level except the entrypoint and its registration shim.
 def main(file: str = "") -> dict:
+    import math
     import os
     import tomllib
 
@@ -55,8 +56,11 @@ def main(file: str = "") -> dict:
     NOTES_BYTES = 2_000_000
 
     def is_num(v):
-        # bool is an int subclass in Python — reject it as a coordinate.
-        return isinstance(v, (int, float)) and not isinstance(v, bool)
+        # bool is an int subclass in Python — reject it as a coordinate. TOML
+        # also writes `nan` and `inf`: neither is a place or a size, and
+        # neither survives the result's JSON encoding.
+        return (isinstance(v, (int, float)) and not isinstance(v, bool)
+                and math.isfinite(v))
 
     def num(v, default=0):
         return v if is_num(v) else default
@@ -190,10 +194,12 @@ def main(file: str = "") -> dict:
     # ---- stacking ----------------------------------------------------------
     # React Flow's own two rules (`updateChildNode`). Folders that hold
     # nodes are spread apart: each is lifted by 10 times its turn, counted in
-    # the order the rows of their first children come in the file (a later
-    # child of an earlier folder sets the count back to that folder's turn,
-    # as React Flow does). Then a child sits one above its folder unless its
-    # own zIndex is already higher.
+    # the order the rows of their first children come in the file. React
+    # Flow keeps ONE running count and sets it back to a folder's own turn
+    # whenever a later child of that folder comes up, so children rows
+    # ordered A, B, A, C give A 0, B 10 and C 10 (not 20). That is what the
+    # workbench shows, so it is kept here on purpose. Then a child sits one
+    # above its folder unless its own zIndex is already higher.
     turn = -1
     turns = {}
     for node in nodes:

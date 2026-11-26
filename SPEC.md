@@ -2254,9 +2254,13 @@ offer it — a plain `.toml` never shows the mode at all.
   `ax`/`ay` (absolute position), a node its `parent` (index into `folders`,
   or null), and both a `z`: the row's `zIndex` (a row without one stacks by
   its place in the file, `index + 1`), with React Flow's two rules applied —
-  folders that hold nodes are lifted 10 apart in the order their first
-  children's rows come, and a child sits one above its folder unless its own
-  `zIndex` is already higher. **What a node is.** `kind` comes from its source
+  folders that hold nodes are lifted by 10 times their turn, counted in the
+  order their first children's rows come (React Flow keeps one running count
+  and sets it back to a folder's own turn at a later child of that folder, so
+  children rows ordered A, B, A, C lift C like B: kept, as it is what the
+  workbench shows), and a child sits one above its folder unless its own
+  `zIndex` is already higher. A number that is not finite (`nan`, `inf`) is
+  no number. **What a node is.** `kind` comes from its source
   file: `.py` udf, `.json` widget, `.html` html, `.md` note (no file: a row
   with `textBoxColor` is a note, else a udf). A node also carries the row's
   display keys (`textBoxColor`, `textBoxGradient`, `textBoxScaleFactor`,

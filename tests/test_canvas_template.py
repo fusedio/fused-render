@@ -470,6 +470,46 @@ def test_reader_stacking_follows_react_flow(reader, folders_canvas):
     assert folders["First"]["zIndex"] == 0   # the row's own value is kept
 
 
+def test_reader_stacking_keeps_react_flows_running_count(reader, tmp_path):
+    # Children rows ordered A, B, A, C: React Flow sets its one running count
+    # back to A's turn at the second A, so C takes turn 1 like B. The
+    # workbench shows 0, 10, 10, and so does the reader.
+    d = tmp_path / "turns"
+    d.mkdir()
+    rows = ['type = "canvas"\nversion = 2\n[canvas]\n']
+    for name, kids in (("A", '["a1", "a2"]'), ("B", '["b1"]'), ("C", '["c1"]')):
+        rows.append('[[canvas.nodes]]\nudfName = "%s"\ntype = "udf-folder"\n'
+                    'childUdfOrder = %s\nx = 0\ny = 0\nzIndex = 0\n' % (name, kids))
+    for name in ("a1", "b1", "a2", "c1"):
+        rows.append('[[canvas.nodes]]\nudfName = "%s"\nx = 0\ny = 0\nzIndex = 1\n' % name)
+    (d / "canvas.toml").write_text("".join(rows))
+    out = reader.main(file=str(d / "canvas.toml"))
+    assert {f["udfName"]: f["z"] for f in out["folders"]} == {"A": 0, "B": 10, "C": 10}
+    assert {n["udfName"]: n["z"] for n in out["nodes"]} == {"a1": 1, "b1": 11, "a2": 1, "c1": 11}
+
+
+def test_reader_drops_numbers_that_are_not_finite(reader, tmp_path):
+    # TOML can say `nan` and `inf`. Neither is a position, a size or a scale,
+    # and the result must stay JSON (the page gets it through a strict encoder).
+    import json
+
+    d = tmp_path / "nonfinite"
+    d.mkdir()
+    (d / "canvas.toml").write_text(
+        'type = "canvas"\nversion = 2\n[canvas]\n'
+        '[canvas.viewport]\nx = nan\ny = 0\nzoom = 1\n'
+        '[canvas.viewportBounds]\nminX = 0\nminY = 0\nmaxX = inf\nmaxY = 10\n'
+        '[[canvas.nodes]]\nudfName = "n"\nx = inf\ny = -inf\nwidth = nan\nzIndex = 2\n'
+        'textBoxColor = "#FFF9C4"\ntextBoxScaleFactor = nan\nnodeDescriptionScaleFactor = inf\n'
+    )
+    out = reader.main(file=str(d / "canvas.toml"))
+    json.dumps(out, allow_nan=False)
+    node = out["nodes"][0]
+    assert (node["x"], node["y"], node["width"]) == (0, 0, 350)
+    assert node["textBoxScaleFactor"] is None and node["nodeDescriptionScaleFactor"] is None
+    assert out["viewport"] is None and out["viewportBounds"] is None
+
+
 def test_reader_kinds_sizes_and_note_text(reader, folders_canvas):
     out = reader.main(file=str(folders_canvas / "canvas.toml"))
     by = {}
@@ -539,6 +579,16 @@ def test_template_assets_exist():
         assert os.path.isfile(os.path.join(TEMPLATES_DIR, folder, url.rsplit("/", 1)[1]))
     assert "http://" not in html.replace("http://www.w3.org/", "")
     assert "https://" not in html
+
+
+def test_template_looks_names_up_by_own_key_only():
+    # A node may be called "constructor" or "toString": a lookup by udfName
+    # must never find something Object.prototype holds.
+    with open(os.path.join(TEMPLATES_DIR, "canvas", "template.html"), encoding="utf-8") as f:
+        html = f.read()
+    assert "var byName = Object.create(null);" in html
+    assert "Object.prototype.hasOwnProperty.call(siblingsOf, name)" in html
+    assert "siblings[" not in html
 
 
 def test_reader_output_is_json_serializable(reader, canvas_folder):

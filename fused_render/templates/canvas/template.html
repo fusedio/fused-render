@@ -588,7 +588,13 @@
   var nodes = Array.isArray(data.nodes) ? data.nodes : [];
   var folders = Array.isArray(data.folders) ? data.folders : [];
   var edges = Array.isArray(data.edges) ? data.edges : [];
-  var siblings = (data.siblings && typeof data.siblings === "object") ? data.siblings : {};
+  // Looked up by udfName, which is any text a file can hold: own keys only,
+  // so a node called "constructor" does not find Object's.
+  var siblingsOf = (data.siblings && typeof data.siblings === "object") ? data.siblings : {};
+  function siblingExts(name) {
+    var exts = Object.prototype.hasOwnProperty.call(siblingsOf, name) ? siblingsOf[name] : null;
+    return Array.isArray(exts) ? exts : [];
+  }
   var viewport = data.viewport || null;
   var viewportBounds = data.viewportBounds || null;
 
@@ -603,7 +609,7 @@
   var all = folders.concat(nodes);
   // An edge names its two ends by udfName; where two rows share a name the
   // later one is the edge's (the workbench's own lookup).
-  var byName = {};
+  var byName = Object.create(null);
   folders.forEach(function (f) { if (f.udfName) byName[f.udfName] = f; });
   nodes.forEach(function (n) { if (n.udfName) byName[n.udfName] = n; });
 
@@ -770,7 +776,7 @@
       }
       var stand = el("div", "stand-in");
       stand.appendChild(icon(n.kind));
-      var exts = siblings[n.udfName] || [];
+      var exts = siblingExts(n.udfName);
       var ext = exts.indexOf(KIND_EXT[n.kind]) >= 0 ? KIND_EXT[n.kind] : (exts[0] || "");
       stand.appendChild(el("div", "file", (n.udfName || "") + ext));
       if (n.visible === false) stand.appendChild(el("div", "", "Hidden"));
@@ -1039,7 +1045,7 @@
   }
 
   function showNode(n) {
-    var exts = siblings[n.udfName] || [];
+    var exts = siblingExts(n.udfName);
     var files = exts.map(function (ext) {
       var abs = fileDir.replace(/\/$/, "") + "/" + n.udfName + ext;
       return '<a href="' + esc(urlForFsPath(abs)) + '" target="_blank" rel="noopener">'
@@ -1120,6 +1126,13 @@
     // once that click has been handled.
     setTimeout(function () { dragMoved = false; }, 0);
   });
+  // The click that ends a pan is nobody's: not a selection, and not a visit
+  // to a link in a note the pan happened to end on.
+  stage.addEventListener("click", function (e) {
+    if (!dragMoved) return;
+    e.preventDefault();
+    e.stopPropagation();
+  }, true);
   stage.addEventListener("click", function (e) {
     if (dragMoved || onChrome(e.target)) return;
     // A click on a node or folder is theirs; one on the empty canvas clears.
