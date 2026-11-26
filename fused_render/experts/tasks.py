@@ -189,6 +189,8 @@ def watch(home: str, rec: dict, resumed: bool = False) -> None:
                 st = str(row.get("status") or "")
                 if st in ("in_progress", "queued", "needs_attention", "blocked"):
                     seen = True
+                if rec.get("base") is None and row.get("session_id"):
+                    seen = True  # it ran and ended inside one poll: a row with a session has started
                 if rec.get("base") is not None and row and tasktools.last_active(row) > float(rec["base"]):
                     seen = True  # a follow-up that ran between two polls
                 if st in ("needs_attention", "blocked") and row.get("blocked_reason"):
@@ -230,6 +232,17 @@ def _catch_up(home: str, rows: list) -> list:
     return out
 
 
+def _news(home: str, rows: list | None = None) -> str:
+    """What the expert has not heard yet, as the head of a tool answer: the notes that waited, and the tasks that
+    ended with no watcher. Every tool answers with it, `task_start` included. Never raises."""
+    try:
+        notes = _take_notes(home) + _catch_up(home, tasktools.rows() if rows is None else rows)
+    except Exception:  # noqa: BLE001 — the listing is down: the notes wait for the next call
+        return ""
+    return ("Since you last looked (tell the user what they have not heard):\n"
+            + "\n".join(f"- {n}" for n in notes) + "\n\n") if notes else ""
+
+
 # ------------------------------------------------------------------- call ---
 def call(spec, name: str, args) -> dict:
     """Run one task tool for expert `spec`: `{content, isError}`. Never raises."""
@@ -248,15 +261,13 @@ def call(spec, name: str, args) -> dict:
             if rec["entry_id"]:
                 _record(home, rec)
                 watch(home, rec)
-            return _result(f"ok, task started with id {r['entry_id'] or r['key']} in {fields['folder']}. It asks the user "
+            return _result(_news(home) + f"ok, task started with id {r['entry_id'] or r['key']} in {fields['folder']}. It asks the user "
                            "before risky steps and works on its own from here; you are told in this chat when it "
                            "finishes or waits on the user. Tell the user it is started and that they can follow it "
                            "under Tasks; do not wait for it.", True)
         rows = tasktools.rows()
         own = _own(home)
-        notes = _take_notes(home) + _catch_up(home, rows)
-        head = ("Since you last looked (tell the user what they have not heard):\n"
-                + "\n".join(f"- {n}" for n in notes) + "\n\n") if notes else ""
+        head = _news(home, rows)
         if name == tasktools.LIST:
             return _result(head + tasktools.list_text(rows, own, False, query=d.get("query") or "",
                                                       archived=d.get("archived") is True), True)

@@ -2022,7 +2022,8 @@ door `build` already used). Every bot gets, on both engines:
   may not be inside a bot's private `.fused/` folder, whose sessions the
   Tasks listing drops as bot conversations, `paths.is_bot_workdir`; no
   `folder` is a scratch folder of the task's own,
-  `<workspace>/tasks/<slug of the title>`, made when the task starts). The card (`tasktools.start_preview`) shows the title,
+  `<workspace>/tasks/<slug of the title>`, `-2`, `-3`, … when that name is
+  taken, made when the task starts). The card (`tasktools.start_preview`) shows the title,
   the folder, how it will run and the prompt (first 1200 characters). The
   permission mode is not the model's to pick: `tools._task_mode` reads the
   bot's Builds setting as `build` does (`BUILD_MODES`: scoped asks before
@@ -2038,6 +2039,8 @@ door `build` already used). Every bot gets, on both engines:
   last reply), and the stall notices of `_surface_build_stall` reworded
   ("The task … is waiting for your OK to run …", "Answer Claude under
   Tasks"). Both are `source: "build"` so every existing consumer holds (a
+  task whose row already has a session counts as started, so one that ran
+  or failed inside a single 15 s poll is still reported; a
   hand-off does not take it for the target's result, the thread does not
   treat it as a live question), and carry `task: {name, dir, entry_id,
   key}`; the stall's `build` ref has `kind: "task"`, which is all the card
@@ -2050,6 +2053,11 @@ door `build` already used). Every bot gets, on both engines:
   `meta["builds"]` on purpose: a build's folder is an app the bot owns
   (`apptools.is_owned`: its scripts run without a card), a task's folder is
   the user's project.
+- **The gate and the run agree.** `_task_risk` records the task it judged
+  (`bot._task_gated`: tool, id, own or not) and `_task_exec` runs a send /
+  stop / archive only on that same reading. A target the gate could not
+  resolve (the listing failed) records nothing, so a write can never run
+  on a task nobody was asked about; the model is told to call again.
 - **Reads are web text at one remove**: `task_list` / `task_read` flip
   Super Bot's `web_touched` like `bot_chat` (agent_engine `_act`).
 - Not there: delete and erase, answering a task's permission card (the

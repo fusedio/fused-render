@@ -266,7 +266,14 @@ def scratch_folder(title: str) -> str:
     Not inside a bot's own folder: a session whose cwd is under `<bot>/.fused/` is a bot conversation to the
     Tasks listing (`paths.is_bot_workdir`) and would never show as a task."""
     from fused_render.bots import paths as bpaths
-    return os.path.join(bpaths.workspace_dir(), "tasks", bpaths.slug(title))
+    base = os.path.join(bpaths.workspace_dir(), "tasks", bpaths.slug(title))
+    # Two tasks never share a folder (they would queue behind each other and write over each other's files): a
+    # name already in use gets -2, -3, … The first free name is the same on the card and at the start.
+    cand, n = base, 1
+    while os.path.exists(cand):
+        n += 1
+        cand = f"{base}-{n}"
+    return cand
 
 
 def start_check(d: dict, default_folder: str = ""):

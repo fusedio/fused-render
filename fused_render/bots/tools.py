@@ -1404,6 +1404,10 @@ def _task_risk(bot, act: str, d: dict) -> str:
     if act not in TASK_WRITE_TOOLS:
         return ""
     row, err, mine = _task_target(bot, d)
+    # What the gate judged, for _task_exec: it runs the write only on this same task. A target the gate could not
+    # resolve (the listing failed, or the task was not there yet) records nothing, so a later read that does find
+    # it cannot run a write nobody was asked about.
+    bot._task_gated = None if err else (act, tasktools.task_id(row), mine)
     if err or (not mine and routine_run(bot)):
         return ""
     return ("" if mine else "This bot did not start that task. ") + _TASK_RISK[act]
@@ -1439,6 +1443,10 @@ def _task_exec(bot, act: str, d: dict) -> tuple[str, str]:
             return label, tasktools.read_text(row, d.get("last"))
         if not mine and routine_run(bot):
             return label, unattended
+        gated, bot._task_gated = getattr(bot, "_task_gated", None), None
+        if gated != (act, tasktools.task_id(row), mine):
+            # The approval check (risk / must_ask) did not see this task as it is now: never run on a guess.
+            return label, "error: the task list changed while this was being checked; nothing was done. Call it again."
         if act == tasktools.SEND:
             out = tasktools.send(row, d.get("text"))
             if out.startswith("ok") and mine:

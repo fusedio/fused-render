@@ -620,7 +620,8 @@ docs/bots.md §12, and the tool definitions, the listing and the calls are the s
   `tasks._tell` puts that as one message into the main chat's live session (`agent._live_host` + `agent._send`,
   the path a page's `fused.tasks.send` takes), marked "[Task update from the app, not typed by the user]". With
   no live session (the chat is closed and reaped, a learning run holds the home) the note waits in the state
-  (`task_notes`, last 20) and is put at the top of the answer of the expert's next task tool call. Watchers do
+  (`task_notes`, last 20) and is put at the top of the answer of the expert's next task tool call, `task_start`
+  included (`tasks._news`). Watchers do
   not survive a restart: the next tool call catches up (`tasks._catch_up`: an ended task is reported then, one
   still going is watched again).
 - Not there: a tag on the task row saying which expert started it (the Tasks page shows it as any task), seeing
