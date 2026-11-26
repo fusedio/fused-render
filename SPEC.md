@@ -2246,43 +2246,102 @@ offer it — a plain `.toml` never shows the mode at all.
   are `[src, dst]` name pairs; malformed nodes/edges are **skipped, never
   fatal**. `siblings` maps each node's udfName → the sibling file extensions
   (`.py`/`.json`/`.md`/`.html`) present next to the toml, from one
-  `os.listdir`. **Engine isolation:** the whole body — helpers and imports —
-  lives inside `main()`; nothing but the entrypoint and its registration shim
-  is at module level.
-- **CV-4** **Viewer (`template.html`).** A single full-viewport `<canvas>` in
-  world space (toml coordinates), visually replicating the Flow app canvas
-  (its widget.css tokens: #070a0f bg with a 50-gap dot grid, #0d1219 node
-  cards with a #11171f header bar, bezier edges at 22% text tone with a
-  bg-colored legibility outline and target arrowhead, folder regions as a
-  color wash with a solid title pill above; folderColor `series-N`/`chart-N`
-  keys map into the series palette, default purple). Draw order matches Flow's
-  zIndex layering: folder regions → edges → node cards (title header,
-  description/udfName body, sibling-extension chips; `visible:false` ghosted
-  at 40% alpha) → folder title pills. Geometry, text, and borders are drawn in
-  **world units** so everything scales with zoom exactly like ReactFlow's
-  transformed DOM; only edge strokes are screen-constant (`min(5, 1.5/zoom)`).
-  Hovering a node brightens its border and shows a title/description tooltip.
-  Empty canvas → a centered "empty canvas" note; a reader error surfaces
-  through the runtime's traceback overlay (the header still renders first).
-- **CV-5** **Camera & URL sync.** Start from `[canvas.viewport]` (x/y/zoom)
-  when present, else **fit-to-bounds** of all nodes with a 10% margin (fit
-  clamps zoom to ≤1; interactive zoom clamps to [0.1, 2], Flow's min/max).
-  Wheel zooms to the cursor, drag pans; a bottom-right glass cluster offers
-  zoom in/out and an animated **Fit** (600 ms cubic ease-out, instant under
-  `prefers-reduced-motion`). Camera
+  `os.listdir`. **Where things are (D1511).** A row's `x`/`y` is the React
+  Flow node position, which for a node inside a folder is **relative to that
+  folder**. The reader resolves it: a folder's `childUdfOrder` names its
+  children, each name taking the first node of that name no folder has taken
+  (the workbench's `hydrateFolderParentage`); every node and folder carries
+  `ax`/`ay` (absolute position), a node its `parent` (index into `folders`,
+  or null), and both a `z`: the row's `zIndex` (a row without one stacks by
+  its place in the file, `index + 1`), with React Flow's two rules applied —
+  folders that hold nodes are lifted by 10 times their turn, counted in the
+  order their first children's rows come (React Flow keeps one running count
+  and sets it back to a folder's own turn at a later child of that folder, so
+  children rows ordered A, B, A, C lift C like B: kept, as it is what the
+  workbench shows), and a child sits one above its folder unless its own
+  `zIndex` is already higher. A number that is not finite (`nan`, `inf`) is
+  no number. **What a node is.** `kind` comes from its source
+  file: `.py` udf, `.json` widget, `.html` html, `.md` note (no file: a row
+  with `textBoxColor` is a note, else a udf). A node also carries the row's
+  display keys (`textBoxColor`, `textBoxGradient`, `textBoxScaleFactor`,
+  `textBoxAlignment`, `nodeDescriptionScaleFactor`, `widgetBackgroundColor`),
+  and a note its file's text (`note`; 200 KB a note, 2 MB a canvas). Missing
+  sizes take the workbench's defaults (700 x 500; a note 350 x 250).
+  `viewportBounds` is passed only when its four numbers enclose an area.
+  **Engine isolation:** the whole body — helpers and imports — lives inside
+  `main()`; nothing but the entrypoint and its registration shim is at module
+  level.
+- **CV-4** **Viewer (`template.html`): the canvas as the workbench draws it,
+  without running it (D1511).** The page is DOM in canvas units under one
+  transformed element, the way React Flow lays a canvas out, and its sizes,
+  spacing and colours are the workbench's own (dark theme: `#141414` canvas,
+  `#1F1F1F` / `#333333` surfaces, `#AFAFAF` edges, `#E8FF59` accent; Work
+  Sans, shipped in `templates/vendor/`).
+  - **Background.** Two React Flow backgrounds: dots every 50 (radius 4, white
+    15%) and lines every 500 (1 screen px, white 10%).
+  - **A node** is a box of exactly the row's width and height: a 2px border
+    (transparent, accent when selected), radius 8, a soft shadow, 90% opaque at
+    rest; the body sits inside the border with radius 4. A UDF, a widget and an
+    HTML node show a **stand-in** for their output (the kind's icon and the
+    file name; a widget's body takes `widgetBackgroundColor`, default
+    `#2e2e2e`); `visible = false` adds "Hidden" at 80%. **Above** the box, the
+    title (weight 300) on the left; the udfName with the kind's icon on the
+    right shows on hover or selection, and at rest only when the title is
+    empty. **Below** it, the description as markdown at 14px times
+    `nodeDescriptionScaleFactor` (default 1.5).
+  - **A note** is its markdown on a card of `textBoxColor` (default `#FFF9C4`,
+    a top-to-bottom sheen unless `textBoxGradient = false`, the workbench's
+    border colour per card colour, radius 6), at 14px times
+    `textBoxScaleFactor`, aligned per `textBoxAlignment`; black or white text
+    by the card's luminance. `transparent` draws no card.
+  - **A folder** is a region of `folderColor` (its alpha kept; border the same
+    colour 15% more opaque, 1.5px, radius 8; default `#9370DB40`;
+    `transparent` draws nothing) with its name on a pill 2px above its top
+    left corner, over every node; a locked folder's pill carries a lock.
+  - **An edge** is the workbench's floating edge: it leaves each box where the
+    line between the two centres crosses that box's border, as a React Flow
+    bezier, 2 screen px wide (never more than 5 canvas units) with a
+    canvas-coloured outline and an arrowhead at the target. Edges sit on
+    level 1.
+  - **Sizes that follow the zoom**, as in the workbench: a node's bar text is
+    `24 * t * 0.6 + 1` px kept in 16..33 and a folder's name `30 * t * 0.5 + 1`
+    kept in 16..49, where `t = 0.1 + 1 / min(zoom, 0.7)`; their padding is
+    `6 * (0.1 + 1 / zoom)` kept in 4..14.
+  - Markdown (a note, a description) is rendered by the vendored `marked` and
+    copied into the page through an allowlist of plain elements: no script,
+    style, frame or handler from a file reaches the page; links open in a new
+    tab; images load only from `http(s)` and image `data:` URLs.
+  - Empty canvas → a centered "empty canvas" note; a reader error surfaces
+    through the runtime's traceback overlay (the header still renders first).
+  - **Not drawn:** a node's output, selection handles, toolbars, the minimap.
+    A folder's children are placed where the toml puts them; the workbench's
+    re-flow of a folder on load is not run, so a toml saved before such a
+    re-flow shows the older positions. A title equal to the udfName is drawn
+    as a title (a canvas loaded from its toml has it so); a node made in the
+    workbench and never titled shows its name on the right there instead.
+- **CV-5** **Camera & URL sync.** Start from `[canvas.viewportBounds]` when
+  present — the part of the canvas that was on screen, fitted to this pane
+  with no padding (the workbench's own restore) — else `[canvas.viewport]`
+  (x/y/zoom), else **fit** all nodes with React Flow's fit at padding 0.1.
+  Zoom stays in [0.1, 2]. Scroll pans, pinch or ctrl/cmd + scroll zooms to the
+  cursor (React Flow's step), drag pans; a bottom-right cluster shows the zoom
+  and offers zoom in/out and an animated **Fit** (600 ms cubic ease-out,
+  instant under `prefers-reduced-motion`). Camera
   state mirrors to URL params `cx`/`cy`/`z` (translate + zoom) on interaction
   (150 ms debounce) and is read on load, where it **overrides** the toml
-  viewport — so refresh/share restores the exact camera. Params are strings
+  camera — so refresh/share restores the exact camera. Params are strings
   (`set` throws otherwise); parsed at the boundary. The template's own writes
   are echo-guarded in `onChange`; a `_file` change reloads.
-- **CV-6** **Detail panel.** Clicking a node opens a footer panel: title,
-  udfName, description, size, and sibling files as links that open
-  `/view/<abs sibling path>` in a **new tab** (no in-shell navigation, v0).
-  Clicking a folder shows its name and child list; clicking empty space clears.
-- **CV-7** Dark theme matching the explorer, no external assets, ES2020, and —
-  like every template — no runtime script tag (`window.fused` is injected).
-  Out of scope (v0): editing/writing the toml, rendering widget contents inside
-  nodes, executing UDFs, in-shell sibling navigation, non-v2 canvas versions.
+- **CV-6** **Detail panel.** Clicking a node selects it and opens a footer
+  panel: title, kind, udfName, description, size, position, its folder, and
+  sibling files as links that open `/view/<abs sibling path>` in a **new tab**
+  (no in-shell navigation, v0). Clicking a folder or its name shows its name,
+  size and child list; clicking empty space clears.
+- **CV-7** Dark, in the workbench's colours; no network (the page loads only
+  the app's own `marked`, `canvas-node.js` and font), ES2020, and — like every
+  template — no runtime script tag (`window.fused` is injected).
+  Out of scope (v0): editing/writing the toml, rendering a node's output,
+  executing UDFs, in-shell sibling navigation, non-v2 canvas versions.
 ## 29. Recents — Sidebar Last-Opened Files (D115)
 
 Goal: getting back to what you were just working on is one click — the sidebar
