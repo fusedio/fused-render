@@ -24,6 +24,8 @@ import webbrowser
 # Where the Windows tools sit when the distro does not append the Windows PATH (`appendWindowsPath=false`).
 WINDOWS_SYSTEM32 = "/mnt/c/Windows/System32"
 BROWSER_NAME = "fused-render-wsl"
+# The opener script `route_children` writes, and the name it is also linked under.
+OPENER_NAME = "fused-render-open"
 _registered = False
 
 
@@ -74,7 +76,8 @@ def browser_chosen(env=None) -> bool:
     value = (os.environ if env is None else env).get("BROWSER") or ""
     names = [entry.split()[0].replace("\\", "/").rsplit("/", 1)[-1].lower()
              for entry in value.split(os.pathsep) if entry.strip()]
-    return any(name not in ("explorer.exe", "explorer") for name in names)
+    # Our own opener (route_children) is not the person's choice either: it is this module's route.
+    return any(name not in ("explorer.exe", "explorer", OPENER_NAME) for name in names)
 
 
 class _WindowsBrowser(webbrowser.BaseBrowser):
@@ -93,4 +96,55 @@ def use_windows_browser() -> bool:
         return True
     _registered = True
     webbrowser.register(BROWSER_NAME, None, _WindowsBrowser(BROWSER_NAME), preferred=True)
+    return True
+
+
+def opener_script(rundll32, real_xdg_open) -> str:
+    """The shell script behind `route_children`: an http(s) address goes to the Windows default browser,
+    anything else to the real `xdg-open` (or fails like a missing one, exit 3)."""
+    fallback = f'exec "{real_xdg_open}" "$@"' if real_xdg_open else "exit 3"
+    return (
+        "#!/bin/sh\n"
+        "# Written by fused-render (_wsl.py). Under WSL, xdg-open hands a web address to explorer.exe, which\n"
+        "# shows a folder for any address with a query. This hands it to the Windows default browser.\n"
+        'case "$1" in\n'
+        f'  http://*|https://*|HTTP://*|HTTPS://*) exec "{rundll32}" url.dll,FileProtocolHandler "$1" ;;\n'
+        "esac\n"
+        f"{fallback}\n"
+    )
+
+
+def route_children(bin_dir, env=None, which=shutil.which, exists=os.path.exists) -> bool:
+    """Under WSL, make the programs this process SPAWNS open web addresses in the Windows browser too.
+
+    `use_windows_browser` covers only Python's `webbrowser` in this process. A sign-in run by a CLI child
+    (`claude auth login`, `gh auth login`, the other agents') opens its page itself, through `xdg-open` or
+    `$BROWSER`, and so still ended in `explorer.exe <url>`: a folder window instead of the sign-in page.
+    This writes one opener into `bin_dir` under two names, `xdg-open` and OPENER_NAME, puts `bin_dir` first
+    on PATH and names the opener in BROWSER, so both routes reach it. A BROWSER the person set is left
+    alone (browser_chosen). Never raises; False when not WSL, no rundll32, or the files cannot be written."""
+    env = os.environ if env is None else env
+    if not is_wsl(env):
+        return False
+    rundll32 = windows_exe("rundll32.exe", which, exists)
+    if not rundll32:
+        return False
+    parts = [p for p in (env.get("PATH") or "").split(os.pathsep) if p and p != bin_dir]
+    # The real one, looked up WITHOUT our own dir, so the opener never calls itself.
+    real = which("xdg-open", path=os.pathsep.join(parts))
+    script = opener_script(rundll32, real)
+    try:
+        os.makedirs(bin_dir, exist_ok=True)
+        for name in ("xdg-open", OPENER_NAME):
+            path = os.path.join(bin_dir, name)
+            tmp = path + ".tmp"
+            with open(tmp, "w", encoding="utf-8") as f:
+                f.write(script)
+            os.chmod(tmp, 0o755)
+            os.replace(tmp, path)
+    except OSError:
+        return False
+    env["PATH"] = os.pathsep.join([bin_dir, *parts])
+    if not browser_chosen(env):
+        env["BROWSER"] = os.path.join(bin_dir, OPENER_NAME)
     return True
