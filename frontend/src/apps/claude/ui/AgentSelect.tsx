@@ -22,26 +22,34 @@ export function fixedAgentTitle(backend: string, others: string[]): string {
   return `This chat is handled by ${here}.${tail}`;
 }
 
+/** The enabled agents a chat's pill offers: all of them, or those in `only`
+ *  (an expert's chat runs on Claude or Copilot alone). */
+export function offeredAgents(enabled: string[], only?: string[]): string[] {
+  return only ? enabled.filter((b) => only.includes(b)) : enabled;
+}
+
 export interface AgentSelectProps {
   value: string;
   onChange(value: string): void;
+  /** The agents this chat can run on; absent = every enabled one. */
+  only?: string[];
   /** The session already has a turn: the agent is a fact now, not a choice. */
   fixed?: boolean;
   disabled?: boolean;
 }
 
-export function AgentSelect({ value, onChange, fixed, disabled }: AgentSelectProps) {
+export function AgentSelect({ value, onChange, fixed, disabled, only }: AgentSelectProps) {
   const catalog = useAgentBackends();
   const options = useMemo(
-    () => catalog.backends.map((b) => ({ value: b.id, label: b.label })),
-    [catalog.backends],
+    () => catalog.backends.filter((b) => !only || only.includes(b.id)).map((b) => ({ value: b.id, label: b.label })),
+    [catalog.backends, only],
   );
   if (fixed) {
     return (
       <span className="c-pillwrap">
         <span
           className="c-pill c-agent-sel is-fixed"
-          title={fixedAgentTitle(value, catalog.backends.map((b) => b.id))}
+          title={fixedAgentTitle(value, offeredAgents(catalog.backends.map((b) => b.id), only))}
           aria-label={`${AGENT_PILL_ARIA}: ${agentLabel(value)}`}
         >
           <AgentMark backend={value} size={0.9} />

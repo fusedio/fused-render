@@ -671,6 +671,14 @@ class _Host:
         self.notice_pending = False   # D18 notice owed to out.jsonl's first turn
         self.tools = {}               # toolCallId -> (name, input)
         self._ids = itertools.count(1)
+        # An expert's own session (docs/experts.md §16; agent.py `_start`):
+        # `ask` are the tools that raise the user's card in EVERY mode, in
+        # Copilot's spelling (`<server>-<tool>`), and `unattended` is a
+        # learning run, where nobody is there to answer one.
+        expert = req.get("expert") if isinstance(req.get("expert"), dict) else {}
+        self.ask = tuple(str(t) for t in expert.get("ask") or () if t)
+        self.unattended = bool(expert.get("unattended"))
+        self.auto = req.get("cli_mode") == "auto"
         peer.on_notification = self._on_notification
         peer.on_request = self._on_request
         peer.start()
@@ -1206,6 +1214,37 @@ class _Host:
 
     # ---------------------------------------------------------- permissions
 
+    def _allow_all(self) -> str:
+        """`allow_all`'s value for the mode the session is in now. Auto is
+        `on` (D5) unless some tool must still ask: Copilot has no "ask for
+        this one" rule under allow_all, so it stays `off` and the host
+        answers every other request itself (`_expert_gate`)."""
+        return "on" if self.auto and not self.ask else "off"
+
+    def _asks(self, name: str, call: dict, seen: dict) -> bool:
+        """Whether this call is one of the tools that always ask. Matched on
+        every place the tool's name may ride (the mapped name, the title,
+        the raw input's name fields), by the full `<server>-<tool>` or the
+        bare tool name, since only the kind of a permission's `toolCall` is
+        protocol."""
+        raw = call.get("rawInput") if isinstance(call.get("rawInput"), dict) else {}
+        where = [name, call.get("title"), seen.get("title"),
+                 raw.get("name"), raw.get("tool"), raw.get("toolName")]
+        where = [w for w in where if isinstance(w, str) and w]
+        return any(ask in w or ask.rpartition("-")[2] in w
+                   for ask in self.ask for w in where)
+
+    def _expert_gate(self, name: str, call: dict, seen: dict):
+        """An expert session's answer to a permission request before any
+        card: `"deny"` (a learning run: nobody is there), `"allow"` (Auto
+        with `allow_all` held off for the tools that ask: everything else
+        goes through as allow_all would let it), or None (the card)."""
+        if self.unattended:
+            return "deny"
+        if self.ask and self.auto and not self._asks(name, call, seen):
+            return "allow"
+        return None
+
     def _on_request(self, rid, method: str, params: dict) -> None:
         if method == "session/request_permission":
             threading.Thread(target=self._serve_permission, args=(rid, params),
@@ -1273,6 +1312,12 @@ class _Host:
                                   call.get("rawInput"), call.get("locations"),
                                   self.cwd, call.get("content"))
         options = entry["options"]
+        seen = known[1].get("_acp", {}) if known is not None else {}
+        gate = self._expert_gate(name, call, seen)
+        if gate is not None:
+            self._answer_perm(rid, _permission_outcome(options, {"decision": gate}))
+            return
+        always_asks = bool(self.ask) and self._asks(name, call, seen)
         perm_id = self._perm_id()
         _private_dirs(self.perm_dir)
         # The card goes up UNDER THE LOCK, and only if nothing answered this
@@ -1313,6 +1358,9 @@ class _Host:
             # allow_all; on any other card (a shell command) it is a plain
             # allow_once, whatever scope the card sent.
             decision = dict(decision, scope="session" if name in _EDIT_TOOLS else "once")
+        if always_asks:
+            # Each one is the user's to approve: never "always".
+            decision = dict(decision, scope="once")
         if self._answer_perm(rid, _permission_outcome(options, decision)):
             # Only the answer that won announces the card gone: a cancel
             # that beat it here has posted its own `card_cleared`.
@@ -1320,9 +1368,10 @@ class _Host:
             if mode == "auto":
                 # "…and stop asking" (D5): after the RPC reply, so the tool
                 # that asked runs first and everything after it is allowed.
+                self.auto = True
                 self.peer.request("session/set_config_option", {
                     "sessionId": self.sid, "configId": "allow_all",
-                    "value": "on"})
+                    "value": self._allow_all()})
 
     def _await_decision(self, entry: dict):
         """permission_server's `_await_answer`, with one extra exit: the
@@ -1491,9 +1540,10 @@ class _Host:
                         self._control_response(request_id, error=str(
                             rpc.error.get("message") or "set_config_option failed"))
 
+            self.auto = mode == "auto"
             self.peer.request("session/set_config_option", {
                 "sessionId": self.sid, "configId": "allow_all",
-                "value": "on" if mode == "auto" else "off"}, on_done=answered)
+                "value": self._allow_all()}, on_done=answered)
         else:
             with self.lock:
                 self._control_response(request_id, error=_UNSUPPORTED)
@@ -1571,7 +1621,7 @@ class _Host:
             "sessionId": self.sid, "modeId": _AGENT_MODE})
         allow = self.peer.request("session/set_config_option", {
             "sessionId": self.sid, "configId": "allow_all",
-            "value": "on" if self.req.get("cli_mode") == "auto" else "off"})
+            "value": self._allow_all()})
         for rpc in (mode, allow):
             if not rpc.done.wait(_CONFIG_WAIT_SECONDS) or rpc.error is not None:
                 sys.stderr.write("copilot_host: %s: %r\n" % (rpc.method, rpc.error))

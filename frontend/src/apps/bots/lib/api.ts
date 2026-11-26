@@ -568,7 +568,9 @@ export interface ExpertBody { name: string; about: string; folder: string; face:
 export interface ExpertEntry { name: string; text: string; at: number; kind: "note" | "task" | "breakout" | "chat"; title: string }
 /** A commit of its history: a learning run ("Update"; `read` entries) or a change to memory or skills. */
 export interface ExpertChange { sha: string; at: number; label: string; read: number; changed: boolean }
-export interface ExpertChat { session_id: string | null; folded: { session_id: string; at: number }[] }
+/** `backend`: the agent the main chat runs on (for one yet to start, the one its pill opens on); `backends`: the
+ *  agents that can run an expert's chat. */
+export interface ExpertChat { session_id: string | null; folded: { session_id: string; at: number }[]; backend?: string; backends?: string[] }
 /** /api/experts/<id>/… (fused_render/experts/routes.py). */
 export const expertApi = {
   create: (body: ExpertBody) => post<Expert>("/api/experts", body, "new expert"),

@@ -95,7 +95,7 @@ class Session:
 
     def __init__(self, agent, tmp_path, resume=False, fake_args=(), env=None,
                  transcript_seed=None, cli_mode=None, messages=(),
-                 seed_bucket=None, canvas_clone=False):
+                 seed_bucket=None, canvas_clone=False, expert=None):
         import agent_roots  # importable once agent.py seeded the shared dir
         self.agent = agent
         # A resume names its session; a fresh one learns it off the init row,
@@ -143,6 +143,8 @@ class Session:
                "effort": "medium", "extra_read_dirs": [],
                "new_session_id": "", "argv": argv, "backend": "copilot",
                "canvas_clone": canvas_clone}
+        if expert is not None:
+            req["expert"] = expert   # an expert's own session (`agent._start`)
         host_env = dict(os.environ)
         host_env.pop("FUSED_RENDER_ORIGIN", None)
         # A token preset, so `_spawn_env` never shells out to `gh auth token`.
@@ -1003,6 +1005,53 @@ def test_auto_mode_turns_allow_all_on_before_the_first_prompt(start):
                      "https://agentclientprotocol.com/protocol/session-modes#agent"}]
     assert methods.index("session/set_mode") < methods.index("session/prompt")
     assert methods.index("session/set_config_option") < methods.index("session/prompt")
+
+
+# ------------------------------------------------- an expert's own session
+CANVAS_CREATE = "expert_canvas-canvas_create"
+
+
+def test_an_unattended_run_refuses_a_card_at_once(start):
+    """A learning run (docs/experts.md §16): nobody is there, so a request
+    Copilot still raises is refused without a card."""
+    s = start(cli_mode="auto", fake_args=["--perm"], expert={"ask": [], "unattended": True})
+    s.say("learn")
+    s.wait_results(1)
+    assert [a["result"]["outcome"]["optionId"] for a in _perm_answers(s, _perm_rpc_id(s))] == ["o-no"]
+    assert not s.perm_requests()
+    assert s.config_values() == ["on"]
+
+
+def test_a_tool_that_always_asks_holds_allow_all_off_in_auto(start):
+    """Auto with a tool that asks in every mode: `allow_all` stays off and
+    the host lets every other request through itself, with no card."""
+    s = start(cli_mode="auto", fake_args=["--perm"], expert={"ask": [CANVAS_CREATE], "unattended": False})
+    s.say("go")
+    s.wait_results(1)
+    assert s.config_values() == ["off"]
+    assert [a["result"]["outcome"]["optionId"] for a in _perm_answers(s, _perm_rpc_id(s))] == ["o-once"]
+    assert not s.perm_requests()
+
+
+def test_the_tool_that_always_asks_raises_its_card_in_auto_and_never_always(start):
+    s = start(cli_mode="auto", fake_args=["--perm-tool", CANVAS_CREATE],
+              expert={"ask": [CANVAS_CREATE], "unattended": False})
+    s.say("make a canvas")
+    assert _wait_for(lambda: s.perm_requests())
+    card = s.perm_requests()[0]
+    assert card["tool"] == CANVAS_CREATE and card["input"]["env"] == "prod"
+    # "Always" and "stop asking" on this card are one allow: the next canvas asks again.
+    s.decide(card["id"], decision="allow", scope="session", mode="auto")
+    s.wait_results(1)
+    assert [a["result"]["outcome"]["optionId"] for a in _perm_answers(s, _perm_rpc_id(s))] == ["o-once"]
+    assert s.config_values() == ["off", "off"]
+
+
+def test_without_an_expert_request_nothing_changes(start):
+    s = start(cli_mode="auto", fake_args=["--perm-tool", CANVAS_CREATE])
+    s.say("go")
+    assert _wait_for(lambda: s.perm_requests())   # the fake asks whatever allow_all says: a plain card
+    assert s.config_values() == ["on"]
 
 
 def test_late_slash_commands_ride_a_fresh_init_row(start, agent):

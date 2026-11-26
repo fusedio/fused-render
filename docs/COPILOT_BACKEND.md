@@ -143,6 +143,10 @@ claude_enabled(), copilot_enabled(), default_backend() -> "claude" unless stored
   on the prompt. fused CLI → `--allow-tool
   'shell(fused:*)'` + PATH prefix. Builtin GitHub MCP stays on. No shell-prefix
   terminal mirror (`claude_cmd_log`) for Copilot.
+- **D9a** Experts (docs/experts.md §16): an expert's own session and a task's `expert_pull` / `expert_note`
+  run on Copilot. The launch spec's servers ride `--additional-mcp-config`, the charter, memory and skills ride
+  the generated plugin, and the request's `expert: {ask, unattended}` makes the host refuse every permission
+  request of a learning run and, in Auto, hold `allow_all` off while a tool must always ask.
 - **D10** `copilot_health.py` + `copilot_login.py` + `routers/copilot_health.py`
   under `/api/copilot/{health, health/refresh, install, login, login/cancel}`,
   same snapshot keys as `claude_health.summary()`. Signed-in probe = spawn

@@ -64,7 +64,8 @@ BLOCK_UNTIL = _flag("--block-until")
 REPLAY = int(_flag("--replay", "1"))
 WITH_TOOL = "--tool" in ARGS
 PERM_EDIT = _flag("--perm-edit")   # the card is an edit of this (relative) path
-PERMS = int(_flag("--perms", "1" if ("--perm" in ARGS or PERM_EDIT) else "0"))
+PERM_TOOL = _flag("--perm-tool")   # the card is an MCP tool of this title (`<server>-<tool>`)
+PERMS = int(_flag("--perms", "1" if ("--perm" in ARGS or PERM_EDIT or PERM_TOOL) else "0"))
 WITH_ERROR = "--error" in ARGS
 WITH_THOUGHT = "--think" in ARGS
 DIE = "--die" in ARGS
@@ -241,6 +242,9 @@ def _ask(n):
                     "content": [{"type": "diff", "path": PERM_EDIT,
                                  "oldText": "one\ntwo\nthree\n",
                                  "newText": "one\n2\nthree\n"}]}
+        if PERM_TOOL:
+            call = {"toolCallId": "call-perm", "title": PERM_TOOL, "kind": "other",
+                    "rawInput": {"name": "c1", "env": "prod"}}
         _send({"jsonrpc": "2.0", "id": pid, "method": "session/request_permission",
                "params": {"sessionId": SESSION_ID,
                           "toolCall": call,

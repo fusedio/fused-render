@@ -59,9 +59,32 @@ def record_start(spec_id: str, kind: str, session_id: str) -> None:
     change(home, fn)
 
 
+def backend(home: str, session_id: str | None = None, agent=None) -> str:
+    """The agent an expert session in `home` runs on: `session_id`'s own when it names a session on one of the
+    agents that can run an expert (`agent.EXPERT_BACKENDS`) and that agent is switched on; else, for a session
+    yet to start, the user's default agent when it is one of those, else the first of them switched on. Claude
+    when nothing can be read."""
+    agent = agent or agent_module()
+    able = tuple(getattr(agent, "EXPERT_BACKENDS", ("claude",)))
+    on = getattr(agent, "_backend_enabled", lambda b: b == "claude")
+    try:
+        if session_id:
+            own = str(agent._defaults(home, session_id).get("backend") or "claude")
+            if own in able and on(own):
+                return own
+        default = getattr(agent, "_default_backend_pref", lambda: "claude")()
+        return next((b for b in (default, *able) if b in able and on(b)), "claude")
+    except Exception:  # noqa: BLE001 - an unreadable record is Claude, as an absent one is
+        return "claude"
+
+
 def view(home: str) -> dict:
+    """The main chat for the page: its session, the earlier ones, and the agent the session runs on (for one
+    yet to start, the agent its pill opens on) with the agents the pill may offer."""
     d = load(home)
-    return {"session_id": d["main"], "folded": d["folded"]}
+    agent = agent_module()
+    return {"session_id": d["main"], "folded": d["folded"], "backend": backend(home, d["main"], agent),
+            "backends": list(getattr(agent, "EXPERT_BACKENDS", ("claude",)))}
 
 
 def clear(home: str) -> dict:

@@ -12,6 +12,11 @@ the answer to the run dir, and `_claude_argv` folds it into the CLI's argv:
                 skills (canvas.toml, UDFs, JSON-UI widgets), as a canvas task gets them
     ask         a main chat with the canvas tools only: the tools that raise the approval card in every mode
                 (`canvas_create`, show.py)
+    read_dirs   the update only: the folders holding the transcripts it is pointed at, for an agent whose
+                reads are fenced to granted folders (Copilot's `--add-dir`; Claude's Auto needs none)
+
+The spec is the same whichever agent runs the session (Claude or Copilot, `agent.EXPERT_BACKENDS`); what each
+makes of it is in docs/experts.md §16.
 
 Apart from `ask`, nothing in it limits the session: the expert runs free under its permission mode (the
 owner's decision). While a
@@ -25,7 +30,7 @@ import secrets
 import threading
 import time
 
-from fused_render.experts import flag, history, paths, services, show, store, update
+from fused_render.experts import chat, flag, history, paths, services, show, store, update
 from fused_render.experts import home as hm
 
 KINDS = ("main", "breakout", "update")
@@ -80,6 +85,29 @@ def session_servers(spec: store.Expert, canvas: bool = False) -> dict:
             for server in services.SERVERS + ((show.SERVER,) if canvas else ())}
 
 
+def minted(key: str, session_id: str) -> None:
+    """The session of start `key` has its id only now (`agent._expert_minted`): an agent that mints its own
+    (Copilot) answers the start with none, so what the start's answer records for Claude is recorded here. A
+    main chat becomes the home's main; a learning run's id goes on the run's record, before its turn can end."""
+    spec_id, _, kind = str(key or "").partition(":")
+    if kind == "main":
+        chat.record_start(spec_id, kind, session_id)
+    elif kind == "update":
+        home = paths.home(spec_id)
+
+        def fn(d):
+            if d["update"] and not d["update"]["session"]:
+                d["update"]["session"] = session_id
+        if os.path.isdir(home):
+            chat.change(home, fn)
+
+
+def _transcript_dirs(home: str) -> list:
+    """The folders of the transcripts waiting in the inbox."""
+    return sorted({os.path.dirname(rec["path"]) for rec in chat.load(home)["sources"].values()
+                   if rec.get("file") and rec.get("path") and os.path.isdir(os.path.dirname(rec["path"]))})
+
+
 def spec(key: str, file: str) -> dict:
     """The launch spec for start key `key` on target `file`, or `{"error", "reason"}`."""
     if not flag.on():
@@ -104,4 +132,5 @@ def spec(key: str, file: str) -> dict:
     return {"kind": kind, "mcp_servers": session_servers(s, canvas),
             "append": APPEND[kind] + (" " + show.note(skills) if canvas else ""),
             "policy_env": {"FUSED_EXPERT_UNATTENDED": "1"} if run else {},
+            **({"read_dirs": _transcript_dirs(s.home)} if run else {}),
             **({"ask": show.ASK} if canvas else {}), **({"workbench_skills": True} if skills else {})}

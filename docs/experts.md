@@ -10,7 +10,8 @@ An expert knows one subject, keeps what it learns in a memory and skills of its 
 with it. It shows on the Bots page as a row of its own kind (badge EXPERT), but the bots backend does not know
 it: the page reads `/api/experts` and makes the rows itself (§11). Its home is an ordinary Claude Code project,
 and every conversation with it is an ordinary Claude Code session in that folder, run by the task chat engine
-(`claude_agent/agent.py`). fused writes none of its memory: the expert edits its own files with Claude Code's
+(`claude_agent/agent.py`). GitHub Copilot can run it too, and Copilot tasks can call it; this page describes
+Claude, and §16 says what differs. fused writes none of its memory: the expert edits its own files with Claude Code's
 tools, and the app only commits what changed (§7).
 
 Three things reach it: the user, in its main chat (§3); tasks, through three tools (§4); and a learning run (the
@@ -110,7 +111,7 @@ before the other started the session would otherwise start a second one and fold
 All three are `agent._start` with `expert="<id>:<kind>"`. The page sends `<id>:main` or `<id>:breakout` as an
 extra start field (`ChatMount extraParams`, carried on every start and send by the run controller); `agent.main`
 drops a `:update` key from a page, so only the server starts an update (`claude_spawn.spawn_helper(...,
-expert=)`). `_start` then requires the Claude backend and no fork, calls `launch.spec(key, file)`, and refuses
+expert=)`). `_start` then requires Claude or Copilot (`agent.EXPERT_BACKENDS`, §16) and no fork, calls `launch.spec(key, file)`, and refuses
 the start when it answers an error (`bad_key`, `no_expert`, `wrong_folder`: the target must be the home itself).
 A breakout start passes the plain breakout's checks first, then runs as an ordinary session: not research-only, not
 pinned to Ask mode.
@@ -480,7 +481,8 @@ That is the only one; `FUSED_RENDER_EXPERT_ORIGIN` (§4) and `FUSED_EXPERT_UNATT
   prompt text. A learning run reads transcripts as they are, so a
   long task costs a reader more (it is told to search, not read whole).
 - No export, clone or import of an expert; no editing skills from the pane (ask the expert).
-- Only Claude runs an expert, and only Claude tasks get its tools; plain breakouts get none.
+- Only Claude and Copilot run an expert, and only their tasks get its tools (§16); no other agent does. A
+  breakout, an expert's included, is Claude's alone, and plain breakouts get no tools.
 
 ## 14. Showing work in the chat
 
@@ -600,3 +602,67 @@ switch is read and before seeding) moves a machine across once:
 The stamp `<home>/experts_migration.json` is written even when there was nothing to move, so the delete can never
 run later against experts in use; the moved root also carries `.state/migrated-from-specialists`, which stops a
 run under another app home on the same workspace from deleting it. A run that raised is not stamped and is tried again on the next start.
+
+## 16. Experts on GitHub Copilot
+
+Added 2026-11-26 (DECISIONS D1511). Two agents can run an expert's own sessions and call the task tools: Claude
+and Copilot (`agent.EXPERT_BACKENDS`). Everything above describes Claude; this section is what Copilot does
+differently, and why. A breakout stays Claude's alone, an expert's included. Codex, Gemini, OpenCode and Cursor
+are refused at `_start` ("an expert chat runs on Claude or GitHub Copilot").
+
+**Which agent.** The main chat's Agent pill offers Claude and Copilot (those switched on; `ChatMount
+agentChoices`), and is fixed once the chat has a turn, as in any chat. `GET …/chat` answers `backend` (the main
+session's agent; for a chat yet to start, the user's default agent when it can run an expert, else the first of
+the two that is on; `chat.backend`) and `backends`. Clear frees the pill. A learning run goes to the agent of
+the main chat (or of the last cleared one) with that chat's model and effort; when that agent is switched off,
+or the expert was never chatted with, to the agent a new chat would open on, with that agent's default model.
+
+**What Copilot is handed** (`agent._copilot_argv`, `_copilot_plugin_dir`), from the same launch spec:
+
+| Claude | Copilot |
+|---|---|
+| `CLAUDE.md` and its `@memory.md` import, loaded by the CLI | The charter with `memory.md` as it is at the spawn in place of the import line, at the head of the generated agent file (`_expert_charter`). Copilot has no import, and no agent but Claude is pointed at CLAUDE.md. |
+| `.claude/skills/` in the home, read by the CLI | Each skill linked into the generated plugin's `skills/`, after the shipped ones (a shipped skill of the same name wins). A skill written during a session is there from the next spawn. |
+| `mcp_servers` in `--mcp-config` | The same servers in `--additional-mcp-config`, with Copilot's never-defer key. |
+| `append` after the appended prompt | The same sentence at the end of the agent file, tool names in Copilot's spelling (`expert_canvas-show`, `_copilot_tool_names`). |
+| `ask` as a settings `ask` rule | The host (below). |
+| `policy_env` on the permission server | The host (below): under `--no-approve` that server has no approval tool. |
+| nothing: Auto reads the transcripts | `read_dirs` (the update only): `--add-dir` for each folder holding a transcript the inbox points at. |
+
+**The host's two gates** (`copilot_host.py` `_expert_gate`; `_start` puts `expert: {ask, unattended}` on the
+host's request and in `launch.json`):
+
+- *Unattended* (a learning run): any `session/request_permission` is refused at once with no card. The run is
+  in Auto, which is `allow_all` on, so few arrive.
+- *Tools that always ask* (`canvas_create`): Copilot has no "ask for this one" rule under `allow_all`. While the
+  session has such a tool, Auto keeps `allow_all` **off** and the host answers every other request `allow_once`
+  itself, with no card; the tool's own request raises the card, and its answer is always once (never "always",
+  never the switch to stop asking). The tool is recognised by `<server>-<tool>` or the bare tool name in the
+  mapped name, the call's title or its raw input's name fields.
+
+**The session id.** Copilot mints it after the start, so `_start` answers `session_id: ""` and the router has
+nothing to record. `_start` writes the start key on the run's `meta.json` (`expert`), and the first poll that
+knows the id calls `launch.minted(key, session_id)` (`agent._expert_minted`, one-shot, before the turn's commit):
+a main chat becomes `state.main`, a learning run's id goes on `state.update.session`, which is what its clean
+end is matched to.
+
+**The learning prompt** (`update.prompt_for`). Claude starts one haiku `Agent` per conversation. Copilot is told
+to read each conversation itself with the same brief, or to hand it to a sub-agent if it has such a tool. Both
+prompts search with ` ?` after each `:` and `,`: Claude Code writes transcript rows compact, the Copilot host
+writes them with a space, and either expert may be pointed at either kind.
+
+**Copilot tasks** get `expert_pull` and `expert_note`, pre-allowed (`--allow-tool 'fused_render(<tool>)'`), and
+the experts paragraph without its breakout sentence. `expert_breakout` is not listed (`permission_server.
+_expert_tools`: it is a card, and that server raises none under `--no-approve`). Copilot's reads are fenced to
+its own folders and `--add-dir` has no read-only form, so the homes are not granted: a pull's skills line reads
+`(call expert_pull with expert "<name>" and skill "<skill>")` instead of `(Read <path>)`, and `expert_pull` with
+`skill` answers that skill's text (`tools._skill`; an unknown one is a 404 listing the skills). Claude tasks
+keep the path and may use `skill` too.
+
+**Verified and assumed.** Run against the stand-in CLI (`tests/fake_copilot_acp.py`) end to end: a main chat
+start, its record at the first poll, a learning run with its "Update" commit and archived inbox, both host
+gates. There was no `copilot` binary on the build machine, so these rest on the CLI's documented behaviour and
+are not checked live: `--allow-tool 'fused_render(expert_pull)'` as the spelling for one MCP tool; a plugin
+`skills/` entry that is a link into the home being loaded; where an MCP tool's name rides on a permission
+request (D14 of docs/COPILOT_BACKEND.md verified the title for `fused_render-*`); whether Copilot also loads a
+project's `CLAUDE.md` or `.claude/skills` by itself, in which case the charter or a skill is seen twice.
