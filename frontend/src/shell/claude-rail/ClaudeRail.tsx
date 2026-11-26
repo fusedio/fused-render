@@ -233,7 +233,7 @@ import {
   type PointerEvent as ReactPointerEvent,
   type ReactNode,
 } from "react";
-import { Plus, Search } from "lucide-react";
+import { Plus } from "lucide-react";
 import PanelIcon from "@platform/ui/PanelIcon";
 import { useRailState } from "@platform/lib/hooks";
 import { resizeWidth } from "@platform/lib/panel-drag";
@@ -247,8 +247,8 @@ import {
   toggleRailExpanded,
   type RailState,
 } from "@platform/lib/railstate";
-import { getSchedule, markWholeTaskRead, showLauncher, type Task, type TaskPulseTask } from "@platform/lib/api";
-import { useBotsAvailable, useLauncherAvailable } from "@platform/lib/bots-available";
+import { getSchedule, markWholeTaskRead, type Task, type TaskPulseTask } from "@platform/lib/api";
+import { useBotsAvailable } from "@platform/lib/bots-available";
 import { useExpertsEnabled } from "@platform/lib/experts-flag";
 import type { ScreenPlace } from "@platform/lib/screen-context";
 import {
@@ -411,7 +411,6 @@ import { publishRailGit } from "./rail-git-store";
 import { PLUS_DOOR, PlusPopIntent } from "./plus-pop-lib";
 import { installRailZone, railPace } from "./rail-zone";
 import { publishPlusRender, usePlusCard, usePlusHosted, withdrawPlusRender } from "./plus-card-store";
-import { useLauncherOpen } from "./launcher-open";
 import { RailPeek, type RailPeekHandle, type RailPeekProps } from "./RailPeek";
 import { botHasUnread, botsPulseTitle, useBotsPulse, useBotsRows } from "@platform/lib/botsPulse";
 import { navigateUrl } from "@platform/lib/router";
@@ -3533,17 +3532,13 @@ export function ClaudeRail({
   const expertsOn = useExpertsEnabled();
   const botsDoor = botsOffered || expertsOn;
   const botsPulse = useBotsPulse(botsOffered);
-  // The Search door only where the app has a launcher panel to show (the
-  // Mac desktop app; `useLauncherAvailable`).
-  const searchDoor = useLauncherAvailable(true);
   // THE DOORS WEAR THEIR WINDOW'S OPEN STATE (owner, 2026-11-09: "show
   // highlight only when the window is open, so we know this one made it
   // open — for +, Tasks, Bots and Search as well"): `.is-open` while the
   // door's window stands (a hover's preview), `.is-pinned` beside it once a
   // press holds it — the list rings' own two steps (claude-rail.css). The
-  // Search door's window is the launcher panel (`useLauncherOpen`); the Bots
-  // door's is its card (BotsPeek), as the Tasks door's.
-  const launcher = useLauncherOpen();
+  // Bots door's window is its card (BotsPeek), as the Tasks door's. (Search
+  // moved to the left sidebar under Home — owner, 2026-11-26.)
   const doorOpen = (up: boolean, pinnedUp: boolean) => (up ? " is-open" + (pinnedUp ? " is-pinned" : "") : "");
   const here = typeof location === "undefined" ? "" : location.pathname;
   const tasksHere = here === "/tasks";
@@ -3838,7 +3833,7 @@ export function ClaudeRail({
   // open"): where a ring says its row (`railQuiet`, hints.ts
   // `renderRowHint`), a door says its name in that same panel — and dims the
   // window its press would replace (`win`), or none for a door that replaces
-  // no window (Search, the expand button).
+  // no window (the expand button).
   const doorHint = (words: string, cardIsCaption: boolean, win: "a" | "b" | "none" = "a") => ({
     "data-hint": cardIsCaption ? "" : words,
     "data-hint-side": "left",
@@ -4621,7 +4616,7 @@ export function ClaudeRail({
           sidebar's own (SidebarFrame), mirrored — first on the rail, then the
           hairline the left sidebar draws under its button, then the nav
           doors. Expanded it moves to the rail's top-left, into the rows' icon
-          column above Search (claude-rail.css; owner, 2026-11-21). */}
+          column above Bots (claude-rail.css; owner, 2026-11-21). */}
       {expandOn && (
         <>
           <button
@@ -4640,34 +4635,10 @@ export function ClaudeRail({
           <span className="sidebar-rail-sep is-tight claude-rail-expand-sep" aria-hidden="true" />
         </>
       )}
-      {/* THE NAV DOORS' TOP: Search, Bots, Tasks and the +, in
+      {/* THE NAV DOORS' TOP: Bots, Tasks and the +, in
           that order, where the panel glyph stood — on every rail, always; no
           hairline between them (owner, 2026-11-08). */}
       <div className="claude-rail-nav">
-        {/* THE SEARCH DOOR (owner, 2026-11-08): the app's launcher — the
-            ⌥Space search panel over the apps and bots — summoned from the
-            rail's top. Only where the app has one (`searchDoor`). */}
-        {searchDoor && (
-          <button
-            type="button"
-            className={"sidebar-rail-btn claude-rail-item" + doorOpen(launcher.open, true)}
-            {...doorHint("Search", false, "none")}
-            aria-label="Search"
-            onClick={() => {
-              hideHint();
-              launcher.opened();
-              // Where the shortcut opens it, for now (owner, 2026-11-08: "just
-              // open it where we default open it"); the beside-the-rail place
-              // (`showLauncher({left, top})`, launcher.beside_frame) is a
-              // follow-up. A miss (the panel went with the preference) is
-              // nothing to show: the door stands only while the config says
-              // it is there.
-              showLauncher().catch(() => launcher.failed());
-            }}
-          >
-            {seatBody(<Search size={16} aria-hidden="true" />, "Search")}
-          </button>
-        )}
         {/* THE BOTS DOOR (owner, 2026-11-08: "search, bots, tasks, +"): the
             Bots page, the left sidebar's row moved here; its pinned bots
             stay at the rail's foot (window B's). */}

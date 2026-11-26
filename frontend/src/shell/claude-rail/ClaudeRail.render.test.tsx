@@ -243,7 +243,7 @@ const byLabel = (r: ReactTestRenderer, label: string): ReactTestInstance[] =>
 const glyph = (r: ReactTestRenderer) => byLabel(r, "Show the Claude panel").length;
 const seam = (r: ReactTestRenderer) => byLabel(r, "Drag to show the Claude panel").length;
 // THE NAV DOORS (owner, 2026-11-07, order
-// 2026-11-08): Search (where the app has the launcher panel), Bots, Tasks and
+// 2026-11-08; Search moved to the left sidebar 2026-11-26): Bots, Tasks and
 // the + where the panel glyph stood — always standing; the pinned bots at the
 // foot.
 const doors = (r: ReactTestRenderer) => byLabel(r, "Tasks").length + byLabel(r, "Bots").length;
@@ -277,38 +277,15 @@ describe("ClaudeRail beside the pane", () => {
     resetBotsPulseForTests();
   });
 
-  test("the nav's order (owner, 2026-11-08): Search, Bots, Tasks, + at the rail's top; the Bots door is not at the foot", async () => {
+  test("the nav's order: Bots, Tasks, + at the rail's top (Search moved to the left sidebar, owner 2026-11-26); the Bots door is not at the foot", async () => {
     setLauncherAvailableForTests(true);
-    setBotsAvailableForTests(true);
-    const r = await mountRail({ paneOpen: false });
-    expect(navOrder(r)).toEqual(["Search", "Bots", "Tasks", "New task"]);
-    // One Bots door in all: the nav's.
-    expect(byLabel(r, "Bots").length).toBe(1);
-    expect(r.root.findAll((n) => n.props?.className === "sidebar-rail-items")[0]!.findAll((n) => n.props?.["aria-label"] === "Bots").length).toBe(0);
-    setLauncherAvailableForTests(null);
-  });
-
-  test("no launcher panel in this process (a plain server): no Search door, the rest stand", async () => {
-    setLauncherAvailableForTests(false);
     setBotsAvailableForTests(true);
     const r = await mountRail({ paneOpen: false });
     expect(navOrder(r)).toEqual(["Bots", "Tasks", "New task"]);
-    setLauncherAvailableForTests(null);
-  });
-
-  test("the Search door shows the launcher panel (POST /api/launcher/show)", async () => {
-    setLauncherAvailableForTests(true);
-    setBotsAvailableForTests(true);
-    const calls: string[] = [];
-    (globalThis as { fetch: unknown }).fetch = (input: RequestInfo | URL, init?: RequestInit) => {
-      calls.push(`${init?.method ?? "GET"} ${String(input)}`);
-      return new Promise<Response>(() => {});
-    };
-    const r = await mountRail({ paneOpen: false });
-    await act(async () => {
-      byLabel(r, "Search")[0]!.props.onClick();
-    });
-    expect(calls).toContain("POST /api/launcher/show");
+    expect(byLabel(r, "Search").length).toBe(0);
+    // One Bots door in all: the nav's.
+    expect(byLabel(r, "Bots").length).toBe(1);
+    expect(r.root.findAll((n) => n.props?.className === "sidebar-rail-items")[0]!.findAll((n) => n.props?.["aria-label"] === "Bots").length).toBe(0);
     setLauncherAvailableForTests(null);
   });
 

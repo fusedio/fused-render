@@ -36,12 +36,14 @@ export interface SidebarRailItem {
   icon: React.ReactNode;
   /** Navigate here on click. Highlights as active on exact pathname match,
       like NavItem. Still set even when `onClick` overrides the click, so
-      middle-click/copy-link keeps working. */
-  href: string;
+      middle-click/copy-link keeps working. Left out, the item is an ACTION
+      (the Search row's launcher panel): a native <button> running `onClick`,
+      no link semantics. */
+  href?: string;
   /** Overrides the click instead of navigating to `href` — for a rail icon
       that opens a menu (e.g. Settings) rather than going straight to a page.
       Receives the anchor so the caller can anchor a popover off its rect. */
-  onClick?: (e: React.MouseEvent<HTMLAnchorElement>) => void;
+  onClick?: (e: React.MouseEvent<HTMLElement>) => void;
   /** Hairline above this item — a group boundary, mirroring the expanded
       sidebar's headings. */
   dividerBefore?: boolean;
@@ -104,27 +106,46 @@ function renderRailItem(item: SidebarRailItem, tip: RailTip, bare = false) {
   return (
     <React.Fragment key={item.key}>
       {!bare && renderRailLead(item)}
-      <a
-        href={item.href}
-        className={
-          "sidebar-rail-btn" +
-          ((item.active ?? location.pathname === item.href) ? " active" : "")
-        }
-        aria-label={item.label}
-        onMouseEnter={(e) => tip.show(item.label, e.currentTarget)}
-        onMouseLeave={tip.hide}
-        onFocus={(e) => tip.show(item.label, e.currentTarget)}
-        onBlur={tip.hide}
-        onClick={(e) => {
-          e.preventDefault();
-          tip.hide();
-          if (item.onClick) item.onClick(e);
-          else navigateUrl(item.href);
-        }}
-      >
-        {item.icon}
-        {item.badge}
-      </a>
+      {item.href === undefined ? (
+        <button
+          type="button"
+          className={"sidebar-rail-btn" + (item.active ? " active" : "")}
+          aria-label={item.label}
+          onMouseEnter={(e) => tip.show(item.label, e.currentTarget)}
+          onMouseLeave={tip.hide}
+          onFocus={(e) => tip.show(item.label, e.currentTarget)}
+          onBlur={tip.hide}
+          onClick={(e) => {
+            tip.hide();
+            item.onClick?.(e);
+          }}
+        >
+          {item.icon}
+          {item.badge}
+        </button>
+      ) : (
+        <a
+          href={item.href}
+          className={
+            "sidebar-rail-btn" +
+            ((item.active ?? location.pathname === item.href) ? " active" : "")
+          }
+          aria-label={item.label}
+          onMouseEnter={(e) => tip.show(item.label, e.currentTarget)}
+          onMouseLeave={tip.hide}
+          onFocus={(e) => tip.show(item.label, e.currentTarget)}
+          onBlur={tip.hide}
+          onClick={(e) => {
+            e.preventDefault();
+            tip.hide();
+            if (item.onClick) item.onClick(e);
+            else navigateUrl(item.href!);
+          }}
+        >
+          {item.icon}
+          {item.badge}
+        </a>
+      )}
     </React.Fragment>
   );
 }
@@ -159,8 +180,10 @@ export function NavItem({
   trailing,
   active,
   title,
+  onClick,
 }: {
-  href: string;
+  /** Left out, the row is an ACTION: a native <button> running `onClick`. */
+  href?: string;
   label: string;
   icon: React.ReactNode;
   id?: string;
@@ -178,7 +201,29 @@ export function NavItem({
       whole family of routes (the global sidebar's Explorer row is active on
       every fs-path/panel/tab route, not just /explorer itself). */
   active?: boolean;
+  /** The rail item's `onClick`, for a row that summons something rather
+      than going to a page (the Search row's launcher panel) — with no `href`
+      it renders a <button>. */
+  onClick?: () => void;
 }) {
+  if (href === undefined) {
+    return (
+      <button
+        type="button"
+        id={id}
+        title={title || undefined}
+        className={"sidebar-item" + (active ? " active" : "")}
+        onClick={() => onClick?.()}
+      >
+        <span className="icon">
+          {icon}
+          {extra}
+        </span>{" "}
+        {label}
+        {trailing && <span className="sidebar-item-trail">{trailing}</span>}
+      </button>
+    );
+  }
   return (
     <a
       href={href}
@@ -187,7 +232,8 @@ export function NavItem({
       className={"sidebar-item" + ((active ?? location.pathname === href) ? " active" : "")}
       onClick={(e) => {
         e.preventDefault();
-        navigateUrl(href);
+        if (onClick) onClick();
+        else navigateUrl(href);
       }}
     >
       <span className="icon">
