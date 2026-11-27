@@ -156,7 +156,7 @@ export const SOURCES: Record<WidgetSource, SourceSpec> = {
   },
   s3: {
     label: "S3 files",
-    description: "Folders in the S3 data available to you.",
+    description: "The S3 buckets indexed for you.",
     sizes: ["2x2", "2x1", "1x2", "1x1", "4x1", "1x3", "2x3"],
     formats: ["list", "icons"],
   },

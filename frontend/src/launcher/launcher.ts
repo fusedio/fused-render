@@ -99,7 +99,7 @@ async function query(text: string) {
     state.filesReason = String(data.files_reason || "");
     // One list to select from. Empty query: apps, then files, then the bottom rows — last, so <modifier>+0 and
     // the footer read the same. Typed query: the server already ranked the bottom rows among the apps, so its
-    // order stands, then files, then the fused-asset bucket's rows (only ever sent for a typed query).
+    // order stands, then files, then the S3 bucket rows (only ever sent for a typed query).
     const files = state.files.concat(state.remote);
     state.rows = text.trim()
       ? state.apps.concat(files)
@@ -194,7 +194,7 @@ function emptyCopy(text: string): { line: string; tip: string } {
   const line = text ? `No app, bot or file matches “${text}”` : "Nothing opened yet";
   let tip = "";
   if (!text) tip = "Type to search every app in your workspace, your bots, and the files and folders in your home"
-    + " (and the fused-asset bucket, with Canvases on).";
+    + " (and your indexed S3 buckets, with Canvases on).";
   else if (state.filesReason === "scanning") tip = "The file index is still scanning — files appear once it has covered your home folder.";
   else if (state.filesReason) tip = "Files are searched from the index; your home folder is not indexed yet (Preferences → Index).";
   return { line, tip };
@@ -225,7 +225,7 @@ function render() {
       const h = document.createElement("li");
       h.className = "sect";
       h.setAttribute("aria-hidden", "true");
-      h.textContent = kind === "remote" ? "Fused assets" : "Files";
+      h.textContent = kind === "remote" ? "S3" : "Files";
       list.appendChild(h);
     }
     if (kind) sect = kind;

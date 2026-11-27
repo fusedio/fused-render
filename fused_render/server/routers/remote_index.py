@@ -46,18 +46,31 @@ def _error(message: str, code: str, status: int) -> JSONResponse:
     return JSONResponse({"error": message, "code": code}, status_code=status)
 
 
-def _rank(q: str, limit: int, ranked: bool, token, prefix: str | None = None) -> dict:
+def _rank(q: str, limit: int, ranked: bool, token, under: tuple | None = None) -> dict:
     """`remote_index.rank`, after the (throttled) retry/refresh nudge: these
     routes are how a session that only searches keeps its index current."""
     remote_index.retry_if_needed()
-    return remote_index.rank(q, limit, ranked, token, prefix=prefix)
+    return remote_index.rank(q, limit, ranked, token, under=under)
+
+
+def _resolve(url: str):
+    """`(bucket, key, index)` for an `s3://` address, or RemoteError."""
+    from fused_render import remote_buckets
+
+    bucket, key = remote_access.parse_url(url)
+    remote_access.require_supported(bucket)
+    ix = remote_buckets.resolve(bucket, key)
+    if ix is None:
+        raise RemoteError("not_found", f"{canonical_url(bucket, key)} is not in an indexed "
+                                       "part of this bucket")
+    return bucket, key, ix
 
 
 @router.get("/api/remote-index/status")
 def api_remote_index_status():
     if not canvases_enabled():
         return {"enabled": False, "state": "absent", "rows": 0,
-                "fetched_at": None, "error": None}
+                "fetched_at": None, "error": None, "signed_in": False, "indexes": []}
     try:
         remote_index.retry_if_needed()
         return {"enabled": True, **remote_index.status()}
@@ -81,17 +94,16 @@ async def api_remote_index_rank(request: Request, q: str = Query(default=""),
     except ValueError:
         return _error("'limit' must be an integer", "bad_url", 400)
     want_ranked = ranked.strip().lower() not in ("0", "false", "no", "off")
-    prefix = None
+    scope = None
     if under.strip():
         try:
-            bucket, key = remote_access.parse_url(under)
-            remote_access.require_supported(bucket)
+            bucket, key, ix = _resolve(under)
         except RemoteError as e:
             return _error(e.message, e.code, 400)
-        prefix = key if (not key or key.endswith("/")) else key + "/"
+        scope = (ix, key if (not key or key.endswith("/")) else key + "/")
     async with cancellable(request) as token:
         try:
-            return await asyncio.to_thread(_rank, q, limit_n, want_ranked, token, prefix)
+            return await asyncio.to_thread(_rank, q, limit_n, want_ranked, token, scope)
         except Cancelled:
             logger.debug("remote index rank %r abandoned by the client", q)
             return Response(status_code=499)
@@ -146,12 +158,12 @@ def _hit(url: str, is_dir: bool, size, mtime, n_files=None) -> dict:
     return hit
 
 
-def _summary(bucket: str, prefix: str) -> dict | JSONResponse:
+def _summary(ix, bucket: str, prefix: str) -> dict | JSONResponse:
     remote_index.retry_if_needed()
-    out = remote_index.summary(prefix, SUMMARY_TOP)
+    out = remote_index.summary(ix, prefix, SUMMARY_TOP)
     if out is None:
         return _not_ready()
-    if prefix and not out["files"] and remote_index.has_dir(prefix) is False:
+    if prefix and not out["files"] and remote_index.has_dir(ix, prefix) is False:
         return _error(f"{canonical_url(bucket, prefix)} does not exist", "not_found", 404)
     iso = remote_access.iso_utc
     return {"bucket": bucket, "mode": "summary", "url": canonical_url(bucket, prefix),
@@ -165,19 +177,19 @@ def _summary(bucket: str, prefix: str) -> dict | JSONResponse:
             "index_fetched": None if not out["index_fetched_at"] else iso(out["index_fetched_at"])}
 
 
-def _search_list(bucket: str, prefix: str, cursor: str | None, limit: int,
+def _search_list(ix, bucket: str, prefix: str, cursor: str | None, limit: int,
                  file_key: str | None) -> dict | JSONResponse:
     remote_index.retry_if_needed()
     try:
-        page = remote_index.list_dir(prefix, cursor, limit)
+        page = remote_index.list_dir(ix, prefix, cursor, limit)
     except ValueError:
         return _error("the listing cursor is not valid", "bad_url", 400)
     if page is None:
         return _not_ready()
     entries = page.get("entries") or []
     nxt = page.get("cursor") or None
-    if not entries and not nxt and prefix and remote_index.has_dir(prefix) is False:
-        if file_key and remote_index.has_file(file_key):
+    if not entries and not nxt and prefix and remote_index.has_dir(ix, prefix) is False:
+        if file_key and remote_index.has_file(ix, file_key):
             return _error("that is a file, not a folder: read it with s3_read, "
                           "or list its parent folder", "bad_url", 400)
         return _error(f"{canonical_url(bucket, prefix)} does not exist", "not_found", 404)
@@ -220,8 +232,7 @@ async def api_remote_index_search(request: Request, q: str = Query(default=""),
 
     if has_path:
         try:
-            bucket, key = remote_access.parse_url(path)
-            remote_access.require_supported(bucket)
+            bucket, key, ix = _resolve(path)
         except RemoteError as e:
             return _error(e.message, e.code, 400)
         if len(cursor) > 4096:
@@ -229,12 +240,12 @@ async def api_remote_index_search(request: Request, q: str = Query(default=""),
         prefix = key if (not key or key.endswith("/")) else key + "/"
         if want_summary:
             try:
-                return await asyncio.to_thread(_summary, bucket, prefix)
+                return await asyncio.to_thread(_summary, ix, bucket, prefix)
             except Exception:  # noqa: BLE001 - details (local paths) stay in the log
                 logger.exception("remote index summary failed for %r", prefix)
                 return _error("summing the S3 folder failed", "internal", 500)
         try:
-            return await asyncio.to_thread(_search_list, bucket, prefix, cursor or None,
+            return await asyncio.to_thread(_search_list, ix, bucket, prefix, cursor or None,
                                            limit_n, prefix[:-1] if prefix != key else None)
         except Exception:  # noqa: BLE001 - details (local paths) stay in the log
             logger.exception("remote index listing failed for %r", prefix)
@@ -251,7 +262,21 @@ async def api_remote_index_search(request: Request, q: str = Query(default=""),
             return _error("searching the S3 file index failed", "internal", 500)
     if not out.get("ready"):
         return await asyncio.to_thread(_not_ready)
-    return {"bucket": remote_index.BUCKET, "mode": "search",
+    return {"bucket": None, "mode": "search",
             "hits": [_hit(h["url"], bool(h["is_dir"]), h.get("size"), h.get("mtime"))
                      for h in out["hits"]],
             "truncated": bool(out.get("truncated")), "cursor": None}
+
+
+@router.post("/api/remote-index/sync")
+def api_remote_index_sync(x_fused: str | None = Header(default=None)):
+    """Read the manifest and sync every index that moved, now ("refresh now")."""
+    if _require_fused(x_fused) is not None:
+        return _error("missing or invalid X-Fused header", "forbidden", 403)
+    if not canvases_enabled():
+        return _error("the Fused integration is off — turn on Fused Workbench in Preferences",
+                      "disabled", 403)
+    from fused_render import remote_buckets
+
+    remote_buckets.kick()
+    return {"ok": True}

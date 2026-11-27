@@ -16,11 +16,12 @@
   POST /api/remote/fetch/cancel        stop it
 
 All of it is gated on the Canvases flag (off -> 403 `disabled`). Every error is
-`{"error": <plain message>, "code": <code>}`. Scope is the one public bucket
-`remote_access.BUCKET`: any other bucket is 400 `unsupported_bucket`, checked
-right after parsing, before any network call. Folders come from its index only
-(`remote_index`; 503 `index_not_ready` while it loads); files are a live HEAD
-(size/etag must be current) plus a download, and need no index. Blocking work
+`{"error": <plain message>, "code": <code>}`. Scope is every bucket the
+signed-in account has an index for (`remote_buckets`): any other bucket is 400
+`unsupported_bucket`, checked right after parsing, before any network call.
+Folders come from the index only (`remote_index`; 503 `index_not_ready` while
+it loads); files are a live read of the object (size/etag must be current)
+plus a download. `GET /api/remote/buckets` lists the indexes. Blocking work
 runs in the threadpool, never on the event loop. The POSTs carry the same
 `X-Fused` write guard as every other mutating route.
 """
@@ -98,42 +99,55 @@ def _handle(fn, *args) -> dict | JSONResponse:
 # error and surfaces as `internal`, never disguised as "still loading".
 
 
-def _not_ready() -> RemoteError:
+def _ix(bucket: str, key: str):
+    """The index that answers for the address (`_parse` already checked the
+    account has one in this bucket)."""
+    from fused_render import remote_buckets
+
+    ix = remote_buckets.resolve(bucket, key)
+    if ix is None:
+        raise RemoteError("not_found", f"{canonical_url(bucket, key)} is not in an indexed "
+                                       "part of this bucket")
+    return ix
+
+
+def _not_ready(bucket: str = "S3") -> RemoteError:
     """503 `index_not_ready`, after nudging a retry, saying why when known."""
-    message = f"The {remote_access.BUCKET} index is still loading. Try again in a moment."
+    message = f"The {bucket} index is still loading. Try again in a moment."
     try:
         from fused_render import remote_index
 
         remote_index.retry_if_needed()
-        st = remote_index.status()
+        st = next((i for i in remote_index.status().get("indexes") or []
+                   if i.get("bucket") == bucket), {})
         if st.get("state") == "error" and st.get("error"):
-            message = (f"The {remote_access.BUCKET} index could not be loaded: "
+            message = (f"The {bucket} index could not be loaded: "
                        f"{st['error']}. It will be retried.")
     except Exception:  # noqa: BLE001 - the explanation is best-effort
         logger.debug("remote index status unavailable", exc_info=True)
     return RemoteError("index_not_ready", message)
 
 
-def _index_answer(name: str, arg: str) -> bool | None:
-    """`remote_index.<name>(arg)`: True/False, or None (not ready). Only a
+def _index_answer(name: str, ix, arg: str) -> bool | None:
+    """`remote_index.<name>(ix, arg)`: True/False, or None (not ready). Only a
     missing extra (ImportError) reads as None; a broken store is a real error."""
     from fused_render import remote_index
 
     try:
-        answer = getattr(remote_index, name)(arg)
+        answer = getattr(remote_index, name)(ix, arg)
     except ImportError:
         return None
     return None if answer is None else bool(answer)
 
 
-def _index_list(prefix: str, cursor: str | None) -> dict | None:
+def _index_list(ix, prefix: str, cursor: str | None) -> dict | None:
     """The index's page for `prefix`, or None (not ready). A cursor the index
     rejects (ValueError) is `bad_url`."""
     from fused_render import remote_index
 
     remote_index.retry_if_needed()  # throttled; retries a failed ingest, refreshes a stale one
     try:
-        page = remote_index.list_dir(prefix, cursor)
+        page = remote_index.list_dir(ix, prefix, cursor)
     except ImportError:
         return None
     except ValueError:
@@ -169,23 +183,24 @@ def _missing(bucket: str, key: str) -> RemoteError:
 
 def _stat(url) -> dict:
     bucket, key = _parse(url)
+    ix = _ix(bucket, key)
     if not key or key.endswith("/"):
-        known = _index_answer("has_dir", key)
+        known = _index_answer("has_dir", ix, key)
         if known is None:
-            raise _not_ready()
+            raise _not_ready(bucket)
         if not known:
             raise _missing(bucket, key)
         return _dir_payload(bucket, key)
     # Index first, so folder navigation needs no network and works offline.
-    d = _index_answer("has_dir", key + "/")
-    f = _index_answer("has_file", key)
+    d = _index_answer("has_dir", ix, key + "/")
+    f = _index_answer("has_file", ix, key)
     if d is True and f is False:
         return _dir_payload(bucket, key + "/")
     try:
         info = remote_access.head(bucket, key)
     except RemoteError as e:
         if d is None and e.code == "not_found":
-            raise _not_ready() from None  # may be a folder the index cannot show yet
+            raise _not_ready(bucket) from None  # may be a folder the index cannot show yet
         if d is True and e.code in ("not_found", "network"):
             return _dir_payload(bucket, key + "/")
         raise
@@ -204,12 +219,13 @@ def _list(url, cursor) -> dict:
     prefix = key if (not key or key.endswith("/")) else key + "/"
     if cursor is not None and len(cursor) > 4096:
         raise RemoteError("bad_url", "the listing cursor is not valid")
-    page = _index_list(prefix, cursor or None)
+    ix = _ix(bucket, prefix)
+    page = _index_list(ix, prefix, cursor or None)
     if page is None:
-        raise _not_ready()
+        raise _not_ready(bucket)
     raw = page.get("entries") or []
     next_cursor = page.get("cursor") or None
-    if not raw and not next_cursor and prefix and _index_answer("has_dir", prefix) is False:
+    if not raw and not next_cursor and prefix and _index_answer("has_dir", ix, prefix) is False:
         raise _missing(bucket, prefix)
     # The index already orders dirs first, then files, by name. A folder's
     # size and mtime are its whole subtree's (bytes, newest file), from
@@ -218,6 +234,22 @@ def _list(url, cursor) -> dict:
                 "is_dir": bool(e["is_dir"]),
                 "size": e.get("size"), "mtime": e.get("mtime")} for e in raw]
     return {"url": canonical_url(bucket, prefix), "entries": entries, "cursor": next_cursor}
+
+
+def _buckets() -> dict:
+    from fused_render import remote_index
+
+    remote_index.retry_if_needed()
+    st = remote_index.status()
+    return {"signed_in": bool(st.get("signed_in")), "state": st.get("state"),
+            "error": st.get("error"),
+            "buckets": st.get("indexes") or []}
+
+
+@router.get("/api/remote/buckets")
+def api_remote_buckets():
+    """The indexes the signed-in account can read, each with its sync state."""
+    return _gate() or _handle(_buckets)
 
 
 @router.get("/api/remote/stat")

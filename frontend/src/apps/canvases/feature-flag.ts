@@ -85,7 +85,7 @@ export function publishCanvasesEnabled(next: boolean) {
   reading = Promise.resolve();
   set(next);
   // The platform-side copy (platform/lib/canvases-flag.ts) for readers that
-  // may not import this app — the explorer's "Fused assets" search group.
+  // may not import this app — the explorer's "S3" search group.
   publishCanvasesFlag(next);
 }
 

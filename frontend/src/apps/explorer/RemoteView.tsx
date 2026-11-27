@@ -40,8 +40,10 @@ import {
   parseRemoteLocation,
   remoteFetch,
   remoteFetchCancel,
+  remoteBuckets,
   remoteFetchStatus,
   remoteStat,
+  type RemoteBucket,
   type RemoteStat,
 } from "@platform/lib/remote";
 import { notify } from "@platform/lib/notifications";
@@ -64,7 +66,7 @@ function isAbort(err: unknown): boolean {
   return err instanceof Error && err.name === "AbortError";
 }
 
-// `index_not_ready`: the fused-asset index is still loading server-side, which
+// `index_not_ready`: the bucket's index is still loading server-side, which
 // answers itself in a few seconds. Folder stat/list retry on this backoff
 // before the page settles on the message; an abort (unmount, navigation)
 // stops the wait and rejects with the AbortError.
@@ -129,6 +131,8 @@ function RemoteErrorBody({ error, onRetry }: { error: RemoteApiError; onRetry?: 
   let title: string;
   let detail: string | null = null;
   let action: ReactNode = null;
+  // Offer the buckets that open (their own row: none means no row at all).
+  let buckets = false;
   switch (error.code) {
     case "disabled":
       title = "The canvas integration is off";
@@ -144,6 +148,8 @@ function RemoteErrorBody({ error, onRetry }: { error: RemoteApiError; onRetry?: 
       break;
     case "not_found":
       title = "Not found in the bucket";
+      // e.g. a bucket address above the one prefix the account has indexed.
+      detail = error.message;
       break;
     case "bad_url":
       title = "This is not a valid S3 address";
@@ -154,18 +160,16 @@ function RemoteErrorBody({ error, onRetry }: { error: RemoteApiError; onRetry?: 
       detail = error.message;
       break;
     case "unsupported_bucket": {
+      // The server says why: signed out, or no index in this bucket for the
+      // account. The buckets that DO open are offered instead.
       title = "This bucket is not available";
-      detail = "Only the fused-asset bucket can be opened for now.";
-      action = (
-        <Button size="sm" variant="outline" onClick={() => navigate("s3://fused-asset/", { isDir: true })}>
-          Open s3://fused-asset
-        </Button>
-      );
+      detail = error.message;
+      buckets = true;
       break;
     }
     case "index_not_ready":
-      title = "The fused-asset index is still loading";
-      detail = "Folders appear once it has loaded.";
+      title = "This bucket's index is still loading";
+      detail = error.message || "Folders appear once it has loaded.";
       break;
     default:
       title = "Could not open this address";
@@ -181,7 +185,7 @@ function RemoteErrorBody({ error, onRetry }: { error: RemoteApiError; onRetry?: 
         <p className="m-0 font-medium">{title}</p>
         {detail && <p className="m-0 pt-1 text-sm text-muted-foreground">{detail}</p>}
         {(action || (retryable && onRetry)) && (
-          <div className="flex gap-2 pt-3">
+          <div className="flex flex-wrap gap-2 pt-3">
             {action}
             {retryable && onRetry && (
               <Button size="sm" variant="outline" onClick={onRetry}>
@@ -190,7 +194,33 @@ function RemoteErrorBody({ error, onRetry }: { error: RemoteApiError; onRetry?: 
             )}
           </div>
         )}
+        {buckets && <AvailableBuckets />}
       </div>
+    </div>
+  );
+}
+
+/** One button per bucket the account can open, each to its index's own
+ *  address (an index of one prefix has no listable bucket root). Nothing
+ *  while loading, when there are none, or when the list cannot be read. */
+function AvailableBuckets() {
+  const [buckets, setBuckets] = useState<RemoteBucket[]>([]);
+  useEffect(() => {
+    const c = new AbortController();
+    remoteBuckets({ signal: c.signal }).then(
+      (r) => !c.signal.aborted && setBuckets(r.buckets),
+      () => undefined,
+    );
+    return () => c.abort();
+  }, []);
+  if (!buckets.length) return null;
+  return (
+    <div className="flex flex-wrap gap-2 pt-3">
+      {buckets.map((b) => (
+        <Button key={b.id} size="sm" variant="outline" onClick={() => navigate(b.url, { isDir: true })}>
+          {"Open " + b.url.replace(/\/+$/, "")}
+        </Button>
+      ))}
     </div>
   );
 }

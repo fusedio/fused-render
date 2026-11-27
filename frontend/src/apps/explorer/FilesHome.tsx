@@ -158,7 +158,7 @@ type LaunchTab = "recents" | "sessions" | "repos";
 const NO_LOCAL_HITS: HomeHit[] = [];
 
 // The row the user explicitly highlighted, by IDENTITY, not position: the list
-// has two halves (local rows, "Fused assets" rows) answering two independent
+// has two halves (local rows, "S3" rows) answering two independent
 // requests, so a bare index would silently re-point at a different row when
 // either half lands. The index is derived from this every render; a row that
 // is gone falls back to the default.
@@ -498,7 +498,7 @@ export function FilesSearch({
   // ADDRESS, not a local file name: it is not `searchable` (no local request,
   // no AI row), but the BUCKET search still runs on it — the server reads an
   // address being typed (`s3://fused` → buckets + keys matching "fused",
-  // `s3://fused-asset/cen` → "cen" inside that bucket). A bare Enter opens the
+  // `s3://<bucket>/cen` → "cen" inside that bucket). A bare Enter opens the
   // address itself (`submit`) and the note says so; an arrowed-to bucket row
   // opens that row. Flag OFF: an `s3://…` string is an ordinary local query, exactly as before
   // the remote integration existed.
@@ -506,7 +506,7 @@ export function FilesSearch({
   const remoteAddr = canvasesOn ? canonicalRemoteUrl(q) : null;
   const searchable = trimmedQ.length >= MIN_QUERY_CHARS && remoteAddr === null;
   useEffect(() => onActiveChange(active), [active, onActiveChange]);
-  // The "Fused assets" bucket hits (RemoteHitsGroup): their own request, in
+  // The "S3" bucket hits (RemoteHitsGroup): their own request, in
   // parallel with the local one below, flag-gated, silent on failure. Asked
   // with the RAW query, like the local request: the server ranks the bucket
   // index with the same engine (remote_index.rank → search_ranked), so a
@@ -1173,7 +1173,7 @@ export function FilesSearch({
   // `aiUsable` gates it too: offering a call that will fail on the same
   // missing index is a dead end, not an offer.
   //
-  // The bucket rows ("Fused assets", RemoteHitsGroup) ride in `fileCount` as
+  // The bucket rows ("S3", RemoteHitsGroup) ride in `fileCount` as
   // hit rows AFTER the local ones — one list for ↑/↓, local first — so the
   // row-model helpers step over them unchanged. Only rendered rows count
   // (`shown`, not every fetched hit).

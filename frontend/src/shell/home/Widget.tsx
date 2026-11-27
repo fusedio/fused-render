@@ -15,7 +15,7 @@ import { FolderWidget, useWidgetFolder } from "./widgets/FolderWidget";
 import { SearchWidget } from "./widgets/SearchWidget";
 import { BuildWidget } from "./widgets/BuildWidget";
 import { IndexWidget } from "./widgets/IndexWidget";
-import { LocalFilesWidget, S3FilesWidget, S3_SEE_ALL, filesSeeAll } from "./widgets/FilesWidgets";
+import { LocalFilesWidget, S3FilesWidget, S3RefreshButton, filesSeeAll } from "./widgets/FilesWidgets";
 import { CANVASES_SEE_ALL, CanvasesWidget } from "./widgets/CanvasesWidget";
 import { MarketplaceWidget } from "./widgets/MarketplaceWidget";
 import { MARKETPLACE_HOME } from "@platform/lib/marketplace";
@@ -29,7 +29,6 @@ const SEE_ALL: Partial<Record<WidgetModel["source"], string>> = {
   recents: "/explorer?tab=recents",
   tasks: "/tasks",
   bots: "/bots",
-  s3: S3_SEE_ALL,
   canvases: CANVASES_SEE_ALL,
   marketplace: MARKETPLACE_HOME,
 };
@@ -141,6 +140,9 @@ export function WidgetFrame(p: WidgetFrameProps): ReactNode {
           <OpenAppLink app={embedded} />
         ) : widget.source === "app" && widget.appPath ? (
           <OpenPageLink path={widget.appPath} />
+        ) : widget.source === "s3" ? (
+          // Many buckets, no one folder to "See all": a Refresh in its place.
+          <S3RefreshButton />
         ) : seeAll ? (
           <a className="home-sec-more" href={seeAll} onClick={(e) => softNavigate(e, seeAll)}>
             See all

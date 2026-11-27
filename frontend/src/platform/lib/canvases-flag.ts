@@ -1,6 +1,6 @@
 // The `canvases_enabled` preference (D427, shell/prefs.py) for code that may
 // not import apps/canvases (scripts/check-boundaries.mjs) — today the explorer
-// home search's "Fused assets" group (apps/explorer/RemoteHitsGroup.tsx).
+// home search's "S3" group (apps/explorer/RemoteHitsGroup.tsx).
 //
 // The same module-level cache + subscribe shape as apps/canvases/feature-flag.ts
 // and apps/explorer/lib/ranked-search-pref.ts: one read per page load (through
