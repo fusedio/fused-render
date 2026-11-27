@@ -1,5 +1,5 @@
 // Where the folder view's data comes from: the local routes for a filesystem
-// path, the `fused-asset` bucket index for an `s3://` location.
+// path, the bucket's index for an `s3://` location.
 //
 // The explorer's folder view (Listing.tsx and its hooks) is the same
 // component over both: an S3 folder lists, searches, completes and resolves

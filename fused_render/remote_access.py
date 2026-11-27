@@ -1,14 +1,15 @@
 """How a remote (S3) object is reached — the one seam for it.
 
-Scope is one public bucket, `BUCKET` in `REGION`, read with anonymous HTTPS.
-Folders come from its index (`remote_index`); this module answers for objects:
-`head(bucket, key)`, `read_url(bucket, key)`, `read_range(bucket, key,
-start, end)` and `sign_read_url(bucket, key)` (the URL a template reads the
-object from itself). A signed reader for other buckets would replace these
-functions here and nowhere else.
+Scope is every bucket the signed-in account has an index for
+(`remote_buckets`). Folders come from that index (`remote_index`); this module
+answers for objects: `head(bucket, key)`, `read_url(bucket, key)`,
+`read_range(bucket, key, start, end)` and `sign_read_url(bucket, key)` (the
+URL a template reads the object from itself). Every read goes to a link the
+Fused server signed for that one object (`remote_buckets.sign`): the plain
+URL for a public bucket, a presigned GET for a private one.
 
-**No SSRF.** The only host ever contacted is built from `BUCKET`/`REGION`
-(`require_supported` refuses anything else before any network call), and
+**No SSRF.** `require_supported` refuses an address no index covers before
+any network call, the only host contacted is the one in the signed link, and
 redirects are never followed.
 
 No import of anything under `fused_render.server` — the router imports this.
@@ -19,12 +20,8 @@ import email.utils
 import re
 from dataclasses import dataclass
 from datetime import datetime, timezone
-from urllib.parse import quote
 
 import httpx
-
-BUCKET = "fused-asset"
-REGION = "us-west-2"
 
 # S3 caps a single key at 1024 bytes of UTF-8.
 _KEY_MAX_BYTES = 1024
@@ -92,10 +89,15 @@ def canonical_url(bucket: str, key: str) -> str:
 
 
 def require_supported(bucket: str) -> str:
-    """`bucket`, or `RemoteError("unsupported_bucket")` unless it is `BUCKET`.
-    Callers run this before any network call."""
-    if bucket != BUCKET:
-        raise RemoteError("unsupported_bucket", f"Only the {BUCKET} bucket can be opened for now.")
+    """`bucket`, or `RemoteError("unsupported_bucket")` unless the signed-in
+    account has an index in it. Callers run this before any network call."""
+    from fused_render import remote_buckets
+
+    if remote_buckets.resolve(bucket, "") is None:
+        if not remote_buckets.signed_in():
+            raise RemoteError("unsupported_bucket", "Sign in to Fused to open S3 locations.")
+        raise RemoteError("unsupported_bucket",
+                          f"The {bucket} bucket is not indexed for your account.")
     return bucket
 
 
@@ -136,8 +138,7 @@ def http_date(value: str | None) -> float | None:
 
 def read_url(bucket: str, key: str) -> str:
     """The https URL a plain GET (with Range) downloads the object from."""
-    require_supported(bucket)
-    return f"https://{BUCKET}.s3.{REGION}.amazonaws.com/{quote(key, safe='/~')}"
+    return sign_read_url(bucket, key).url
 
 
 @dataclass(frozen=True)
@@ -153,16 +154,22 @@ def sign_read_url(bucket: str, key: str) -> SignedUrl:
     """The URL a page or template reads `s3://bucket/key` from directly
     (`fused.s3.sign`, `POST /api/remote/sign`).
 
-    Signing is the authorization point: only objects this module would read
-    itself are signed, and the caller gets a URL for that one object, never a
-    credential. Today the one supported bucket is public, so the URL is the
-    plain `read_url` and never expires. Signed access to private buckets (the
-    user's Fused credentials) replaces the body here; the callers already
-    handle `expires_at`. No network call."""
+    Signing is the authorization point: only objects under an index the
+    signed-in account can read are signed, and the caller gets a URL for that
+    one object, never a credential. A public bucket's URL is plain and never
+    expires; a private one's is presigned by the Fused server (fused-py) and
+    `expires_at` says when. Signed links are cached in memory until near
+    their expiry, so only the first read of an object pays the round trip."""
+    from fused_render import remote_buckets
+
     require_supported(bucket)
     if not key or key.endswith("/"):
         raise RemoteError("bad_url", "a folder has no bytes to read — sign an object, not a prefix")
-    return SignedUrl(url=read_url(bucket, key), expires_at=None)
+    try:
+        url, expires_at = remote_buckets.sign(bucket, key)
+    except remote_buckets.GatewayError as e:
+        raise RemoteError("not_public", f"{canonical_url(bucket, key)} could not be signed: {e}") from None
+    return SignedUrl(url=url, expires_at=expires_at)
 
 
 def iso_utc(ts: float | None) -> str | None:
@@ -350,15 +357,13 @@ def _past_end(r: httpx.Response, start: int, what: str) -> str:
 
 
 def head(bucket: str, key: str) -> ObjectInfo:
-    url = read_url(bucket, key)
-    what = canonical_url(bucket, key)
+    """Size, modified time and ETag of an object. A one-byte ranged GET, not
+    a HEAD: a presigned GET link refuses any other method."""
     try:
-        r = _client.head(url)
-    except httpx.HTTPError as e:
-        raise RemoteError("network", f"could not reach S3 for {what}: {e}") from None
-    if r.status_code != 200:
-        raise error_for_status(r.status_code, what)
-    size = r.headers.get("content-length")
-    return ObjectInfo(size=int(size) if size and size.isdigit() else None,
-                      mtime=http_date(r.headers.get("last-modified")),
-                      etag=clean_etag(r.headers.get("etag")))
+        body, info = read_range(bucket, key, 0, 1)
+    except RemoteError as e:
+        if e.code == "range_not_satisfiable":  # an empty object has no byte 0
+            return ObjectInfo(size=0, mtime=None, etag=None)
+        raise
+    body.close()
+    return info

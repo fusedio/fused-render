@@ -1,13 +1,16 @@
 // Two file-location widgets: Local files (the home folder's top level) and
-// S3 files (the top level of the S3 data available today). Rows open the
-// entry in the explorer, the same as clicking it in a listing.
+// S3 files (the S3 buckets indexed for the signed-in account, one row per
+// index). Rows open the entry in the explorer, the same as clicking it in a
+// listing.
+import { useEffect, useRef, useState } from "react";
 import { formatSize, timeAgo } from "@platform/lib/format";
 import { spaLinkProps } from "@platform/lib/router";
 import { iconForEntry } from "@platform/ui/FileIcons";
 import type { FsEntry } from "@platform/lib/api";
-import type { RemoteEntry } from "@platform/lib/remote";
+import { remoteSyncNow, type RemoteBucket } from "@platform/lib/remote";
+import { notify } from "@platform/lib/notifications";
 import { useCanvasesFeature } from "@apps/canvases/feature-flag";
-import { S3_ROOT, useHomeDirListing, useS3Listing } from "../data";
+import { S3_BUCKETS_CHANGED_EVENT, useHomeDirListing, useS3Buckets } from "../data";
 import { useHome } from "@platform/lib/home-path";
 import { itemCapacity, type Widget } from "../layout";
 import { EmptyLine, ErrorLine, ItemIcons, ItemList, ListSkeleton, type WidgetItem } from "./bits";
@@ -18,7 +21,6 @@ const joinPath = (dir: string, name: string) => dir.replace(/\/+$/, "") + "/" + 
 export function filesSeeAll(home: string): string | undefined {
   return home ? spaLinkProps(home, { isDir: true }).href : undefined;
 }
-export const S3_SEE_ALL = spaLinkProps(S3_ROOT, { isDir: true }).href;
 
 function localItem(dir: string, e: FsEntry): WidgetItem {
   const path = joinPath(dir, e.name);
@@ -32,14 +34,25 @@ function localItem(dir: string, e: FsEntry): WidgetItem {
   };
 }
 
-function s3Item(e: RemoteEntry): WidgetItem {
-  const size = e.size != null ? formatSize(e.size) : "";
+/** A bucket's row: named by bucket (and prefix, for an index of one part of
+    it), its secondary line the sync state. */
+function bucketItem(b: RemoteBucket): WidgetItem {
+  const name = b.prefix ? `${b.bucket}/${b.prefix.replace(/\/+$/, "")}` : b.bucket;
+  const files = `${b.rows.toLocaleString()} ${b.rows === 1 ? "file" : "files"}`;
+  const sub =
+    b.state === "ready"
+      ? b.syncing ? `${files} · syncing…` : files
+      : b.state === "fetching"
+        ? "Syncing…"
+        : b.state === "error"
+          ? b.error || "Couldn't sync"
+          : "Not synced yet";
   return {
-    key: e.url,
-    name: e.name.replace(/\/$/, ""),
-    sub: size || (e.is_dir ? "Folder" : undefined),
-    icon: iconForEntry(e.name, e.is_dir),
-    ...spaLinkProps(e.url, { isDir: e.is_dir }),
+    key: b.id,
+    name,
+    sub,
+    icon: iconForEntry(name, true),
+    ...spaLinkProps(b.url, { isDir: true }),
   };
 }
 
@@ -78,9 +91,47 @@ export function S3FilesWidget({ widget }: { widget: Widget }) {
 }
 
 function S3Body({ widget }: { widget: Widget }) {
-  const { data, error, retry } = useS3Listing();
+  const { data, error, retry } = useS3Buckets();
   if (error && !data) return <ErrorLine message={error} onRetry={retry} />;
-  if (!data) return <ListSkeleton rows={3} label="Loading S3 files" />;
-  if (!data.length) return <EmptyLine>Nothing here yet.</EmptyLine>;
-  return <Items widget={widget} items={data.map(s3Item)} moreHref={S3_SEE_ALL} />;
+  if (!data) return <ListSkeleton rows={3} label="Loading S3 buckets" />;
+  if (!data.signed_in) return <EmptyLine>Sign in to Fused to browse S3.</EmptyLine>;
+  if (!data.buckets.length) {
+    return data.error ? <ErrorLine message={data.error} onRetry={retry} /> : <EmptyLine>No S3 buckets are indexed for you yet.</EmptyLine>;
+  }
+  return <Items widget={widget} items={data.buckets.map(bucketItem)} />;
+}
+
+/** How long after "refresh now" to re-read the list: long enough for the
+    server to have marked the buckets it is syncing. */
+const REFRESH_RELOAD_MS = 1500;
+
+/** The S3 tile's header action (where "See all" sits on other tiles): ask the
+    server to re-sync the bucket indexes now, then re-read the list. Nothing
+    with Fused Workbench off, like the body. */
+export function S3RefreshButton() {
+  const on = useCanvasesFeature();
+  const [busy, setBusy] = useState(false);
+  const timer = useRef<number | undefined>(undefined);
+  useEffect(() => () => window.clearTimeout(timer.current), []);
+  if (!on) return null;
+  const refresh = () => {
+    setBusy(true);
+    remoteSyncNow().then(
+      () => {
+        timer.current = window.setTimeout(() => {
+          setBusy(false);
+          window.dispatchEvent(new Event(S3_BUCKETS_CHANGED_EVENT));
+        }, REFRESH_RELOAD_MS);
+      },
+      (err: Error) => {
+        setBusy(false);
+        notify({ title: `Could not refresh S3: ${err.message || "the request failed"}`, tone: "error" });
+      },
+    );
+  };
+  return (
+    <button type="button" className="hw-btn" disabled={busy} title="Check for new and updated S3 buckets now" onClick={refresh}>
+      {busy ? "Refreshing…" : "Refresh"}
+    </button>
+  );
 }

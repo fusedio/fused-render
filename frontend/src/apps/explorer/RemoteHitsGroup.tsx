@@ -1,5 +1,6 @@
-// The home search's "Fused assets" group: hits from the public `fused-asset`
-// bucket's index (/api/remote-index/rank, platform/lib/remote.ts), rendered as
+// The home search's "S3" group: hits from every S3 bucket indexed for the
+// signed-in account (/api/remote-index/rank, platform/lib/remote.ts; each
+// hit's url names its own bucket), rendered as
 // their own block BELOW the local file rows and above the sticky AI row, inside
 // the same listbox — so ↑/↓ walks local rows and bucket rows as one list.
 // FilesSearch owns the keyboard model; bucket rows are reached only by arrowing
@@ -19,7 +20,7 @@ import { spaLinkProps } from "@platform/lib/router";
 import { formatMtime, formatMtimeFull, formatSize } from "@platform/lib/format";
 import { substringMatch } from "@platform/lib/fuzzy";
 import { INSTANT_DEBOUNCE_MS, QueryMemo } from "@platform/lib/instant-search";
-import { REMOTE_WARN_BYTES, remoteRank, type RemoteRankHit } from "@platform/lib/remote";
+import { REMOTE_WARN_BYTES, parseRemoteLocation, remoteRank, type RemoteRankHit } from "@platform/lib/remote";
 import { iconForEntry } from "@platform/ui/FileIcons";
 import {
   HOME_RESULT_CAP,
@@ -32,13 +33,12 @@ import { renderHighlight, renderHighlightPath } from "@apps/explorer/listing/bit
 /** Bucket rows shown before "Show more" — the same cap the local rows use. */
 export const REMOTE_GROUP_CAP = HOME_RESULT_CAP;
 
-const REMOTE_BUCKET_ADDR = "s3://fused-asset";
 const HEAD_ID = "fh-remote-head";
 const NO_HITS: RemoteRankHit[] = [];
 
 /**
  * The part of a typed S3 address the server actually matched keys against,
- * for highlighting: `s3://fused` → "fused", `s3://fused-asset/cen` → "cen".
+ * for highlighting: `s3://data` → "data", `s3://<bucket>/cen` → "cen".
  * Any other query is its own term.
  */
 export function remoteHighlightTerm(query: string): string {
@@ -180,6 +180,7 @@ function RemoteRow({
   const namePos = positionsWithin(marks, from, key.length - from);
   const folderPos = positionsWithin(marks, 0, folder.length);
   const big = !isDir && hit.size !== null && hit.size > REMOTE_WARN_BYTES;
+  const bucket = parseRemoteLocation(hit.url)?.bucket;
   return (
     <li
       role="option"
@@ -200,7 +201,7 @@ function RemoteRow({
         <span className="fh-result-name">{renderHighlight(name, namePos)}</span>
         <span className="fh-result-path">{renderHighlightPath(folder, folderPos)}</span>
         <span className="fh-result-meta">
-          <span className="fh-remote-cloud" title="In the fused-asset bucket">
+          <span className="fh-remote-cloud" title={bucket ? `In the ${bucket} bucket` : "In S3"}>
             <Cloud size={13} strokeWidth={2} aria-hidden="true" />
           </span>
           {!isDir && (
@@ -248,8 +249,7 @@ export function RemoteHitsGroup({
   return (
     <>
       <li role="presentation" className={"fh-remote-item fh-remote-head" + held} id={HEAD_ID}>
-        <span className="fh-remote-title">Fused assets</span>
-        <span className="fh-remote-addr">{REMOTE_BUCKET_ADDR}</span>
+        <span className="fh-remote-title">S3</span>
       </li>
       {remote.shown.map((hit, i) => {
         const row = rowOffset + i;

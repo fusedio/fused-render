@@ -22,7 +22,7 @@ import {
   type WorkbenchEnv,
 } from "@apps/canvases/api";
 import { listDir, type FsEntry } from "@platform/lib/api";
-import { remoteList, type RemoteEntry } from "@platform/lib/remote";
+import { remoteBuckets, type RemoteBucketsResult } from "@platform/lib/remote";
 import type { AppsSort } from "./layout";
 import { MAX_ROW } from "./strip";
 import { isDraftTask, sortForList } from "../tasks-lib";
@@ -281,16 +281,25 @@ export function useHomeDirListing(dir: string): AsyncState<FsEntry[]> {
   });
 }
 
-/** The S3 data available today: one bucket, public and indexed. Generic name,
-    one constant, so more locations slot in here later. */
-export const S3_ROOT = "s3://fused-asset/";
+/** Fired to re-read the S3 bucket list now (the widget's Refresh). */
+export const S3_BUCKETS_CHANGED_EVENT = "fused:s3-buckets-changed";
 
-const loadS3 = shared(() => remoteList(S3_ROOT).then((r) => visibleEntries(r.entries)));
+const loadS3Buckets = shared(() => remoteBuckets());
 
-/** The top level of S3_ROOT. Fetched once per mount: the bucket changes on
-    its own publish cadence, not while Home is open. */
-export function useS3Listing(): AsyncState<RemoteEntry[]> {
-  return useAsyncResource(loadS3, { pollMs: 0, errorText: "Couldn't reach S3." });
+/** The indexed S3 buckets, public first (the server's order). Re-read on a
+    slow beat so a new index shows up, on a quick one while any bucket is
+    syncing (so "syncing…" turns into a count), and at once on
+    S3_BUCKETS_CHANGED_EVENT. */
+export function useS3Buckets(): AsyncState<RemoteBucketsResult> {
+  const [busy, setBusy] = useState(false);
+  const res = useAsyncResource(loadS3Buckets, {
+    pollMs: busy ? 4000 : 30000,
+    event: S3_BUCKETS_CHANGED_EVENT,
+    errorText: "Couldn't reach S3.",
+  });
+  const nowBusy = !!res.data?.buckets.some((b) => b.syncing || b.state === "fetching");
+  useEffect(() => setBusy(nowBusy), [nowBusy]);
+  return res;
 }
 
 export type HomeCanvases =

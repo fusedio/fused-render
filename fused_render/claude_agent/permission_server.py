@@ -1489,7 +1489,7 @@ _TERMINAL_HANDLERS = {
 # ------------------------------------------------------------- S3 files
 #
 # Two tools over fused-render's own /api/remote* routes, for the S3 files
-# fused-render can serve (today the public `fused-asset` bucket): find paths in
+# fused-render can serve (every bucket indexed for the signed-in account): find paths in
 # the index, read an object whole or a byte range. Every byte goes through the
 # server (`fused_render/remote_access.py` is the one module that knows how a
 # bucket is reached, and which buckets are served — another one is the
@@ -2085,9 +2085,11 @@ S3_SCHEMAS = [
     {
         "name": S3_SEARCH_TOOL,
         "description": (
-            "Find S3 files and folders available through fused-render (today: "
-            "the public `fused-asset` bucket of ready-to-use datasets), from "
-            "fused-render's index. Pass exactly one of: `query` — search object "
+            "Find S3 files and folders available through fused-render: every "
+            "bucket indexed for the signed-in Fused account (public datasets "
+            "and the team's own buckets), from fused-render's index. The query "
+            "`s3://` lists those buckets; `<bucket>/<text>` searches one of "
+            "them. Pass exactly one of: `query` — search object "
             "keys and folder names by substring and get the best-ranked folders "
             "and files (at most three hits per file name, and folders whose name "
             "starts with a dot are hidden, so a search never enumerates a "
@@ -2111,7 +2113,7 @@ S3_SCHEMAS = [
                 "query": {"type": "string",
                           "description": "Substring to search object keys and folder names for."},
                 "path": {"type": "string",
-                         "description": "s3://<bucket>/<prefix>/ (e.g. s3://fused-asset/census/) — list this folder, one level."},
+                         "description": "s3://<bucket>/<prefix>/ — list this folder, one level."},
                 "limit": {"type": "integer", "minimum": 1, "maximum": 200,
                           "description": "Most hits to return (default 20, max 200)."},
                 "cursor": {"type": "string",

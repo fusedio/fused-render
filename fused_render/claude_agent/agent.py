@@ -5708,7 +5708,7 @@ def _s3_note(file: str, backend: str = "") -> str:
     tool = "mcp__%s__%%s" % PERMISSION_SERVER
     note = (
         " You can find and read S3 files available through fused-render "
-        "(today the public `fused-asset` bucket of ready-made datasets): `"
+        "(the buckets indexed for the signed-in Fused account, public and the team's own): `"
         + tool % "s3_search" + "` searches their index (`query`) or lists one "
         "folder (`path`), and `" + tool % "s3_read" + "` reads a file, whole "
         "into a local file or a byte range. Use only these to look at S3 files "

@@ -1,6 +1,7 @@
 // Remote (S3) locations: typed wrappers over /api/remote/* and
-// /api/remote-index/rank, plus the address helpers the explorer's location
-// plumbing shares. An `s3://bucket/key` string is an explorer LOCATION (the
+// /api/remote-index/*, plus the address helpers the explorer's location
+// plumbing shares. Every bucket the signed-in account has an index for can be
+// opened (`remoteBuckets` lists them); any other is `unsupported_bucket`. An `s3://bucket/key` string is an explorer LOCATION (the
 // thing the address bar, tab title and history hold), never a filesystem
 // path — no local route (/api/fs/*, listing, index, git) may receive one.
 // Opening a remote file downloads it into the server's cache; the viewer then
@@ -244,6 +245,33 @@ export interface RemoteRankResult {
   truncated: boolean;
 }
 
+/** One index the signed-in account can read: a whole bucket (`prefix` "")
+ *  or one prefix of it (ends in "/"). `url` is where it opens. `rows`,
+ *  `version` and `synced_at` (epoch seconds) are set only while `state` is
+ *  "ready"; `syncing` can be true on a ready index (a newer copy is coming);
+ *  `error` is the last sync's failure, if any. */
+export interface RemoteBucket {
+  id: string;
+  bucket: string;
+  prefix: string;
+  url: string;
+  is_public: boolean;
+  state: "absent" | "fetching" | "ready" | "error";
+  syncing: boolean;
+  rows: number;
+  version: number | null;
+  synced_at: number | null;
+  error: string | null;
+}
+
+/** Public indexes first (the server's order). Signed out: `signed_in` false
+ *  and no buckets. `error` is a sync problem that is not one bucket's. */
+export interface RemoteBucketsResult {
+  signed_in: boolean;
+  error: string | null;
+  buckets: RemoteBucket[];
+}
+
 // -- Routes ------------------------------------------------------------------
 
 export function remoteStat(url: string, opts: { signal?: AbortSignal } = {}): Promise<RemoteStat> {
@@ -272,8 +300,10 @@ export function remoteFetchCancel(id: string): Promise<{ ok: boolean }> {
   return wrap(postJson<{ ok: boolean }>("/api/remote/fetch/cancel", { id }));
 }
 
-/** Ranked search over the `fused-asset` index. Flag off or no store answers
- *  200 `{ready:false, hits:[]}`, not an error. `under` (an `s3://` folder
+/** Ranked search over every indexed bucket (each hit's `url` names its own
+ *  bucket; `s3://` lists the buckets, `s3://<bucket>/<text>` searches inside
+ *  one). Flag off or no store answers 200 `{ready:false, hits:[]}`, not an
+ *  error. `under` (an `s3://` folder
  *  address) scopes it to that folder's subtree — the S3 folder view's own
  *  search box; hit keys stay whole bucket keys. */
 export function remoteRank(
@@ -285,4 +315,15 @@ export function remoteRank(
   if (opts.ranked !== undefined) params.set("ranked", String(opts.ranked));
   if (opts.under) params.set("under", opts.under);
   return wrap(getJson<RemoteRankResult>("/api/remote-index/rank?" + params.toString(), { signal: opts.signal }));
+}
+
+/** The indexes the signed-in account can read, each with its sync state. */
+export function remoteBuckets(opts: { signal?: AbortSignal } = {}): Promise<RemoteBucketsResult> {
+  return wrap(getJson<RemoteBucketsResult>("/api/remote/buckets", { signal: opts.signal }));
+}
+
+/** "Refresh now": the server re-reads which indexes exist and syncs every
+ *  one that moved, in the background. Resolves as soon as that is started. */
+export function remoteSyncNow(): Promise<{ ok: boolean }> {
+  return wrap(postJson<{ ok: boolean }>("/api/remote-index/sync", {}));
 }
