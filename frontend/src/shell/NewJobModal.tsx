@@ -27,6 +27,10 @@ import { paneChatUrl, taskPane } from "@apps/claude/ui/list-rows";
 import { ChatMount } from "@apps/claude";
 import { homePlaceholderFor, type TargetNoun } from "@apps/claude/pane/paneUrl";
 import { runAppEntry } from "@apps/claude/protocol/agent";
+import {
+  defaultWorktreeName, isWorktreeError, listWorktrees, resolveWorktree, validWorktreeName,
+} from "@apps/claude/protocol/worktrees";
+import { GitBranch } from "lucide-react";
 // THE SHARED TASK HEAD on the open chat and the form (design.md, "One task
 // head, everywhere").
 import { TaskHead } from "./TaskHead";
@@ -4790,10 +4794,52 @@ export default function NewJobModal({
     }
   };
 
+  // ---- Start in a NEW WORKTREE (user request, 2026-11-27) --------------------
+  // A toggle beside the Folder pill, offered only where the chat's own worktree
+  // menu would be: the folder is inside a git repo (the menu's `list` says so)
+  // and the agent has worktrees. On, Save first makes `.claude/worktrees/<name>`
+  // (or reuses one of that name, so a retried Save does not trip on its own
+  // first attempt) and the task targets that checkout instead of the folder.
+  // `null` = off; a string is the name field's value.
+  const [wtName, setWtName] = useState<string | null>(null);
+  const [wtRepo, setWtRepo] = useState(false);
+  const wtBase = pathError === null && !pathChecking && targetIsPath
+    ? (listingAddress(target.trim(), home, home || undefined) ?? "")
+    : "";
+  useEffect(() => {
+    setWtRepo(false);
+    if (!wtBase) return;
+    let stale = false;
+    const timer = window.setTimeout(() => {
+      listWorktrees(wtBase).then(
+        (list) => { if (!stale) setWtRepo(!isWorktreeError(list)); },
+        () => { /* not a repo, or unreachable: no toggle */ },
+      );
+    }, 300);
+    return () => {
+      stale = true;
+      window.clearTimeout(timer);
+    };
+  }, [wtBase]);
+  const wtShown = wtRepo && !editing && !lockedWhere && capsOf(agent).worktrees;
+  const wtOn = wtShown && wtName !== null;
+
   const submit = async () => {
     setBusy(true);
     setError(null);
     try {
+      // The worktree FIRST: a refusal (bad name, git's own) must stop the Save
+      // before anything is scheduled against the wrong folder.
+      let runTarget = target;
+      if (wtOn) {
+        const name = (wtName ?? "").trim();
+        if (!validWorktreeName(name)) {
+          throw new Error("A worktree name is 1-64 letters, digits, dots, dashes or underscores");
+        }
+        const made = await resolveWorktree(wtBase, name);
+        if (isWorktreeError(made)) throw new Error(made.error);
+        runTarget = made.path;
+      }
       // A drop the instant before Save must still make the task: wait out the
       // in-flight uploads, then read the paths off state. Failures already
       // removed themselves (attachFiles' catch), so what remains is real.
@@ -4825,7 +4871,7 @@ export default function NewJobModal({
       if (syncKey) draftSyncer(syncKey).forget();
       const created = await scheduleMessage(
         buildSchedulePayload({
-          target,
+          target: runTarget,
           message: fields.description,
           title: taskTitle,
           text,
@@ -5540,6 +5586,34 @@ export default function NewJobModal({
           {/* A CANVAS'S LOCKED CARD IS THE EXCEPTION (`lockedWhere`): its path is a
               clone dir that names neither the canvas nor the node, so the pill
               comes back read-only and says both (Akshil, 2026-10-30). */}
+          {wtShown && (
+            <>
+              <button
+                type="button"
+                className={"pp nt-wt" + (wtOn ? " nt-wt--on" : "")}
+                aria-pressed={wtOn}
+                aria-label="Start in a new worktree"
+                data-hint={wtOn ? "The task runs in a new worktree of this repo" : "Run this task in a new worktree"}
+                onClick={() => setWtName(wtOn ? null : defaultWorktreeName())}
+              >
+                <span className="pp-k"><GitBranch size={12} aria-hidden="true" /></span>
+                <span className="pp-v">{wtOn ? "New worktree" : "Worktree"}</span>
+              </button>
+              {wtOn && (
+                <input
+                  type="text"
+                  className={"field-control nt-wt-field"
+                    + (validWorktreeName((wtName ?? "").trim()) ? "" : " is-invalid")}
+                  aria-label="New worktree name"
+                  value={wtName ?? ""}
+                  spellCheck={false}
+                  autoCapitalize="off"
+                  autoCorrect="off"
+                  onChange={(e) => setWtName(e.currentTarget.value)}
+                />
+              )}
+            </>
+          )}
           {lockTarget && lockedWhere && (
             <WherePill where={lockedWhere} path={tildePath(target.trim(), home)} />
           )}
