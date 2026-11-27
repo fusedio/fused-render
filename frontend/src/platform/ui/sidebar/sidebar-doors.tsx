@@ -24,8 +24,12 @@ export interface SidebarRailDoor {
   onFocus?: (e: FocusEvent<HTMLElement>) => void;
   onBlur?: (e: FocusEvent<HTMLElement>) => void;
   onKeyDown?: (e: KeyboardEvent<HTMLElement>) => void;
-  /** A click, before the entry's own (`onClick`, else the navigation). */
-  onActivate?: () => void;
+  /** A click, before the entry's own (`onClick`, else the navigation).
+      Answering true, the owner took it (its card came up instead): the
+      entry's own click does not run. `keyboard`: the click came from Enter
+      (no pointer); `modified`: Shift, Cmd, Ctrl or Alt was down. Only a
+      literal `true` takes the click; any other answer is ignored. */
+  onActivate?: (how?: { keyboard: boolean; modified: boolean }) => unknown;
   /** Extra attributes on the entry (`data-*`, `aria-*`). */
   attrs?: Record<string, string | boolean | undefined>;
   /** The card speaks for the entry: no tooltip (`.sidebar-rail-tip`, a
@@ -35,6 +39,11 @@ export interface SidebarRailDoor {
 
 /** An entry's key → its hooks, or undefined (no card for it). */
 export type SidebarDoorLookup = (key: string) => SidebarRailDoor | undefined;
+
+/** How a click arrived, for `onActivate`. */
+export function activateHow(e: { detail: number; shiftKey: boolean; metaKey: boolean; ctrlKey: boolean; altKey: boolean }): { keyboard: boolean; modified: boolean } {
+  return { keyboard: e.detail === 0, modified: e.shiftKey || e.metaKey || e.ctrlKey || e.altKey };
+}
 
 export const SidebarDoorContext = createContext<SidebarDoorLookup | null>(null);
 

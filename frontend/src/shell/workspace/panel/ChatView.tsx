@@ -41,7 +41,7 @@ export function ChatView({ file, sessionId, queued, initialAsk, host, events, on
   // The session on screen counts as open in a pane (peek-session), as a
   // page's pane says it through `AnnounceUrlSession`.
   useEffect(() => (sessionId ? announcePaneSession(sessionId) : undefined), [sessionId]);
-  // …and its task counts as OPEN (WS-29): a reply landing here is read as it
+  // …and its task counts as OPEN (WS-33): a reply landing here is read as it
   // arrives and raises no "finished" notice. This mounts only while the chat
   // shows; the reader's window being hidden is task-open-read's own check.
   const rows = useTasksPulseRows(true);

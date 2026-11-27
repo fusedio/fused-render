@@ -264,7 +264,7 @@ export function openInWorkspace(href: string): boolean {
 }
 
 /** A staged ask, in a workspace (the host or one of its frames): the panel's
- *  chat takes it (§56 WS-32). False outside one, or with no host to take it:
+ *  chat takes it (§56 WS-36). False outside one, or with no host to take it:
  *  the caller stages it the ordinary way. */
 export function askInWorkspace(file: string, prompt: string, backend?: string): boolean {
   if (!hostOn && WS_ROLE === null) return false;

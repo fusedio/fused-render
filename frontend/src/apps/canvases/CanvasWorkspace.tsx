@@ -3298,7 +3298,7 @@ export default function CanvasWorkspace({
 
   const claudeOff = isBackendOff("claude");
   // IN A WORKSPACE TAB this page has no pane: the fix's chat is the window's
-  // panel's (SPEC §56 WS-31) — the clone's chat attached to the run by its
+  // panel's (SPEC §56 WS-35) — the clone's chat attached to the run by its
   // `run` door param, as this page's own pane attaches by `runId`. With no
   // run known (a reload while the fix runs) the clone's Claude home lists it.
   const showFixInPanel = (runId: string | null) => {
@@ -3479,7 +3479,9 @@ export default function CanvasWorkspace({
             <strong style={{ minWidth: 0, overflowWrap: "anywhere" }}>
               {pushLeg.reason ?? "Publishing failed"}
             </strong>
-            {/* Claude's feature (D17): no door while Claude is switched off. */}
+            {/* Claude's feature (D17): no door while Claude is switched off.
+                In a workspace tab the fix's chat stands in the window's panel
+                (WS-35), so the door stays and "see chat" opens it there. */}
             {!claudeOff && <button
               className="btn btn-primary"
               // In a tab, "see chat →" is a door: the panel shows it again.

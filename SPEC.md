@@ -13581,7 +13581,7 @@ nothing here exists and nothing changes.
 - **WS-23 The `/` key.** In a tab with nothing of its own to focus, `/` puts
   the keyboard in the panel's chat composer when a chat shows there.
 - **WS-24 Pages' own doors.** App Doctor's "Open in git" opens the panel's
-  Git. A page's staged asks go to the panel (WS-32).
+  Git. A page's staged asks go to the panel (WS-36).
 - **WS-25 No companions in a tab.** A file or folder page in a tab offers no
   Claude or Git mode. A tab whose URL arrives on one (`_side=claude|git`,
   `_mode=claude|git`, with its session params) shows its default content,
@@ -13605,33 +13605,55 @@ nothing here exists and nothing changes.
   file — the file in its parent. A published place wins. A faded ring's
   card names its own place; its click opens its chat in the panel and
   never switches the tab. A switch starts the list at its top.
-- **WS-28 Tasks and Bots are kept.** Each mounts the first time it shows and
+- **WS-28 Left cards in a host.** With "Left sidebar preview" on, every
+  sidebar entry keeps its hover card, and a press inside one holds it until
+  one press outside. Only a favourite's card (a bookmark: a collapsed rail
+  icon or a non-folder Favourites row) has a pin; every other card has none,
+  and a head drag pins nothing. A click on any other entry loads its page in
+  the tab (WS-5) and puts its card down; its card's Open does the same.
+- **WS-29 A favourite's click.** A plain click (or Enter) on a favourite
+  shows its card, held till one press outside, and opens nothing; its pin
+  holds it across presses and tab switches. The card's Open loads it in the
+  tab by WS-5 and arms it (Update-bookmark); Shift+click on the row or on
+  Open opens a new tab, armed too. A favourite with no card (another site,
+  `/api`) and every favourite with the preview off open on click as before;
+  folder rows are unchanged.
+- **WS-30 The shown entry.** The entry whose page the active tab shows (a
+  favourite: its url equals the tab's) opens no card on hover or
+  ArrowRight and keeps its active look and tooltip; a click on it opens
+  what is already shown.
+- **WS-31 Search.** The Search row is first, collapsed and expanded, where
+  the launcher exists or the preview is on. Hover: the file-search card.
+  Click: the launcher; with none (a browser), the search card, held till
+  one press outside. A result from the card opens as a tab (WS-5), and the
+  card goes. Its Open is the launcher, else Home.
+- **WS-32 Tasks and Bots are kept.** Each mounts the first time it shows and
   stays, hidden in place and inert, while another view shows or the panel
   is closed: the list keeps its filters, rows and scroll, the Bots frame is
   never reloaded and reads as hidden to its polls meanwhile. A hidden Tasks
   view holds no peek: reopening it shows the list unless the URL names one.
   Closed is still no `_right` and nothing open on the rail.
-- **WS-29 The panel's chat is open.** While it shows, its task counts as
+- **WS-33 The panel's chat is open.** While it shows, its task counts as
   open (marked read as replies land, no "finished" notice), as a held card's
   does: the row with its session, else the session; a not-yet-run chat its
   `pending:` row.
-- **WS-30 Tasks and Bots are never tabs.** A host booting on `/tasks…` or
+- **WS-34 Tasks and Bots are never tabs.** A host booting on `/tasks…` or
   `/bots…`, or with one in `_tabs`, drops that tab (Home active if it was)
   and shows it in the panel unless `_right` names a view. An open of one,
   even as a new tab, opens the panel. A tab that lands on one by a full load
   goes back (its own Back, else a reload of where it was, else it closes) and
   the panel shows it. A canvas page naming a `session_id` stays a tab and,
   shown with no `_right`, also opens that task's chat once the listing has it.
-- **WS-31 A canvas fix in a tab.** "Fix with Claude" works in a canvas tab:
+- **WS-35 A canvas fix in a tab.** "Fix with Claude" works in a canvas tab:
   the run's chat opens in the panel (the clone's chat with `run=`), and
   "Claude is on it — see chat →" opens it again.
-- **WS-32 Staged asks.** "Fix with AI", "Explain with AI", a repo update's
+- **WS-36 Staged asks.** "Fix with AI", "Explain with AI", a repo update's
   "Fix with Claude" and the panel Git's "Fix with AI" open the target's
   Claude home in the panel, a new mount, the ask handed to that one mount
   only; the page does not move.
-- **WS-33 The terminal is the window's.** In a tab or the panel's frame,
+- **WS-37 The terminal is the window's.** In a tab or the panel's frame,
   "Run in terminal" and "Open in Terminal" ask the host's drawer through the
   bridge. A real embed still has none.
-- **WS-34 Armed bookmarks.** A tab keeps its own armed bookmark, not the
+- **WS-38 Armed bookmarks.** A tab keeps its own armed bookmark, not the
   window's shared one. A sidebar bookmark opened into a tab arms that tab
   once it lands on the bookmark's page, so its "Update bookmark" works.

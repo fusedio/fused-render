@@ -124,7 +124,24 @@ function hostCanSit(url: string): boolean {
   if (!isSpaUrl(url)) return false;
   const { path, query } = splitUrl(url);
   if (path.startsWith("/explorer/embed")) return false;
-  return !querySegments(query).includes("embed=1");
+  // DECODED, as the page itself reads it (router.ts IS_QUERY_EMBED goes
+  // through URLSearchParams): `embed=%31` boots an embed too.
+  return !querySegments(query).some((seg) => {
+    try {
+      return decodeURIComponent(seg.replace(/\+/g, " ")) === "embed=1";
+    } catch {
+      return false;
+    }
+  });
+}
+
+/** A path+query this origin serves, as a browser would resolve it. Starting
+ *  with one `/` is not enough: the URL parser reads `\` as `/` and drops tabs
+ *  and newlines before resolving, so `/\evil.example/x` and `/<tab>/evil…` name
+ *  another origin. Nothing a tab's own URL holds needs those characters raw. */
+export function isPlainPath(url: string): boolean {
+  if (!url.startsWith("/") || url.startsWith("//")) return false;
+  return !/[\\\u0000-\u001f\u007f]/.test(url);
 }
 
 /** Is `url` Home (`/` is the front door, which is Home)? */
@@ -291,7 +308,7 @@ export function parseHostUrl(url: string): ParsedHost {
       }
       // Same-origin paths only: an item becomes an iframe src, so a
       // hand-edited `https://…` or `javascript:` must not become a tab.
-      if (!decoded.startsWith("/") || decoded.startsWith("//")) continue;
+      if (!isPlainPath(decoded)) continue;
       if (explicit && active === -1) active = tabs.length;
       tabs.push(stripHash(decoded));
     }
@@ -520,7 +537,7 @@ export function encodeRight(view: RightView): string {
 /** Does `b` show what `a` shows? Two chats are the same conversation on the
  *  same file — their other params (`split`, …) are the chat's own state, not
  *  another chat. A `run` that `b` names counts (a canvas's fix opens its run
- *  on a Claude home that names none, WS-31). Opening what already shows does
+ *  on a Claude home that names none, WS-35). Opening what already shows does
  *  nothing. */
 export function sameRight(a: RightView | null, b: RightView | null): boolean {
   if (!a || !b) return a === b;
@@ -569,7 +586,7 @@ export function panelLayout(rowW: number, railW: number, leftMin: number, panelM
 }
 
 /**
- * THE TASK KEY THE PANEL'S CHAT HOLDS OPEN (WS-29, task-open-read): the row
+ * THE TASK KEY THE PANEL'S CHAT HOLDS OPEN (WS-33, task-open-read): the row
  * whose session it shows (a run task's key need not be its session id), else
  * the session id itself; a chat that has not run yet (`queued=`) is its
  * `pending:<entry>` row. Null for a Claude home with no conversation.
@@ -660,7 +677,7 @@ export function classifyNav(url: string): NavPlace {
 }
 
 /**
- * A URL THAT IS NEVER A TAB (WS-30): Tasks and Bots live in the panel only.
+ * A URL THAT IS NEVER A TAB (WS-34): Tasks and Bots live in the panel only.
  * Their view, or null for every other URL (a chat door is a real explorer page
  * that keeps its tab, `splitArrival`; a canvas with a session too).
  */
@@ -672,7 +689,7 @@ export function rightOnlyView(url: string): RightView | null {
 }
 
 /**
- * A HOST BOOTING WITH TASKS OR BOTS IN ITS STRIP (WS-30): a pasted `/tasks?
+ * A HOST BOOTING WITH TASKS OR BOTS IN ITS STRIP (WS-34): a pasted `/tasks?
  * peek=…`, a deep link `/bots/x`, or a `_tabs` item naming one. Those tabs go
  * (Home, never one, stays at 0); when the active one went, Home is active. The
  * panel shows the active one's view — else the first lifted — unless the URL

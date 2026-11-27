@@ -38,6 +38,7 @@ import {
   updateBookmarkUrl,
   armBookmark,
   disarmBookmark,
+  bookmarksHydrated,
   getArmedBookmark,
   sameSearch,
   splitBookmarkUrl,
@@ -220,7 +221,7 @@ function useSpringLoadedCrumbs() {
 // of the vanilla syncUpdateButton() wired to fused:urlchange.
 function useUpdateButton(urlVersion: number, bookmarksVersion: number): boolean {
   const [visible, setVisible] = useState(false);
-  // A workspace tab is armed by the host AFTER it loaded (§56 WS-34): the
+  // A workspace tab is armed by the host AFTER it loaded (§56 WS-38): the
   // check runs again when the arm changes, not only on a URL change. Only
   // there: elsewhere the sidebar arms BEFORE its hop lands, and a check in
   // between would read the old page as a page change and disarm.
@@ -240,6 +241,9 @@ function useUpdateButton(urlVersion: number, bookmarksVersion: number): boolean 
     // a folder (D44) — the top-level list alone would misread it as deleted.
     const bookmark = allBookmarks().find((b) => b.id === armed.id);
     if (!bookmark) {
+      // Not loaded yet (a fresh workspace tab, armed by the click that opened
+      // it): ask again once they are (bookmarksVersion).
+      if (!bookmarksHydrated()) return setVisible(false);
       disarmBookmark(); // bookmark deleted out from under us
       return setVisible(false);
     }

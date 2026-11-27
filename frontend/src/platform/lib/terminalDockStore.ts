@@ -48,7 +48,7 @@ function subscribeMounted(listener: () => void): () => void {
 
 function canRunSnapshot(): boolean {
   // A WORKSPACE TAB (or the panel's frame) has no drawer of its own: the
-  // window's is the host's, asked through the bridge (§56 WS-33). A real
+  // window's is the host's, asked through the bridge (§56 WS-37). A real
   // embed still has none.
   if (IS_WS_FRAME) {
     try {

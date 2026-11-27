@@ -208,14 +208,25 @@ function readFavicon(doc: Document | null | undefined): string | null {
   }
 }
 
-export default function WorkspaceHost({ config }: { config: Config }) {
+export default function WorkspaceHost({
+  config,
+  onPagePath,
+}: {
+  config: Config;
+  /** The shown page's PATH changed without a tab op (a hop inside the active
+   *  tab): App re-reads what it derives from the address (the terminal's cwd).
+   *  A tab op says so itself (NAV_EVENT); a param write is not a path change. */
+  onPagePath?: () => void;
+}) {
   const [, rerender] = useReducer((n: number) => n + 1, 0);
+  const onPagePathRef = useRef(onPagePath);
+  onPagePathRef.current = onPagePath;
 
   // The whole strip, initialised once from the host URL. A reload keeps its ids
   // (the entry's state survives it), so Back into an older entry still matches.
   const S = useRef<{ tabs: Map<string, Tab>; order: string[]; mounted: string[]; active: string; right: string | null } | null>(null);
   if (S.current === null) {
-    // Tasks and Bots are never tabs (WS-30): a strip naming one boots without
+    // Tasks and Bots are never tabs (WS-34): a strip naming one boots without
     // it, the panel showing it instead.
     const raw = parseHostUrl(location.pathname + location.search);
     const parsed = liftRightTabs(raw);
@@ -245,9 +256,9 @@ export default function WorkspaceHost({ config }: { config: Config }) {
     chatEpoch: 0,
     chatEvents: new EventTarget(),
     places: new Map<string, Published>(),
-    // A staged ask for ONE chat mount: the one made at `epoch` (WS-32).
+    // A staged ask for ONE chat mount: the one made at `epoch` (WS-36).
     ask: null as PanelAsk | null,
-    // A bookmark the sidebar armed, waiting for its tab to land (WS-34).
+    // A bookmark the sidebar armed, waiting for its tab to land (WS-38).
     arms: new Map<string, ArmedBookmark>(),
   }).current;
   const frames = useRef(new Map<string, HTMLIFrameElement>()).current;
@@ -291,7 +302,9 @@ export default function WorkspaceHost({ config }: { config: Config }) {
       JSON.stringify(cur?.wsIds ?? null) === JSON.stringify(state.wsIds) &&
       JSON.stringify(cur?.wsTitles ?? null) === JSON.stringify(state.wsTitles);
     if (location.pathname + location.search === url && sameState) return;
+    const path = location.pathname;
     history.replaceState({ ...(cur && typeof cur === "object" ? cur : null), ...state }, "", url);
+    if (location.pathname !== path) onPagePathRef.current?.();
   };
 
   // The window's title follows the active tab's.
@@ -339,7 +352,7 @@ export default function WorkspaceHost({ config }: { config: Config }) {
     }
     // A TAB THAT LANDED ON TASKS OR BOTS by a full load (a plain anchor, a
     // location.assign; the sink sends every routed hop to the panel): the
-    // panel shows it, and the tab goes back where it was (WS-30).
+    // panel shows it, and the tab goes back where it was (WS-34).
     const only = loc ? rightOnlyView(loc) : null;
     if (only) {
       // A REPLACE: the frame's own Back below walks the window's joint
@@ -366,7 +379,7 @@ export default function WorkspaceHost({ config }: { config: Config }) {
     rerender();
   };
 
-  // ARM A TAB (WS-34): the sidebar armed a bookmark in THIS document and
+  // ARM A TAB (WS-38): the sidebar armed a bookmark in THIS document and
   // opened its page; the tab showing it is armed in its own.
   const sendArm = (id: string, arm: ArmedBookmark) => {
     const win = frames.get(id)?.contentWindow;
@@ -552,7 +565,7 @@ export default function WorkspaceHost({ config }: { config: Config }) {
       void navigateUrl(url);
       return;
     }
-    // Tasks and Bots are never tabs (WS-30), even asked for as a new one.
+    // Tasks and Bots are never tabs (WS-34), even asked for as a new one.
     const only = rightOnlyView(url);
     if (only) {
       void live.current.openRightView(only);
@@ -635,7 +648,7 @@ export default function WorkspaceHost({ config }: { config: Config }) {
     });
   };
 
-  // A STAGED ASK (WS-32): a NEW mount of the file's Claude home takes it —
+  // A STAGED ASK (WS-36): a NEW mount of the file's Claude home takes it —
   // even when that home already shows — and only that mount (`R.ask.epoch`).
   const askClaude = (file: string, prompt: string, backend?: string) => {
     const view: RightView = { kind: "chat", file, query: backend ? "backend=" + encodeURIComponent(backend) : "" };
@@ -713,7 +726,7 @@ export default function WorkspaceHost({ config }: { config: Config }) {
   const adoptArrival = (win: Window, url: string): string | null => {
     const shown = frames.get(st.active)?.contentWindow === win;
     // A CANVAS PAGE NAMING A SESSION stays a canvas tab (the page is real) and
-    // shows that task's chat on the right too (WS-30) — once the listing has
+    // shows that task's chat on the right too (WS-34) — once the listing has
     // the task, which a booting window may not yet.
     const place = classifyNav(url);
     if (place.side === "session") {
@@ -881,7 +894,7 @@ export default function WorkspaceHost({ config }: { config: Config }) {
       publishPlace: (win, info) => live.current.publishPlace(win, info),
       focusPanelChat: () => focusAnyChatComposer(),
       askClaude: (file, prompt, opts) => live.current.askClaude(String(file), String(prompt), opts?.backend ? String(opts.backend) : undefined),
-      // The window's terminal drawer is this document's (WS-33).
+      // The window's terminal drawer is this document's (WS-37).
       canRunInTerminal: () => canRunInTerminal(),
       openTerminal: (req) =>
         openTerminal({
@@ -919,7 +932,7 @@ export default function WorkspaceHost({ config }: { config: Config }) {
     });
     // THE PANEL'S GIT (or mode) FRAME's "Fix with AI" climbs to the nearest
     // `_fusedClaudeAsk` (runtime.js `noteAskClaude`), which is this window:
-    // its folder's Claude home in the panel takes the ask (WS-32).
+    // its folder's Claude home in the panel takes the ask (WS-36).
     window._fusedClaudeAsk = (text: unknown) => {
       if (typeof text !== "string" || !text) return false;
       const v = parseRight(S.current?.right ?? null);

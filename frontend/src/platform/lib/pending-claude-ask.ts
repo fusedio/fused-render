@@ -153,7 +153,7 @@ export function takePendingClaudeAsk(path: string): string | null {
  *  pane plumbing), so the agent rides beside it here and is matched on that
  *  same text; "" when the ask named none (the catalog's default stands). */
 let taken: { prompt: string; backend: string } | null = null;
-/** An ask handed straight to a chat (a workspace's panel, §56 WS-32) names
+/** An ask handed straight to a chat (a workspace's panel, §56 WS-36) names
  *  its agent here, as `takePendingClaudeAsk` does for a staged one. */
 export function noteAskBackend(prompt: string, backend: string): void {
   taken = backend ? { prompt, backend } : null;

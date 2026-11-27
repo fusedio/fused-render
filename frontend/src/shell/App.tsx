@@ -18,7 +18,7 @@
 // which is the React equivalent of the vanilla shell rebuilding the view DOM
 // on each route() call (fresh iframes, fresh fetches, dropped local state).
 import { canonFsPath } from "@platform/lib/path-url";
-import { lazy, Suspense, useEffect, useRef, useState } from "react";
+import { lazy, Suspense, useEffect, useReducer, useRef, useState } from "react";
 import { subscribeJobDismissed, type Job } from "@platform/lib/jobs";
 import { useThemedIconSrc } from "@platform/lib/app-icon-src";
 import {
@@ -552,6 +552,9 @@ export default function App({ config }: { config: Config }) {
   // below acts on "the route this document shows" is about a page that lives
   // in a frame, and is gated where it would misfire.
   const wsHost = isWorkspaceHost();
+  // A hop INSIDE the shown tab moves the host's address by a replace, which
+  // announces no navigation: this render is what re-reads the terminal's cwd.
+  const [, hostPagePath] = useReducer((n: number) => n + 1, 0);
   // …and only while the feature is on (shell/task-peek-flag.ts): off, the epoch
   // is judged on the whole URL, which is what it did before any of this.
   const taskPeekOn = useTaskPeekEnabled();
@@ -1332,7 +1335,7 @@ export default function App({ config }: { config: Config }) {
         {wsHost ? (
           // UNKEYED: a Back across the host's own tab entries bumps the epoch,
           // and a remount here would reload every tab. It reconciles in place.
-          <WorkspaceHost config={config} />
+          <WorkspaceHost config={config} onPagePath={hostPagePath} />
         ) : (
           <div className="shell-main-row">
             <div className="shell-main-col">{main}</div>

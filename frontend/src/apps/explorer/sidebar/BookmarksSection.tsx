@@ -3,7 +3,7 @@
 // folders, drag-reorder, inline rename, icon picker, hover card. Renders both
 // as the explorer sidebar's Bookmarks section and as the /explorer homepage's
 // launcher (FilesHome).
-import { sidebarDoorProps, useSidebarDoor } from "@platform/ui/sidebar/sidebar-doors";
+import { activateHow, sidebarDoorProps, useSidebarDoor } from "@platform/ui/sidebar/sidebar-doors";
 import React, { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { navigateUrl, rootedFsPath, VIEW_PREFIX } from "@platform/lib/router";
 import { currentPageUrl } from "@platform/lib/workspace-bridge";
@@ -276,7 +276,20 @@ function BookmarkRow({ b, child, parentId, active, dirty, missing, isRenaming, o
       {isRenaming ? (
         <RenameInput initialName={b.name} onCommit={onCommitRename} onCancel={onCancelRename} />
       ) : (
-        <a className="bookmark-name" href={b.url} draggable={false} onClick={onNameClick}>
+        <a
+          className="bookmark-name"
+          href={b.url}
+          draggable={false}
+          onClick={(e) => {
+            // The sidebar's owner took the click (the favourite's card came
+            // up instead of the page: a workspace host, sidebar-doors).
+            if (door?.onActivate?.(activateHow(e)) === true) {
+              e.preventDefault();
+              return;
+            }
+            onNameClick(e);
+          }}
+        >
           {b.name}
           {dirty && "*"}
         </a>

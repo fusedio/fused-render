@@ -6,6 +6,7 @@ import {
   classifyNav,
   encodeRight,
   encodeTabsParam,
+  isPlainPath,
   isSpaUrl,
   liftRightTabs,
   neighborAfterClose,
@@ -313,7 +314,7 @@ describe("placeOfUrl (an unloaded tab's rail place, WS-27)", () => {
   });
 });
 
-describe("rightOnlyView (WS-30)", () => {
+describe("rightOnlyView (WS-34)", () => {
   test("Tasks and Bots are panel views, never tabs", () => {
     expect(rightOnlyView("/tasks")).toEqual({ kind: "tasks", peek: null });
     expect(rightOnlyView("/tasks?peek=abc")).toEqual({ kind: "tasks", peek: "abc" });
@@ -328,7 +329,7 @@ describe("rightOnlyView (WS-30)", () => {
   });
 });
 
-describe("liftRightTabs (WS-30)", () => {
+describe("liftRightTabs (WS-34)", () => {
   test("a host booting on /tasks?peek= is Home plus the Tasks view", () => {
     const out = liftRightTabs(parseHostUrl("/tasks?peek=k1"));
     expect(out.tabs).toEqual(["/home"]);
@@ -362,7 +363,7 @@ describe("liftRightTabs (WS-30)", () => {
   });
 });
 
-test("a canvas fix's door opens the clone's chat on its run (WS-31)", () => {
+test("a canvas fix's door opens the clone's chat on its run (WS-35)", () => {
   expect(classifyNav(chatUrl("/Users/me/clone", "") + "&run=r1")).toEqual({
     side: "right",
     view: { kind: "chat", file: "/Users/me/clone", query: "run=r1" },
@@ -391,7 +392,7 @@ describe("panelLayout (WS-17)", () => {
   });
 });
 
-describe("chatHoldKey (WS-29)", () => {
+describe("chatHoldKey (WS-33)", () => {
   const rows = [
     { key: "k-run", session_id: "s1" },
     { key: "pending:e9", session_id: null },
@@ -405,5 +406,27 @@ describe("chatHoldKey (WS-29)", () => {
   });
   test("a Claude home holds nothing", () => {
     expect(chatHoldKey(null, null, rows)).toBeNull();
+  });
+});
+
+describe("what a restored tab may be", () => {
+  test("a path this origin serves, as a browser would resolve it", () => {
+    expect(isPlainPath("/explorer/view/Users/me/a b.html?x=1")).toBe(true);
+    expect(isPlainPath("//evil.example/x")).toBe(false);
+    // The URL parser reads a backslash as a slash and drops tabs / newlines.
+    expect(isPlainPath("/\\evil.example/x")).toBe(false);
+    expect(isPlainPath("/\t/evil.example/x")).toBe(false);
+    expect(isPlainPath("/\n/evil.example/x")).toBe(false);
+    expect(isPlainPath("https://evil.example/")).toBe(false);
+  });
+  test("such an item in _tabs is dropped, not framed", () => {
+    const bad = encodeURIComponent("/\\evil.example/page");
+    expect(parseHostUrl("/home?_tabs=.," + bad).tabs).toEqual(["/home"]);
+  });
+  test("an embed spelling, however it is written, is never the host's own address", () => {
+    // `embed=%31` decodes to embed=1 at boot (router IS_QUERY_EMBED).
+    expect(buildHostUrl(["/home", "/tasks?embed=%31"], 1)).toMatch(/^\/home\?_tabs=/);
+    expect(buildHostUrl(["/home", "/tasks?embed=1"], 1)).toMatch(/^\/home\?_tabs=/);
+    expect(buildHostUrl(["/home", "/tasks?embedded=1"], 1)).toMatch(/^\/tasks\?embedded=1&_tabs=/);
   });
 });

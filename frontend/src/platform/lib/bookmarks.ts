@@ -116,6 +116,13 @@ export function hydrateBookmarks(): Promise<void> {
   });
 }
 
+/** The cache holds the server's tree (hydrate came back). Before that an
+ *  empty list says nothing: a fresh tab of a workspace (D1514) must not read
+ *  its armed bookmark as deleted. */
+export function bookmarksHydrated(): boolean {
+  return hydrated;
+}
+
 // Re-read the server tree to pick up another tab's writes (D77 poll), AND the
 // latest missing-file flags (a target can vanish/reappear between polls with
 // the tree itself unchanged). Enqueued so it never overwrites an in-flight
@@ -519,7 +526,7 @@ export interface ArmedBookmark {
   url: string;
 }
 
-// IN A WORKSPACE FRAME THE ARM IS THIS DOCUMENT'S (SPEC §56 WS-34): the
+// IN A WORKSPACE FRAME THE ARM IS THIS DOCUMENT'S (SPEC §56 WS-38): the
 // window's tabs share one sessionStorage, and every other tab's Breadcrumb
 // would read a bookmark armed for another page as "page changed" and disarm
 // it. The host hands the arm to the tab it opens (`WS_ARM_BOOKMARK_EVENT`).

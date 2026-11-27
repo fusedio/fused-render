@@ -84,7 +84,7 @@ export function resetDefaultFolderCache(): void {
 export async function explainWithAi(prompt: string, folderPath?: string): Promise<void> {
   const path = folderPath ?? (await resolveDefaultFolder());
   if (!path) return;
-  // In a workspace the window's panel takes it (§56 WS-32): no page hop.
+  // In a workspace the window's panel takes it (§56 WS-36): no page hop.
   if (askInWorkspace(path, prompt)) return;
   stageClaudeAsk(path, prompt);
   navigate(path, { isDir: true });

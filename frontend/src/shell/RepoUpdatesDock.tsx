@@ -321,7 +321,7 @@ export function SyncFailureRowView({
   };
   const fixWithClaude = async () => {
     // CLAUDE'S, by name (D17): never the catalog's default agent. In a
-    // workspace the panel takes it, and the page stays (§56 WS-32).
+    // workspace the panel takes it, and the page stays (§56 WS-36).
     if (askInWorkspace(failure.root, syncFixPrompt(failure), "claude")) return;
     stageClaudeAsk(failure.root, syncFixPrompt(failure), { backend: "claude" });
     if (leaveTo) {

@@ -9,7 +9,7 @@
 // The width is the viewer's (panel-width.ts), clamped by CSS against the row:
 // the tabs keep 320px and the rail its own.
 //
-// TASKS AND BOTS ARE KEPT (SPEC §56 WS-28): each mounts the first time it shows
+// TASKS AND BOTS ARE KEPT (SPEC §56 WS-32): each mounts the first time it shows
 // and stays, hidden and inert, while another view shows or the panel is
 // closed — the rail's Tasks card and the Bots page keep their state across
 // hops on main the same way. Hidden by `visibility`, never `display:none`, so
@@ -34,7 +34,7 @@ const CLOSE_UNDER = 60;
 /** The tabs' floor (apps/explorer side-width CONTENT_MIN_W). */
 const LEFT_MIN_W = 320;
 
-/** A staged ask for the chat mount made at `epoch` on `file` (WS-32). */
+/** A staged ask for the chat mount made at `epoch` on `file` (WS-36). */
 export interface PanelAsk {
   file: string;
   prompt: string;
