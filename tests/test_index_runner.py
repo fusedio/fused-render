@@ -6,7 +6,9 @@ import json
 import os
 import subprocess
 import sys
+import threading
 import time
+from concurrent.futures import ThreadPoolExecutor
 
 import pytest
 
@@ -175,6 +177,38 @@ def test_start_scans_a_different_root_while_one_runs(tmp_path, spawned):
     assert second["run_id"] != first["run_id"]
     assert "already_running" not in second
     assert len(spawned) == 2
+
+
+def _start_together(monkeypatch, cfg, read, roots):
+    gate = threading.Barrier(len(roots), timeout=0.2)
+    real = getattr(runner, read)
+
+    def held(*args):
+        try:
+            gate.wait()
+        except threading.BrokenBarrierError:
+            pass
+        return real(*args)
+
+    monkeypatch.setattr(runner, read, held)
+    with ThreadPoolExecutor(len(roots)) as ex:
+        return list(ex.map(lambda r: runner.start(cfg, r), roots))
+
+
+def test_concurrent_starts_of_one_root_spawn_one_worker(tmp_path, spawned, monkeypatch):
+    first, second = _start_together(monkeypatch, _cfg(tmp_path), "active_run",
+                                    [str(tmp_path)] * 2)
+    assert len(spawned) == 1
+    assert first["run_id"] == second["run_id"]
+
+
+def test_concurrent_starts_of_two_roots_keep_both_scan_times(tmp_path, spawned, monkeypatch):
+    cfg = _cfg(tmp_path)
+    roots = [str(tmp_path / "a"), str(tmp_path / "b")]
+    for r in roots:
+        os.mkdir(r)
+    _start_together(monkeypatch, cfg, "_scans", roots)
+    assert all(runner.last_scan(cfg, r) for r in roots)
 
 
 def test_start_ignores_a_finished_run_of_the_same_root(tmp_path, spawned):
