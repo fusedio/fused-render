@@ -6,7 +6,7 @@ service's tools (Notion, GitHub, Slack...) without holding its token. The
 token never reaches this module: it asks the running server to make the call
 (`POST /api/connect/<key>/tools/call`) and gets the tool's result back, the
 same door an app page's JS uses. Signing in is not here either; that is a
-person at Preferences → Connections, and a call to a provider nobody has
+person at Preferences → Integrations, and a call to a provider nobody has
 connected raises a `RuntimeError` that says so.
 
 **Travels with `appenv.py`.** Stdlib only (`json`, `os`, `urllib`) and never
@@ -100,7 +100,7 @@ def _request(method: str, path: str, body: dict | None = None, *, key: str | Non
         if e.code == 409 and key is not None:
             raise RuntimeError(
                 f"fused_connect: {key} is not connected ({said}). Open Fused → "
-                f"Preferences → Connections and connect it, then try again.") from None
+                f"Preferences → Integrations and connect it, then try again.") from None
         raise RuntimeError(f"fused_connect: {method} {path} failed: {said}") from None
     except urllib.error.URLError as e:
         raise RuntimeError(

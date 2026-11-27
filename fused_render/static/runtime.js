@@ -513,7 +513,7 @@
  *         const r = await t.done;  // r.state === "done" ? r.text : t.blocked
  *     LOCAL ONLY — a hosted page has no bots; 403 while Bots is off in Preferences.
  *   fused.connect.* -> Connections (SPEC-connect-oauth.md §4/§11): the services
- *     a person signed in to at Preferences → Connections (Notion, GitHub,
+ *     a person signed in to at Preferences → Integrations (Notion, GitHub,
  *     Slack...), and their tools, run on the server's side. The token never
  *     reaches the page: it asks, the server calls the vendor, the page gets
  *     the result. Same contract as fused.tasks (Promises, the server's
@@ -525,7 +525,7 @@
  *       verification_uri, error, tools, store}.
  *     login(key, {kind, value, client_id}) -> status — starts (or joins) the
  *       sign-in; opens `status.url` (the vendor's consent page) in a new tab
- *       when there is one. Prefer sending people to Preferences → Connections.
+ *       when there is one. Prefer sending people to Preferences → Integrations.
  *     logout(key) -> status.
  *     tools(key) -> [{name, description, input_schema, read_only,
  *       destructive}] — [] while not connected.
@@ -7547,7 +7547,7 @@
   // ------------------------------------------------------------ fused.connect
   //
   // fused.connect — Connections (SPEC-connect-oauth.md §4, §11): the services
-  // signed in to at Preferences → Connections, and their tools. A thin door
+  // signed in to at Preferences → Integrations, and their tools. A thin door
   // onto `/api/connect`: the server holds the token and makes the vendor
   // call, so nothing here ever sees one — an app page gets tool RESULTS.
   // `login` exists so a page can offer a Connect button of its own, but the
@@ -7612,7 +7612,7 @@
               String(key) +
                 " is not connected (" +
                 err.message +
-                "). Open Preferences → Connections in Fused and connect it, then try again.",
+                "). Open Preferences → Integrations in Fused and connect it, then try again.",
             );
             e.code = "not_connected";
             throw e;

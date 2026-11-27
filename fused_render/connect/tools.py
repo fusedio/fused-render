@@ -335,7 +335,7 @@ def call_tool(key: str, name: str, args: dict) -> dict:
     if p is None:
         return _fail(f"no connected service called {key!r}", error="unknown_provider")
     if not _connected(key):
-        return _fail(f"{p.name} is not connected. Connect it in Preferences > Connections.",
+        return _fail(f"{p.name} is not connected. Connect it in Preferences > Integrations.",
                      error="not_connected")
     args = args if isinstance(args, dict) else {}
     try:
@@ -348,9 +348,9 @@ def call_tool(key: str, name: str, args: dict) -> dict:
     rec = manager.record(key) or {}
     if rec.get("kind") == "local-app":
         reconnect = (f"macOS no longer lets Fused control {rec.get('app') or p.name} (System Settings > "
-                     f"Privacy & Security > Automation). Reconnect it in Preferences > Connections.")
+                     f"Privacy & Security > Automation). Reconnect it in Preferences > Integrations.")
     else:
-        reconnect = f"{p.name} refused the saved sign-in. Reconnect it in Preferences > Connections."
+        reconnect = f"{p.name} refused the saved sign-in. Reconnect it in Preferences > Integrations."
     try:
         if remote and name not in native_names:
             def go():

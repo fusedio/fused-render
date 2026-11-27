@@ -249,7 +249,7 @@ def workbench_env() -> str:
     return enabled[0]
 
 
-# The environments a PERSON turns on (Preferences > Fused Workbench: "Fused
+# The environments a PERSON turns on (Preferences > Integrations > Fused Workbench: "Fused
 # hosted" is prod, "On-prem" is custom). Unstable is not one of them (owner,
 # 2026-11-26): it has no switch and is never drawn — it joins the enabled list
 # by itself for a Fused employee signed in to hosted Fused (`_staff_unstable`).

@@ -1,5 +1,5 @@
 // Settings › Connections: one row per connected service the server knows (Notion, GitHub, Slack…), with the GLOBAL
-// sign-in (one token per service on this machine, the same state Preferences › Connections shows; the client and
+// sign-in (one token per service on this machine, the same state Preferences › Integrations shows; the client and
 // its polling are platform/lib/connect.ts) and the PER-BOT switch: bot.json `connections`, the services this bot may
 // use. Off by default: a call into a service that is off raises a card every time, even under "Never ask", and
 // "Always approve" on that card flips the switch here (the dialog folds that tick in while it is open, BotSettings).
@@ -29,14 +29,14 @@ import { Switch } from "@platform/shadcn/ui/switch";
 import { normApp } from "../lib/botform";
 import { Row, Rows } from "./SettingsRow";
 
-export const PREFERENCES_CONNECTIONS_URL = "/preferences?tab=connections";
+export const PREFERENCES_CONNECTIONS_URL = "/preferences?tab=integrations&s=connections";
 
 export function ConnectionsSection({ botName, enabled, setEnabled, openPreferences }: {
   botName: string;
   /** Provider keys (normalised) this bot may use, as the dialog holds them. */
   enabled: string[];
   setEnabled: (f: (cur: string[]) => string[]) => void;
-  /** Leaves for Preferences › Connections; the dialog's own guard asks about unsaved edits first. */
+  /** Leaves for Preferences › Integrations; the dialog's own guard asks about unsaved edits first. */
   openPreferences: () => void;
 }) {
   const { rows, error, stateOf, apply, login } = useConnections();

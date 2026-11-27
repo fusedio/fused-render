@@ -1,4 +1,4 @@
-// Preferences → Connections (SPEC-connect-oauth.md §6, §11): the card per
+// Preferences → Integrations (SPEC-connect-oauth.md §6, §11): the card per
 // provider, each state's words and buttons, the Advanced kinds, and the
 // login → consent tab → poll → connected round trip, against a stubbed
 // `/api/connect` (a fake `globalThis.fetch`, the way the settings render

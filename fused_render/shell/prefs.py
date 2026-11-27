@@ -255,7 +255,7 @@ def reader_enabled() -> bool:
 
 def canvases_enabled() -> bool:
     """Whether Fused Workbench is turned on — and with it Canvases (default
-    off — opt-in, D427). Preferences > Fused Workbench > "Enable Fused
+    off — opt-in, D427). Preferences > Integrations > Fused Workbench > "Enable Fused
     Workbench" writes this key (owner, 2026-11-26: one switch, no separate
     Canvases setting); the key keeps its old name so an install that had
     Canvases on has Workbench on.

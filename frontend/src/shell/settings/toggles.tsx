@@ -241,7 +241,7 @@ export function ContribRemixControl({ prefs, onChange }: PrefControlProps) {
 // D427). Each one gates its ENTRY POINTS — a sidebar row, a status-bar chip, a
 // file view — never the routes behind them.
 
-// "Enable Fused Workbench" (Preferences > Fused Workbench; owner, 2026-11-26):
+// "Enable Fused Workbench" (Preferences > Integrations > Fused Workbench; owner, 2026-11-26):
 // the old Canvases flag under a new name and page — turning Workbench on is
 // turning Canvases on, so there is one switch and one pref.
 export function CanvasesControl({ prefs, onChange }: PrefControlProps) {

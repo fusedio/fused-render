@@ -1,7 +1,7 @@
 // The modal a Connect press opens on a sign-in that will trip the browser's
 // certificate warning (an https localhost redirect — Slack, connect/tls.py):
 // two short lines, a "Why?" disclosure for whoever wants the reasoning, and
-// Continue / Cancel. Shared by Preferences › Connections and the bot Settings
+// Continue / Cancel. Shared by Preferences › Integrations and the bot Settings
 // tab (owner, 2026-11-04: a popover, not a note inside the card; keep the
 // main text short).
 import {

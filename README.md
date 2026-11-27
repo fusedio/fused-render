@@ -156,7 +156,7 @@ and platform. Intel Macs get the agent tiers only.
 
 ### Connections
 
-Preferences → Connections signs you in to Notion, GitHub and Slack once.
+Preferences → Integrations signs you in to Notion, GitHub and Slack once.
 Their tools then work in your apps (`fused.connect.call`), in Python, through
 the local HTTP API, and in bots, where each service is off per bot until you
 tick it.

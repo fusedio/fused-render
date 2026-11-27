@@ -309,7 +309,7 @@ vendors here have nothing to delegate to).
 
 ## 6. What the user sees
 
-Preferences → Connections: one card per provider in the registry. Icon,
+Preferences → Integrations: one card per provider in the registry. Icon,
 **Connect**, the vendor's consent page, "Connected as ‹name›", the tool
 count ("23 tools from Notion"), **Disconnect**, the provider's
 `privacy` line, and an "Advanced" disclosure listing the other auth
@@ -631,7 +631,7 @@ first call raises — and that card shows under "Never ask" too
 (`tools.must_ask`). A listed service's tools run without a card; a
 service not listed asks on every call, read-only or not. `trusted_apps`
 never opens a service. The tab shows the same global sign-in buttons as
-Preferences › Connections (both on `platform/lib/connect.ts`), plus the
+Preferences › Integrations (both on `platform/lib/connect.ts`), plus the
 bot's switch.
 
 ### Test fake vendor (`tests/_fake_vendor.py`)

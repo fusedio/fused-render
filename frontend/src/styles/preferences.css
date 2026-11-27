@@ -1738,6 +1738,36 @@
   margin: 0 0 22px;
 }
 
+/* Integrations › Connectors: a card per service, in a grid. Every card is the
+   size of the tallest one (owner, 2026-11-27), so the grid reads as one set. */
+.settings-connect-blurb {
+  margin: 0 0 10px 2px;
+  font-size: 12.5px;
+  color: var(--fg-muted);
+}
+
+.settings-connect-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(250px, 1fr));
+  gap: 12px;
+  grid-auto-rows: 1fr;
+}
+
+.settings-connect-grid .settings-card {
+  height: 100%;
+}
+
+.settings-connect-grid:empty {
+  display: none;
+}
+
+/* A page-supplied card (Hugging Face) is a one-row section in a cell. */
+.settings-connect-grid > .settings-section {
+  margin: 0;
+  min-width: 0;
+  height: 100%;
+}
+
 .settings-section-title {
   margin: 0 0 8px 2px;
   font-size: 11.5px;
