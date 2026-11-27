@@ -2859,8 +2859,9 @@ def test_a_worker_that_finished_during_the_liveness_check_is_not_called_a_crash(
 
 
 @requires_fused
-@pytest.mark.parametrize("detached", [True, False], ids=["group-leader", "same-group"])
-def test_cancellation_kills_the_recorded_pid(tmp_path, monkeypatch, detached):
+@pytest.mark.parametrize("detached,age", [(True, 0), (False, 0), (True, 90)],
+                         ids=["group-leader", "same-group", "stale-recycled-pid"])
+def test_cancellation_kills_the_recorded_pid(tmp_path, monkeypatch, detached, age):
     """Cancel by the pid the worker recorded, and say the install was cancelled.
 
     Both cases, because `cancel` signals the process GROUP — it has to, or the
@@ -2881,8 +2882,13 @@ def test_cancellation_kills_the_recorded_pid(tmp_path, monkeypatch, detached):
     os.makedirs(d, exist_ok=True)
     with open(os.path.join(d, "progress.json"), "w", encoding="utf-8") as f:
         json.dump({"stage": "install", "pct": 25, "detail": "", "done": False,
-                   "error": None, "pid": child.pid, "ts": time.time()}, f)
+                   "error": None, "pid": child.pid, "ts": time.time() - age}, f)
     try:
+        if age:
+            assert "without finishing" in envinstall.progress(key)["error"]
+            assert envinstall.cancel(key) is False
+            assert child.poll() is None, "a stale record's pid must never be signalled"
+            return
         assert envinstall.cancel(key) is True
         deadline = time.time() + 30
         while child.poll() is None and time.time() < deadline:
