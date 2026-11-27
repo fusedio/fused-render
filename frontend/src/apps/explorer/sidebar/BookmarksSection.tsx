@@ -5,7 +5,8 @@
 // launcher (FilesHome).
 import { sidebarDoorProps, useSidebarDoor } from "@platform/ui/sidebar/sidebar-doors";
 import React, { useEffect, useLayoutEffect, useRef, useState } from "react";
-import { navigateUrl, currentUrl, rootedFsPath, VIEW_PREFIX } from "@platform/lib/router";
+import { navigateUrl, rootedFsPath, VIEW_PREFIX } from "@platform/lib/router";
+import { currentPageUrl } from "@platform/lib/workspace-bridge";
 import { isRemoteLocation } from "@platform/lib/remote";
 // Folder-as-tabs entry (TM-8): composeFolderTabsUrl builds the `_tab` url
 // from a folder's children. This sidebar -> Tabs import is the documented
@@ -917,16 +918,21 @@ export default function BookmarksSection() {
   // CrumbActions, forever missing) the Breadcrumb's disarm effect. With
   // nothing armed, exact-url match still highlights a pasted/hand-typed url
   // (matching never arms).
-  const armed = getArmedBookmarkFor(location.pathname);
+  // The page on screen: in a workspace host (D1514) the active tab's own URL,
+  // not the host's (which adds `_tabs`); the location everywhere else.
+  const pageUrl = currentPageUrl();
+  const pageQ = pageUrl.indexOf("?");
+  const pageSearch = pageQ === -1 ? "" : pageUrl.slice(pageQ);
+  const armed = getArmedBookmarkFor(pageQ === -1 ? pageUrl : pageUrl.slice(0, pageQ));
   const rowActive = (b: Bookmark): boolean =>
-    armed ? armed.id === b.id : b.url === currentUrl();
+    armed ? armed.id === b.id : b.url === pageUrl;
   // Dirty = the armed row's current params differ from its saved url — the
   // exact visibility condition of the Update-bookmark button (Breadcrumb).
   // Pathname already matches (the gate above), so only the search differs.
   const rowDirty = (b: Bookmark): boolean =>
     !!armed &&
     armed.id === b.id &&
-    !sameSearch(location.search, splitBookmarkUrl(armed.url).search);
+    !sameSearch(pageSearch, splitBookmarkUrl(armed.url).search);
 
   // True when the active bookmark lives anywhere in this subtree — keeps the
   // collapsed-folder active hint visible at any nesting depth.

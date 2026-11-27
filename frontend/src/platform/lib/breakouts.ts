@@ -7,7 +7,7 @@
 // `task-peek-store`: pure rules at the top, a thin `useSyncExternalStore`
 // layer under them.
 import { useSyncExternalStore } from "react";
-import { IS_EMBED } from "./router";
+import { NO_SHELL_CHROME } from "./router";
 import { statPath } from "./api";
 import type { HandoffTurn } from "./breakout-context";
 import { chatDraftKey, fetchChatDraft, saveChatDraft, type ChatDraft, type DraftAttachment } from "./drafts";
@@ -167,7 +167,7 @@ export async function openBreakoutSettled(
 /** What a host passes as `onBreakout`: `openBreakoutSettled`, or nothing inside
  *  an embedded document, where the shell mounts no `BreakoutCards` to draw the
  *  card (so no Breakout seat should exist there). */
-export function breakoutOpener(embed: boolean = IS_EMBED): typeof openBreakoutSettled | undefined {
+export function breakoutOpener(embed: boolean = NO_SHELL_CHROME): typeof openBreakoutSettled | undefined {
   return embed ? undefined : openBreakoutSettled;
 }
 

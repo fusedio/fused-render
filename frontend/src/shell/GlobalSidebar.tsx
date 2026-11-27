@@ -22,6 +22,7 @@ import { botsAvailable, rawUrl, showLauncher, type Config } from "@platform/lib/
 import { useLauncherAvailable } from "@platform/lib/bots-available";
 import { useLauncherOpen } from "@shell/claude-rail/launcher-open";
 import { embedUrlForFsPath, navigateUrl } from "@platform/lib/router";
+import { currentPageUrl, isWorkspaceHost } from "@platform/lib/workspace-bridge";
 import { isBrowserHandledClick } from "@platform/lib/appEntry";
 import { TOURS, startTour } from "@platform/lib/tours";
 import { ONBOARDING_PATH } from "@shell/onboarding/state";
@@ -529,6 +530,10 @@ export default function GlobalSidebar({ config }: { config: Config }) {
   // highlighting both the row and the thing you opened read as two selections.
   const pathname = location.pathname;
   const homeActive = pathname === "/home";
+  // A WORKSPACE HOST (D1514) draws no Home row: Home is the fixed first tab,
+  // and the brand row above still takes you there. Search moves up into its
+  // place.
+  const homeRow = !isWorkspaceHost();
   // THE SEARCH ROW (owner, 2026-11-26: "move it on left side below home"):
   // the launcher panel, once the Claude rail's top door. Only where the app
   // has one (the Mac desktop app); lit while the panel stands
@@ -734,7 +739,9 @@ export default function GlobalSidebar({ config }: { config: Config }) {
     canvases: canvasesInNav,
   });
   const onAppPath = appPathFromPath(pathname);
-  const here = pathname + location.search;
+  // The page on screen — in a workspace host, the active tab's own URL (the
+  // host's adds `_tabs`).
+  const here = currentPageUrl();
   // A rail door opens ITS section for the next expand (owner, 2026-11-09:
   // "my last clicked item in the collapsed sidebar should be remembered and
   // open that section"): the accordion's own write (sidebar-accordion), so
@@ -841,7 +848,7 @@ export default function GlobalSidebar({ config }: { config: Config }) {
 
   const railItems: SidebarRailItem[] = [
     // Same gate and same order as the expanded rows below.
-    { key: "home", label: "Home", icon: HOME_ICON, href: "/home", active: homeActive },
+    ...(homeRow ? [{ key: "home", label: "Home", icon: HOME_ICON, href: "/home", active: homeActive }] : []),
     ...(searchAvailable
       ? [{ key: "search", label: "Search", icon: SEARCH_ICON, active: launcher.open, onClick: openSearch }]
       : []),
@@ -912,7 +919,7 @@ export default function GlobalSidebar({ config }: { config: Config }) {
   const leftItems: LeftPeekItem[] = [];
   if (leftPeekOn) {
     const goTo = (href: string) => () => navigateUrl(href);
-    leftItems.push({ key: "home", title: "Home", icon: HOME_ICON, show: { kind: "frame", src: embedUrlForFsPath(config.home, "?_side=off") }, onOpen: goTo("/home") });
+    if (homeRow) leftItems.push({ key: "home", title: "Home", icon: HOME_ICON, show: { kind: "frame", src: embedUrlForFsPath(config.home, "?_side=off") }, onOpen: goTo("/home") });
     if (searchAvailable) leftItems.push({ key: "search", title: "Search", icon: SEARCH_ICON, show: { kind: "search", src: SEARCH_CARD_SRC }, onOpen: openSearch });
     leftItems.push({ key: "ai-models", title: "AI Models", icon: AI_MODELS_ICON, show: { kind: "frame", src: withQueryEmbed(AI_MODELS_HOME) }, onOpen: goTo(AI_MODELS_HOME) });
     leftItems.push({ key: "marketplace", title: "Community", icon: MARKETPLACE_ICON, show: { kind: "frame", src: withQueryEmbed(marketplaceHref) }, onOpen: goTo(marketplaceHref) });
@@ -1001,7 +1008,7 @@ export default function GlobalSidebar({ config }: { config: Config }) {
         onRailEl={leftPeekOn ? setLeftRail : undefined}
       >
         <div className="sidebar-section sidebar-group">
-          <NavItem href="/home" id="home-link" label="Home" icon={HOME_ICON} active={homeActive} doorKey="home" />
+          {homeRow && <NavItem href="/home" id="home-link" label="Home" icon={HOME_ICON} active={homeActive} doorKey="home" />}
           {searchAvailable && (
             <NavItem
               id="search-link"

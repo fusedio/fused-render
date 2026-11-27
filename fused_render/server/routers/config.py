@@ -103,6 +103,10 @@ def api_config(
         # and on Windows only with pywinpty (the `[cli]` extra) installed. The
         # shell hides the terminal button and `fused.terminal` refuses off this.
         "terminal_available": pty_session.terminal_available(),
+        # Is this window a workspace (tabs on the left, D1514)? Here and not
+        # only in /api/prefs because the shell must know before its first
+        # render whether it is a tab host; prefs are read after it.
+        "workspace_tabs_enabled": shell_prefs.workspace_tabs_enabled(),
     }
     # Self-update state (update/mac.py, update/linux.py) — present only when
     # this platform started an in-app manager (mac, or Linux running from an

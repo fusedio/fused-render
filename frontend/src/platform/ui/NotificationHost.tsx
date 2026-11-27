@@ -52,7 +52,7 @@
 import ServerStatusBanner from "@platform/ui/ServerStatusBanner";
 import MessagePopupCard from "@platform/ui/MessagePopupCard";
 import JobPopupCard from "@platform/ui/JobPopupCard";
-import { IS_EMBED } from "@platform/lib/router";
+import { NO_SHELL_CHROME } from "@platform/lib/router";
 import type { Job } from "@platform/lib/jobs";
 
 export default function NotificationHost({
@@ -84,14 +84,14 @@ export default function NotificationHost({
           (its mount effect never reruns), so the new event's card never
           restarted its own countdown and could vanish on the FIRST event's
           timer instead. */}
-      {!IS_EMBED && jobPopup && (
+      {!NO_SHELL_CHROME && jobPopup && (
         <JobPopupCard
           key={`${jobPopup.id}:${jobPopup.finished_at ?? ""}`}
           job={jobPopup}
           onGone={onJobPopupGone ?? (() => {})}
         />
       )}
-      {!IS_EMBED && <ServerStatusBanner />}
+      {!NO_SHELL_CHROME && <ServerStatusBanner />}
     </div>
   );
 }

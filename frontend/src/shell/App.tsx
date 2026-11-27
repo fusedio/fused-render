@@ -26,6 +26,7 @@ import {
   IS_NATIVE_WINDOW,
   IS_PREVIEW,
   IS_SNAPSHOT,
+  NO_SHELL_CHROME,
   fsPathFromLocation,
   isPanelPath,
   navHintIsDir,
@@ -119,6 +120,8 @@ import Panel from "@apps/explorer/Panel";
 import Tabs from "@apps/explorer/Tabs";
 import FilesHome from "@apps/explorer/FilesHome";
 import Home from "@shell/Home";
+import WorkspaceHost from "@shell/workspace/WorkspaceHost";
+import { isWorkspaceHost } from "@platform/lib/workspace-bridge";
 import {
   AI_MODELS_PREFIX,
   DEFAULT_TAB,
@@ -542,6 +545,13 @@ function BotFileView({ fsPath }: { fsPath: string }) {
 }
 
 export default function App({ config }: { config: Config }) {
+  // A WORKSPACE HOST (D1514, shell/workspace): the page column is a strip of
+  // tab frames, not this route. Fixed for the document's life (main.tsx marks
+  // it before the first render). The host's URL still MIRRORS the active tab,
+  // which keeps the sidebar's highlight and the terminal's cwd right; what
+  // below acts on "the route this document shows" is about a page that lives
+  // in a frame, and is gated where it would misfire.
+  const wsHost = isWorkspaceHost();
   // …and only while the feature is on (shell/task-peek-flag.ts): off, the epoch
   // is judged on the whole URL, which is what it did before any of this.
   const taskPeekOn = useTaskPeekEnabled();
@@ -727,7 +737,10 @@ export default function App({ config }: { config: Config }) {
   // /view/_home, /view/_account, and the whole /view//embed namespaces are
   // rewritten at boot by router.ts.)
   if (location.pathname === "/") {
-    history.replaceState(null, "", "/home");
+    // A host keeps its query and entry state: `_tabs`, `_right` and the tab
+    // ids Back matches on ride on this URL.
+    if (wsHost) history.replaceState(history.state, "", "/home" + location.search);
+    else history.replaceState(null, "", "/home");
   }
   // The server runs no bots on Windows, but the Bots page still opens there for
   // the experts (task sessions, not bots: docs/experts.md; the page
@@ -738,7 +751,9 @@ export default function App({ config }: { config: Config }) {
   const expertsKnown = useExpertsFlagKnown();
   const botsPageOn = botsOn || expertsKnown !== false;
   const terminalOn = terminalAvailable(config);
-  if (!botsPageOn && isBotsPath(location.pathname)) {
+  // Not in a host: the frame showing the page rewrites itself, and the mirror
+  // follows (a rewrite here would drop `_tabs`).
+  if (!wsHost && !botsPageOn && isBotsPath(location.pathname)) {
     history.replaceState(null, "", "/home");
   }
   // A fresh install's first load lands on the setup wizard instead (its own
@@ -749,7 +764,7 @@ export default function App({ config }: { config: Config }) {
   // dismissed wizard stays gone across ports and browsers. The URL names the
   // server's stored step, so a restart mid-wizard resumes where it was.
   if (
-    !IS_EMBED &&
+    !NO_SHELL_CHROME &&
     !autoShowDecided &&
     location.pathname === "/home" &&
     shouldAutoShow(config)
@@ -762,7 +777,7 @@ export default function App({ config }: { config: Config }) {
   // bare prefix redirects to it (same render-time rewrite as "/" above). The
   // QUERY is carried: `/ai-models?model=…` is how a link selects a model, and
   // dropping it here would land the playground on its fallback pick.
-  if (location.pathname === AI_MODELS_PREFIX) {
+  if (!wsHost && location.pathname === AI_MODELS_PREFIX) {
     history.replaceState(
       null,
       "",
@@ -824,9 +839,11 @@ export default function App({ config }: { config: Config }) {
   const isHome = pathname === "/home";
   // A fresh page from either home starts on the default companion: drop the
   // remembered sidebar tab (lib/side-tab-store). Open/closed and width are global.
+  // Not in a host: the Home that should clear it is the one in its frame.
   useEffect(() => {
+    if (wsHost) return;
     if (isHome || isExplorerHome) setSideTab(null);
-  }, [isHome, isExplorerHome]);
+  }, [wsHost, isHome, isExplorerHome]);
   // Canvases: the listing plus the parameterized workspace route. The name is
   // constrained to the CLI's own canvas-name alphabet, so the match below is
   // also the validation.
@@ -896,8 +913,12 @@ export default function App({ config }: { config: Config }) {
   const fusedFile = installVerdictNow === "install" ? fusedNamed : null;
   const botFile = installVerdictNow === "install" ? botNamed : null;
   // A resolved fsPath mounts StatView below, which owns the title itself.
+  // A host's title is the active tab's (WorkspaceHost), so App's is
+  // `undefined` — "not mine to set" — or the two would trade it every render.
   useDocumentTitle(
-    isPanel
+    wsHost
+      ? undefined
+      : isPanel
       ? "Panel"
       : isTabs
         ? "Tabs"
@@ -957,7 +978,9 @@ export default function App({ config }: { config: Config }) {
   // tour for wherever the wizard lets go fires on that navigation.
   const firedTours = useRef<Set<string>>(new Set());
   useEffect(() => {
-    if (IS_EMBED || pathname === ONBOARDING_PATH) return;
+    // Not in a host either: the page a tour is about is in a frame, so the
+    // sidebar-only steps would run and the whole tour be marked seen.
+    if (NO_SHELL_CHROME || wsHost || pathname === ONBOARDING_PATH) return;
     const tour = autoStartTourFor(pathname);
     if (!tour || firedTours.current.has(tour.id)) return;
     // Retries IN PLACE, not only on the next route change: a tour can be held
@@ -973,7 +996,7 @@ export default function App({ config }: { config: Config }) {
     };
     id = setTimeout(attempt, 600);
     return () => clearTimeout(id);
-  }, [pathname]);
+  }, [pathname, wsHost]);
 
   // Route fade (A5). Every route hard-remounts on the nav epoch, so a cross-fade
   // between old and new content is impossible — instead #content plays a short
@@ -1281,8 +1304,8 @@ export default function App({ config }: { config: Config }) {
             OTHER mount site below, which had no guard at all. Both sites now
             say it the same way so the comment stays true regardless of how
             this branch's own condition might change later. */}
-        {!IS_EMBED && <UpdateNotifier />}
-        {!IS_EMBED && <RestartOverlay />}
+        {!NO_SHELL_CHROME && <UpdateNotifier />}
+        {!NO_SHELL_CHROME && <RestartOverlay />}
         {/* Mod+K is App-wide (the listener above runs here too), so the sheet
             must be renderable here — or the flag flips with nothing shown and
             the sheet pops open on whatever page the wizard lets go to. */}
@@ -1298,7 +1321,7 @@ export default function App({ config }: { config: Config }) {
       <TaskStatusNotifier />
       <TeardownNotifier />
       <ModelConflictNotifier />
-      {!IS_EMBED && sidebar}
+      {!NO_SHELL_CHROME && sidebar}
       <div id="main">
         {/* THE SHELL'S FALLBACK RAIL (shell/claude-rail FallbackRail): the
             favourites' rail on a page that draws no Claude rail of its own.
@@ -1306,10 +1329,16 @@ export default function App({ config }: { config: Config }) {
             ever — until it stands, when they become the page's column and
             the rail beside it (claude-rail.css). Always in the tree, so the
             rail coming and going never remounts the page. */}
-        <div className="shell-main-row">
-          <div className="shell-main-col">{main}</div>
-          {!IS_EMBED && <FallbackRail />}
-        </div>
+        {wsHost ? (
+          // UNKEYED: a Back across the host's own tab entries bumps the epoch,
+          // and a remount here would reload every tab. It reconciles in place.
+          <WorkspaceHost config={config} />
+        ) : (
+          <div className="shell-main-row">
+            <div className="shell-main-col">{main}</div>
+            {!NO_SHELL_CHROME && <FallbackRail />}
+          </div>
+        )}
         {/* Three sections, not three surfaces: ModelsDock is the shell's
             wrapper around Models' own chip (it speaks apps/ai_models/lib's
             shared runtime poll, which platform may not import). ActivityDock
@@ -1339,11 +1368,11 @@ export default function App({ config }: { config: Config }) {
             pywinpty): `canRunInTerminal()` and `window._fusedOpenTerminal`
             both ride this mount, so every Run affordance and
             `fused.terminal.open/run` go away with it instead of failing. */}
-        {!IS_EMBED && terminalOn && <TerminalDrawer cwd={localFsPath} />}
+        {!NO_SHELL_CHROME && terminalOn && <TerminalDrawer cwd={localFsPath} />}
         {/* Breakout cards: research-only side chats, shell-level so they
             outlive the page they were opened from. */}
-        {!IS_EMBED && <BreakoutCards />}
-        {!IS_EMBED && (
+        {!NO_SHELL_CHROME && <BreakoutCards />}
+        {!NO_SHELL_CHROME && (
           <StatusBar
             terminalDock={terminalOn && <TerminalDock />}
             updates={<UpdatesDock version={config.version} hasUpdater={config.update != null} />}
@@ -1392,8 +1421,8 @@ export default function App({ config }: { config: Config }) {
           decision it raises already reaches every pane through the ordinary
           notify() store, so a pane mounting its own instance can only
           duplicate work, never add coverage. */}
-      {!IS_EMBED && <UpdateNotifier />}
-      {!IS_EMBED && <RestartOverlay />}
+      {!NO_SHELL_CHROME && <UpdateNotifier />}
+      {!NO_SHELL_CHROME && <RestartOverlay />}
       {/* The open favourite's chat card, beside whichever page's Claude rail
           is up (shell/claude-rail FavouritePeek): mounted once here so a hop
           between pages never remounts it. */}
@@ -1401,35 +1430,35 @@ export default function App({ config }: { config: Config }) {
           2026-11-24): the favourite's window is its non-pin and one card per
           pin, and a pin's press hands the non-pin's card the pin — so pinning
           never remounts the chat the reader pinned. */}
-      {!IS_EMBED && <FavouritePeekSlots />}
+      {!NO_SHELL_CHROME && <FavouritePeekSlots />}
       {/* The list's chat card, with free pins on (shell/claude-rail
           ListCardHost): the rail builds it, the shell draws it, so a pinned
           list task is never remounted by a page hop. */}
-      {!IS_EMBED && <ListCardHost />}
+      {!NO_SHELL_CHROME && <ListCardHost />}
       {/* The Tasks card off the rail's Tasks door (shell/claude-rail
           TasksPeek): mounted once here for the same reason — its view,
           filters and scroll survive a hop (owner, 2026-11-07). */}
-      {!IS_EMBED && <TasksPeek />}
+      {!NO_SHELL_CHROME && <TasksPeek />}
       {/* The +'s New task card (shell/claude-rail PlusCardHost): window A's
           too, drawn here so a hop keeps it — words, open chat and all
           (owner, 2026-11-09). */}
-      {!IS_EMBED && <PlusCardHost />}
+      {!NO_SHELL_CHROME && <PlusCardHost />}
       {/* The Bots card off the rail's Bots door (shell/claude-rail BotsPeek):
           window A's too, mounted once here for the same reason — its list's
           search and scroll survive a hop (owner, 2026-11-09). */}
-      {!IS_EMBED && <BotsPeek />}
+      {!NO_SHELL_CHROME && <BotsPeek />}
       {/* The Git card off the rail's Git door (shell/claude-rail GitPeek):
           window A's too, mounted once here for the same reason (owner,
           2026-11-10: Git moved off the status bar onto the rail). */}
-      {!IS_EMBED && <GitPeek />}
+      {!NO_SHELL_CHROME && <GitPeek />}
       {/* The mode card off the rail's mode doors (shell/claude-rail ModePeek):
           window A's too, mounted once here for the same reason (owner,
           2026-11-20: a file's other modes as doors above Git). */}
-      {!IS_EMBED && <ModePeek />}
+      {!NO_SHELL_CHROME && <ModePeek />}
       {/* The collapsed left sidebar's hover cards (shell/left-rail LeftPeek;
           "Left sidebar preview", `left_rail_peek_enabled`, default off): mounted
           once here so a held card survives a hop, like the cards above. */}
-      {!IS_EMBED && <LeftPeek />}
+      {!NO_SHELL_CHROME && <LeftPeek />}
       {/* The pinned bot's card (shell/claude-rail BotCardHost): window B's
           other card, mounted once here for the favourite's reason — a page's
           view switch remounts its rail, and a card that lived there

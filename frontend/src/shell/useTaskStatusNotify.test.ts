@@ -139,8 +139,8 @@ beforeEach(() => {
 // main.tsx's own `if (IS_EMBED) return;` boot-path guard.
 test("useTaskStatusNotify guards its own effect against IS_EMBED before it can raise anything", () => {
   const src = readFileSync(join(import.meta.dir, "useTaskStatusNotify.ts"), "utf8");
-  expect(src).toContain('import { IS_EMBED, IS_TOP_EMBED } from "@platform/lib/router";');
-  const guard = src.indexOf("if (IS_EMBED && !IS_TOP_EMBED) return;");
+  expect(src).toContain('import { NO_SHELL_CHROME, IS_TOP_EMBED } from "@platform/lib/router";');
+  const guard = src.indexOf("if (NO_SHELL_CHROME && !IS_TOP_EMBED) return;");
   expect(guard).toBeGreaterThan(-1);
   // Guards the whole effect BODY, not the `useEffect(...)` call itself — a
   // conditional hook call would break the rules of hooks.
@@ -165,8 +165,8 @@ test("the IS_EMBED guard is narrowed to exclude IS_TOP_EMBED, so a standalone to
   // Must not regress to the too-wide bare guard inside the effect body
   // itself (the header comment's own prose mentions the old spelling while
   // explaining the fix, so the check is scoped past it).
-  expect(effectBody).not.toContain("if (IS_EMBED) return;");
-  expect(effectBody).toContain("if (IS_EMBED && !IS_TOP_EMBED) return;");
+  expect(effectBody).not.toContain("if (NO_SHELL_CHROME) return;");
+  expect(effectBody).toContain("if (NO_SHELL_CHROME && !IS_TOP_EMBED) return;");
 });
 
 describe("useTaskStatusNotify", () => {

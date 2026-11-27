@@ -32,7 +32,7 @@
 // moment the current narrator's tab closes and a heartbeat elects another.
 import { useEffect, useRef } from "react";
 import { ackScheduleEvents, getScheduleEvents } from "@platform/lib/api";
-import { IS_EMBED, navigateUrl } from "@platform/lib/router";
+import { NO_SHELL_CHROME, navigateUrl } from "@platform/lib/router";
 import { dismissNotification, dismissPopup, notify } from "@platform/lib/notifications";
 import { isNarrator } from "@platform/lib/presence";
 import { toastForEvent } from "@platform/lib/schedule-toast";
@@ -71,7 +71,7 @@ export function useScheduleEvents(onOutcome?: () => void): void {
   useEffect(() => {
     // Only the top-level shell narrates: every embed iframe would otherwise poll
     // and double-toast the same events into the host page.
-    if (IS_EMBED) return;
+    if (NO_SHELL_CHROME) return;
     let alive = true;
 
     const poll = async () => {

@@ -36,6 +36,7 @@ import {
 } from "react";
 import {
   IS_PANEL_PANE,
+  IS_WS_FRAME,
   IS_SNAPSHOT,
   confirmLeave,
   embedUrlForFsPath,
@@ -436,7 +437,11 @@ export default function Listing({
   // …and an S3 folder (`remote`, above) has no pane at all: every companion
   // is about a folder on this disk, and a selected bucket object is opened,
   // never previewed beside the list (it would have to be downloaded first).
-  const paneEnabled = !IS_SNAPSHOT && !IS_PANEL_PANE && !remote;
+  // …and IN A WORKSPACE FRAME (D1514): Claude lives in the window's right
+  // panel (specified by later clauses), so the folder draws no pane and no
+  // rail and the listing takes the whole width. Stage 2's "open this chat on
+  // the right" hooks in here.
+  const paneEnabled = !IS_SNAPSHOT && !IS_PANEL_PANE && !IS_WS_FRAME && !remote;
   // Drag-to-close hands off to the same `_side=off` the pane header's close
   // button writes (`closeSide`, below) — one vocabulary for "the pane is shut",
   // whichever gesture said it. A closure, called only from pointer events, so

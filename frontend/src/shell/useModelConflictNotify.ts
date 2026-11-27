@@ -29,7 +29,7 @@ import { repoName, joinNames } from "@platform/lib/format";
 import { resolveModelConflict, actionErrorMessage } from "@platform/lib/api";
 import { publishAiRuntime, useAiRuntime } from "@apps/ai_models/lib/aiRuntime";
 import { capabilityLabel } from "@apps/ai_models/lib/engines";
-import { IS_EMBED, IS_TOP_EMBED } from "@platform/lib/router";
+import { NO_SHELL_CHROME, IS_TOP_EMBED } from "@platform/lib/router";
 import { requestOpenSection } from "@platform/lib/statusChip";
 
 /** The hook as a LEAF, mounted once in `App`'s tree — see
@@ -59,7 +59,7 @@ export function useModelConflictNotify(): void {
     // Matches `useTaskStatusNotify`'s own embed rule exactly (see its header
     // comment): a non-top embed pane forwards nothing of its own, a top
     // embed is a whole window with nobody to forward to.
-    if (IS_EMBED && !IS_TOP_EMBED) return;
+    if (NO_SHELL_CHROME && !IS_TOP_EMBED) return;
     const live = new Set<string>();
     for (const conflict of runtime.conflicts) {
       live.add(conflict.capability);

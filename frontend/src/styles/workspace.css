@@ -1,0 +1,173 @@
+/* The workspace (D1514, shell/workspace): in a host window the page column is
+   a row — the tabs' column (strip over frames), then (stage 2) the right
+   panel, then the rail. The row is the `.shell-main-row` the fallback rail's
+   rules know, made a box for good here: with no rail standing those wrappers
+   are `display: contents` (claude-rail.css), which a host never wants.
+
+   Its own `ws-*` names, not the explorer Tab mode's `.tab`/`.tabs-bar`
+   (preview.css): that strip is a bar of file names inside one explorer page,
+   this one is the window's, and a shared class would make every tweak to one
+   a regression hunt in the other. Same tokens, so both follow the theme. */
+.shell-main-row.ws-row {
+  flex: 1 1 auto;
+  min-width: 0;
+  min-height: 0;
+  display: flex;
+  flex-direction: row;
+}
+
+.ws-left {
+  flex: 1 1 auto;
+  min-width: 320px;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.ws-strip {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: stretch;
+  /* Packed from the left, each tab as wide as its label — never distributed
+     across the strip (owner, 2026-10-14: tabs sat ~400px apart). */
+  justify-content: flex-start;
+  gap: 2px;
+  height: 36px;
+  padding: 4px 8px 0;
+  background: var(--bg-alt);
+  /* The line under the strip is an INSET shadow, not a border: a shadow
+     paints beneath the children, so the active tab's own background covers
+     it where the tab joins the page — a border would show through. */
+  box-shadow: inset 0 -1px 0 var(--border);
+  /* Many tabs shrink first (below), then scroll sideways, never with a bar. */
+  overflow-x: auto;
+  overflow-y: hidden;
+  scrollbar-width: none;
+  user-select: none;
+  -webkit-user-select: none;
+}
+
+.ws-strip::-webkit-scrollbar {
+  display: none;
+}
+
+/* SIZED TO ITS LABEL: the tab is its icon and label (plus the × only while
+   that shows), clamped 72–220px, and shrinks toward the floor when the strip
+   runs out of room before it scrolls (owner, 2026-10-14). Scoped under the
+   strip so no element-level rule elsewhere can out-rank it. */
+.ws-strip > .ws-tab {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  flex: 0 1 auto;
+  width: auto;
+  margin: 0;
+  min-width: 72px;
+  max-width: 220px;
+  padding: 0 8px 0 10px;
+  border: 1px solid transparent;
+  border-bottom: none;
+  border-radius: 7px 7px 0 0;
+  color: var(--fg-muted);
+  font-size: 12.5px;
+  cursor: default;
+  outline: none;
+  transition:
+    background-color var(--dur-fast) var(--ease-out),
+    color var(--dur-fast) var(--ease-out);
+}
+
+/* Home never shrinks below its own icon and name. */
+.ws-strip > .ws-tab.is-home {
+  flex-shrink: 0;
+  padding-right: 10px;
+}
+
+.ws-tab:hover {
+  color: var(--fg);
+  background: rgba(var(--tint), 0.05);
+}
+
+/* The active tab joins the page below it: the page's own background, over
+   the strip's bottom line. */
+.ws-tab.is-active {
+  color: var(--fg);
+  background: var(--bg);
+  border-color: var(--border);
+}
+
+.ws-tab:focus-visible {
+  box-shadow: inset 0 0 0 2px rgba(var(--tint), 0.25);
+}
+
+.ws-tab-icon {
+  flex: 0 0 auto;
+  /* A glyph drawn by another component sits in a span of this class. */
+  display: inline-flex;
+  width: 14px;
+  height: 14px;
+  object-fit: contain;
+}
+
+.ws-tab-label {
+  /* Shrinks (ellipsis at the cap), never grows: the tab is the label. */
+  flex: 0 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* Out of the layout unless shown — the active tab, a hovered or focused one —
+   so a background tab is exactly its label's width. */
+.ws-tab-close {
+  flex: 0 0 auto;
+  display: none;
+  align-items: center;
+  justify-content: center;
+  width: 18px;
+  height: 18px;
+  padding: 0;
+  border: none;
+  border-radius: 4px;
+  background: none;
+  color: var(--fg-muted);
+  cursor: pointer;
+  transition: background-color var(--dur-fast) var(--ease-out);
+}
+
+.ws-tab.is-active .ws-tab-close,
+.ws-tab:hover .ws-tab-close,
+.ws-tab:focus-within .ws-tab-close {
+  display: inline-flex;
+}
+
+.ws-tab-close:hover {
+  color: var(--fg);
+  background: rgba(var(--tint), 0.1);
+}
+
+.ws-frames {
+  position: relative;
+  flex: 1 1 auto;
+  min-height: 0;
+}
+
+.ws-frame {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  border: none;
+  background: var(--bg);
+  /* A frame fades in on its own load instead of flashing unpainted. Hidden
+     tabs are display:none (TM-5), never merely transparent — this opacity is
+     only ever the fade. */
+  opacity: 0;
+  transition: opacity var(--dur-med) var(--ease-out);
+}
+
+.ws-frame.is-loaded {
+  opacity: 1;
+}

@@ -25,7 +25,7 @@ import {
 } from "@platform/lib/api";
 import type { StatResult, TemplateEntry, RegistryEntryForPath } from "@platform/lib/api";
 import { captureAppPreview, cropRect } from "@platform/lib/appShot";
-import { confirmLeave, navigate, navigateUrl, urlForFsPath, viewUrlForFsPath, embedUrlForFsPath, replaceSearch, IS_EMBED, IS_FOREIGN_EMBED, IS_PREVIEW } from "@platform/lib/router";
+import { confirmLeave, navigate, navigateUrl, urlForFsPath, viewUrlForFsPath, embedUrlForFsPath, replaceSearch, IS_EMBED, IS_FOREIGN_EMBED, IS_PREVIEW, IS_WS_FRAME } from "@platform/lib/router";
 import { explainErrorPrompt, explainWithAi } from "@platform/lib/explain-with-ai";
 import { useUrlVersion } from "@platform/lib/hooks";
 import { formatSize, formatMtimeFull, basename } from "@platform/lib/format";
@@ -998,7 +998,12 @@ function TemplatePreview({
   // Never for a remote location's cache copy (RemoteView.tsx): the companions
   // (Claude chat, git, the parent's MCP) and the rail would all be about the
   // cache folder, not the `s3://` object the reader opened.
-  const splitCapable = !!actionsInTopbar && !stat.is_dir && !IS_EMBED && !remoteUrl;
+  // …and never IN A WORKSPACE FRAME (D1514): Claude lives in the window's
+  // right panel (specified by later clauses), so the file draws no sidebar
+  // and no rail and its content takes the whole width — its companions stay
+  // content modes, as in a pane. Stage 2's "open this chat on the right"
+  // hooks in here.
+  const splitCapable = !!actionsInTopbar && !stat.is_dir && !IS_EMBED && !IS_WS_FRAME && !remoteUrl;
   const parts = partitionModes(offered);
 
   // --- the BORROWED companion `git`, and the parent's `mcp`, from this file's parent folder -

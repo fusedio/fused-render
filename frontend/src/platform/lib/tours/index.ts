@@ -5,7 +5,7 @@
 // runtime around them.
 import { driver, type Driver, type DriveStep } from "driver.js";
 import "driver.js/dist/driver.css";
-import { IS_EMBED, navigateUrl } from "@platform/lib/router";
+import { NO_SHELL_CHROME, navigateUrl } from "@platform/lib/router";
 import { presentSteps, seenKey, type FlowStep, type FollowUp, type Tour } from "./registry";
 
 export {
@@ -333,7 +333,7 @@ export function startTour(tour: Tour): void {
 // seen, or embed) and false when the shell chrome simply isn't on screen yet —
 // the caller retries on the next route change.
 export function maybeAutoStartTour(tour: Tour): boolean {
-  if (IS_EMBED) return true;
+  if (NO_SHELL_CHROME) return true;
   if (hasSeen(tour.id)) return true;
   if (!document.querySelector("#sidebar")) return false;
   // A collapsed sidebar is a rail with none of the sidebar targets

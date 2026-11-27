@@ -98,8 +98,8 @@ async function mountClean(): Promise<{ unmount: () => void }> {
 
 test("useModelConflictNotify guards its own effect against IS_EMBED before it can raise anything", () => {
   const src = readFileSync(join(import.meta.dir, "useModelConflictNotify.ts"), "utf8");
-  expect(src).toContain('import { IS_EMBED, IS_TOP_EMBED } from "@platform/lib/router";');
-  expect(src.indexOf("if (IS_EMBED && !IS_TOP_EMBED) return;")).toBeGreaterThan(-1);
+  expect(src).toContain('import { NO_SHELL_CHROME, IS_TOP_EMBED } from "@platform/lib/router";');
+  expect(src.indexOf("if (NO_SHELL_CHROME && !IS_TOP_EMBED) return;")).toBeGreaterThan(-1);
 });
 
 test("a freshly detected conflict raises exactly one toast, with Keep <other> and Stop both", async () => {

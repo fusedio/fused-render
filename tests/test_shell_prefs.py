@@ -1746,6 +1746,32 @@ def test_left_rail_peek_defaults_off_toggles_and_rejects_junk(tmp_path, monkeypa
     assert prefs_mod.left_rail_peek_enabled() is False
 
 
+def test_workspace_tabs_defaults_off_toggles_and_rejects_junk(tmp_path, monkeypatch):
+    """Tabs and side panel (D1514): only a stored `true` is on, in /api/prefs
+    and in /api/config (the shell reads it there, before its first render)."""
+    client, home = _client(tmp_path, monkeypatch)
+    assert client.get("/api/prefs").json()["workspace_tabs"] == {"enabled": False}
+    assert client.get("/api/config").json()["workspace_tabs_enabled"] is False
+    body = client.put("/api/prefs", json={"workspace_tabs_enabled": True},
+                      headers=FUSED).json()
+    assert body["workspace_tabs"]["enabled"] is True
+    stored = json.loads((home / "prefs.json").read_text(encoding="utf-8"))
+    assert stored["workspace_tabs_enabled"] is True
+    assert prefs_mod.workspace_tabs_enabled() is True
+    assert client.get("/api/config").json()["workspace_tabs_enabled"] is True
+    off = client.put("/api/prefs", json={"workspace_tabs_enabled": False},
+                     headers=FUSED).json()
+    assert off["workspace_tabs"]["enabled"] is False
+    bad = client.put("/api/prefs", json={"workspace_tabs_enabled": "yes"},
+                     headers=FUSED)
+    assert bad.status_code == 400
+    assert "workspace_tabs_enabled" in bad.json()["error"]
+    (home / "prefs.json").write_text(json.dumps({"workspace_tabs_enabled": 1}),
+                                     encoding="utf-8")
+    assert prefs_mod.workspace_tabs_enabled() is False
+    assert client.get("/api/config").json()["workspace_tabs_enabled"] is False
+
+
 def test_retired_rail_extras_and_task_icons_switches_are_ignored(tmp_path, monkeypatch):
     """Task icons are always on, and the three rail switches folded into
     `rail_extras_enabled` (no migration): their old keys left in prefs.json

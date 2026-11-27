@@ -598,3 +598,33 @@ describe("runtime params → history", () => {
     expect(seen).toEqual(["1", undefined, "1"]);
   });
 });
+
+// A workspace host (D1514) mirrors its ACTIVE tab's query in its own URL. A
+// page in another tab must not read those params as hand-typed globals (D72):
+// the host marks itself opaque as well as a boundary, and the climb stops there.
+describe("runtime params under a workspace host", () => {
+  function mountUnder(hostFlags: Record<string, boolean>) {
+    const ctx = createContext("/explorer/view/home/me/b");
+    const host: any = new EventTarget();
+    host.location = {
+      pathname: "/explorer/view/home/me/a",
+      search: "?leak=from-tab-a&shared=1",
+      href: "http://localhost/explorer/view/home/me/a?leak=from-tab-a&shared=1",
+    };
+    host.parent = host;
+    Object.assign(host, hostFlags);
+    ctx.sandbox.window.parent = host;
+    return ctx.mount();
+  }
+
+  test("an opaque host's params are not read as globals", () => {
+    const fused = mountUnder({ _fusedParamBoundary: true, _fusedParamOpaque: true });
+    expect(fused.params.get("leak")).toBeUndefined();
+    expect(fused.params.getAll()).toEqual({});
+  });
+
+  test("a plain boundary's params still are (D72 unchanged)", () => {
+    const fused = mountUnder({ _fusedParamBoundary: true });
+    expect(fused.params.get("leak")).toBe("from-tab-a");
+  });
+});
