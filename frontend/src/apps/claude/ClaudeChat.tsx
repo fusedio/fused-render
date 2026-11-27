@@ -450,8 +450,9 @@ const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
 /** WHETHER A WORKTREE MENU IS MOUNTED for this target: any file or folder the
  *  pane has named — the menu then hides itself unless its list says repo. */
 export function worktreeMenuTarget(file: string | null, noun: TargetNoun): boolean {
-  // Not on the phone: worktree create/remove are Mac-disk operations the LAN door 404s (lan.py `_DOORS`).
-  return !!file && !!noun && !isLanHost();
+  // On the phone too: the LAN door admits `list` and `create` (lan.py
+  // `_DOORS`); the menu drops its Remove row there, which the door 404s.
+  return !!file && !!noun;
 }
 
 // `/model` and `/effort` parsing moved to `ui/local-commands.ts`; re-exported.

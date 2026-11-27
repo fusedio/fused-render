@@ -153,7 +153,7 @@ def test_the_agent_route_is_gated_on_its_action(home):
         body = {"action": action} if action is not None else {}
         assert call(app, "/api/claude/agent", "POST", body, headers=[cookie]) == 404, action
     assert call(app, "/api/claude/worktrees", "POST", {"action": "list"}, headers=[cookie]) == 200
-    assert call(app, "/api/claude/worktrees", "POST", {"action": "create"}, headers=[cookie]) == 404
+    assert call(app, "/api/claude/worktrees", "POST", {"action": "create"}, headers=[cookie]) == 200
     assert call(app, "/api/claude/worktrees", "POST", {"action": "remove"}, headers=[cookie]) == 404
     assert inner.hits == [h for h in inner.hits if h[1] == "/api/claude/worktrees"]
 

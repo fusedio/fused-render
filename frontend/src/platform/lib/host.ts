@@ -20,3 +20,13 @@ export function isLanHost(): boolean {
  *  same marker). The shell draws its own top bar from the page's <title>, so a
  *  page drops its own title row there. */
 export const IN_PHONE_APP = typeof navigator !== "undefined" && /FusedRender-iOS\//.test(navigator.userAgent);
+
+/** ENTER IS A NEWLINE ON THE PHONE. A touch keyboard has no Shift+Enter, so a
+ *  composer whose Enter sends could never take a second line there (user
+ *  report, 2026-11-27); the send button is the send. Only the LAN page on a
+ *  touch-first device: a Mac browser on the LAN port keeps Enter-sends, and
+ *  Cmd/Ctrl+Enter from a hardware keyboard still sends everywhere. */
+export function enterIsNewline(): boolean {
+  if (!isLanHost() || typeof window === "undefined" || typeof window.matchMedia !== "function") return false;
+  return window.matchMedia("(hover: none) and (pointer: coarse)").matches;
+}

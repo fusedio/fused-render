@@ -30,6 +30,7 @@ import {
   type DraftAttachment,
   type TaskDraftForm,
 } from "@platform/lib/drafts";
+import { enterIsNewline } from "@platform/lib/host";
 import { notify } from "@platform/lib/notifications";
 import { onDraftChange } from "@shell/tasksPulse";
 import "../styles/composer.css";
@@ -2354,6 +2355,9 @@ export function ComposerCard({
       // Cmd/Ctrl+Enter idle is the same send it always was, for the hands that
       // learned it in every other composer in this app.
       if (ev.shiftKey) return;
+      // ON THE PHONE Enter is a newline too (`enterIsNewline`): the send
+      // button sends. A hardware keyboard's Cmd/Ctrl+Enter still does.
+      if (enterIsNewline() && !ev.ctrlKey && !ev.metaKey) return;
       // AN IME'S Enter COMMITS ITS CANDIDATE; it never sends.
       if (ev.nativeEvent?.isComposing || ev.keyCode === 229) return;
       ev.preventDefault();

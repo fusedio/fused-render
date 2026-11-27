@@ -2245,7 +2245,7 @@ the pairing record; a client-sent one is dropped). `/api/claude/agent`,
 body's `action` (the chat multiplexes on it): start, send, poll, cancel,
 history, cards, commands, decide, defaults, sessions, shots_dir, image_to_png,
 task_* and tasks are in; snapshot_*, terminal_command, set_mode, app_state and
-canvas_shot are not, and worktrees admits `list` alone. Under `/api/bots` the
+canvas_shot are not, and worktrees admits `list` and `create` (never `remove`). Under `/api/bots` the
 list, status (`?cursors=`), presets, setup, pulse, create, delete, send, the
 shot and step pictures and these ops are in: pause resume stop clear open
 settings routines skills seen react flag attach goto nav tab tool viewport
@@ -2262,7 +2262,7 @@ like every file route) can carry a picture in and draw it back.
 `data-host` stamp; the few controls whose route the door 404s ask it:
 BotSettings drops its Connections, Browser and Phone tabs, the bot list its
 Builds and Apps buttons, the workspace-busy banner its "Take over here", the
-chat its worktree menu. Everything else is drawn as on the Mac and, where the
+chat's worktree menu its Remove row. Everything else is drawn as on the Mac and, where the
 door refuses, the desktop's own error surfaces (a 404 toast), the same
 backstop the Mac has for a dead worker.
 

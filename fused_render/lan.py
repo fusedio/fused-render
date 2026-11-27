@@ -366,8 +366,10 @@ _PREFIXES = ("/static/", "/template-assets/", "/template-shared/", "/api/engines
 #: popout / dock / wake / profile / reveal / package / export / clone, the
 #: browsers, iMessage, builds, usage and workspace routes, `/api/bot-apps`;
 #: the agent's snapshot_* / terminal_command / set_mode / app_state /
-#: canvas_shot actions; `/api/tasks/erase`, `/api/claude/worktrees` create and
-#: remove, `/api/capture/*`, desktop `/api/prefs` writes. A row is one line;
+#: canvas_shot actions; `/api/tasks/erase`, `/api/claude/worktrees` remove
+#: (`create` opened 2026-11-27, the owner's call: a phone that can start a task
+#: must be able to start it in a new worktree), `/api/capture/*`, desktop
+#: `/api/prefs` writes. A row is one line;
 #: a reviewer reads a new line here as "the phone can now do this".
 _DOOR_BOT_OPS = ("pause", "resume", "stop", "clear", "open", "settings", "routines", "skills", "seen",
                  "react", "flag", "attach", "goto", "nav", "tab", "tool", "viewport", "failures")
@@ -391,7 +393,7 @@ _DOORS: tuple[tuple[re.Pattern, frozenset[str], tuple[str, frozenset[str]] | Non
     (re.compile(rf"^/api/bots/{_BOT}/({'|'.join(_DOOR_BOT_OPS)})$"), frozenset({"POST"}), None),
     (re.compile(r"^/api/claude/agent$"), frozenset({"POST"}), ("action", _DOOR_AGENT_ACTIONS)),
     (re.compile(r"^/api/claude/artifacts$"), frozenset({"POST"}), ("action", frozenset({"list", "live"}))),
-    (re.compile(r"^/api/claude/worktrees$"), frozenset({"POST"}), ("action", frozenset({"list"}))),
+    (re.compile(r"^/api/claude/worktrees$"), frozenset({"POST"}), ("action", frozenset({"list", "create"}))),
     (re.compile(r"^/api/claude/app-entry$"), frozenset({"POST"}), None),
     (re.compile(r"^/api/claude-sessions(/history|/recap|/defaults|/summaries|/liveness)?$"), frozenset({"GET"}), None),
     (re.compile(r"^/api/tasks$"), frozenset({"GET"}), None),
