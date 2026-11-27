@@ -806,7 +806,12 @@ export default function WorkspaceHost({ config }: { config: Config }) {
     return p && p.win === frames.get(st.active)?.contentWindow ? p.info : null;
   })();
   const activeFrameWin = () => frames.get(st.active)?.contentWindow ?? null;
-  const railPlace = (activePub?.place as RailPlace | undefined) ?? NO_PLACE;
+  // …and UNTIL ITS PAGE HAS SAID (a tab still loading), the place its URL
+  // names: its tasks stand on top from the first paint, not among the faded
+  // ones until the page publishes.
+  const activeUrl = st.tabs.get(st.active)?.url ?? "";
+  const urlPlace = useMemo(() => placeOfUrl(activeUrl), [activeUrl]);
+  const railPlace = (activePub?.place as RailPlace | undefined) ?? urlPlace ?? NO_PLACE;
   // EVERY OTHER TAB'S PLACE (WS-27), in strip order: what its page published,
   // else what its URL names (a tab not loaded since a reload has published
   // nothing). One per place, none the active tab's. Keyed by its JSON, so the
@@ -832,7 +837,12 @@ export default function WorkspaceHost({ config }: { config: Config }) {
     }
     return out;
   }, [othersJson, railRoot]);
-  const railNewTask = (activePub?.newTask as NewTaskSeed | undefined) ?? NO_TASK;
+  // The +'s target meanwhile: the folder or file that URL names.
+  const urlTask = useMemo((): NewTaskSeed => {
+    const target = !urlPlace ? null : urlPlace.kind === "folder" ? urlPlace.dir : urlPlace.kind === "file" ? urlPlace.file : null;
+    return target ? { target, waiting: null, on: null } : NO_TASK;
+  }, [urlPlace]);
+  const railNewTask = (activePub?.newTask as NewTaskSeed | undefined) ?? urlTask;
   const railGitPath = activePub?.git?.path ?? null;
   const railGit = useMemo(
     () => (railGitPath ? { path: railGitPath, onOpenGit: () => void live.current.openRightView({ kind: "git", path: railGitPath }) } : undefined),
