@@ -1631,6 +1631,10 @@ export interface Prefs {
   // pinned rail windows (exact place and size, a second window for the rest).
   // Optional: absent (older server) reads as off.
   rail_extras?: { enabled: boolean };
+  // Left sidebar preview (`left_rail_peek_enabled`, shell/prefs.py; off by
+  // default): the collapsed left sidebar's icons preview their page in a
+  // hover card (shell/left-rail). Optional: absent (older server) reads as off.
+  left_rail_peek?: { enabled: boolean };
   // Stable AI titles: Tasks rows titled only by the stable `title` (`task_summary_titles_enabled`,
   // shell/prefs.py; off by default). Optional: absent reads as off.
   task_summary_titles?: { enabled: boolean };
@@ -2219,6 +2223,10 @@ export function putCanvasShotSlowFallbackEnabled(enabled: boolean): Promise<Pref
 
 export function putRailExtrasEnabled(enabled: boolean): Promise<Prefs> {
   return putJson<Prefs>("/api/prefs", { rail_extras_enabled: enabled });
+}
+
+export function putLeftRailPeekEnabled(enabled: boolean): Promise<Prefs> {
+  return putJson<Prefs>("/api/prefs", { left_rail_peek_enabled: enabled });
 }
 
 /** One PUT per Bots page-wide switch (`Prefs.bots`). */

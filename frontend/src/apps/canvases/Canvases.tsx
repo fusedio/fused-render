@@ -17,7 +17,7 @@
 // default. FUSED_RENDER_WORKBENCH_ENV pins it (`status.locked`): the dropdown
 // is disabled and the query ignored, since the server 423s any other env.
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { navigateUrl, replaceSearch } from "@platform/lib/router";
+import { keepQueryEmbed, navigateUrl, replaceSearch } from "@platform/lib/router";
 import { putWorkbenchEnv } from "@platform/lib/api";
 import { ErrorBanner } from "@platform/ui/ErrorBanner";
 import { Modal } from "@platform/ui/modal/Modal";
@@ -339,7 +339,8 @@ export default function Canvases() {
     envGenRef.current += 1;
     pickedRef.current = next;
     setPicked(next);
-    replaceSearch(catalogPath(next));
+    // A framed catalog (`?embed=1`, the sidebar's + Canvas card) keeps saying so.
+    replaceSearch(keepQueryEmbed(catalogPath(next)));
     // The pick is also the default from here on (where the catalog opens,
     // what `fused` outside a clone targets): Preferences no longer has a
     // picker for it. Best effort — the listing does not wait on it.

@@ -10,15 +10,16 @@
 // Nothing here knows what a model or a stage is: it is `location.search` in
 // and out. That is the whole reason it is in `lib/` rather than `playground/`
 // — the page shell reads `?cap=` through the same door (see routes.ts).
-import { navigateUrl, replaceSearch } from "@platform/lib/router";
+import { keepQueryEmbed, navigateUrl, replaceSearch } from "@platform/lib/router";
 
 // How a rewrite lands in history. `replace` (the default) edits the current
 // entry — a slider drag must not stack entries. `push` adds one, so the Back
 // button undoes it: that is for a MODEL change, which is a move between
 // places rather than a tweak to the place one is in.
 export type WriteMode = "replace" | "push";
+// A framed page (`?embed=1`, the sidebar's AI Models card) keeps saying so.
 const land = (url: string, mode: WriteMode) =>
-  mode === "push" ? navigateUrl(url) : replaceSearch(url);
+  mode === "push" ? navigateUrl(keepQueryEmbed(url)) : replaceSearch(keepQueryEmbed(url));
 
 /** Read one query param off the CURRENT url. The second argument exists so
  *  tests can drive this without a `location`, the same three-argument trick

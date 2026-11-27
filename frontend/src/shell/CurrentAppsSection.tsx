@@ -34,6 +34,7 @@ import {
 } from "@platform/lib/api";
 import { setSidebarSectionOpen, useSidebarSectionOpen } from "@platform/ui/sidebar/sidebar-accordion";
 import SectionFold from "@platform/ui/sidebar/SectionFold";
+import { sidebarDoorProps, useSidebarDoor } from "@platform/ui/sidebar/sidebar-doors";
 import { applyIconPick } from "@platform/lib/app-icon";
 import { AppStar } from "@platform/ui/AppStar";
 import IconPicker, { type IconPick } from "@platform/ui/IconPicker";
@@ -247,6 +248,9 @@ function CurrentAppRow({
       onRemoved();
     }
   };
+  // SIDEBAR PREVIEWS (shell/left-rail): the row's hover card, when the
+  // sidebar's owner offers one — the collapsed rail icon's own card.
+  const door = useSidebarDoor((app.canvas ? "canvas:" : "app:") + app.path);
   const tip =
     app.path +
     (app.canvas && isWorkbenchEnv(app.canvas.env) ? " — " + ENV_NAMES[app.canvas.env].label : "") +
@@ -263,8 +267,12 @@ function CurrentAppRow({
         (app.running ? " is-running" : "") +
         (app.unread && !app.running ? " is-unread" : "")
       }
-      title={tip}
-      onContextMenu={(e) => onMenu(e, app)}
+      title={door?.quietTip ? undefined : tip}
+      {...sidebarDoorProps(door)}
+      onContextMenu={(e) => {
+        door?.onContextMenu?.(e);
+        onMenu(e, app);
+      }}
     >
       {/* The glyph is the icon picker's toggle — the Bookmarks pattern
           (BookmarksSection.onBookmarkGlyphClick), except the pick lands on
@@ -797,6 +805,8 @@ export default function CurrentAppsSection({ section = "projects" }: { section?:
   // modal (D489). The section ALWAYS renders: a door to "make one" is exactly
   // what an empty desk wants.
   const [composing, setComposing] = useState(false);
+  // The "+" row's hover card (Left sidebar preview): the hub, or the catalog.
+  const newDoor = useSidebarDoor(canvases ? "new-canvas" : "new-app");
   // Whole-section fold: the sidebar's sections are an accordion (one open at a
   // time, platform/ui/sidebar/sidebar-accordion.ts), the flags in the ui-layout
   // doc (`ui_layout.json`, D1386). The count chip carries the collapsed signal.
@@ -850,9 +860,11 @@ export default function CurrentAppsSection({ section = "projects" }: { section?:
             className="bookmark-row current-app-row current-app-new"
             role="button"
             tabIndex={0}
-            title="New app"
+            title={newDoor?.quietTip ? undefined : "New app"}
+            {...sidebarDoorProps(newDoor)}
             onClick={() => setComposing(true)}
             onKeyDown={(e) => {
+              newDoor?.onKeyDown?.(e);
               if (e.key === "Enter" || e.key === " ") {
                 e.preventDefault();
                 setComposing(true);
@@ -873,9 +885,11 @@ export default function CurrentAppsSection({ section = "projects" }: { section?:
             className="bookmark-row current-app-row current-app-new"
             role="button"
             tabIndex={0}
-            title="Open or create a canvas"
+            title={newDoor?.quietTip ? undefined : "Open or create a canvas"}
+            {...sidebarDoorProps(newDoor)}
             onClick={() => navigateUrl("/canvases")}
             onKeyDown={(e) => {
+              newDoor?.onKeyDown?.(e);
               if (e.key === "Enter" || e.key === " ") {
                 e.preventDefault();
                 navigateUrl("/canvases");
@@ -971,6 +985,53 @@ export default function CurrentAppsSection({ section = "projects" }: { section?:
   );
 }
 
+/** The New-app composer's two parts — the optional name field and the
+ *  composer — with the state between them, for the modal (`NewAppModal`) and
+ *  the sidebar's "+ New app" hover card (`NewAppInline`). */
+function useNewAppCompose(onCreated: () => void): { nameInput: React.ReactNode; composer: React.ReactNode } {
+  const [name, setName] = useState("");
+  const [nameNeeded, setNameNeeded] = useState(false);
+  const nameRef = useRef<HTMLInputElement>(null);
+  // Enter in the name field is Build: the composer fills this with its own
+  // submit, so a name typed after onNameNeeded resumes the create from the
+  // keyboard, as the ask row it replaces did.
+  const submitRef = useRef<(() => void) | null>(null);
+  return {
+    nameInput: (
+      <input
+        ref={nameRef}
+        className="current-apps-compose-name"
+        aria-label="App name (optional)"
+        aria-invalid={nameNeeded || undefined}
+        placeholder={nameNeeded ? "Type a name" : "Untitled (optional)"}
+        value={name}
+        spellCheck={false}
+        autoComplete="off"
+        onChange={(e) => {
+          setName(e.target.value);
+          setNameNeeded(false);
+        }}
+        onKeyDown={(e) => {
+          if (e.key !== "Enter") return;
+          e.preventDefault();
+          submitRef.current?.();
+        }}
+      />
+    ),
+    composer: (
+      <HeroComposer
+        onCreated={onCreated}
+        givenName={name}
+        submitRef={submitRef}
+        onNameNeeded={() => {
+          setNameNeeded(true);
+          requestAnimationFrame(() => nameRef.current?.focus());
+        }}
+      />
+    ),
+  };
+}
+
 /** The "New app" composer, in a modal. Opened by the "+ New app" row above
  *  and by the collapsed rail's "+" (GlobalSidebar) — the rail swaps this
  *  section out, so the modal cannot live only here. */
@@ -991,36 +1052,10 @@ export function NewAppModal({ onClose }: { onClose: () => void }) {
   // the dialog has one name input, not two. Typing clears the red. The
   // dialog's accessible name stays "New app" (`ariaLabel`), since an input
   // cannot be the heading it is labelled by.
-  const [name, setName] = useState("");
-  const [nameNeeded, setNameNeeded] = useState(false);
-  const nameRef = useRef<HTMLInputElement>(null);
-  // Enter in the name field is Build: the composer fills this with its own
-  // submit, so a name typed after onNameNeeded resumes the create from the
-  // keyboard, as the ask row it replaces did.
-  const submitRef = useRef<(() => void) | null>(null);
+  const { nameInput, composer } = useNewAppCompose(onClose);
   return (
     <Modal
-      title={
-        <input
-          ref={nameRef}
-          className="current-apps-compose-name"
-          aria-label="App name (optional)"
-          aria-invalid={nameNeeded || undefined}
-          placeholder={nameNeeded ? "Type a name" : "Untitled (optional)"}
-          value={name}
-          spellCheck={false}
-          autoComplete="off"
-          onChange={(e) => {
-            setName(e.target.value);
-            setNameNeeded(false);
-          }}
-          onKeyDown={(e) => {
-            if (e.key !== "Enter") return;
-            e.preventDefault();
-            submitRef.current?.();
-          }}
-        />
-      }
+      title={nameInput}
       ariaLabel="New app"
       onClose={onClose}
       width={640}
@@ -1030,15 +1065,20 @@ export function NewAppModal({ onClose }: { onClose: () => void }) {
       // button in it. Owner: "we should not be redesigning anything".
       plainBody
     >
-      <HeroComposer
-        onCreated={onClose}
-        givenName={name}
-        submitRef={submitRef}
-        onNameNeeded={() => {
-          setNameNeeded(true);
-          requestAnimationFrame(() => nameRef.current?.focus());
-        }}
-      />
+      {composer}
     </Modal>
+  );
+}
+
+/** The same composer with no dialog around it: the sidebar's "+ New app"
+ *  hover card (shell/left-rail LeftPeek; owner, 2026-11-27: "for + app only
+ *  show the modal type UI"). */
+export function NewAppInline({ onCreated }: { onCreated: () => void }) {
+  const { nameInput, composer } = useNewAppCompose(onCreated);
+  return (
+    <div className="current-apps-compose current-apps-compose-inline">
+      <div className="current-apps-compose-inline-name">{nameInput}</div>
+      {composer}
+    </div>
   );
 }

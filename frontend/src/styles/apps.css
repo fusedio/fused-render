@@ -500,3 +500,22 @@
   background: color-mix(in srgb, var(--error) 14%, transparent);
   color: var(--error);
 }
+
+/* A NARROW HUB (the sidebar's "+ New app" card, shell/left-rail: this page in
+   a frame ~360–420px wide, whose viewport the card is — and any window that
+   narrow): tighter gutters, the search across the row, one card per line. */
+@media (max-width: 520px) {
+  .apps-inner {
+    padding: 16px 12px 32px;
+  }
+  .apps-toolbar {
+    justify-content: flex-start;
+  }
+  .apps-search {
+    flex: 1 1 100%;
+    max-width: none;
+  }
+  .apps-cards {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}

@@ -477,6 +477,17 @@ const ENTRIES = [
     description: "Three rail additions: a file's other views (Code, Reader and so on) show as icons above Git, hover to preview, click to keep open; a button at the rail's top left widens it into a list with titles, and its inner edge drags to resize; a pinned rail window keeps its exact place and size while other chats open in a second window, up to four at once.",
     keywords: "rail extras mode view preview code reader door icon file git expand widen wide width resize titles drag pin pinned window float move four windows",
   },
+  // SIDEBAR PREVIEWS (shell/left-rail; owner, 2026-11-27): the collapsed
+  // left sidebar's icons get the Claude rail's hover card. A switch of its
+  // own, beside Rail extras.
+  {
+    id: "left-rail-peek",
+    group: "features",
+    section: "Other",
+    label: "Left sidebar preview",
+    description: "With the left sidebar collapsed, hovering one of its icons previews that page in a card beside it: Home, Search, AI Models, Community, your projects, canvases and favourites. A click still opens the page; a press inside the card keeps it open, and its pin holds it.",
+    keywords: "sidebar left rail collapsed preview hover card peek icon home search models community project canvas favourite pin",
+  },
   // EXPERTS (docs/experts.md): a kind of bot on the Bots page, and
   // the task tools and the breakout's "With". Off by default; off, nothing of
   // it exists.

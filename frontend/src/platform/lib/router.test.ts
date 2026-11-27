@@ -25,6 +25,7 @@ const {
   rootedFsPath,
   encodeFsPathSegments,
   urlForFsPath,
+  keepQueryEmbed,
 } = await import("./router");
 const { setResolvedSnapshot } = await import("./snapshot-param");
 const setSnapshotAppDir = (appDir: string | null) =>
@@ -719,5 +720,18 @@ describe("fs path <-> url codec", () => {
 
   test("a UNC path stays one segment", () => {
     expect(encodeFsPathSegments("\\\\server\\share\\f")).toBe("%5C%5Cserver%5Cshare%5Cf");
+  });
+});
+
+describe("keepQueryEmbed: a framed shell route keeps saying it is embedded", () => {
+  test("embedded: ?embed=1 rides along, once, the query and hash kept", () => {
+    expect(keepQueryEmbed("/marketplace", true)).toBe("/marketplace?embed=1");
+    expect(keepQueryEmbed("/marketplace?category=ai#top", true)).toBe("/marketplace?category=ai&embed=1#top");
+    expect(keepQueryEmbed("/ai-models/local?embed=1", true)).toBe("/ai-models/local?embed=1");
+  });
+  test("not embedded, or not a path on this server: unchanged", () => {
+    expect(keepQueryEmbed("/marketplace", false)).toBe("/marketplace");
+    expect(keepQueryEmbed("https://x.test/a", true)).toBe("https://x.test/a");
+    expect(keepQueryEmbed("//x.test/a", true)).toBe("//x.test/a");
   });
 });

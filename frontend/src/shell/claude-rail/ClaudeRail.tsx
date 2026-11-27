@@ -386,7 +386,7 @@ let pageRailPath = typeof location !== "undefined" ? location.pathname : "";
 const pinNoop = () => {};
 const pinNoRing = () => null;
 import { setRailResizing, useCardMove } from "./useCardMove";
-import { aPinWord, cardMode, doorSelector, inFullModal, inRailView, pinnedTaskLands, readAPin, ringClick, ringSelector, viewPress, type APin } from "./rail-pin-lib";
+import { RAIL_BRIDGE_SELECTOR, aPinWord, cardMode, doorSelector, inFullModal, inRailView, pinnedTaskLands, readAPin, ringClick, ringSelector, viewPress, type APin } from "./rail-pin-lib";
 import { PinAngle, RailPinButton, useTempOutside, type PressFlag } from "./RailPin";
 import {
   dismissFavHover,
@@ -1686,7 +1686,7 @@ export function ClaudeRail({
     const onDown = (e: PointerEvent) => {
       const t = e.target as Node | null;
       const el = t instanceof Element ? t : null;
-      if (el?.closest(".claude-rail-peek-bridge")) return;
+      if (el?.closest(RAIL_BRIDGE_SELECTOR)) return;
       // A held card is not closed by any press outside it (header).
       if (heldRef.current) return;
       if (pinned) {
@@ -1888,7 +1888,7 @@ export function ClaudeRail({
     const onDown = (e: PointerEvent) => {
       const t = e.target as Node | null;
       const el = t instanceof Element ? t : null;
-      if (el?.closest(".claude-rail-peek-bridge")) return;
+      if (el?.closest(RAIL_BRIDGE_SELECTOR)) return;
       if (botHeldRef.current) return;
       if (botPinned) {
         // With the pin, the rail and its windows are the view (the list

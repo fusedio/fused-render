@@ -159,6 +159,14 @@ export type PressWhere = "inside" | "own" | "view" | "outside";
 
 export const BRIDGE_SELECTOR = ".claude-rail-peek-bridge";
 
+/** THE LEFT SIDEBAR'S CARDS (shell/left-rail; owner, 2026-11-27) wear the rail
+ *  card's classes and `.is-left`: they are NOT this rail's view — a press in
+ *  one is outside for a temp Claude-rail card, as a press on the left sidebar
+ *  itself always was. */
+export const LEFT_CARD_SELECTOR = ":is(.claude-rail-peek, .claude-rail-peek-bridge).is-left";
+/** This rail's own bridges (never a left card's). */
+export const RAIL_BRIDGE_SELECTOR = ".claude-rail-peek-bridge:not(.is-left)";
+
 /** THE RAIL'S VIEW: the rail itself and every window off it — the fixed
  *  wrapper every card stands in (`.claude-rail-peek`: a task's, a
  *  favourite's, a bot's, Tasks / Bots / Git) and the + New task popover. */
@@ -167,6 +175,7 @@ export const RAIL_VIEW_SELECTORS: readonly string[] = [".claude-rail", ".claude-
 /** Is this element in the rail's view (`RAIL_VIEW_SELECTORS`)? */
 export function inRailView(el: PressTarget | null): boolean {
   if (!el) return false;
+  if (el.closest(LEFT_CARD_SELECTOR)) return false;
   for (const s of RAIL_VIEW_SELECTORS) if (el.closest(s)) return true;
   return false;
 }
@@ -196,6 +205,7 @@ export function pressVerdict(
   if (o.pressedInside) return "inside";
   if (!el) return "outside";
   for (const s of o.cardSelectors) if (el.closest(s)) return "inside";
+  if (el.closest(LEFT_CARD_SELECTOR)) return "outside";
   if (el.closest(BRIDGE_SELECTOR)) return "inside";
   for (const s of o.ownSelectors) if (el.closest(s)) return "own";
   return inRailView(el) ? "view" : "outside";

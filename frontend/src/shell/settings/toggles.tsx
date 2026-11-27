@@ -10,6 +10,7 @@ import {
   putCanvasesEmbedProxy,
   putCanvasesEnabled,
   putRailExtrasEnabled,
+  putLeftRailPeekEnabled,
   putGitAutoSyncEnabled,
   putLivePreviewsEnabled,
   putMonitorEnabled,
@@ -27,6 +28,7 @@ import {
 import { publishContribFlags } from "@platform/lib/contrib-flags";
 import { publishCanvasesEnabled } from "@apps/canvases/feature-flag";
 import { publishRailExtras } from "../claude-rail/rail-extras-flag";
+import { publishLeftRailPeek } from "../left-rail/left-rail-peek-flag";
 import { publishAppSharingEnabled } from "@platform/lib/share-app-flag";
 import { publishLivePreviewsEnabled } from "@platform/lib/live-previews-flag";
 import { publishMonitorEnabled } from "@platform/lib/monitor-flag";
@@ -294,6 +296,21 @@ export function RailExtrasControl({ prefs, onChange }: PrefControlProps) {
       checked={on}
       put={putRailExtrasEnabled}
       after={(next) => publishRailExtras(next.rail_extras)}
+      onChange={onChange}
+    />
+  );
+}
+
+// SIDEBAR PREVIEWS (owner, 2026-11-27): the collapsed left sidebar's hover
+// cards (shell/left-rail).
+export function LeftRailPeekControl({ prefs, onChange }: PrefControlProps) {
+  const on = prefs.left_rail_peek?.enabled === true;
+  return (
+    <PrefToggleRow
+      id="left-rail-peek"
+      checked={on}
+      put={putLeftRailPeekEnabled}
+      after={(next) => publishLeftRailPeek(next.left_rail_peek)}
       onChange={onChange}
     />
   );

@@ -3,7 +3,7 @@
 // usual wait.
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import { RAIL_COLD_OPEN_MS, RAIL_HOT_OPEN_MS } from "./rail-zone-lib";
-import { RAIL_ZONE_SELECTOR, inRailZone, installRailZone, railPace, railZoneForTests, resetRailZoneForTests, setRailZoneClockForTests } from "./rail-zone";
+import { RAIL_ZONE_SELECTOR, createRailZoneWatch, inRailZone, installRailZone, railPace, railZoneForTests, resetRailZoneForTests, setRailZoneClockForTests } from "./rail-zone";
 
 type Fn = (e: PointerEvent) => void;
 
@@ -122,5 +122,29 @@ describe("installRailZone", () => {
     expect(inRailZone(el(false))).toBe(false);
     expect(inRailZone(null)).toBe(false);
     expect(inRailZone({} as EventTarget)).toBe(false);
+  });
+});
+
+describe("createRailZoneWatch: a zone per rail (the left sidebar's own, shell/left-rail)", () => {
+  it("each watch reads its own selector and its own heat", () => {
+    const left = createRailZoneWatch("#left");
+    left.setClockForTests(() => now);
+    const doc = fakeDoc();
+    offs.push(installRailZone(doc), left.install(doc));
+    const leftEl = { closest: (s: string) => (s === "#left" ? {} : null) } as unknown as EventTarget;
+    // Into the left sidebar: its zone is entered, the Claude rail's is not.
+    doc.fire("pointerover", { target: leftEl });
+    expect(left.zoneForTests().isInside).toBe(true);
+    expect(railZoneForTests().isInside).toBe(false);
+    left.pace.shown();
+    expect(left.pace.openMs(150)).toBe(RAIL_HOT_OPEN_MS);
+    // The Claude rail stays cold: a left card heats nothing there.
+    doc.fire("pointerover", { target: el(true) });
+    expect(railPace.openMs(150)).toBe(RAIL_COLD_OPEN_MS);
+    left.resetForTests();
+  });
+  it("the Claude rail's zone is not the left sidebar's cards", () => {
+    expect(RAIL_ZONE_SELECTOR).toContain(".claude-rail-peek:not(.is-left)");
+    expect(RAIL_ZONE_SELECTOR).toContain(".claude-rail-peek-bridge:not(.is-left)");
   });
 });

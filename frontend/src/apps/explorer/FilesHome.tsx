@@ -443,9 +443,14 @@ export function FilesSearch({
   onActiveChange,
   onScanRequested,
   compact,
+  autoFocus = true,
 }: {
   home: string;
   initialQuery: string;
+  /** The caret starts in the box (the page's own posture). Off for a box in
+   *  a hover card (the shell's sidebar search preview), which must not take
+   *  the keyboard until the reader presses into it. */
+  autoFocus?: boolean;
   /** Shorter placeholder for a one-column widget. */
   compact?: boolean;
   /** The shared index poll (see FilesHome) — this box adds no poller of its own. */
@@ -911,7 +916,8 @@ export function FilesSearch({
   // keystroke aimed at nothing else focuses the box and lands in it.
   const inputEl = useRef<HTMLInputElement | null>(null);
   useEffect(() => {
-    inputEl.current?.focus();
+    if (autoFocus) inputEl.current?.focus();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {

@@ -18,7 +18,7 @@
 // here: on Discover it filters in place (URL kept with replaceState); on the
 // other pages Enter carries it to Discover.
 import { useEffect, useRef, useState } from "react";
-import { IS_EMBED, navigateUrl, pushHistory, replaceSearch } from "@platform/lib/router";
+import { IS_EMBED, keepQueryEmbed, navigateUrl, pushHistory, replaceSearch } from "@platform/lib/router";
 import { useNavEpoch } from "@platform/lib/hooks";
 import { MARKETPLACE_HOME, releaseWaiting, useCatalog } from "@platform/lib/marketplace";
 import { StoreHeader, type StoreTab } from "./StoreHeader";
@@ -75,7 +75,8 @@ function searchFor(category: string, q: string): string {
   const sort = new URLSearchParams(location.search).get("sort");
   if (sort) sp.set("sort", sort);
   const s = sp.toString();
-  return MARKETPLACE_HOME + (s ? "?" + s : "");
+  // A framed store (`?embed=1`, the sidebar's Community card) keeps saying so.
+  return keepQueryEmbed(MARKETPLACE_HOME + (s ? "?" + s : ""));
 }
 
 export function MarketplacePage({ fusedFile }: { fusedFile?: string } = {}) {

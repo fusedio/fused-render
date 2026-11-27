@@ -210,6 +210,27 @@ function mergeApple(
 export default function PlaygroundTab() {
   const [catalog, setCatalog] = useState<CatalogLoad>({ status: "loading" });
   const [actionError, setActionError] = useState<string | null>(null);
+  // A NARROW PAGE (ai-playground.css, max-width 760px — a small window, or
+  // the sidebar's AI Models hover card): the model list is a dropdown under
+  // one button that names the selected model, so the stage gets the page's
+  // whole height instead of half of it. Open or shut; a pick shuts it.
+  const [pickerOpen, setPickerOpen] = useState(false);
+  const pickRef = useRef<HTMLDivElement | null>(null);
+  useEffect(() => {
+    if (!pickerOpen) return;
+    const onDown = (e: PointerEvent) => {
+      if (!pickRef.current?.contains(e.target as Node)) setPickerOpen(false);
+    };
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") setPickerOpen(false);
+    };
+    document.addEventListener("pointerdown", onDown, true);
+    document.addEventListener("keydown", onKey);
+    return () => {
+      document.removeEventListener("pointerdown", onDown, true);
+      document.removeEventListener("keydown", onKey);
+    };
+  }, [pickerOpen]);
   // The copy-repo tick, briefly. Not per-model: switching models mid-tick just
   // lets the tick lapse on its own.
   const [copiedRepo, setCopiedRepo] = useState(false);
@@ -395,6 +416,7 @@ export default function PlaygroundTab() {
 
   const select = (id: string) => {
     setActionError(null);
+    setPickerOpen(false);
     // CHANGING CAPABILITY CLEARS THE SETTINGS. Every stage writes its tuning
     // into one query namespace and nulls only the keys it owns, so a merge kept
     // the abandoned stage's — which is not merely untidy: `prompt`, `steps`,
@@ -551,6 +573,28 @@ export default function PlaygroundTab() {
 
   return (
     <div className="pg-body">
+      {/* `display: contents` on a wide page (the list is the body's own left
+          column, as ever); on a narrow one the button's box, with the list
+          dropping from it. */}
+      <div ref={pickRef} className={"pg-pick" + (pickerOpen ? " is-open" : "")}>
+      <button
+        type="button"
+        className="pg-picker"
+        aria-haspopup="true"
+        aria-expanded={pickerOpen}
+        onClick={() => setPickerOpen((o) => !o)}
+      >
+        {selected && (
+          <span className="pg-picker-icon" aria-hidden="true">
+            {capabilityIcon(selected.row.capability)}
+          </span>
+        )}
+        <span className="pg-picker-name">{selected ? modelName(selected.model) : "Choose a model"}</span>
+        {selected && (
+          <span className="pg-picker-size">{modelSizeLabel(selected.model.size_gb, jobForSelected)}</span>
+        )}
+        <span className="pg-picker-caret" aria-hidden="true" />
+      </button>
       <aside className="pg-side" aria-label="Models to try">
         {sections.map(({ row, useCase }) => {
           // The catalog's curated half, in its own smallest-first order — but
@@ -780,6 +824,7 @@ export default function PlaygroundTab() {
           </details>
         )}
       </aside>
+      </div>
 
       <div className="pg-stage">
       {/* One frame owns the width story for everything on the stage: capped at

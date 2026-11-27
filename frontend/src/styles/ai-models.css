@@ -4581,3 +4581,37 @@ button.am-bench-model:focus-visible {
   padding-top: 10px;
   border-top: 1px solid var(--border);
 }
+
+/* A NARROW PAGE (the sidebar's AI Models card, shell/left-rail: the page in a
+   frame ~360–420px wide, whose viewport the card is — and any window that
+   narrow): the head wraps, the heading over the tab strip, and the strip
+   scrolls sideways rather than widening the page. */
+@media (max-width: 520px) {
+  .cc-page-head:has(.am-tabs) {
+    flex-wrap: wrap;
+    gap: 8px;
+  }
+  .cc-page-head:has(.am-tabs) > div:first-child {
+    min-width: 0;
+    max-width: 100%;
+  }
+  .am-head-actions {
+    flex: 1 1 100%;
+    min-width: 0;
+  }
+  .am-tabs {
+    max-width: 100%;
+    overflow-x: auto;
+    scrollbar-width: none;
+  }
+  .am-tabs::-webkit-scrollbar {
+    display: none;
+  }
+  .am-tab {
+    flex: 0 0 auto;
+    white-space: nowrap;
+  }
+  .cc-caption {
+    overflow-wrap: anywhere;
+  }
+}

@@ -10,17 +10,18 @@
 // Lives in the shell layer on purpose: it composes both platform chrome
 // (SidebarFrame) and explorer-owned sections (Bookmarks), which only
 // the shell is allowed to import together (scripts/check-boundaries.mjs).
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { Plug, Search, Sparkles, Store } from "lucide-react";
 import { ClaudeMark } from "@platform/ui/ClaudeMark";
 import { CanvasIcon } from "@platform/ui/NodeTypeIcons";
 import { SidebarFrame, NavItem } from "@platform/ui/sidebar/SidebarFrame";
 import { setSidebarSectionOpen } from "@platform/ui/sidebar/sidebar-accordion";
 import type { SidebarRailItem } from "@platform/ui/sidebar/SidebarFrame";
-import { botsAvailable, showLauncher, type Config } from "@platform/lib/api";
+import { SidebarDoorContext, type SidebarDoorLookup } from "@platform/ui/sidebar/sidebar-doors";
+import { botsAvailable, rawUrl, showLauncher, type Config } from "@platform/lib/api";
 import { useLauncherAvailable } from "@platform/lib/bots-available";
 import { useLauncherOpen } from "@shell/claude-rail/launcher-open";
-import { navigateUrl } from "@platform/lib/router";
+import { embedUrlForFsPath, navigateUrl } from "@platform/lib/router";
 import { isBrowserHandledClick } from "@platform/lib/appEntry";
 import { TOURS, startTour } from "@platform/lib/tours";
 import { ONBOARDING_PATH } from "@shell/onboarding/state";
@@ -32,6 +33,7 @@ import {
 } from "@platform/lib/hooks";
 import {
   armBookmark,
+  allBookmarks,
   loadBookmarks,
   pinnedBookmarks,
 } from "@platform/lib/bookmarks";
@@ -60,6 +62,16 @@ import UpdateCard, { updateCardActive } from "@shell/UpdateCard";
 import { useRestartFlow } from "@platform/lib/restart-store";
 import { useUpdateStatus } from "@platform/lib/update-status";
 import { useSidebarArrowNav } from "@shell/sidebarArrowNav";
+import { useLeftRailPeek } from "@shell/left-rail/left-rail-peek-flag";
+import {
+  leftDoorFor,
+  publishLeftItems,
+  setLeftPeekBlocked,
+  setLeftRail,
+  useLeftPeek,
+  type LeftPeekItem,
+} from "@shell/left-rail/left-peek-store";
+import { SEARCH_CARD_SRC, appShow, bookmarkFrameSrc, canvasShow, withQueryEmbed } from "@shell/left-rail/left-peek-lib";
 
 // House — the Home page (/home): search hero + the three recency strips.
 const HOME_ICON = (
@@ -443,9 +455,36 @@ function RailAppIcon({ app }: { app: CurrentApp }) {
 // there is nothing to carry (see `tabHref`).
 const AI_MODELS_HOME = tabHref("playground", "");
 
+// The "+" glyph of the New app and Canvas entries, in a card's head.
+const NEW_GLYPH = (
+  <span className="sidebar-rail-new-glyph" aria-hidden="true">
+    +
+  </span>
+);
+
+/** Publish the left cards' facts after each render (left-peek-store
+ *  `publishLeftItems`): with the switch on, collapsed or expanded; with the
+ *  switch off, nothing — once — so every card goes. */
+function useLeftRailPublish(items: LeftPeekItem[], on: boolean): void {
+  const wasOn = useRef(false);
+  useLayoutEffect(() => {
+    if (on) publishLeftItems(items);
+    else if (wasOn.current) publishLeftItems([]);
+    wasOn.current = on;
+  });
+}
+
+/** The expanded sidebar's rows' hooks (platform sidebar-doors): a row's key →
+ *  its card's door, as a row (left-peek-store `leftDoorFor`). A new function
+ *  each render, so the rows re-read the cards' state with the sidebar. */
+const rowDoorLookup = (): SidebarDoorLookup => (key) => leftDoorFor(key, "row");
+
 export default function GlobalSidebar({ config }: { config: Config }) {
   // See `tuckOnCollapse` below.
   const taskPeekOn = useTaskPeekEnabled();
+  // SIDEBAR PREVIEWS (shell/left-rail): read up here, the desk read below
+  // follows it.
+  const leftPeekOn = useLeftRailPeek();
   // Re-render on any nav/url change (active-item highlight).
   useUrlVersion();
   // Up/Down step through the Projects + Bookmarks rows (sidebarArrowNav.ts).
@@ -685,7 +724,10 @@ export default function GlobalSidebar({ config }: { config: Config }) {
   // (the feature on, nothing more).
   const { collapsed: sidebarCollapsed } = useSidebarState();
   useBookmarksVersion();
-  const desk = useDeskAppsOrdered(sidebarCollapsed);
+  // …and while Left sidebar preview is on, in both layouts: every project and
+  // canvas has its card, collapsed or expanded, so a held one survives the
+  // switch.
+  const desk = useDeskAppsOrdered(sidebarCollapsed || leftPeekOn);
   const extras = railExtras({
     desk,
     pins: pinnedBookmarks(loadBookmarks()),
@@ -697,9 +739,9 @@ export default function GlobalSidebar({ config }: { config: Config }) {
   // "my last clicked item in the collapsed sidebar should be remembered and
   // open that section"): the accordion's own write (sidebar-accordion), so
   // expanding shows the section the reader last went into from the rail.
-  const railGo = (section: "projects" | "canvases" | "favourites", href: string) => {
+  const railGo = (section: "projects" | "canvases" | "favourites", href: string): Promise<boolean> => {
     setSidebarSectionOpen(section, true);
-    navigateUrl(href);
+    return navigateUrl(href);
   };
   // The Projects section's "+ New app" row, on the rail: same composer, same
   // place (the head of the apps group).
@@ -730,7 +772,7 @@ export default function GlobalSidebar({ config }: { config: Config }) {
     href: appPageUrl(app.path),
     active: onAppPath === app.path,
     scrolls: true,
-    onClick: () => railGo("projects", appPageUrl(app.path)),
+    onClick: () => void railGo("projects", appPageUrl(app.path)),
   }));
   // A canvas door lights on its editor, the section's own rule; the href is
   // the row's (canvasRowHref), with the row's fallback for a clone of an
@@ -754,7 +796,7 @@ export default function GlobalSidebar({ config }: { config: Config }) {
           active: pathname === "/canvases",
           dividerBefore: true,
           scrolls: true,
-          onClick: () => railGo("canvases", "/canvases"),
+          onClick: () => void railGo("canvases", "/canvases"),
         },
       ]
     : [];
@@ -767,7 +809,7 @@ export default function GlobalSidebar({ config }: { config: Config }) {
       </span>
     ),
     href: canvasRowHref(app) ?? appPageUrl(app.path),
-    onClick: () => railGo("canvases", canvasRowHref(app) ?? appPageUrl(app.path)),
+    onClick: () => void railGo("canvases", canvasRowHref(app) ?? appPageUrl(app.path)),
     active:
       !!app.canvas &&
       !!onCanvas &&
@@ -793,11 +835,11 @@ export default function GlobalSidebar({ config }: { config: Config }) {
     // Arm it, as the section's own click does (Update-bookmark tracking).
     onClick: () => {
       armBookmark(b.id, b.url);
-      railGo("favourites", b.url);
+      void railGo("favourites", b.url);
     },
   }));
 
-  const rail: SidebarRailItem[] = [
+  const railItems: SidebarRailItem[] = [
     // Same gate and same order as the expanded rows below.
     { key: "home", label: "Home", icon: HOME_ICON, href: "/home", active: homeActive },
     ...(searchAvailable
@@ -861,6 +903,88 @@ export default function GlobalSidebar({ config }: { config: Config }) {
     },
   ];
 
+  // SIDEBAR PREVIEWS (shell/left-rail; `left_rail_peek_enabled`, default
+  // off): every entry below gets a hover card — the collapsed rail's icons
+  // and the expanded sidebar's rows alike, one card per key — what it shows,
+  // and its own click for the card's Open. Off, nothing is published and
+  // every entry is exactly what it was. The setup ring and Settings have none
+  // (their tooltip stays).
+  const leftItems: LeftPeekItem[] = [];
+  if (leftPeekOn) {
+    const goTo = (href: string) => () => navigateUrl(href);
+    leftItems.push({ key: "home", title: "Home", icon: HOME_ICON, show: { kind: "frame", src: embedUrlForFsPath(config.home, "?_side=off") }, onOpen: goTo("/home") });
+    if (searchAvailable) leftItems.push({ key: "search", title: "Search", icon: SEARCH_ICON, show: { kind: "search", src: SEARCH_CARD_SRC }, onOpen: openSearch });
+    leftItems.push({ key: "ai-models", title: "AI Models", icon: AI_MODELS_ICON, show: { kind: "frame", src: withQueryEmbed(AI_MODELS_HOME) }, onOpen: goTo(AI_MODELS_HOME) });
+    leftItems.push({ key: "marketplace", title: "Community", icon: MARKETPLACE_ICON, show: { kind: "frame", src: withQueryEmbed(marketplaceHref) }, onOpen: goTo(marketplaceHref) });
+    // The "+" rows: the page each one leads to — their own click is unchanged.
+    leftItems.push({
+      key: "new-app",
+      title: "New app",
+      icon: NEW_GLYPH,
+      show: { kind: "compose" },
+      onOpen: () => {
+        setSidebarSectionOpen("projects", true);
+        setRailComposing(true);
+      },
+    });
+    if (canvasesInNav)
+      leftItems.push({
+        key: "new-canvas",
+        title: "Canvases",
+        icon: NEW_GLYPH,
+        show: { kind: "frame", src: withQueryEmbed("/canvases") },
+        onOpen: () => railGo("canvases", "/canvases"),
+      });
+    // Every project and canvas on the desk (the rail draws the first seven;
+    // the expanded sections every one), and every favourite — pinned or not.
+    for (const app of desk.filter((a) => !a.canvas))
+      leftItems.push({
+        key: "app:" + app.path,
+        title: app.name,
+        icon: <RailAppIcon app={app} />,
+        show: appShow({ path: app.path, entry: app.entry, rawUrl, embedUrl: embedUrlForFsPath }),
+        onOpen: () => railGo("projects", appPageUrl(app.path)),
+      });
+    for (const app of canvasesInNav ? desk.filter((a) => a.canvas) : []) {
+      const href = canvasRowHref(app) ?? appPageUrl(app.path);
+      leftItems.push({
+        key: "canvas:" + app.path,
+        title: app.name,
+        icon: <CanvasGlyph size={16} />,
+        show: canvasShow({ path: app.path, embedUrl: embedUrlForFsPath }),
+        onOpen: () => railGo("canvases", href),
+      });
+    }
+    for (const b of allBookmarks()) {
+      const src = bookmarkFrameSrc(b.url);
+      if (src)
+        leftItems.push({
+          key: "pin:" + b.id,
+          title: b.name,
+          icon: <span className={"sidebar-rail-bm-glyph" + (b.icon ? " custom-icon" : "")}>{b.icon ?? "★"}</span>,
+          show: { kind: "frame", src },
+          onOpen: () => {
+            armBookmark(b.id, b.url);
+            return railGo("favourites", b.url);
+          },
+        });
+    }
+  }
+  // Published with the switch on; off, the empty list puts every card down.
+  useLeftRailPublish(leftItems, leftPeekOn);
+  // The Settings menu open: no card over it, and a preview goes.
+  useEffect(() => {
+    if (leftPeekOn) setLeftPeekBlocked(prefsPos !== null);
+  }, [leftPeekOn, prefsPos]);
+  // Re-read the cards' state (ready, up) for the icons' attributes.
+  useLeftPeek();
+  const rail: SidebarRailItem[] = leftPeekOn
+    ? railItems.map((item) => {
+        const door = leftDoorFor(item.key, "rail");
+        return door ? { ...item, door } : item;
+      })
+    : railItems;
+
   return (
     <>
       {railComposing && <NewAppModal onClose={() => setRailComposing(false)} />}
@@ -868,14 +992,16 @@ export default function GlobalSidebar({ config }: { config: Config }) {
           panel on the reader's behalf), so it rides that feature's flag —
           shell/task-peek-flag.ts. Off, the collapse is the one this sidebar has
           always had. */}
+      <SidebarDoorContext.Provider value={leftPeekOn ? rowDoorLookup() : null}>
       <SidebarFrame
         title="Render"
         homeHref={frontDoor}
         rail={rail}
         tuckOnCollapse={taskPeekOn}
+        onRailEl={leftPeekOn ? setLeftRail : undefined}
       >
         <div className="sidebar-section sidebar-group">
-          <NavItem href="/home" id="home-link" label="Home" icon={HOME_ICON} active={homeActive} />
+          <NavItem href="/home" id="home-link" label="Home" icon={HOME_ICON} active={homeActive} doorKey="home" />
           {searchAvailable && (
             <NavItem
               id="search-link"
@@ -883,6 +1009,7 @@ export default function GlobalSidebar({ config }: { config: Config }) {
               icon={SEARCH_ICON}
               active={launcher.open}
               onClick={openSearch}
+              doorKey="search"
             />
           )}
           {/* No Canvases row (owner, 2026-10-20): the Canvases section below
@@ -894,6 +1021,7 @@ export default function GlobalSidebar({ config }: { config: Config }) {
             icon={AI_MODELS_ICON}
             active={aiModelsActive}
             extra={residentDot}
+            doorKey="ai-models"
           />
           <NavItem
             href={marketplaceHref}
@@ -903,6 +1031,7 @@ export default function GlobalSidebar({ config }: { config: Config }) {
             active={marketplaceActive}
             extra={marketplaceDot}
             title={marketplaceTip || undefined}
+            doorKey="marketplace"
             trailing={
               // The updates count, in the chip the Tasks and Bots rows wear
               // for theirs.
@@ -948,6 +1077,7 @@ export default function GlobalSidebar({ config }: { config: Config }) {
           />
         </div>
       </SidebarFrame>
+      </SidebarDoorContext.Provider>
       {prefsPos && (
         <PreferencesPopover
           pos={prefsPos}
