@@ -523,9 +523,9 @@
   function px(n) { return n + "px"; }
 
   // ---- shell /view/ URL codec + navigation (mirrors router.ts) -----------
-  // A node's file opens in place, like a link in a note: pushState +
-  // "fused:navigate" on the top window, in the prefix this session is in
-  // (SPEC §28 CV-6). Cmd/ctrl/shift/middle click keep the browser's new tab.
+  // Clicking a node opens its file in place, like a link in a note:
+  // pushState + "fused:navigate" on the top window, in the prefix this
+  // session is in (SPEC §28 CV-6).
   function shellPrefix() {
     try {
       var p = window.top.location.pathname;
@@ -891,7 +891,7 @@
       }
     }
     node.appendChild(frame);
-    node.addEventListener("click", function () { select(node, "node", n); });
+    node.addEventListener("click", function (e) { openNode(e, node, n); });
     return node;
   }
 
@@ -1195,12 +1195,31 @@
     if (kind === "node") showNode(n); else showFolder(n);
   }
 
+  // Clicking a node opens its source file in place (canvas/node.py,
+  // node.json, node.md…); cmd/ctrl/shift/middle click opens it in a new tab.
+  // A link inside a note stays the link's; a node with no file next to the
+  // toml shows the detail panel instead.
+  function nodeFileUrl(n) {
+    var exts = siblingExts(n.udfName);
+    if (!n.udfName || !exts.length) return null;
+    var ext = exts.indexOf(KIND_EXT[n.kind]) >= 0 ? KIND_EXT[n.kind] : exts[0];
+    return urlForFsPath(fileDir.replace(/\/$/, "") + "/" + n.udfName + ext);
+  }
+  function openNode(e, elm, n) {
+    if (dragMoved || ghostMode) return;
+    if (e.target.closest && e.target.closest("a[href]")) return;
+    var url = nodeFileUrl(n);
+    if (!url) { select(elm, "node", n); return; }
+    if (e.metaKey || e.ctrlKey || e.shiftKey) { window.open(url, "_blank", "noopener"); return; }
+    navigateShell(url);
+  }
+
   function showNode(n) {
     var exts = siblingExts(n.udfName);
     var files = exts.map(function (ext) {
       var abs = fileDir.replace(/\/$/, "") + "/" + n.udfName + ext;
-      return '<a href="' + esc(urlForFsPath(abs)) + '" target="_blank" rel="noopener"'
-        + ' title="Open ' + esc(n.udfName + ext) + '">' + esc(n.udfName + ext) + "</a>";
+      return '<a href="' + esc(urlForFsPath(abs)) + '" target="_blank" rel="noopener">'
+        + esc(n.udfName + ext) + "</a>";
     }).join("");
     var html = '<div class="p-head"><span class="p-title">' + esc(n.title || n.udfName || "node")
       + '</span><span class="p-kind">' + esc(KIND_LABEL[n.kind] || "UDF") + '</span>'
@@ -1233,13 +1252,6 @@
     panel = el("div", "panel");
     panel.innerHTML = html;
     panel.querySelector(".p-close").addEventListener("click", clearPanel);
-    panel.querySelectorAll(".p-files a").forEach(function (a) {
-      a.addEventListener("click", function (e) {
-        if (e.button !== 0 || e.metaKey || e.ctrlKey || e.shiftKey || e.altKey) return;
-        e.preventDefault();
-        navigateShell(a.getAttribute("href"));
-      });
-    });
     stage.appendChild(panel);
   }
 

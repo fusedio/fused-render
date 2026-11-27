@@ -2333,12 +2333,14 @@ offer it — a plain `.toml` never shows the mode at all.
   camera — so refresh/share restores the exact camera. Params are strings
   (`set` throws otherwise); parsed at the boundary. The template's own writes
   are echo-guarded in `onChange`; a `_file` change reloads.
-- **CV-6** **Detail panel.** Clicking a node selects it and opens a footer
-  panel: title, kind, udfName, description, size, position, its folder, and
-  sibling files as links to `/view/<abs sibling path>`: a plain click opens
-  the file in place (pushState + `fused:navigate` on the top window, in the
-  session's `/explorer/view/` or `/explorer/embed/` prefix, like a note link);
-  cmd/ctrl/shift/middle click keep the browser's new tab. Clicking a folder or its name shows its name,
+- **CV-6** **Clicking a node opens its file.** A plain click on a node opens
+  its source file next to the toml (`<udfName>.py` / `.json` / `.html` /
+  `.md`, the kind's own first) in place: pushState + `fused:navigate` on the
+  top window, in the session's `/explorer/view/` or `/explorer/embed/`
+  prefix, like a note link. Cmd/ctrl/shift click opens it in a new tab; a
+  link inside a note stays the link's. A node with no file next to the toml
+  selects it and opens the detail panel (title, kind, udfName, description,
+  size, position, its folder). Clicking a folder or its name shows its name,
   size and child list; clicking empty space clears.
 - **CV-8** **A picture of the layout, for an agent (D1512).** An agent that
   has added, moved or resized nodes, or re-arranged folders, looks at the
