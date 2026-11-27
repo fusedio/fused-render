@@ -188,10 +188,11 @@ describe("leftFrameLook: what a card shows while its frame loads", () => {
     expect(look(slow, { loaded: "1#0#a" })).toEqual({ ready: true, spinner: true, still: false });
     expect(look(slow, { loaded: "1#0#a", painted: "1#0#a" })).toEqual({ ready: true, spinner: false, still: false });
   });
-  it("a project's still: alone while a preview, then under its live page until that page has drawn", () => {
+  it("a project's still: alone while a preview, then under its live page, which fades in over it once drawn", () => {
     expect(look(app, { stillOk: true, frameKey: null })).toEqual({ ready: true, spinner: false, still: true });
     expect(look(app, { stillOk: true, loaded: "1#0#a" })).toEqual({ ready: false, spinner: false, still: true });
-    expect(look(app, { stillOk: true, loaded: "1#0#a", painted: "1#0#a" })).toEqual({ ready: true, spinner: false, still: false });
+    // The still stays through (and after) the fade: no ground shows between.
+    expect(look(app, { stillOk: true, loaded: "1#0#a", painted: "1#0#a" })).toEqual({ ready: true, spinner: false, still: true });
   });
   it("a project with no still (or a failed one): its picture fades in on load, no spinner", () => {
     expect(look(app, { stillOk: false, loaded: "1#0#a" })).toEqual({ ready: true, spinner: false, still: false });

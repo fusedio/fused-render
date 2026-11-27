@@ -222,8 +222,10 @@ export function leftPressVerdict(
  *    - a `spin` frame (AI Models, the Community): the spinner over the frame
  *      until the framed page has drawn (`framePainted`), as before;
  *    - a PROJECT with a still: its `preview.png` stays up under the live page
- *      (pressed, or held) until that page has drawn, then the page fades in
- *      over it — never a blank card, never a spinner.
+ *      (pressed, or held); the page fades in over it once drawn, and the
+ *      still stays under it (the opaque page covers it) — dropping it as the
+ *      fade starts would show the card's ground for the fade (Bugbot,
+ *      CodeRabbit on #2503). Never a blank card, never a spinner.
  *  `frameKey` names the frame now drawn (null: none); `loaded` / `painted`
  *  the frame each was last said of. `ready` is the body's `is-loaded`. */
 export function leftFrameLook(o: {
@@ -236,7 +238,7 @@ export function leftFrameLook(o: {
   const hasStill = o.show?.kind === "app" && o.stillOk;
   if (o.frameKey === null) return { ready: hasStill, spinner: false, still: hasStill };
   const drawn = o.painted === o.frameKey;
-  if (hasStill) return { ready: drawn, spinner: false, still: !drawn };
+  if (hasStill) return { ready: drawn, spinner: false, still: true };
   const spin = o.show?.kind === "frame" && o.show.spin === true;
   return { ready: o.loaded === o.frameKey, spinner: spin && !drawn, still: false };
 }

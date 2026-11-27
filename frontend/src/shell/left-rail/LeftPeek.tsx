@@ -14,8 +14,8 @@
 // result, a folder in the listing — and ← Back walks the card's trail
 // (left-peek-lib `HomeStep`); only Open takes the page there: the view the
 // card is on, or Home with the query while the results show.
-// No spinner but on the slow pages, and a project's still stays up until its
-// live page has drawn (left-peek-lib `leftFrameLook`).
+// No spinner but on the slow pages, and a project's still stays under its live
+// page, which fades in over it once drawn (left-peek-lib `leftFrameLook`).
 //
 // A PREVIEW'S FRAME IS SHIELDED (`.claude-left-peek:not(.is-live)`, claude-
 // rail.css): it takes no pointer, so the pointer over it is over the card
@@ -184,7 +184,7 @@ function LeftCard({ itemKey, on }: { itemKey: string; on: boolean }) {
   });
 
   // A PROJECT'S STILL (left-peek-lib `frameSrcOf`): drawn while a preview,
-  // and under its live page until that page has drawn (`leftFrameLook`);
+  // and under its live page, which fades in over it once drawn (`leftFrameLook`);
   // one that does not load gives way to the live page.
   const show = it?.show ?? null;
   const still = show?.kind === "app" ? show.still : null;
