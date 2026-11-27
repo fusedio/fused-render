@@ -1,7 +1,8 @@
 // SIDEBAR PREVIEWS, the parts that need no DOM (owner, 2026-11-27; the story
 // is left-peek-store's header): what each collapsed-sidebar icon's card shows,
 // the frame addresses, and what a press means to a left card.
-import { EMBED_PARAM, EMBED_PREFIX, VIEW_PREFIX, withPreviewFlag } from "@platform/lib/router";
+import { EMBED_PARAM, EMBED_PREFIX, PREVIEW_PARAM, VIEW_PREFIX, withPreviewFlag } from "@platform/lib/router";
+import { NO_FOCUS_PARAM } from "@platform/lib/frame-focus";
 import type { PressTarget, PressWhere } from "@shell/claude-rail/rail-pin-lib";
 
 /** WHAT A LEFT CARD SHOWS:
@@ -88,6 +89,85 @@ export function frameSrcOf(show: LeftPeekShow, o: { pinned: boolean; stillFailed
   if (show.kind !== "app") return show.src;
   if (o.pinned) return show.live;
   return o.stillFailed ? show.picture : null;
+}
+
+/** THE HOME CARD'S TRAIL (owner, 2026-11-27: "we open everything in card
+ *  unless user clicks open in top right, when it does we open whatever view
+ *  we are in"): what the card has shown, oldest first — a framed page
+ *  (`page`: the address the frame is on, as the frame sees it) or the search
+ *  results (`results`). The last step is what shows; Back drops it. The
+ *  first step (the ~ listing) never goes. */
+export type HomeStep = { kind: "results" } | { kind: "page"; url: string };
+
+/** A query became live: its results show on top (once). */
+export function trailResults(trail: readonly HomeStep[]): HomeStep[] {
+  return trail[trail.length - 1]?.kind === "results" ? [...trail] : [...trail, { kind: "results" }];
+}
+
+/** The query emptied (Esc, Clear, the box wiped): its results go — on top,
+ *  or under a page they led to (Back never lands on empty results). */
+export function trailNoResults(trail: readonly HomeStep[]): HomeStep[] {
+  return trail.filter((step, i) => i === 0 || step.kind !== "results");
+}
+
+/** A page opened in the card (a result picked): it shows on top. */
+export function trailOpen(trail: readonly HomeStep[], url: string): HomeStep[] {
+  return [...trail, { kind: "page", url }];
+}
+
+function pathOf(url: string): string {
+  const cut = url.search(/[?#]/);
+  return cut < 0 ? url : url.slice(0, cut);
+}
+
+/** THE FRAME WENT SOMEWHERE ON ITS OWN (a folder opened in the listing): a
+ *  new path is a new step; the same path with another query (a view
+ *  param, a selection) only updates the step it is. Nothing while the
+ *  results are on top — the frame under them is not what shows. */
+export function trailFrameAt(trail: readonly HomeStep[], url: string): HomeStep[] {
+  const top = trail[trail.length - 1];
+  if (!top || top.kind !== "page") return [...trail];
+  if (top.url === url) return [...trail];
+  if (pathOf(top.url) === pathOf(url)) return [...trail.slice(0, -1), { kind: "page", url }];
+  return [...trail, { kind: "page", url }];
+}
+
+/** Back: the step on top goes (never the first). */
+export function trailBack(trail: readonly HomeStep[]): HomeStep[] {
+  return trail.length > 1 ? trail.slice(0, -1) : [...trail];
+}
+
+/** The page the frame should be on: the last page step. */
+export function trailPage(trail: readonly HomeStep[]): string | null {
+  for (let i = trail.length - 1; i >= 0; i--) {
+    const s = trail[i];
+    if (s.kind === "page") return s.url;
+  }
+  return null;
+}
+
+/** A FRAMED PAGE AS THE TOP PAGE'S ADDRESS (the card's Open): the embed
+ *  prefix back to the view prefix, the card's own stamps dropped (`embed`,
+ *  `_nofocus`, `_preview`, and the shut side pane `_side=off`, so the page
+ *  keeps its own pane). */
+export function cardPageUrl(url: string): string {
+  const hashAt = url.indexOf("#");
+  const base = hashAt < 0 ? url : url.slice(0, hashAt);
+  const hash = hashAt < 0 ? "" : url.slice(hashAt);
+  const qAt = base.indexOf("?");
+  const path = qAt < 0 ? base : base.slice(0, qAt);
+  const q = new URLSearchParams(qAt < 0 ? "" : base.slice(qAt + 1));
+  for (const k of [EMBED_PARAM, NO_FOCUS_PARAM, PREVIEW_PARAM]) q.delete(k);
+  if (q.get("_side") === "off") q.delete("_side");
+  const top = path.startsWith(EMBED_PREFIX) ? VIEW_PREFIX + path.slice(EMBED_PREFIX.length) : path;
+  const qs = q.toString();
+  return top + (qs ? "?" + qs : "") + hash;
+}
+
+/** The Home page with a search typed (the card's Open while its results
+ *  show). */
+export function homeSearchUrl(query: string): string {
+  return query.trim() ? "/home?q=" + encodeURIComponent(query) : "/home";
 }
 
 /** The attribute every left door carries: its item's key. */

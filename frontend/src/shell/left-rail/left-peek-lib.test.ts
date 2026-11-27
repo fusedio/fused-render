@@ -2,6 +2,15 @@
 import { describe, expect, it } from "bun:test";
 import {
   appShow,
+  cardPageUrl,
+  homeSearchUrl,
+  trailBack,
+  trailFrameAt,
+  trailNoResults,
+  trailOpen,
+  trailPage,
+  trailResults,
+  type HomeStep,
   bookmarkFrameSrc,
   canvasShow,
   framePainted,
@@ -69,6 +78,45 @@ describe("frame addresses", () => {
     expect(app.live).not.toContain("_preview");
     expect(app.live).not.toContain("_nofocus");
     expect(frameSrcOf({ kind: "frame", src: "/x" }, { pinned: false, stillFailed: false })).toBe("/x");
+  });
+});
+
+describe("the Home card's trail", () => {
+  const home: HomeStep[] = [{ kind: "page", url: "/explorer/embed/Users/me?_side=off" }];
+  it("a query puts its results on top once; emptying it takes them away, wherever they are", () => {
+    const r = trailResults(home);
+    expect(r).toEqual([...home, { kind: "results" }]);
+    expect(trailResults(r)).toEqual(r);
+    expect(trailNoResults(r)).toEqual(home);
+    expect(trailNoResults(home)).toEqual(home);
+    // Under a page the results led to, too: Back never lands on empty results.
+    const under = trailOpen(r, "/explorer/embed/Users/me/a.pdf");
+    expect(trailNoResults(under)).toEqual([...home, { kind: "page", url: "/explorer/embed/Users/me/a.pdf" }]);
+  });
+  it("a result opens on top; Back walks to the results, then the listing, never past it", () => {
+    const t = trailOpen(trailResults(home), "/explorer/embed/Users/me/a.pdf?_side=off");
+    expect(trailPage(t)).toBe("/explorer/embed/Users/me/a.pdf?_side=off");
+    const r = trailBack(t);
+    expect(r[r.length - 1]).toEqual({ kind: "results" });
+    expect(trailPage(r)).toBe(home[0].kind === "page" ? home[0].url : "");
+    expect(trailBack(trailBack(r))).toEqual(home);
+  });
+  it("the frame's own hops: a new path is a step, the same path with a new query updates it, none under the results", () => {
+    const a = trailFrameAt(home, "/explorer/embed/Users/me/Downloads?_side=off");
+    expect(a.length).toBe(2);
+    const b = trailFrameAt(a, "/explorer/embed/Users/me/Downloads?_side=off&sel=x");
+    expect(b.length).toBe(2);
+    expect(trailPage(b)).toBe("/explorer/embed/Users/me/Downloads?_side=off&sel=x");
+    expect(trailFrameAt(b, "/explorer/embed/Users/me/Downloads?_side=off&sel=x")).toEqual(b);
+    const r = trailResults(b);
+    expect(trailFrameAt(r, "/explorer/embed/elsewhere")).toEqual(r);
+  });
+  it("Open: the framed page as the top page's address; the results as Home with the query", () => {
+    expect(cardPageUrl("/explorer/embed/Users/me?_side=off")).toBe("/explorer/view/Users/me");
+    expect(cardPageUrl("/explorer/embed/Users/me/a.html?_mode=code&embed=1&_nofocus=1&_preview=1#L3")).toBe("/explorer/view/Users/me/a.html?_mode=code#L3");
+    expect(cardPageUrl("/explorer/embed/x?_side=claude")).toBe("/explorer/view/x?_side=claude");
+    expect(homeSearchUrl("visa photo")).toBe("/home?q=visa%20photo");
+    expect(homeSearchUrl("  ")).toBe("/home");
   });
 });
 

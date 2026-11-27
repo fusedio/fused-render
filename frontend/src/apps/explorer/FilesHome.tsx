@@ -446,6 +446,8 @@ export function FilesSearch({
   compact,
   autoFocus = true,
   resultsHost,
+  onGo,
+  clearKey,
 }: {
   home: string;
   initialQuery: string;
@@ -456,6 +458,13 @@ export function FilesSearch({
    *  goes to the box", no `?q=` on the page's address, no "All files" (the
    *  card's Open is that). */
   resultsHost?: HTMLElement | null;
+  /** Where a picked row goes (Enter, the open row, the keyboard's pick) —
+   *  the page by default (`navigate`); the Home card opens it in the card.
+   *  Rows that are links (`a[href]`) are the caller's to catch. */
+  onGo?: (fsPath: string, opts?: { isDir?: boolean }) => void;
+  /** A new value empties the box, as its Clear does (the Home card's Back
+   *  out of the results). */
+  clearKey?: number;
   /** The caret starts in the box (the page's own posture). Off for a box in
    *  a hover card (the shell's sidebar search preview), which must not take
    *  the keyboard until the reader presses into it. */
@@ -475,6 +484,7 @@ export function FilesSearch({
   onScanRequested: () => void;
 }) {
   const inCard = resultsHost !== undefined;
+  const go = (fsPath: string, opts?: { isDir?: boolean }) => (onGo ? onGo(fsPath, opts) : navigate(fsPath, opts));
   const [query, setQuery] = useState(initialQuery);
   const [ai, setAi] = useState<AiPhase>(AI_OFF);
   const [picked, setPicked] = useState<RowId | null>(null);
@@ -622,7 +632,7 @@ export function FilesSearch({
     const target = awaitingCommit.current;
     awaitingCommit.current = null;
     if (target !== address) return; // superseded by a newer keystroke
-    if (addr.status === "exists") navigate(addr.path, { isDir: addr.is_dir });
+    if (addr.status === "exists") go(addr.path, { isDir: addr.is_dir });
     // "missing" resolves to nothing: Enter must not navigate to a path that
     // does not exist.
   }, [addr, address]);
@@ -1000,6 +1010,14 @@ export function FilesSearch({
     setPicked(null);
     syncQueryParam(null);
   };
+  const clearNow = useRef(clear);
+  clearNow.current = clear;
+  const clearSeen = useRef(clearKey);
+  useEffect(() => {
+    if (clearSeen.current === clearKey) return;
+    clearSeen.current = clearKey;
+    clearNow.current();
+  }, [clearKey]);
 
   const edit = (value: string) => {
     setQuery(value);
@@ -1247,7 +1265,7 @@ export function FilesSearch({
 
   const activateRow = (row: number) => {
     if (isOpenRow(row, rowModel)) {
-      if (addr.status === "exists") navigate(addr.path, { isDir: addr.is_dir });
+      if (addr.status === "exists") go(addr.path, { isDir: addr.is_dir });
       return;
     }
     if (isAiRow(row, rowModel)) {
@@ -1257,10 +1275,10 @@ export function FilesSearch({
     const fi = row - fileOffset;
     if (fi >= hits.length) {
       const hit = remote.shown[fi - hits.length];
-      if (hit) navigate(hit.url, { isDir: hit.is_dir });
+      if (hit) go(hit.url, { isDir: hit.is_dir });
       return;
     }
-    navigate(hits[fi].path, { isDir: hits[fi].is_dir });
+    go(hits[fi].path, { isDir: hits[fi].is_dir });
   };
 
   // Enter with no row chosen: a resolved address (the open row) or the top
@@ -1273,7 +1291,7 @@ export function FilesSearch({
     // bucket rows are never the default target. A picked bucket row (arrowed
     // to) falls through and opens that row.
     if (remoteAddr !== null && highlight === null) {
-      navigate(remoteAddr);
+      go(remoteAddr);
       return;
     }
     if (address !== null && (addr.status === "idle" || addr.status === "checking")) {
@@ -1504,7 +1522,7 @@ export function FilesSearch({
                   isDir={addr.is_dir}
                   active={current === 0}
                   id="fh-row-0"
-                  onOpen={() => navigate(addr.path, { isDir: addr.is_dir })}
+                  onOpen={() => go(addr.path, { isDir: addr.is_dir })}
                 />
               )}
               {hits.map((hit, i) => {

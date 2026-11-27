@@ -10,7 +10,10 @@
 // project's `preview.png` while a preview (its live page once pinned, or when
 // it has no still). THE HOME CARD has a file search in its head (`searchHome`,
 // Home's own FilesSearch): typing lays the results over the listing, Escape
-// (or emptying the box) takes them away, a result opens ON THE PAGE.
+// (or emptying the box) takes them away. Everything opens IN THE CARD — a
+// result, a folder in the listing — and ← Back walks the card's trail
+// (left-peek-lib `HomeStep`); only Open takes the page there: the view the
+// card is on, or Home with the query while the results show.
 //
 // A PREVIEW'S FRAME IS SHIELDED (`.claude-left-peek:not(.is-live)`, claude-
 // rail.css): it takes no pointer, so the pointer over it is over the card
@@ -20,14 +23,30 @@
 // it back (peek-frame `reclaimFocus`).
 //
 // THE HEAD: the pin (RailPinButton, the Git and mode cards'), the icon and
-// title, the Home card's search box, and Open — the entry's Open (Home's is
-// the file explorer at ~), then the card goes.
-import { useCallback, useEffect, useRef, useState } from "react";
-import { NAV_EVENT } from "@platform/lib/router";
+// title, the Home card's ← Back and search box, and Open — the entry's Open
+// (the Home card's: what it shows), then the card goes.
+import { useCallback, useEffect, useRef, useState, type MutableRefObject } from "react";
+import { ArrowLeft } from "lucide-react";
+import { NAV_EVENT, navigateUrl, urlForFsPath } from "@platform/lib/router";
 import { DoorCard } from "@shell/claude-rail/DoorCard";
 import { RailPinButton, useTempOutside } from "@shell/claude-rail/RailPin";
 import { FRAME_LINGER_MS, PeekFrame, usePeekFrameRules } from "@shell/claude-rail/peek-frame";
-import { framePainted, frameSrcOf, leftDoorSelector, leftPressVerdict } from "./left-peek-lib";
+import {
+  bookmarkFrameSrc,
+  cardPageUrl,
+  framePainted,
+  frameSrcOf,
+  homeSearchUrl,
+  leftDoorSelector,
+  leftPressVerdict,
+  trailBack,
+  trailFrameAt,
+  trailNoResults,
+  trailOpen,
+  trailPage,
+  trailResults,
+  type HomeStep,
+} from "./left-peek-lib";
 import { FilesSearch } from "@apps/explorer/FilesHome";
 import { useIndexStatus } from "@platform/lib/index-status";
 import { NewAppInline } from "@shell/CurrentAppsSection";
@@ -160,7 +179,30 @@ function LeftCard({ itemKey, on }: { itemKey: string; on: boolean }) {
   const still = show?.kind === "app" ? show.still : null;
   const [stillFailed, setStillFailed] = useState<string | null>(null);
   const failed = still !== null && stillFailed === still;
-  const src = show ? frameSrcOf(show, { pinned, stillFailed: failed }) : null;
+  // THE HOME CARD'S TRAIL (header; `searchHome`): its steps, its frame's
+  // address (changed only to show another step — the frame's own hops are
+  // its own), and where the frame says it is.
+  const searchHome = show?.kind === "frame" ? (show.searchHome ?? null) : null;
+  const homeSrc = searchHome !== null && show?.kind === "frame" ? show.src : null;
+  const [trail, setTrail] = useState<HomeStep[] | null>(null);
+  const [homeFrame, setHomeFrame] = useState<string | null>(homeSrc);
+  const frameAt = useRef<string | null>(null);
+  const [clearKey, setClearKey] = useState(0);
+  const steps: HomeStep[] = homeSrc === null ? [] : (trail ?? [{ kind: "page", url: homeSrc }]);
+  const topStep = steps[steps.length - 1] ?? null;
+  const pageUrl = trailPage(steps);
+  // The card put down (its fade over) starts over on ~.
+  useEffect(() => {
+    if (live && homeSrc !== null) return;
+    setTrail(null);
+    setHomeFrame(homeSrc);
+    frameAt.current = null;
+  }, [live, homeSrc]);
+  // The step on top asks for another page than the frame is on: load it.
+  useEffect(() => {
+    if (pageUrl !== null && pageUrl !== frameAt.current) setHomeFrame(pageUrl);
+  }, [pageUrl]);
+  const src = homeSrc !== null ? homeFrame : show ? frameSrcOf(show, { pinned, stillFailed: failed }) : null;
   const [loaded, setLoaded] = useState<string | null>(null);
   // THE SPINNER (owner, 2026-11-27: "sometimes it takes a long time to load
   // and it is just a blank screen"): the frame's `load` is only its shell's
@@ -172,11 +214,79 @@ function LeftCard({ itemKey, on }: { itemKey: string; on: boolean }) {
   const paintPoll = useRef(0);
   useEffect(() => () => window.clearInterval(paintPoll.current), []);
   const compose = show?.kind === "compose";
-  // THE HOME CARD'S SEARCH (`searchHome`): the box in the head, its results
-  // in a layer over the listing while a query is live.
-  const searchHome = show?.kind === "frame" ? (show.searchHome ?? null) : null;
+  // THE HOME CARD'S SEARCH: the box in the head, its results in a layer
+  // over the frame while they are the step on top.
   const [resultsEl, setResultsEl] = useState<HTMLDivElement | null>(null);
-  const [searching, setSearching] = useState(false);
+  const homeBase = useCallback((t: HomeStep[] | null): HomeStep[] => t ?? (homeSrc !== null ? [{ kind: "page", url: homeSrc }] : []), [homeSrc]);
+  const onSearchActive = useCallback(
+    (active: boolean) => setTrail((t) => (active ? trailResults(homeBase(t)) : trailNoResults(homeBase(t)))),
+    [homeBase],
+  );
+  // Typing again over a page the results led to brings them back on top.
+  const onSearchInput = useCallback((value: string) => {
+    if (value.trim()) setTrail((t) => trailResults(homeBase(t)));
+  }, [homeBase]);
+  // A RESULT OPENS IN THE CARD: a row's link (caught before the row's own
+  // click takes the page there) or the box's Enter / open row (`onGo`).
+  const openInCard = useCallback((frameSrc: string | null) => {
+    if (frameSrc) setTrail((t) => trailOpen(homeBase(t), frameSrc));
+  }, [homeBase]);
+  const onGo = useCallback((fsPath: string) => openInCard(bookmarkFrameSrc(urlForFsPath(fsPath))), [openInCard]);
+  useEffect(() => {
+    if (!resultsEl) return;
+    const onClick = (e: MouseEvent) => {
+      if (e.defaultPrevented || e.button !== 0 || e.metaKey || e.ctrlKey || e.shiftKey || e.altKey) return;
+      const a = (e.target as Element | null)?.closest?.("a[href]");
+      if (!a || !resultsEl.contains(a)) return;
+      const frameSrc = bookmarkFrameSrc(a.getAttribute("href") ?? "");
+      if (!frameSrc) return;
+      e.preventDefault();
+      e.stopPropagation();
+      openInCard(frameSrc);
+    };
+    resultsEl.addEventListener("click", onClick, true);
+    return () => resultsEl.removeEventListener("click", onClick, true);
+  }, [resultsEl, openInCard]);
+  const back = useCallback(() => {
+    if (topStep?.kind === "results") setClearKey((n) => n + 1);
+    setTrail((t) => trailBack(homeBase(t)));
+  }, [topStep, homeBase]);
+  // THE FRAME WENT SOMEWHERE ON ITS OWN (a folder opened in the listing):
+  // the trail hears it (left-peek-lib `trailFrameAt`).
+  const frameHops = useRef<(() => void) | null>(null);
+  useEffect(() => () => frameHops.current?.(), []);
+  const watchFrame = useCallback(
+    (inner: HTMLIFrameElement) => {
+      frameHops.current?.();
+      frameHops.current = null;
+      if (homeSrc === null) return;
+      let w: Window | null = null;
+      try {
+        w = inner.contentWindow;
+      } catch {
+        return;
+      }
+      if (!w) return;
+      const win = w;
+      const report = () => {
+        let url: string;
+        try {
+          url = win.location.pathname + win.location.search;
+        } catch {
+          return;
+        }
+        frameAt.current = url;
+        setTrail((t) => trailFrameAt(homeBase(t), url));
+      };
+      const kinds = [NAV_EVENT, "popstate", "fused:urlchange"];
+      for (const k of kinds) win.addEventListener(k, report);
+      frameHops.current = () => {
+        for (const k of kinds) win.removeEventListener(k, report);
+      };
+      report();
+    },
+    [homeSrc, homeBase],
+  );
   // READY PER FRAME, NOT PER ADDRESS (CodeRabbit on #2495): a new frame on
   // the same address — the card back after its fade ran out — is not loaded
   // or painted yet. `loaded` and `painted`
@@ -202,13 +312,28 @@ function LeftCard({ itemKey, on }: { itemKey: string; on: boolean }) {
         return true;
       };
       if (!ask()) paintPoll.current = window.setInterval(ask, 120);
+      watchFrame(inner);
     },
-    [frameKey],
+    [frameKey, watchFrame],
   );
 
   const title = it?.title ?? "";
+  // THE HOME CARD'S OPEN: the view it is on — Home with the query while the
+  // results show, else the framed page as the page's own address.
+  const searchBox = useRef<HTMLDivElement | null>(null);
+  const homeOpenUrl = (): string | null => {
+    if (homeSrc === null || !topStep) return null;
+    if (topStep.kind === "results") return homeSearchUrl(searchBox.current?.querySelector("input")?.value ?? "");
+    return cardPageUrl(topStep.url);
+  };
   const open = useCallback(
-    (close: () => void) => {
+    (close: () => void, to: string | null) => {
+      if (to !== null) {
+        void navigateUrl(to).then((ok) => {
+          if (ok !== false) close();
+        });
+        return;
+      }
       const now = leftItem(itemKey);
       if (!now) return;
       const went = now.onOpen();
@@ -242,6 +367,11 @@ function LeftCard({ itemKey, on }: { itemKey: string; on: boolean }) {
             <div className="claude-rail-peek-row">
               {/* No ×: the pin in its seat (and the keyboard's landing). */}
               <RailPinButton variant="legacy" btnRef={api.closeRef} pinned={api.pin.pinned} onToggle={api.pin.onToggle} />
+              {homeSrc !== null && steps.length > 1 && (
+                <button type="button" className="claude-rail-peek-btn claude-rail-peek-close" aria-label="Back" data-hint="Back" onClick={back}>
+                  <ArrowLeft size={14} aria-hidden="true" />
+                </button>
+              )}
               <span className="claude-rail-tasks-title claude-rail-mode-title claude-left-peek-title">
                 {it && (
                   <span className="claude-rail-mode-icon" aria-hidden="true">
@@ -251,11 +381,19 @@ function LeftCard({ itemKey, on }: { itemKey: string; on: boolean }) {
                 <span className="claude-left-peek-name">{title}</span>
               </span>
               {live && searchHome !== null ? (
-                <CardSearch home={searchHome} resultsHost={resultsEl} onActive={setSearching} />
+                <CardSearch
+                  home={searchHome}
+                  resultsHost={resultsEl}
+                  onActive={onSearchActive}
+                  onInput={onSearchInput}
+                  onGo={onGo}
+                  clearKey={clearKey}
+                  boxRef={searchBox}
+                />
               ) : (
                 <span className="claude-rail-peek-gap" aria-hidden="true" />
               )}
-              <button type="button" className="btn claude-rail-peek-open" onClick={() => open(api.close)}>
+              <button type="button" className="btn claude-rail-peek-open" onClick={() => open(api.close, homeOpenUrl())}>
                 Open
               </button>
             </div>
@@ -282,7 +420,7 @@ function LeftCard({ itemKey, on }: { itemKey: string; on: boolean }) {
             {live && src !== null && (
               <PeekFrame key={src} src={src} title={title} frameRef={frameRef} onLoad={onFrameLoad} />
             )}
-            {live && searchHome !== null && <div ref={setResultsEl} className="claude-left-peek-results" hidden={!searching} />}
+            {live && searchHome !== null && <div ref={setResultsEl} className="claude-left-peek-results" hidden={topStep?.kind !== "results"} />}
           </div>
         </>
       )}
@@ -295,7 +433,23 @@ function LeftCard({ itemKey, on }: { itemKey: string; on: boolean }) {
  *  `resultsHost` over the listing. Its own index poll, as Home's page has
  *  (SearchWidget `useSearchHost`), only while a query is live; no `?q=`
  *  carried in (the page's address is not this card's). */
-function CardSearch({ home, resultsHost, onActive }: { home: string; resultsHost: HTMLElement | null; onActive: (active: boolean) => void }) {
+function CardSearch({
+  home,
+  resultsHost,
+  onActive,
+  onInput,
+  onGo,
+  clearKey,
+  boxRef,
+}: {
+  home: string;
+  resultsHost: HTMLElement | null;
+  onActive: (active: boolean) => void;
+  onInput: (value: string) => void;
+  onGo: (fsPath: string) => void;
+  clearKey: number;
+  boxRef: MutableRefObject<HTMLDivElement | null>;
+}) {
   const [active, setActive] = useState(false);
   const [nonce, setNonce] = useState(0);
   const indexScan = useIndexStatus(active, nonce);
@@ -309,7 +463,7 @@ function CardSearch({ home, resultsHost, onActive }: { home: string; resultsHost
   // The box going (the card's fade ran out) takes its results with it.
   useEffect(() => () => onActive(false), [onActive]);
   return (
-    <div className="claude-left-peek-search">
+    <div className="claude-left-peek-search" ref={boxRef} onInput={(e) => onInput((e.target as HTMLInputElement).value ?? "")}>
       <FilesSearch
         home={home}
         initialQuery=""
@@ -318,6 +472,8 @@ function CardSearch({ home, resultsHost, onActive }: { home: string; resultsHost
         onScanRequested={() => setNonce((n) => n + 1)}
         autoFocus={false}
         resultsHost={resultsHost}
+        onGo={onGo}
+        clearKey={clearKey}
       />
     </div>
   );
