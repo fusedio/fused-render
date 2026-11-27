@@ -11,19 +11,26 @@ import { useEffect, useState } from "react";
 import { ChatMount } from "@apps/claude";
 import { breakoutOpener } from "@platform/lib/breakouts";
 import { announcePaneSession } from "@platform/lib/peek-session";
+import { useTasksPulseRows } from "@shell/tasksPulse";
+import { useHoldOpenTask } from "@shell/task-open-read";
 import { createPanelParamsStore, type PanelParamsHost } from "../panel-params";
+import { chatHoldKey } from "../workspace-lib";
 
 export interface ChatViewProps {
   file: string;
   /** The view's session, while it names one (read off the view's query). */
   sessionId: string | null;
+  /** A chat that has not run yet (`queued=<entry>`), else null. */
+  queued: string | null;
+  /** A staged ask for this mount only (the host's `R.ask`), else null. */
+  initialAsk: string | null;
   host: PanelParamsHost;
   events: EventTarget;
   onHide: () => void;
   onNavigate: (url: string) => void;
 }
 
-export function ChatView({ file, sessionId, host, events, onHide, onNavigate }: ChatViewProps) {
+export function ChatView({ file, sessionId, queued, initialAsk, host, events, onHide, onNavigate }: ChatViewProps) {
   // One store per mount (the host's key remounts this): built in a lazy
   // initializer so a discarded render binds nothing (params/store's header).
   const [store] = useState(() => createPanelParamsStore(host, events));
@@ -34,6 +41,11 @@ export function ChatView({ file, sessionId, host, events, onHide, onNavigate }: 
   // The session on screen counts as open in a pane (peek-session), as a
   // page's pane says it through `AnnounceUrlSession`.
   useEffect(() => (sessionId ? announcePaneSession(sessionId) : undefined), [sessionId]);
+  // …and its task counts as OPEN (WS-29): a reply landing here is read as it
+  // arrives and raises no "finished" notice. This mounts only while the chat
+  // shows; the reader's window being hidden is task-open-read's own check.
+  const rows = useTasksPulseRows(true);
+  useHoldOpenTask(chatHoldKey(sessionId, queued, rows));
   return (
     <div className="ws-panel-chat">
       <ChatMount
@@ -46,8 +58,11 @@ export function ChatView({ file, sessionId, host, events, onHide, onNavigate }: 
         onHidePane={onHide}
         // Place tags are links here: no page around this chat to select in.
         pageRoot={null}
+        // …and the place itself, not only where in it: no page stands for it.
+        placeInHead
         onNavigate={onNavigate}
         onBreakout={breakoutOpener()}
+        {...(initialAsk ? { initialAsk } : {})}
       />
     </div>
   );

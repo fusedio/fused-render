@@ -1,17 +1,22 @@
 import { describe, expect, test } from "bun:test";
+import { chatUrl } from "@platform/lib/queue";
 import {
   buildHostUrl,
+  chatHoldKey,
   classifyNav,
   encodeRight,
   encodeTabsParam,
   isSpaUrl,
+  liftRightTabs,
   neighborAfterClose,
+  panelLayout,
   normalizeOpenUrl,
   pageUrlOf,
   parseHostUrl,
   parseRight,
   placeOfUrl,
   planOpen,
+  rightOnlyView,
   rightSession,
   sameRight,
   samePage,
@@ -226,6 +231,9 @@ describe("parseRight / encodeRight", () => {
     expect(sameRight({ kind: "chat", file: "/a", query: "session_id=s&split=1" }, { kind: "chat", file: "/a", query: "session_id=s" })).toBe(true);
     expect(sameRight({ kind: "chat", file: "/a", query: "session_id=s" }, { kind: "chat", file: "/a", query: "" })).toBe(false);
     expect(sameRight({ kind: "chat", file: "/a", query: "" }, { kind: "chat", file: "/b", query: "" })).toBe(false);
+    // A run the opened view names is another chat to show (a canvas fix).
+    expect(sameRight({ kind: "chat", file: "/a", query: "" }, { kind: "chat", file: "/a", query: "run=r1" })).toBe(false);
+    expect(sameRight({ kind: "chat", file: "/a", query: "run=r1" }, { kind: "chat", file: "/a", query: "run=r1&split=1" })).toBe(true);
     expect(rightSession({ kind: "chat", file: "/a", query: "session_id=s1" })).toBe("s1");
     expect(rightSession({ kind: "chat", file: "/a", query: "" })).toBeNull();
   });
@@ -302,5 +310,100 @@ describe("placeOfUrl (an unloaded tab's rail place, WS-27)", () => {
     for (const u of ["/home", "/tasks", "/ai-models", "/marketplace", "/preferences", "/explorer", "/explorer/view/_panel", "/explorer/view/s3:/bucket/k", "/render?path=/a"]) {
       expect(placeOfUrl(u)).toBeNull();
     }
+  });
+});
+
+describe("rightOnlyView (WS-30)", () => {
+  test("Tasks and Bots are panel views, never tabs", () => {
+    expect(rightOnlyView("/tasks")).toEqual({ kind: "tasks", peek: null });
+    expect(rightOnlyView("/tasks?peek=abc")).toEqual({ kind: "tasks", peek: "abc" });
+    expect(rightOnlyView("/bots")).toEqual({ kind: "bots", url: "/bots" });
+    expect(rightOnlyView("/bots/x?tab=1")).toEqual({ kind: "bots", url: "/bots/x?tab=1" });
+  });
+  test("a chat door, a canvas with a session and any other page keep their tab", () => {
+    expect(rightOnlyView(FOLDER + "?_side=claude&session_id=s1")).toBeNull();
+    expect(rightOnlyView("/canvases/prod/c1?session_id=s1")).toBeNull();
+    expect(rightOnlyView("/home")).toBeNull();
+    expect(rightOnlyView("/botsy")).toBeNull();
+  });
+});
+
+describe("liftRightTabs (WS-30)", () => {
+  test("a host booting on /tasks?peek= is Home plus the Tasks view", () => {
+    const out = liftRightTabs(parseHostUrl("/tasks?peek=k1"));
+    expect(out.tabs).toEqual(["/home"]);
+    expect(out.active).toBe(0);
+    expect(parseRight(out.right)).toEqual({ kind: "tasks", peek: "k1" });
+  });
+  test("a deep link into Bots", () => {
+    const out = liftRightTabs(parseHostUrl("/bots/x"));
+    expect(out.tabs).toEqual(["/home"]);
+    expect(parseRight(out.right)).toEqual({ kind: "bots", url: "/bots/x" });
+  });
+  test("a _tabs item naming one is dropped; the active tab keeps its place", () => {
+    const host = buildHostUrl(["/home", "/tasks", FOLDER], 2);
+    const out = liftRightTabs(parseHostUrl(host));
+    expect(out.tabs).toEqual(["/home", FOLDER]);
+    expect(out.active).toBe(1);
+    expect(out.kept).toEqual([0, 2]);
+    expect(parseRight(out.right)).toEqual({ kind: "tasks", peek: null });
+  });
+  test("an explicit _right wins; the active lifted one beats an earlier one", () => {
+    const named = liftRightTabs(parseHostUrl(buildHostUrl(["/home", "/tasks"], 1, "git:%2Fa")));
+    expect(named.right).toBe("git:%2Fa");
+    expect(named.active).toBe(0);
+    const both = liftRightTabs(parseHostUrl(buildHostUrl(["/home", "/tasks", "/bots"], 2)));
+    expect(both.tabs).toEqual(["/home"]);
+    expect(parseRight(both.right)).toEqual({ kind: "bots", url: "/bots" });
+  });
+  test("a strip with none is untouched", () => {
+    const parsed = parseHostUrl(buildHostUrl(["/home", FILE], 1, "tasks"));
+    expect(liftRightTabs(parsed)).toEqual({ ...parsed, kept: [0, 1] });
+  });
+});
+
+test("a canvas fix's door opens the clone's chat on its run (WS-31)", () => {
+  expect(classifyNav(chatUrl("/Users/me/clone", "") + "&run=r1")).toEqual({
+    side: "right",
+    view: { kind: "chat", file: "/Users/me/clone", query: "run=r1" },
+  });
+});
+
+test("a mode view carries the tab's revision (absent = live)", () => {
+  const live: RightView = { kind: "mode", mode: "code", file: "/a/b.py" };
+  const snap: RightView = { kind: "mode", mode: "code", file: "/a/b.py", rev: "abc123" };
+  expect(encodeRight(live)).toBe("mode:code:%2Fa%2Fb.py");
+  expect(encodeRight(snap)).toBe("mode:code:%2Fa%2Fb.py:abc123");
+  expect(parseRight(encodeRight(snap))).toEqual(snap);
+  expect(parseRight(encodeRight(live))).toEqual(live);
+  expect(sameRight(live, snap)).toBe(false);
+  expect(parseRight("mode:code:%2Fa:r:x")).toBeNull();
+});
+
+describe("panelLayout (WS-17)", () => {
+  test("side by side while the tabs keep 320 and the panel 380", () => {
+    expect(panelLayout(1200, 48, 320, 380)).toEqual({ overlay: false, width: 380 });
+    expect(panelLayout(748, 48, 320, 380).overlay).toBe(false);
+  });
+  test("a narrower row makes it a drawer at its floor, or the room there is", () => {
+    expect(panelLayout(747, 48, 320, 380)).toEqual({ overlay: true, width: 380 });
+    expect(panelLayout(300, 48, 320, 380)).toEqual({ overlay: true, width: 252 });
+  });
+});
+
+describe("chatHoldKey (WS-29)", () => {
+  const rows = [
+    { key: "k-run", session_id: "s1" },
+    { key: "pending:e9", session_id: null },
+  ];
+  test("a session's row key, else the session id", () => {
+    expect(chatHoldKey("s1", null, rows)).toBe("k-run");
+    expect(chatHoldKey("s2", null, rows)).toBe("s2");
+  });
+  test("a chat that has not run is its pending row", () => {
+    expect(chatHoldKey(null, "e9", rows)).toBe("pending:e9");
+  });
+  test("a Claude home holds nothing", () => {
+    expect(chatHoldKey(null, null, rows)).toBeNull();
   });
 });

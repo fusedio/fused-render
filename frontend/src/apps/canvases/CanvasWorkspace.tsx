@@ -217,7 +217,8 @@ import { addCurrentApp } from "@platform/lib/api";
 import { CURRENT_APPS_CHANGED_EVENT } from "@platform/lib/tasksChanged";
 import { ChatMount, ShotViewer, type CanvasShot, type CanvasShotAnswer, type CanvasShotBy, type CanvasShotWhat, type Viewable } from "@apps/claude";
 import { statPath } from "@platform/lib/api";
-import { WS_SELECT_NODE_EVENT, useWorkspacePlace } from "@platform/lib/workspace-bridge";
+import { WS_SELECT_NODE_EVENT, openInWorkspace, useWorkspacePlace } from "@platform/lib/workspace-bridge";
+import { chatUrl } from "@platform/lib/queue";
 import { EMBED_PREFIX, IS_WS_FRAME, NAV_EVENT, VIEW_PREFIX, confirmLeave, embedUrlForFsPath, navigateUrl, spaLinkProps, viewUrlForFsPath } from "@platform/lib/router";
 import { ErrorBanner } from "@platform/ui/ErrorBanner";
 import { CanvasGhost } from "./CanvasGhost";
@@ -3296,6 +3297,14 @@ export default function CanvasWorkspace({
   }, [fixRunId]);
 
   const claudeOff = isBackendOff("claude");
+  // IN A WORKSPACE TAB this page has no pane: the fix's chat is the window's
+  // panel's (SPEC §56 WS-31) — the clone's chat attached to the run by its
+  // `run` door param, as this page's own pane attaches by `runId`. With no
+  // run known (a reload while the fix runs) the clone's Claude home lists it.
+  const showFixInPanel = (runId: string | null) => {
+    if (!dir) return;
+    openInWorkspace(chatUrl(dir, "") + (runId ? "&run=" + encodeURIComponent(runId) : ""));
+  };
   const onFix = async () => {
     setFixBusy(true);
     setFixError(null);
@@ -3341,6 +3350,7 @@ export default function CanvasWorkspace({
       // other chat (see `runId` below).
       setFixChatSeq(canvasChatSeqRef.current);
       setFixRunId(run_id);
+      if (IS_WS_FRAME) showFixInPanel(run_id);
     } catch (e) {
       setFixError((e as Error).message);
     } finally {
@@ -3472,8 +3482,9 @@ export default function CanvasWorkspace({
             {/* Claude's feature (D17): no door while Claude is switched off. */}
             {!claudeOff && <button
               className="btn btn-primary"
-              disabled={fixBusy || fixActive}
-              onClick={() => void onFix()}
+              // In a tab, "see chat →" is a door: the panel shows it again.
+              disabled={fixBusy || (fixActive && !(IS_WS_FRAME && dir))}
+              onClick={() => (fixActive && IS_WS_FRAME ? showFixInPanel(fixRunId) : void onFix())}
               title="Start a Claude session on the local clone, primed with these errors"
             >
               {fixActive

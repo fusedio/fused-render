@@ -12,6 +12,7 @@
 // changed" guard would write on every sync.
 
 import { rootedFsPath } from "@platform/lib/path-url";
+import { PENDING_KEY_PREFIX } from "@platform/lib/queue";
 import { appPathFromPath } from "@shell/current-apps-lib";
 import type { RailPlace } from "@shell/claude-rail/claude-rail-lib";
 import type { WorkbenchEnv } from "@apps/canvases/api";
@@ -445,7 +446,8 @@ export type RightView =
   | { kind: "bots"; url: string }
   | { kind: "chat"; file: string; query: string }
   | { kind: "git"; path: string }
-  | { kind: "mode"; mode: string; file: string };
+  /** `rev`: the git snapshot the tab shows (`_snapshot`); absent = live. */
+  | { kind: "mode"; mode: string; file: string; rev?: string };
 
 /** The chat params a chat door may carry into the panel: the ones that name
  *  WHICH conversation (and how to open it), never the page's own. */
@@ -491,7 +493,8 @@ export function parseRight(raw: string | null | undefined): RightView | null {
     case "git":
       return a.length === 1 && a[0] ? { kind: "git", path: a[0] } : null;
     case "mode":
-      return a.length === 2 && a[0] && a[1] ? { kind: "mode", mode: a[0], file: a[1] } : null;
+      if ((a.length !== 2 && a.length !== 3) || !a[0] || !a[1]) return null;
+      return a[2] ? { kind: "mode", mode: a[0], file: a[1], rev: a[2] } : { kind: "mode", mode: a[0], file: a[1] };
     default:
       return null;
   }
@@ -510,19 +513,27 @@ export function encodeRight(view: RightView): string {
     case "git":
       return "git:" + e(view.path);
     case "mode":
-      return "mode:" + e(view.mode) + ":" + e(view.file);
+      return "mode:" + e(view.mode) + ":" + e(view.file) + (view.rev ? ":" + e(view.rev) : "");
   }
 }
 
-/** Do two views show the same thing? Two chats are the same conversation on
- *  the same file — their other params (`split`, `run`, …) are the chat's own
- *  state, not another chat. Opening what already shows does nothing. */
+/** Does `b` show what `a` shows? Two chats are the same conversation on the
+ *  same file — their other params (`split`, …) are the chat's own state, not
+ *  another chat. A `run` that `b` names counts (a canvas's fix opens its run
+ *  on a Claude home that names none, WS-31). Opening what already shows does
+ *  nothing. */
 export function sameRight(a: RightView | null, b: RightView | null): boolean {
   if (!a || !b) return a === b;
   if (a.kind === "chat" && b.kind === "chat") {
     const pa = new URLSearchParams(a.query);
     const pb = new URLSearchParams(b.query);
-    return a.file === b.file && (pa.get("session_id") || "") === (pb.get("session_id") || "") && (pa.get("queued") || "") === (pb.get("queued") || "");
+    const run = pb.get("run") || "";
+    return (
+      a.file === b.file &&
+      (pa.get("session_id") || "") === (pb.get("session_id") || "") &&
+      (pa.get("queued") || "") === (pb.get("queued") || "") &&
+      (!run || run === (pa.get("run") || ""))
+    );
   }
   return encodeRight(a) === encodeRight(b);
 }
@@ -543,6 +554,33 @@ export function chatDoorQuery(query: string): string {
 export function rightSession(view: RightView | null): string | null {
   if (!view || view.kind !== "chat") return null;
   return new URLSearchParams(view.query).get("session_id") || null;
+}
+
+/**
+ * THE PANEL BESIDE THE TABS OR OVER THEM (WS-17): side by side while the row,
+ * less the rail, holds the tabs' floor and the panel's; else the panel is a
+ * drawer over the tabs' right part, at its floor or the room there is when
+ * that is less — never squeezed under its floor beside them.
+ */
+export function panelLayout(rowW: number, railW: number, leftMin: number, panelMin: number): { overlay: boolean; width: number } {
+  const room = Math.max(0, rowW - railW);
+  if (room >= leftMin + panelMin) return { overlay: false, width: panelMin };
+  return { overlay: true, width: Math.min(panelMin, room) };
+}
+
+/**
+ * THE TASK KEY THE PANEL'S CHAT HOLDS OPEN (WS-29, task-open-read): the row
+ * whose session it shows (a run task's key need not be its session id), else
+ * the session id itself; a chat that has not run yet (`queued=`) is its
+ * `pending:<entry>` row. Null for a Claude home with no conversation.
+ */
+export function chatHoldKey(
+  sessionId: string | null,
+  queued: string | null,
+  rows: readonly { key: string; session_id?: string | null }[],
+): string | null {
+  if (sessionId) return rows.find((r) => r.session_id === sessionId)?.key ?? sessionId;
+  return queued ? PENDING_KEY_PREFIX + queued : null;
 }
 
 /** Where a URL belongs in a workspace (WS-15): the right panel, the right
@@ -619,6 +657,49 @@ export function classifyNav(url: string): NavPlace {
     if (sid) return { side: "session", sessionId: sid };
   }
   return { side: "left" };
+}
+
+/**
+ * A URL THAT IS NEVER A TAB (WS-30): Tasks and Bots live in the panel only.
+ * Their view, or null for every other URL (a chat door is a real explorer page
+ * that keeps its tab, `splitArrival`; a canvas with a session too).
+ */
+export function rightOnlyView(url: string): RightView | null {
+  const { path } = splitUrl(url);
+  if (path !== "/tasks" && !isBotsUrl(path)) return null;
+  const place = classifyNav(url);
+  return place.side === "right" ? place.view : null;
+}
+
+/**
+ * A HOST BOOTING WITH TASKS OR BOTS IN ITS STRIP (WS-30): a pasted `/tasks?
+ * peek=…`, a deep link `/bots/x`, or a `_tabs` item naming one. Those tabs go
+ * (Home, never one, stays at 0); when the active one went, Home is active. The
+ * panel shows the active one's view — else the first lifted — unless the URL
+ * already names a `_right`. `kept` is each surviving tab's index in `parsed`.
+ */
+export function liftRightTabs(parsed: ParsedHost): ParsedHost & { kept: number[] } {
+  const kept: number[] = [];
+  let lifted: RightView | null = null;
+  let activeLifted: RightView | null = null;
+  parsed.tabs.forEach((u, i) => {
+    const view = i === 0 ? null : rightOnlyView(u);
+    if (!view) {
+      kept.push(i);
+      return;
+    }
+    lifted ??= view;
+    if (i === parsed.active) activeLifted = view;
+  });
+  if (kept.length === parsed.tabs.length) return { ...parsed, kept };
+  const active = Math.max(0, kept.indexOf(parsed.active));
+  const pick = activeLifted ?? lifted;
+  return {
+    tabs: kept.map((i) => parsed.tabs[i]),
+    active,
+    right: parsed.right ?? (pick ? encodeRight(pick) : null),
+    kept,
+  };
 }
 
 /**

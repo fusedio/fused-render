@@ -32,6 +32,11 @@ export interface WsPublishedPlace {
   canvasSelect?: boolean;
 }
 
+/** The event the host dispatches on a tab's window to arm a bookmark there
+ *  (detail `{ id, url }`, platform/lib/bookmarks): the sidebar armed it and
+ *  opened its page in that tab. */
+export const WS_ARM_BOOKMARK_EVENT = "fused:ws-arm-bookmark";
+
 /** The event the host dispatches on a canvas tab's window to select a node
  *  there (detail `{ udfName, sessionId?, tag }`). */
 export const WS_SELECT_NODE_EVENT = "fused:ws-select-node";
@@ -61,6 +66,13 @@ export interface WorkspaceHostApi {
   /** `from` just saved the bookmarks: every other document of this window
    *  (the host's sidebar, the other tabs' ★) re-reads them now. */
   bookmarksWritten?(from: Window): void;
+  /** A staged ask ("Fix with AI", "Explain with AI"): the panel opens the
+   *  Claude home of `file` and hands `prompt` to that one chat mount. */
+  askClaude?(file: string, prompt: string, opts?: { backend?: string }): void;
+  /** Is there a terminal drawer to run in, and open one (the host's store,
+   *  `terminalDockStore`; plain data only). */
+  canRunInTerminal?(): boolean;
+  openTerminal?(req: { cwd?: string; command?: string; execute?: boolean }): void;
 }
 
 /** What the mounted host registers: the API, plus what only the host's own
@@ -96,6 +108,8 @@ export function bootWorkspaceHost(fallback: (url: string) => void): void {
   // params (boundary) nor one it reads globals from (opaque, runtime.js).
   window._fusedParamBoundary = true;
   window._fusedParamOpaque = true;
+  // A class, not a `:has(.ws-row)` (a root :has restyles the whole document).
+  document.documentElement.classList.add("ws-host");
   window._fusedWorkspace = {
     openPage: (url, opts) => (impl ? impl.openPage(url, opts) : fallback(url)),
     openHref: (url, opts) => (impl?.openHref ? impl.openHref(url, opts) : fallback(url)),
@@ -105,6 +119,9 @@ export function bootWorkspaceHost(fallback: (url: string) => void): void {
     publishPlace: (win, info) => impl?.publishPlace?.(win, info),
     focusPanelChat: () => impl?.focusPanelChat?.() ?? false,
     bookmarksWritten: (from) => impl?.bookmarksWritten?.(from),
+    askClaude: (file, prompt, opts) => impl?.askClaude?.(file, prompt, opts),
+    canRunInTerminal: () => impl?.canRunInTerminal?.() ?? false,
+    openTerminal: (req) => impl?.openTerminal?.(req),
   };
 }
 
@@ -244,6 +261,21 @@ export function openInWorkspace(href: string): boolean {
   if (!host?.openHref) return false;
   host.openHref(href);
   return true;
+}
+
+/** A staged ask, in a workspace (the host or one of its frames): the panel's
+ *  chat takes it (§56 WS-32). False outside one, or with no host to take it:
+ *  the caller stages it the ordinary way. */
+export function askInWorkspace(file: string, prompt: string, backend?: string): boolean {
+  if (!hostOn && WS_ROLE === null) return false;
+  const host = workspaceHost();
+  if (!host?.askClaude || !file) return false;
+  try {
+    host.askClaude(file, prompt, backend ? { backend } : undefined);
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 // ---- bookmarks, across the window's documents -------------------------------

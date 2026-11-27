@@ -28,7 +28,7 @@
 // the layout modes (LM-11 / TM-9 — ★/update still operate on currentUrl()).
 import React, { useEffect, useLayoutEffect, useRef, useState, useSyncExternalStore } from "react";
 import { createPortal } from "react-dom";
-import { navigate, currentUrl, IS_EMBED } from "@platform/lib/router";
+import { navigate, currentUrl, IS_EMBED, IS_WS_FRAME } from "@platform/lib/router";
 import { basename } from "@platform/lib/format";
 import { isMod } from "@platform/lib/platform";
 import {
@@ -44,6 +44,7 @@ import {
 } from "@platform/lib/bookmarks";
 import {
   useUrlVersion,
+  useArmedVersion,
   useBookmarksVersion,
   notifyBookmarksChanged,
 } from "@platform/lib/hooks";
@@ -219,6 +220,12 @@ function useSpringLoadedCrumbs() {
 // of the vanilla syncUpdateButton() wired to fused:urlchange.
 function useUpdateButton(urlVersion: number, bookmarksVersion: number): boolean {
   const [visible, setVisible] = useState(false);
+  // A workspace tab is armed by the host AFTER it loaded (§56 WS-34): the
+  // check runs again when the arm changes, not only on a URL change. Only
+  // there: elsewhere the sidebar arms BEFORE its hop lands, and a check in
+  // between would read the old page as a page change and disarm.
+  const armedVersion = useArmedVersion();
+  const armDep = IS_WS_FRAME ? armedVersion : 0;
   useEffect(() => {
     // Embed pages (layout panes included) share the tab's sessionStorage.
     // Their breadcrumb is hidden chrome (D39) — if this ran there, the pane's
@@ -244,7 +251,7 @@ function useUpdateButton(urlVersion: number, bookmarksVersion: number): boolean 
       return setVisible(false);
     }
     setVisible(!sameSearch(location.search, armedSearch));
-  }, [urlVersion, bookmarksVersion]);
+  }, [urlVersion, bookmarksVersion, armDep]);
   return visible;
 }
 

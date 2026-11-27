@@ -215,6 +215,8 @@ export interface ChatMountProps {
   /** The chat head's place tags (ClaudeChat `pageRoot` / `onSelectNode`;
    *  shell/claude-rail PlaceTags). */
   pageRoot?: string | null;
+  /** ClaudeChat `placeInHead` (a chat on no page). */
+  placeInHead?: boolean;
   onSelectNode?: (udfName: string | null, sessionId?: string | null) => void;
   /** `session_id` on the frame URL (cards, peek). */
   sessionId?: string;
@@ -385,6 +387,7 @@ export function ChatMount(props: ChatMountProps) {
         {...(props.headerInPeek ? { headerInPeek: true } : {})}
         {...(props.mergedHead ? { mergedHead: true } : {})}
         {...(props.pageRoot !== undefined ? { pageRoot: props.pageRoot } : {})}
+        {...(props.placeInHead ? { placeInHead: true } : {})}
         {...(props.onSelectNode ? { onSelectNode: props.onSelectNode } : {})}
         {...(props.headerExtra ? { headerExtra: props.headerExtra } : {})}
         {...(props.headChipsHost ? { headChipsHost: props.headChipsHost } : {})}

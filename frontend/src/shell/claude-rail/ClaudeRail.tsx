@@ -4045,8 +4045,10 @@ export function ClaudeRail({
                       ? ["peeked", ...(card.pinned ? ["is-pinned"] : [])].filter((c) => !wears.classes.includes(c))
                       : []),
                     ...(foot && !t.starred ? ["is-blocked"] : []),
-                    // The ring whose chat the workspace panel shows (WS-21).
-                    ...(!foot && panel && panelShowsTask(panel.shows, t) && !wears.classes.includes("peeked") ? ["peeked"] : []),
+                    // The ring whose chat the workspace panel shows (WS-21) —
+                    // a favourite's foot ring too: the look only, its card and
+                    // pin keep their own rules.
+                    ...(panel && panelShowsTask(panel.shows, t) && !wears.classes.includes("peeked") ? ["peeked"] : []),
                   ].join(" ")}
                   aria-label={`${label} — ${words}`}
                   // The list row's own caption (platform/lib/hints): the

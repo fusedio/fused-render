@@ -8,6 +8,7 @@
 import { getConfig } from "@platform/lib/api";
 import { stageClaudeAsk } from "@platform/lib/pending-claude-ask";
 import { navigate } from "@platform/lib/router";
+import { askInWorkspace } from "@platform/lib/workspace-bridge";
 
 /**
  * Builds the seeded prompt. `context` is free text a call site adds on top
@@ -83,6 +84,8 @@ export function resetDefaultFolderCache(): void {
 export async function explainWithAi(prompt: string, folderPath?: string): Promise<void> {
   const path = folderPath ?? (await resolveDefaultFolder());
   if (!path) return;
+  // In a workspace the window's panel takes it (§56 WS-32): no page hop.
+  if (askInWorkspace(path, prompt)) return;
   stageClaudeAsk(path, prompt);
   navigate(path, { isDir: true });
 }

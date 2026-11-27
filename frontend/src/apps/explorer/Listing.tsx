@@ -34,7 +34,7 @@ import {
   useState,
   useSyncExternalStore,
 } from "react";
-import { openInWorkspace, useWorkspacePlace } from "@platform/lib/workspace-bridge";
+import { askInWorkspace, openInWorkspace, useWorkspacePlace } from "@platform/lib/workspace-bridge";
 import {
   IS_PANEL_PANE,
   IS_WS_FRAME,
@@ -1212,6 +1212,8 @@ export default function Listing({
   const claudeAskActionRef = useRef<(text: string) => boolean>(() => false);
   useEffect(() => {
     claudeAskActionRef.current = (text: string) => {
+      // In a tab the folder draws no pane: the window's panel takes it.
+      if (IS_WS_FRAME) return askInWorkspace(fsPath, text);
       if (!claudeReady) return false;
       claudeSeedRef.current = text;
       setClaudeAskInstance((n) => n + 1);

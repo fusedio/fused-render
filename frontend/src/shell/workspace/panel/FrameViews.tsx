@@ -5,6 +5,7 @@
 import { useEffect, useRef } from "react";
 import { X } from "lucide-react";
 import { NAVIGATE_URL_EVENT, type NavDetail } from "@platform/lib/router";
+import { TAB_VISIBILITY_EVENT } from "@platform/lib/pause-while-hidden";
 import { attachEmbedUrlChange, detachEmbedUrlChange, embedSrc, type UrlChangeHook } from "@platform/lib/layout-codec";
 import { basename, dirname } from "@platform/lib/format";
 import { useDirMode } from "@apps/explorer/lib/dir-mode";
@@ -26,21 +27,36 @@ export function PanelHead({ title, onHide }: { title: string; onHide: () => void
 
 /** THE BOTS PAGE in a `panel` frame. Its live URL is the view's (a guarded
  *  replace, `onSync`); a view URL changed from outside (a bot card's Open,
- *  Back) is navigated INSIDE the frame by its own router, never reloaded. */
-export function BotsView({ url, onSync, onHide }: { url: string; onSync: (url: string) => void; onHide: () => void }) {
+ *  Back) is navigated INSIDE the frame by its own router, never reloaded.
+ *  KEPT while another view shows (WorkspacePanel's header): `url` is null
+ *  then, and the frame reads as hidden to its polls, as a hidden tab does. */
+export function BotsView({
+  url,
+  initialUrl,
+  onSync,
+  onHide,
+}: {
+  url: string | null;
+  initialUrl: string;
+  onSync: (url: string) => void;
+  onHide: () => void;
+}) {
   const ref = useRef<HTMLIFrameElement | null>(null);
   // Frozen at mount: the frame's src is set once (stage 1's TM-5 rule).
-  const src = useRef(url).current;
+  const src = useRef(initialUrl).current;
   const hook = useRef<UrlChangeHook | null>(null);
   const onSyncRef = useRef(onSync);
   onSyncRef.current = onSync;
+  const shown = url !== null;
+  const shownRef = useRef(shown);
+  shownRef.current = shown;
   useEffect(() => () => detachEmbedUrlChange(hook.current), []);
   // An outside change of the view: the frame goes there by its router.
   useEffect(() => {
     const iframe = ref.current;
     const win = iframe?.contentWindow;
     const loc = readFrameLoc(iframe);
-    if (!win || loc === null || loc === url) return;
+    if (url === null || !win || loc === null || loc === url) return;
     try {
       const detail: NavDetail = { fn: "navigateUrl", url };
       win.dispatchEvent(new (win as Window & typeof globalThis).CustomEvent(NAVIGATE_URL_EVENT, { detail }));
@@ -48,10 +64,13 @@ export function BotsView({ url, onSync, onHide }: { url: string; onSync: (url: s
       /* mid-load: its own load reports where it is */
     }
   }, [url]);
+  // Hidden to its polls while another view shows (pause-while-hidden).
+  useEffect(() => signalHidden(ref.current, !shown), [shown]);
   const onLoad = () => {
     const iframe = ref.current;
     if (!iframe) return;
     iframe.classList.add("is-loaded");
+    signalHidden(iframe, !shownRef.current);
     detachEmbedUrlChange(hook.current);
     const report = () => {
       const loc = readFrameLoc(iframe);
@@ -76,6 +95,21 @@ export function BotsView({ url, onSync, onHide }: { url: string; onSync: (url: s
       </div>
     </>
   );
+}
+
+/** Tell a frame's document whether it is hidden (WorkspaceHost's
+ *  `signalVisibility`, for a panel frame): the flag, and the event when it
+ *  changed. */
+function signalHidden(iframe: HTMLIFrameElement | null, hidden: boolean): void {
+  const win = iframe?.contentWindow;
+  if (!win) return;
+  try {
+    if (win._fusedTabHidden === hidden) return;
+    win._fusedTabHidden = hidden;
+    win.dispatchEvent(new (win as Window & typeof globalThis).Event(TAB_VISIBILITY_EVENT));
+  } catch {
+    /* frame mid-navigation */
+  }
 }
 
 /** THE GIT COMPANION of a folder — the page the app page's Git tab frames
@@ -110,8 +144,9 @@ export function GitView({ path, onHide }: { path: string; onHide: () => void }) 
 
 /** A FILE IN ONE OF ITS MODES — the frame the rail's mode card draws
  *  (Preview's `fileModes.src`). */
-export function ModeView({ mode, file, onHide }: { mode: string; file: string; onHide: () => void }) {
-  const src = embedSrc(file, "?" + new URLSearchParams({ _mode: mode }).toString());
+export function ModeView({ mode, file, rev, onHide }: { mode: string; file: string; rev: string | null; onHide: () => void }) {
+  // At the tab's revision when it shows one (Preview's `fileModes.src`).
+  const src = embedSrc(file, "?" + new URLSearchParams({ _mode: mode, ...(rev ? { _snapshot: rev } : {}) }).toString());
   const title = `${modeTitle(mode)} · ${basename(file) || file}`;
   return (
     <>

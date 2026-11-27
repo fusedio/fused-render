@@ -317,6 +317,10 @@ export interface ClaudeChatProps {
    *  place of the project's name. */
   pageRoot?: string | null;
   onSelectNode?: (udfName: string | null, sessionId?: string | null) => void;
+  /** A chat that stands on no page (the workspace's panel, SPEC §56 WS-18):
+   *  its head names the place too, as a rail card's does, not only where in
+   *  it — the pane's "a pane IS its place" does not hold there. */
+  placeInHead?: boolean;
   params: ChatParamsSource;
   /** A HOST stated this conversation's model/effort through `ChatMount`'s
    *  `model`/`effort` props, so the `model`/`effort` params on this mount's
@@ -5816,6 +5820,18 @@ function ChatBody(props: ChatBodyProps) {
         part="where"
       />
     ) : null;
+  // A CHAT ON NO PAGE (`placeInHead`, the workspace's panel) names its place
+  // in the head's place seat, as a rail card does.
+  const headPlace =
+    props.placeInHead && placeTag && inChat && head.task ? (
+      <PlaceTags
+        scope={railScope(head.task, ownPlace(head.task))}
+        at={ownPlace(head.task)}
+        pageRoot={props.pageRoot ?? null}
+        sessionId={head.task.session_id ?? null}
+        part="place"
+      />
+    ) : undefined;
   const headerExtra =
     props.prChip && head.task ? (
       <>
@@ -6163,9 +6179,10 @@ function ChatBody(props: ChatBodyProps) {
       queue={headQueue}
       status={inChat ? limitWord : ""}
       place={
-        inChat && head.task
+        headPlace ??
+        (inChat && head.task
           ? (placeTag || props.mergedHead ? null : <TaskPeekProject task={head.task} />)
-          : null
+          : null)
       }
       {...(inChat && whereTag ? { where: whereTag } : {})}
       chips={

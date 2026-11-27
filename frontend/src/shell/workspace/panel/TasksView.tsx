@@ -28,8 +28,8 @@ import { useAutoReadOpenTasks, useDocumentVisible } from "@shell/task-open-read"
 
 const Scheduled = lazy(() => import("@shell/Scheduled"));
 
-/** Side by side from here (the list's room + the chat's 400px floor). */
-export const TASKS_SPLIT_W = 780;
+/** Side by side from here (the list's 320px + the chat's 400px floor). */
+export const TASKS_SPLIT_W = 720;
 
 class ListBoundary extends Component<{ children: ReactNode }, { failed: boolean }> {
   state = { failed: false };
@@ -158,7 +158,7 @@ export function TasksView({ peek, onPeek, onHide, onNavigate }: TasksViewProps) 
       // the panel's hide stands before it. Wide: the list beside it has the
       // hide; the chat's × closes the peek only.
       {...(split
-        ? { lead: { kind: "close" as const, label: "Close the chat", onPress: () => onPeek(null, "push") } }
+        ? { lead: { kind: "collapse" as const, label: "Close the task panel", hint: "Close", onPress: () => onPeek(null, "push") } }
         : {
             preLead: (
               <button type="button" className="task-head-btn task-head-lead is-close" aria-label="Hide the panel" data-hint="Hide the panel" onClick={onHide}>

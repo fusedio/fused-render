@@ -9,10 +9,10 @@
 // components still subscribe via useBookmarksVersion (lib/hooks.ts) and call
 // notifyBookmarksChanged() after each mutation they trigger.
 import { getBookmarks, putBookmarks } from "@platform/lib/api";
-import { announceBookmarksWritten } from "@platform/lib/workspace-bridge";
+import { announceBookmarksWritten, WS_ARM_BOOKMARK_EVENT } from "@platform/lib/workspace-bridge";
 import { notifyArmedChanged } from "@platform/lib/hooks";
 import { splitShellSearch } from "@platform/lib/layout-codec";
-import { rewriteLegacyUrl } from "@platform/lib/router";
+import { IS_WS_FRAME, rewriteLegacyUrl } from "@platform/lib/router";
 
 export interface Bookmark {
   id: string;
@@ -519,7 +519,24 @@ export interface ArmedBookmark {
   url: string;
 }
 
+// IN A WORKSPACE FRAME THE ARM IS THIS DOCUMENT'S (SPEC §56 WS-34): the
+// window's tabs share one sessionStorage, and every other tab's Breadcrumb
+// would read a bookmark armed for another page as "page changed" and disarm
+// it. The host hands the arm to the tab it opens (`WS_ARM_BOOKMARK_EVENT`).
+let frameArmed: ArmedBookmark | null = null;
+if (IS_WS_FRAME && typeof window !== "undefined") {
+  window.addEventListener(WS_ARM_BOOKMARK_EVENT, (e) => {
+    const d = (e as CustomEvent<unknown>).detail as { id?: unknown; url?: unknown } | null;
+    if (d && typeof d.id === "string" && typeof d.url === "string") armBookmark(d.id, d.url);
+  });
+}
+
 export function armBookmark(id: string, url: string): void {
+  if (IS_WS_FRAME) {
+    frameArmed = { id, url };
+    notifyArmedChanged();
+    return;
+  }
   try {
     sessionStorage.setItem(ARMED_KEY, JSON.stringify({ id, url }));
   } catch (e) {
@@ -529,6 +546,11 @@ export function armBookmark(id: string, url: string): void {
 }
 
 export function disarmBookmark(): void {
+  if (IS_WS_FRAME) {
+    frameArmed = null;
+    notifyArmedChanged();
+    return;
+  }
   try {
     sessionStorage.removeItem(ARMED_KEY);
   } catch (e) {
@@ -572,6 +594,7 @@ export function getArmedBookmarkFor(pathname: string): ArmedBookmark | null {
 }
 
 export function getArmedBookmark(): ArmedBookmark | null {
+  if (IS_WS_FRAME) return frameArmed;
   try {
     const raw = sessionStorage.getItem(ARMED_KEY);
     if (!raw) return null;

@@ -84,7 +84,7 @@
 // list, close the dialog) is the host's business; the head only seats it. The
 // same for `chips` and `seats`.
 import { useCallback, useEffect, useRef, useState, type ReactNode, type Ref } from "react";
-import { ArrowLeft, ArrowUpRight, ChevronDown, ChevronRight, ChevronUp, MessageSquare, X } from "lucide-react";
+import { ArrowLeft, ArrowUpRight, ChevronDown, ChevronRight, ChevronUp, MessageSquare, PanelRightClose, X } from "lucide-react";
 import type { Task } from "@platform/lib/api";
 import { queueCaption, type QueueFacts } from "@platform/lib/queue";
 import { TaskStar } from "@platform/ui/TaskStar";
@@ -102,7 +102,9 @@ import {
 } from "./row-fit";
 
 export interface TaskHeadLead {
-  kind: "close" | "back";
+  /** `collapse`: closes a peek beside a list whose own head holds the × (the
+   *  workspace panel's Tasks, side by side) — a × twice would read as one. */
+  kind: "close" | "back" | "collapse";
   /** The button's accessible name ("Close the task panel", "Back to tasks"). */
   label: string;
   /** The tooltip, when it says more than the name ("Close · Esc"). */
@@ -489,6 +491,8 @@ export function TaskHead({
   const leadIcon =
     lead?.kind === "back" ? (
       <ArrowLeft size={16} strokeWidth={1.6} aria-hidden="true" />
+    ) : lead?.kind === "collapse" ? (
+      <PanelRightClose size={15} strokeWidth={1.6} aria-hidden="true" />
     ) : (
       <X size={14} aria-hidden="true" />
     );
