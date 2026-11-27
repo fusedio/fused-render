@@ -647,9 +647,44 @@ function fsPathOfViewPath(path: string): string | null {
 }
 
 /**
+ * A rail place that came back out of `history.state` (the host remembers each
+ * tab's published place there, WS-27), or null when it is not one: the entry
+ * is the reader's own, but a shape check costs nothing and a half-written
+ * place would list the wrong tasks.
+ */
+export function asRailPlace(x: unknown): RailPlace | null {
+  if (!x || typeof x !== "object") return null;
+  const p = x as Record<string, unknown>;
+  const str = (v: unknown): v is string => typeof v === "string" && v.length > 0;
+  const optStr = (v: unknown) => v === undefined || v === null || typeof v === "string";
+  if (p.kind === "folder" && str(p.dir)) {
+    return { kind: "folder", dir: p.dir, ...(str(p.word) ? { word: p.word } : {}) };
+  }
+  if (p.kind === "file" && str(p.file) && optStr(p.dir)) {
+    return { kind: "file", file: p.file, dir: (p.dir as string | null | undefined) ?? null };
+  }
+  if (
+    p.kind === "canvas" &&
+    (p.env === "unstable" || p.env === "prod" || p.env === "custom") &&
+    str(p.name) &&
+    optStr(p.dir) &&
+    optStr(p.file)
+  ) {
+    return {
+      kind: "canvas",
+      env: p.env as WorkbenchEnv,
+      name: p.name,
+      dir: (p.dir as string | null | undefined) ?? null,
+      ...(str(p.file) ? { file: p.file } : {}),
+    };
+  }
+  return null;
+}
+
+/**
  * WHERE A TAB'S RAIL WOULD STAND, read off its URL alone (SPEC §56 WS-27): the
- * stand-in for a tab whose page has not published (a reload mounts only the
- * shown tab). An app page is its folder; a canvas page its canvas (no clone
+ * stand-in for a tab whose page has never published in this window (a pasted
+ * URL; after a reload the host remembers what each page last said). An app page is its folder; a canvas page its canvas (no clone
  * dir known); an explorer page its folder, or — the last segment read as a
  * file, `tabKind`'s guess — the file in its parent folder. Anything else has
  * no place (null).

@@ -75,6 +75,7 @@ import {
   pageUrlOf,
   parseHostUrl,
   adoptedRun,
+  asRailPlace,
   placeOfUrl,
   parseRight,
   planOpen,
@@ -136,6 +137,10 @@ interface Tab {
   // Frozen at creation: the iframe's `src` prop (TM-5). Navigation before the
   // frame's first load writes the element's src imperatively.
   src: string;
+  // WHERE ITS RAIL STANDS, as its page last said (WS-27): remembered in the
+  // history entry, so a tab not loaded since a reload still lists its tasks
+  // by its real place. A URL alone cannot tell a folder from a file.
+  place: RailPlace | null;
 }
 
 // Per-frame wiring that dies with each document and is put back on each load.
@@ -154,6 +159,8 @@ interface HistoryWsState {
   // Each tab's last-read title, beside its id: a reload mounts only the shown
   // tab, and the others have no document to read a title from until shown.
   wsTitles?: unknown;
+  // …and its last published rail place (`Tab.place`), for the same reason.
+  wsPlaces?: unknown;
 }
 
 // Ids ride history.state, so they must be unique beyond this document: a Back
@@ -164,9 +171,17 @@ function mintId(): string {
   return `t${DOC_TOKEN}${++idSeq}`;
 }
 
-function makeTab(url: string, id?: string, title?: string): Tab {
-  return { id: id ?? mintId(), url: stripHash(url), docTitle: title ?? "", icon: null, src: url };
+function makeTab(url: string, id?: string, title?: string, place?: RailPlace | null): Tab {
+  return { id: id ?? mintId(), url: stripHash(url), docTitle: title ?? "", icon: null, src: url, place: place ?? null };
 }
+
+function statePlaces(state: HistoryWsState | null, count: number): (RailPlace | null)[] | null {
+  const places = state?.wsPlaces;
+  if (!Array.isArray(places) || places.length !== count) return null;
+  return places.map((x) => asRailPlace(x));
+}
+
+const pathOfUrl = (url: string) => url.split(/[?#]/, 1)[0];
 
 function stateIds(state: HistoryWsState | null, count: number): string[] | null {
   const ids = state?.wsIds;
@@ -233,13 +248,15 @@ export default function WorkspaceHost({
     const parsed = liftRightTabs(raw);
     const rawIds = stateIds(history.state as HistoryWsState | null, raw.tabs.length);
     const rawTitles = stateTitles(history.state as HistoryWsState | null, raw.tabs.length);
+    const rawPlaces = statePlaces(history.state as HistoryWsState | null, raw.tabs.length);
     const ids = rawIds && parsed.kept.map((i) => rawIds[i]);
     const titles = rawTitles && parsed.kept.map((i) => rawTitles[i]);
+    const places = rawPlaces && parsed.kept.map((i) => rawPlaces[i]);
     // Before the first frame can change it (see `readFavicon`).
     defaultIconPath();
     const tabs = new Map<string, Tab>();
     const order = parsed.tabs.map((u, i) => {
-      const t = makeTab(u, ids?.[i], titles?.[i]);
+      const t = makeTab(u, ids?.[i], titles?.[i], places?.[i]);
       tabs.set(t.id, t);
       return t.id;
     });
@@ -281,7 +298,11 @@ export default function WorkspaceHost({
     const idx = Math.max(0, st.order.indexOf(st.active));
     const urls = st.order.map((id) => st.tabs.get(id)?.url ?? HOME_URL);
     const titles = st.order.map((id) => st.tabs.get(id)?.docTitle ?? "");
-    return { url: buildHostUrl(urls, idx, st.right), state: { wsActive: idx, wsIds: st.order.slice(), wsTitles: titles } };
+    const places = st.order.map((id) => st.tabs.get(id)?.place ?? null);
+    return {
+      url: buildHostUrl(urls, idx, st.right),
+      state: { wsActive: idx, wsIds: st.order.slice(), wsTitles: titles, wsPlaces: places },
+    };
   };
 
   // A tab op: a real history entry, so Back returns to the previous tab —
@@ -301,7 +322,8 @@ export default function WorkspaceHost({
     const sameState =
       cur?.wsActive === state.wsActive &&
       JSON.stringify(cur?.wsIds ?? null) === JSON.stringify(state.wsIds) &&
-      JSON.stringify(cur?.wsTitles ?? null) === JSON.stringify(state.wsTitles);
+      JSON.stringify(cur?.wsTitles ?? null) === JSON.stringify(state.wsTitles) &&
+      JSON.stringify(cur?.wsPlaces ?? null) === JSON.stringify(state.wsPlaces);
     if (location.pathname + location.search === url && sameState) return;
     const path = location.pathname;
     history.replaceState({ ...(cur && typeof cur === "object" ? cur : null), ...state }, "", url);
@@ -362,7 +384,11 @@ export default function WorkspaceHost({
       putBack(id, t.url);
       return;
     }
-    if (loc) t.url = loc;
+    if (loc) {
+      // Another page: the place the last one published is not this one's.
+      if (pathOfUrl(loc) !== pathOfUrl(t.url)) t.place = null;
+      t.url = loc;
+    }
     // The first location after an armed open: the arm goes to that page.
     const arm = R.arms.get(id);
     if (arm && loc) {
@@ -788,7 +814,14 @@ export default function WorkspaceHost({
       }
       const was = R.places.get(id);
       if (was && was.win === win && was.json === json) return;
-      R.places.set(id, { win, info: JSON.parse(json) as WsPublishedPlace, json });
+      const clean = JSON.parse(json) as WsPublishedPlace;
+      R.places.set(id, { win, info: clean, json });
+      // Remembered with the tab (its entry carries it across a reload).
+      const t = st.tabs.get(id);
+      if (t) {
+        t.place = asRailPlace(clean.place);
+        replaceMirror();
+      }
     }
     // Every tab's place rides the rail (the others faded, WS-27).
     rerender();
@@ -846,6 +879,7 @@ export default function WorkspaceHost({
     const stamped = stateIds(state, parsed.tabs.length);
     const ids = stamped && stamped.some((id) => st.tabs.has(id)) ? stamped : null;
     const titles = stateTitles(state, parsed.tabs.length);
+    const places = statePlaces(state, parsed.tabs.length);
     const used = new Set<string>();
     const parsedIds: string[] = [];
     parsed.tabs.forEach((u, i) => {
@@ -856,7 +890,7 @@ export default function WorkspaceHost({
       else if (want && st.tabs.has(want) && !used.has(want)) id = want;
       else if (!ids) id = st.order.find((x) => x !== homeId() && !used.has(x) && samePage(st.tabs.get(x)!.url, u));
       if (!id) {
-        const t = makeTab(u, want && !st.tabs.has(want) ? want : undefined, titles?.[i]);
+        const t = makeTab(u, want && !st.tabs.has(want) ? want : undefined, titles?.[i], places?.[i]);
         st.tabs.set(t.id, t);
         const prev = parsedIds[parsedIds.length - 1];
         const order = st.order.slice();
@@ -996,7 +1030,12 @@ export default function WorkspaceHost({
   // names: its tasks stand on top from the first paint, not among the faded
   // ones until the page publishes.
   const activeUrl = st.tabs.get(st.active)?.url ?? "";
-  const urlPlace = useMemo(() => placeOfUrl(activeUrl), [activeUrl]);
+  const activeKnown = st.tabs.get(st.active)?.place ?? null;
+  const activeKnownJson = JSON.stringify(activeKnown);
+  const urlPlace = useMemo(
+    () => (JSON.parse(activeKnownJson) as RailPlace | null) ?? placeOfUrl(activeUrl),
+    [activeUrl, activeKnownJson],
+  );
   const railPlace = (activePub?.place as RailPlace | undefined) ?? urlPlace ?? NO_PLACE;
   // EVERY OTHER TAB'S PLACE (WS-27), in strip order: what its page published,
   // else what its URL names (a tab not loaded since a reload has published
@@ -1008,8 +1047,9 @@ export default function WorkspaceHost({
       .map((id) => {
         const p = R.places.get(id);
         if (p && p.win === frames.get(id)?.contentWindow) return p.info.place as RailPlace;
+        // Not loaded: the place its page last said, else its URL's best guess.
         const t = st.tabs.get(id);
-        return t ? placeOfUrl(t.url) : null;
+        return t ? (t.place ?? placeOfUrl(t.url)) : null;
       }),
   );
   const railRoot = placeRoot(railPlace);

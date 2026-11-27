@@ -2,6 +2,7 @@ import { describe, expect, test } from "bun:test";
 import { chatUrl } from "@platform/lib/queue";
 import {
   adoptedRun,
+  asRailPlace,
   buildHostUrl,
   chatHoldKey,
   classifyNav,
@@ -450,5 +451,25 @@ describe("a run that became its session (the canvas fix chat)", () => {
     expect(sameRight(chat("session_id=s1"), chat("run=r9"), adopted)).toBe(false);
     expect(sameRight(chat("session_id=s1"), chat("run=r1"))).toBe(false);
     expect(sameRight(chat(""), chat("run=r1"), adopted)).toBe(false);
+  });
+});
+
+describe("asRailPlace (a place remembered in the history entry)", () => {
+  test("a place comes back as itself", () => {
+    expect(asRailPlace({ kind: "folder", dir: "/Users/me/data.v2" })).toEqual({ kind: "folder", dir: "/Users/me/data.v2" });
+    expect(asRailPlace({ kind: "folder", dir: "/a", word: "App", sessionless: true })).toEqual({ kind: "folder", dir: "/a", word: "App" });
+    expect(asRailPlace({ kind: "file", file: "/a/Makefile", dir: "/a" })).toEqual({ kind: "file", file: "/a/Makefile", dir: "/a" });
+    expect(asRailPlace({ kind: "canvas", env: "prod", name: "sales", dir: null, file: "hex.py" })).toEqual({
+      kind: "canvas",
+      env: "prod",
+      name: "sales",
+      dir: null,
+      file: "hex.py",
+    });
+  });
+  test("anything else is no place", () => {
+    for (const x of [null, undefined, "folder", 3, {}, { kind: "folder" }, { kind: "folder", dir: "" }, { kind: "file", file: 1 }, { kind: "canvas", env: "x", name: "a", dir: null }]) {
+      expect(asRailPlace(x)).toBeNull();
+    }
   });
 });
