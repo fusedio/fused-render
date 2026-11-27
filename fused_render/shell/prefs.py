@@ -1142,6 +1142,9 @@ def _workbench_state() -> dict:
         # The environments turned on (PUT `workbench_envs_enabled`): the
         # catalog's picker offers these and the default is one of them.
         "enabled": list(fusedcli.enabled_workbench_envs()),
+        # A Fused employee's hosted sign-in (fusedcli.is_staff): the internal
+        # environments' rows are drawn only then.
+        "staff": fusedcli.is_staff(read_prefs()),
     }
 
 
@@ -1902,18 +1905,25 @@ def put_prefs(body: dict = Body(...), x_fused: str | None = Header(default=None)
             changed = True
         if "workbench_envs_enabled" in body:
             # Which environments the person turned on (Fused hosted = prod,
-            # On-prem = custom). Unstable is not theirs to name: it joins by
-            # itself for staff (fusedcli._staff_unstable), so a list naming it
-            # is refused. Stored in the choices' own order; at least one stays
-            # on — the page turns Fused Workbench off instead of sending an
-            # empty list (settings/accounts.tsx).
+            # On-prem = custom), and for a Fused employee the internal ones
+            # too (unstable, staging) — one list on the wire, two stored keys,
+            # since the internal ones have their own default. Anyone else
+            # naming an internal one is refused (fusedcli.is_staff). Stored in
+            # the choices' own order; at least one of the person's own stays
+            # on — the page turns Fused Workbench off instead of sending a
+            # list without one (settings/accounts.tsx).
             from fused_render import fusedcli
 
             value = body.get("workbench_envs_enabled")
-            if (not isinstance(value, list) or not value
-                    or any(v not in fusedcli.USER_WORKBENCH_ENVS for v in value)):
+            staff = fusedcli.is_staff(prefs)
+            allowed = fusedcli.USER_WORKBENCH_ENVS + (
+                fusedcli.STAFF_WORKBENCH_ENVS if staff else ())
+            if (not isinstance(value, list)
+                    or any(v not in allowed for v in value)
+                    or not any(v in fusedcli.USER_WORKBENCH_ENVS for v in value)):
                 return JSONResponse(
-                    {"error": "'workbench_envs_enabled' must be a non-empty list of: "
+                    {"error": "'workbench_envs_enabled' must be a list of: "
+                              + ", ".join(allowed) + ", with at least one of: "
                               + ", ".join(fusedcli.USER_WORKBENCH_ENVS)},
                     status_code=400)
             if fusedcli.workbench_env_locked():
@@ -1923,6 +1933,9 @@ def put_prefs(body: dict = Body(...), x_fused: str | None = Header(default=None)
                     status_code=423)
             prefs["workbench_envs_enabled"] = [
                 e for e in fusedcli.USER_WORKBENCH_ENVS if e in value]
+            if staff:
+                prefs[fusedcli.STAFF_ENVS_PREF_KEY] = [
+                    e for e in fusedcli.STAFF_WORKBENCH_ENVS if e in value]
             changed = True
         launcher_rebind: str | None = None
         launcher_changed = False

@@ -51,6 +51,9 @@ export interface CanvasesStatus {
    *  the catalog's picker offers only these, and is not drawn for one.
    *  OPTIONAL: an older server answers without it. */
   enabled_envs?: string[];
+  /** The hosted sign-in is a Fused employee's: Preferences draws the
+   *  internal environments' switches only then. */
+  staff?: boolean;
   /** Per environment: its workbench web origin, the origin the workspace
    *  frames (the same, or — custom env with the embed proxy on — the
    *  loopback proxy in front of it), its clone folder
@@ -206,16 +209,21 @@ export const deleteFusedSettings = () =>
  *  runs leave FUSED_ENV unset, so they talk to whatever endpoint
  *  `~/.fused/settings.toml` names, and its `base_url` is that endpoint's web
  *  origin. */
-export type WorkbenchEnv = "unstable" | "prod" | "custom";
+export type WorkbenchEnv = "unstable" | "staging" | "prod" | "custom";
 
-/** fusedcli.WORKBENCH_ENV_CHOICES, in picker order: the two a person turns on
- *  first, then unstable — which has no switch and only ever shows up for a
- *  Fused employee signed in to hosted Fused (fusedcli._staff_unstable). */
-export const WORKBENCH_ENVS: readonly WorkbenchEnv[] = ["prod", "custom", "unstable"];
+/** fusedcli.WORKBENCH_ENV_CHOICES, in picker order: the two anyone turns on
+ *  first, then the internal ones — which only ever show up for a Fused
+ *  employee signed in to hosted Fused (fusedcli.is_staff). */
+export const WORKBENCH_ENVS: readonly WorkbenchEnv[] = ["prod", "custom", "unstable", "staging"];
 
 /** fusedcli.USER_WORKBENCH_ENVS: the environments Preferences has a switch
- *  for, and the only ones `workbench_envs_enabled` may name. */
+ *  for on every machine. At least one of them is always on. */
 export const USER_WORKBENCH_ENVS: readonly WorkbenchEnv[] = ["prod", "custom"];
+
+/** fusedcli.STAFF_WORKBENCH_ENVS: Fused's internal environments. Their
+ *  switches are drawn, and `workbench_envs_enabled` may name them, only for
+ *  a Fused employee (`status.staff` / `prefs.workbench.staff`). */
+export const STAFF_WORKBENCH_ENVS: readonly WorkbenchEnv[] = ["unstable", "staging"];
 
 export const isWorkbenchEnv = (s: unknown): s is WorkbenchEnv =>
   typeof s === "string" && (WORKBENCH_ENVS as readonly string[]).includes(s);
@@ -225,6 +233,7 @@ export const isWorkbenchEnv = (s: unknown): s is WorkbenchEnv =>
  *  tightest, the chip in a narrow sidebar (canvases.css container query). */
 export const ENV_NAMES: Record<WorkbenchEnv, { label: string; tag: string; initial: string }> = {
   unstable: { label: "Unstable", tag: "Unstable", initial: "U" },
+  staging: { label: "Staging", tag: "Staging", initial: "S" },
   prod: { label: "Fused hosted", tag: "Fused hosted", initial: "F" },
   custom: { label: "On-prem ~/.fused/settings.toml", tag: "On-prem", initial: "O" },
 };

@@ -554,9 +554,9 @@ const ENTRIES = [
   },
   // One row per environment a person can turn on (settings/accounts.tsx): the
   // switch turns it on, and an environment that is on carries its own sign-in
-  // underneath. Unstable is not here: it turns on by itself for a Fused
-  // employee signed in to Fused hosted (fusedcli._staff_unstable), and is
-  // never drawn.
+  // underneath. The internal ones (Unstable, Staging) come after On-prem's
+  // rows and exist — for the page and for search — only for a Fused employee
+  // signed in to Fused hosted (fusedcli.is_staff).
   {
     id: "workbench-prod",
     needs: "fused",
@@ -591,6 +591,28 @@ const ENTRIES = [
       id: "workbench-custom",
       on: (prefs) => prefs.canvases?.enabled === true && (prefs.workbench?.enabled ?? []).includes("custom"),
     },
+  },
+  {
+    id: "workbench-unstable",
+    needs: "fused",
+    group: "integrations",
+    section: "Fused Workbench",
+    label: "Unstable",
+    description: "Internal, Fused employees only. Fused at unstable.fused.io, on your Fused hosted sign-in.",
+    keywords: "fused workbench environment unstable internal staff env canvases",
+    available: (ctx) => ctx.prefs?.workbench?.staff === true,
+    parent: { id: "canvases", on: (prefs) => prefs.canvases?.enabled === true },
+  },
+  {
+    id: "workbench-staging",
+    needs: "fused",
+    group: "integrations",
+    section: "Fused Workbench",
+    label: "Staging",
+    description: "Internal, Fused employees only. Fused at staging.fused.io, on your Fused hosted sign-in.",
+    keywords: "fused workbench environment staging stg internal staff env canvases",
+    available: (ctx) => ctx.prefs?.workbench?.staff === true,
+    parent: { id: "canvases", on: (prefs) => prefs.canvases?.enabled === true },
   },
 
   // ── Connectors ───────────────────────────────────────────────────────────

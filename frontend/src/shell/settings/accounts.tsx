@@ -9,6 +9,7 @@
 // — the wait is a person finishing a browser round trip — and is otherwise idle.
 import { useCallback, useEffect, useRef, useState, useSyncExternalStore } from "react";
 import {
+  STAFF_WORKBENCH_ENVS,
   USER_WORKBENCH_ENVS,
   cancelLogin,
   loginOutcome,
@@ -25,6 +26,7 @@ import { publishCanvasesEnabled } from "@apps/canvases/feature-flag";
 import {
   cancelHfLogin,
   getHfAuth,
+  getPrefs,
   hfLogout,
   putCanvasesEnabled,
   putWorkbenchEnvsEnabled,
@@ -39,9 +41,10 @@ const FUSED_LOGIN_POLL_MS = 1500;
 
 // FUSED WORKBENCH (Preferences > Integrations > Fused Workbench): one row per environment a
 // person can turn on — Fused hosted (prod) and On-prem (custom) — each a
-// switch. Unstable has no row (owner, 2026-11-26): the server adds it to the
-// enabled list by itself for a Fused employee signed in to Fused hosted
-// (fusedcli._staff_unstable), and only the Canvases picker ever shows it. An environment that is on shows its own sign-in line under
+// switch. The internal ones (Unstable, Staging) get the same row, but only
+// for a Fused employee signed in to Fused hosted (fusedcli.is_staff; the
+// registry leaves their rows out otherwise); they ride that sign-in, so
+// they carry no sign-in line of their own. An environment that is on shows its own sign-in line under
 // the switch; Custom shows its config line first, and its sign-in unlocks
 // once ~/.fused/settings.toml names a deployment. The switches write
 // `workbench_envs_enabled` (PUT /api/prefs): the canvas catalog's environment
@@ -112,13 +115,14 @@ function useWorkbenchShared(): WorkbenchShared {
   return shared;
 }
 
-/** The environments a person turned on, as the server resolved them —
- *  unstable left out, since it is never theirs to switch. An older server
- *  answers without the list: both count as on then. */
+/** Every environment with a switch, in the order a write lists them. */
+const SWITCH_ENVS: readonly WorkbenchEnv[] = [...USER_WORKBENCH_ENVS, ...STAFF_WORKBENCH_ENVS];
+
+/** The environments turned on, as the server resolved them (the internal
+ *  ones are in the list only for a Fused employee). An older server answers
+ *  without the list: the two everyone has count as on then. */
 const enabledEnvsOf = (s: CanvasesStatus): WorkbenchEnv[] =>
-  s.enabled_envs
-    ? s.enabled_envs.filter(isWorkbenchEnv).filter((e) => USER_WORKBENCH_ENVS.includes(e))
-    : [...USER_WORKBENCH_ENVS];
+  s.enabled_envs ? s.enabled_envs.filter(isWorkbenchEnv) : [...USER_WORKBENCH_ENVS];
 
 const hostOf = (url: string): string => {
   try {
@@ -137,7 +141,22 @@ function WorkbenchEnvRow({ env, prefs, onChange }: { env: WorkbenchEnv } & PrefC
   const enabled = status ? enabledEnvsOf(status) : [];
   const on = enabled.includes(env);
   const pinned = status?.locked === true;
-  const lastOn = on && enabled.length === 1;
+  const internal = STAFF_WORKBENCH_ENVS.includes(env);
+  // The last of the two everyone has: an internal one never counts, and
+  // switching one off is never "Workbench off".
+  const lastOn = on && !internal && enabled.filter((e) => USER_WORKBENCH_ENVS.includes(e)).length === 1;
+
+  // The staff verdict comes from a whoami (a sign-in on this page, or the
+  // server's background check), after the page read its preferences: when
+  // the status disagrees with them, re-read so the internal rows appear (or
+  // go) without a reload. One row does it, once per verdict.
+  const staff = status?.staff;
+  const staffSeenRef = useRef<boolean | undefined>(undefined);
+  useEffect(() => {
+    if (env !== "prod" || staff === undefined || staffSeenRef.current === staff) return;
+    staffSeenRef.current = staff;
+    if (staff !== (prefs.workbench?.staff === true)) void getPrefs().then(onChange, () => {});
+  }, [env, staff, prefs.workbench?.staff, onChange]);
   const configured = env !== "custom" || status?.envs?.custom?.available !== false;
 
   const onToggle = async (next: boolean) => {
@@ -154,7 +173,7 @@ function WorkbenchEnvRow({ env, prefs, onChange }: { env: WorkbenchEnv } & PrefC
         onChange(saved);
         return;
       }
-      const want = USER_WORKBENCH_ENVS.filter((e) => (e === env ? next : enabled.includes(e)));
+      const want = SWITCH_ENVS.filter((e) => (e === env ? next : enabled.includes(e)));
       const saved = await putWorkbenchEnvsEnabled(want);
       // The page's own copy too: the proxy row under On-prem shows with it.
       onChange(saved);
@@ -240,7 +259,7 @@ function WorkbenchEnvRow({ env, prefs, onChange }: { env: WorkbenchEnv } & PrefC
           </Button>
         </div>
       )}
-      {status && on && status.cli_found && <WorkbenchEnvSignIn env={env} locked={!configured} />}
+      {status && on && status.cli_found && !internal && <WorkbenchEnvSignIn env={env} locked={!configured} />}
       {status && pinnedElsewhere && status.cli_found && <WorkbenchEnvSignIn env={null} locked={false} />}
       {editing && (
         <FusedSettingsModal
@@ -316,6 +335,9 @@ function WorkbenchEnvSignIn({ env, locked }: { env: WorkbenchEnv | null; locked:
       setHandle(null);
     }
     setStatus(s);
+    // The whoami above is what settles whether this is a Fused employee's
+    // sign-in: the shared status is re-read so the internal rows follow it.
+    if (env === "prod") void reloadWorkbenchShared(true);
     return s;
   }, [env, locked]);
 
@@ -477,6 +499,8 @@ function WorkbenchEnvSignIn({ env, locked }: { env: WorkbenchEnv | null; locked:
 
 export const WorkbenchProdControl = (props: PrefControlProps) => <WorkbenchEnvRow env="prod" {...props} />;
 export const WorkbenchCustomControl = (props: PrefControlProps) => <WorkbenchEnvRow env="custom" {...props} />;
+export const WorkbenchUnstableControl = (props: PrefControlProps) => <WorkbenchEnvRow env="unstable" {...props} />;
+export const WorkbenchStagingControl = (props: PrefControlProps) => <WorkbenchEnvRow env="staging" {...props} />;
 
 // Hugging Face (server/routers/hf_auth.py, D402): huggingface_hub's own
 // device-code login. Someone who needs a specific fine-grained token exports

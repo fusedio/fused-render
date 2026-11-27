@@ -153,8 +153,8 @@ def test_the_clone_root_must_be_exactly_one_segment_under_the_root(root):
     other = OTHER_ENV
     (root.parent / other / "user" / "beta").mkdir(parents=True)
     assert _canvas_push._clone_name(str(root.parent / other / "user" / "beta")) == ("beta", other)
-    (root.parent / "staging" / "gamma").mkdir(parents=True)
-    assert _canvas_push._clone_name(str(root.parent / "staging" / "gamma")) is None
+    (root.parent / "qa" / "gamma").mkdir(parents=True)
+    assert _canvas_push._clone_name(str(root.parent / "qa" / "gamma")) is None
     # A subdirectory of a clone is a different push (different content), and
     # the canvases root itself is not a canvas.
     (root / "user" / "alpha" / "sub").mkdir()
@@ -691,7 +691,7 @@ def test_a_pull_into_the_environment_folder_itself_is_refused(root, monkeypatch,
     assert _canvas_push._legacy_of(str(root)) is None
     # The base above the environments, and an unknown environment, are not.
     assert _canvas_push._locate(str(root.parent)) is None
-    assert _canvas_push._locate(str(root.parent / "staging")) is None
+    assert _canvas_push._locate(str(root.parent / "qa")) is None
 
 
 def test_a_pull_outside_any_clone_falls_through(root, monkeypatch, tmp_path):

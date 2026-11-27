@@ -160,7 +160,15 @@ describe("visibility", () => {
     expect(ids(false)).toContain("canvases");
     expect(ids(false)).not.toContain("workbench-prod");
     expect(ids(true)).toEqual(expect.arrayContaining(["canvases", "workbench-prod", "workbench-custom"]));
-    expect(SETTINGS.map((s) => s.id as string)).not.toContain("workbench-unstable");
+    // The internal ones exist only for a Fused employee, for search too.
+    expect(ids(true)).not.toContain("workbench-unstable");
+    const staff = ctx({}, { canvases: { enabled: true }, workbench: { staff: true } } as Partial<Prefs>);
+    expect(visibleSettings(staff).map((s) => s.id)).toEqual(
+      expect.arrayContaining(["workbench-unstable", "workbench-staging"]),
+    );
+    const searchable = (c: ReturnType<typeof ctx>) => searchableSettings(c).map((s) => s.id);
+    expect(searchable(staff)).toContain("workbench-staging");
+    expect(searchable(ctx({}, { canvases: { enabled: true } } as Partial<Prefs>))).not.toContain("workbench-staging");
   });
 
   test("the default-agent picker appears only with two or more agents on", () => {
@@ -331,7 +339,7 @@ describe("device capability gates", () => {
     const tags: Record<DeviceFeature, string[]> = {
       index: ["indexing", "ranked-search", "low-impact", "skipped-folders", "rebuild-index", "index-query"],
       hf: ["huggingface"],
-      fused: ["workbench-prod", "workbench-custom", "canvases", "canvases-embed-proxy", "share-sheet"],
+      fused: ["workbench-prod", "workbench-custom", "workbench-unstable", "workbench-staging", "canvases", "canvases-embed-proxy", "share-sheet"],
       update: ["auto-update"],
       native_windows: ["native-windows"],
       terminal: ["notify-terminal"],

@@ -1203,6 +1203,9 @@ def api_canvases_status(env: str = ""):
         # The environments turned on in Preferences: the catalog's picker
         # offers only these, and hides itself when there is one.
         "enabled_envs": list(enabled_workbench_envs()),
+        # A Fused employee's hosted sign-in: Preferences draws the internal
+        # environments' switches only then (fusedcli.is_staff).
+        "staff": _is_staff(),
         # Clone counts are a local listdir, no CLI — informational on the
         # Preferences row. `available` is false only for custom whose
         # settings file names no `base_url` (`fused_settings_configured`):
@@ -1837,12 +1840,19 @@ def _whoami_result(env: str):
 
 
 # The envs whose sign-in is hosted Fused's one shared `fused login` store.
-_HOSTED_ENVS = ("prod", "unstable")
+_HOSTED_ENVS = ("prod", "unstable", "staging")
+
+
+def _is_staff() -> bool:
+    from fused_render import fusedcli
+    from fused_render.shell import prefs
+
+    return fusedcli.is_staff(prefs.read_prefs())
 
 
 def record_staff_email(email: object) -> None:
     """Store whether the hosted sign-in belongs to a Fused employee
-    (`fusedcli.is_staff_email`) — the verdict `fusedcli._staff_unstable`
+    (`fusedcli.is_staff_email`) — the verdict `fusedcli.is_staff`
     reads. Written only when it changes; the CLI wrapper is re-exported then,
     since the default environment it bakes in may move with it. A whoami that
     named no email leaves the last verdict alone rather than revoking it on a

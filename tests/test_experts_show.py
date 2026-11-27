@@ -165,7 +165,7 @@ def test_the_environment_is_the_user_s_default_unless_named(base, monkeypatch):
     assert calls[0] == ("create", "unstable", "A")
     assert not show.call(s, "canvas_create", {"name": "B", "env": "prod"})["isError"]  # the user named one
     assert ("create", "prod", "B") in calls
-    res = show.call(s, "canvas_create", {"name": "C", "env": "staging"})
+    res = show.call(s, "canvas_create", {"name": "C", "env": "qa"})
     assert res["isError"] and "one of" in _text(res)
 
 
