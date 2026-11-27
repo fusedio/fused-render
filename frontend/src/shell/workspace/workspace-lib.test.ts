@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import {
+  asRailPlace,
   buildHostUrl,
   classifyNav,
   encodeRight,
@@ -325,5 +326,25 @@ describe("what a restored tab may be", () => {
     expect(buildHostUrl(["/home", "/tasks?embed=%31"], 1)).toMatch(/^\/home\?_tabs=/);
     expect(buildHostUrl(["/home", "/tasks?embed=1"], 1)).toMatch(/^\/home\?_tabs=/);
     expect(buildHostUrl(["/home", "/tasks?embedded=1"], 1)).toMatch(/^\/tasks\?embedded=1&_tabs=/);
+  });
+});
+
+describe("asRailPlace (a place remembered in the history entry)", () => {
+  test("a place comes back as itself", () => {
+    expect(asRailPlace({ kind: "folder", dir: "/Users/me/data.v2" })).toEqual({ kind: "folder", dir: "/Users/me/data.v2" });
+    expect(asRailPlace({ kind: "folder", dir: "/a", word: "App", sessionless: true })).toEqual({ kind: "folder", dir: "/a", word: "App" });
+    expect(asRailPlace({ kind: "file", file: "/a/Makefile", dir: "/a" })).toEqual({ kind: "file", file: "/a/Makefile", dir: "/a" });
+    expect(asRailPlace({ kind: "canvas", env: "prod", name: "sales", dir: null, file: "hex.py" })).toEqual({
+      kind: "canvas",
+      env: "prod",
+      name: "sales",
+      dir: null,
+      file: "hex.py",
+    });
+  });
+  test("anything else is no place", () => {
+    for (const x of [null, undefined, "folder", 3, {}, { kind: "folder" }, { kind: "folder", dir: "" }, { kind: "file", file: 1 }, { kind: "canvas", env: "x", name: "a", dir: null }]) {
+      expect(asRailPlace(x)).toBeNull();
+    }
   });
 });
