@@ -933,6 +933,7 @@ export default function GlobalSidebar({ config }: { config: Config }) {
         title: app.name,
         icon: <RailAppIcon app={app} />,
         show: appShow({ path: app.path, entry: app.entry, rawUrl, embedUrl: embedUrlForFsPath }),
+        active: onAppPath === app.path,
         onOpen: () => railGo("projects", appPageUrl(app.path)),
       });
     for (const app of canvasesInNav ? desk.filter((a) => a.canvas) : []) {
@@ -942,6 +943,7 @@ export default function GlobalSidebar({ config }: { config: Config }) {
         title: app.name,
         icon: <CanvasGlyph size={16} />,
         show: canvasShow({ path: app.path, embedUrl: embedUrlForFsPath }),
+        active: !!app.canvas && !!onCanvas && onCanvas.env === app.canvas.env && onCanvas.name === app.canvas.name,
         onOpen: () => railGo("canvases", href),
       });
     }
@@ -963,7 +965,9 @@ export default function GlobalSidebar({ config }: { config: Config }) {
   }
   // THE PAGE YOU ARE ON HAS NO CARD (owner, 2026-11-27: "if the page is
   // active it shouldn't popup"): an entry lit as the current page opens
-  // nothing on hover — it keeps its active look and its tooltip.
+  // nothing on hover — it keeps its active look and its tooltip. Projects,
+  // canvases and favourites say so themselves (the rail shows only the first
+  // few); the rest take the rail item's own `active`.
   const railActive = new Map(railItems.map((r) => [r.key, r.active === true] as const));
   for (const it of leftItems) if (railActive.get(it.key)) it.active = true;
   // Published with the switch on; off, the empty list puts every card down.
