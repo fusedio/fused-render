@@ -21,6 +21,7 @@ import uuid
 from fused_render.bots import paths as _bpaths
 
 BOT_FILE = "bot.json"
+BUSY_STATUSES = ("running", "waiting", "paused")
 EVENTS_FILE = "events.jsonl"
 USAGE_KEEP_DAYS = 7
 USAGE_CACHE_S = 10

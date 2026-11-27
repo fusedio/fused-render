@@ -86,7 +86,7 @@ import threading
 import time
 
 from fused_render import _platform
-from fused_render.bots import paths as bpaths
+from fused_render.bots import paths as bpaths, store
 
 logger = logging.getLogger(__name__)
 
@@ -186,7 +186,6 @@ def get(bid: str):
             _bots.pop(key, None)
             b = None
         if b is None:
-            from fused_render.bots import store
             try:
                 exists = os.path.isfile(store.meta_path(bid))
             except LookupError:
@@ -204,12 +203,11 @@ def forget(bid: str) -> None:
 
 
 def ids() -> list[str]:
-    from fused_render.bots import store
     return store.list_ids()
 
 
 def all():  # noqa: A001 — the registry's own spelling (OpenBot `_all`)
-    from fused_render.bots import browsers, store
+    from fused_render.bots import browsers
     require_owner()
     out = []
     try:
@@ -698,7 +696,7 @@ def _legacy_bots_remain() -> bool:
     """A BOT still waiting: a legacy data dir holding a bot.json, or a parked `<bots_root>/.unmigrated/<id>/bot.json`.
     Strays (`.unmigrated/stray-<ts>/`, parked from every real tree: `cache/bots/browsers` and the like) and empty
     dirs never count, or the seed would wait forever on an install without a seed stamp."""
-    from fused_render.bots import migrate_v3, store
+    from fused_render.bots import migrate_v3
     if migrate_v3._legacy_bots():
         return True
     parked = os.path.join(bpaths.bots_root(), migrate_v3.UNMIGRATED)
@@ -743,7 +741,7 @@ def _start_router() -> None:
 
 def _reconcile() -> None:
     """The takeover walk: disk state an owner that quit left behind. A bot.json
-    that still says running / waiting with no thread here goes idle with a
+    that still says running / waiting / paused with no thread here goes idle with a
     system line; a routine stuck on "started" gets outcome "stopped" so its
     card and the breaker tell the truth. Runs once per workspace claim (a
     `_WS_STEPS` step), which also covers a plain restart after a crash; never
@@ -752,7 +750,7 @@ def _reconcile() -> None:
     for b in all():
         try:
             meta = b.meta
-            stale_task = meta.get("status") in ("running", "waiting") and not (b.thread and b.thread.is_alive())
+            stale_task = meta.get("status") in store.BUSY_STATUSES and not b.running()
             stuck = [r for r in meta.get("routines") or [] if r.get("last_result") == "started"]
             if not stale_task and not stuck:
                 continue
@@ -787,7 +785,6 @@ def routines_due() -> list:
     bot.json before syncing. Needs no ownership — schedule_wake seeds the bots'
     share of the plist from here in any process that syncs the Tasks share."""
     from datetime import datetime, timezone
-    from fused_render.bots import store
     due = []
     for bid in store.list_ids():
         try:
@@ -918,7 +915,7 @@ def has_been_used() -> bool:
     must not be stranded until someone happens to open the Bots page). The
     boot hook starts the scheduler only when this is true; otherwise the first
     bots API request does (`ensure_started`)."""
-    from fused_render.bots import fusedbot_import, store
+    from fused_render.bots import fusedbot_import
     try:
         if os.path.exists(seed_stamp_path()):
             return True
