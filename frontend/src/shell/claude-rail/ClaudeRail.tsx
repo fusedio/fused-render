@@ -869,6 +869,7 @@ export function ClaudeRail({
   onNewChat,
   favouritesOnly = false,
   panel,
+  otherPlaces,
 }: {
   /** Where the rail stands (claude-rail-lib `RailPlace`): whose chats ride
    *  it. On a canvas the selected node's file narrows it (header). The
@@ -949,6 +950,11 @@ export function ClaudeRail({
    *  a list ring, a door or the + opens it there instead of window A, and
    *  window A pins nothing. Absent: every rule above, unchanged. */
   panel?: RailPanel;
+  /** A WORKSPACE'S OTHER TABS (SPEC §56 WS-27): every other open tab's place.
+   *  Their chats join the list's faded group, under the active place's own
+   *  (claude-rail-lib `railRows`). The caller hands a stable array while
+   *  nothing changed: the seats derive from it. */
+  otherPlaces?: readonly RailPlace[];
 }) {
   const rows = useTasksPulseRows();
   // The panel's view, read at a click (handlers built before a re-render).
@@ -973,6 +979,10 @@ export function ClaudeRail({
   // the List's order in rings, drafts included (claude-rail-lib
   // `sessionless`) — every page's rail, so it is set here, not by the page.
   const seatPlace = useMemo((): RailPlace => ({ ...place, sessionless: true }), [place]);
+  const seatOthers = useMemo(
+    (): RailPlace[] => (otherPlaces ?? []).map((p) => ({ ...p, sessionless: true })),
+    [otherPlaces],
+  );
   const scope = placeName(place);
   // THE CAPTION'S WORDS ARE THE LISTING'S, not the pulse's: the pulse carries
   // status and a title, but the list row's caption is built from the full row
@@ -1061,8 +1071,8 @@ export function ClaudeRail({
   // THE LIST: the place's chats, starred or blocked or not (owner,
   // 2026-11-05: a favourite's ring stands in both sections).
   const allSeats = useMemo(
-    () => (favouritesOnly ? [] : railRows(rows, full, seatPlace)),
-    [rows, full, seatPlace, favouritesOnly],
+    () => (favouritesOnly ? [] : railRows(rows, full, seatPlace, Date.now(), seatOthers)),
+    [rows, full, seatPlace, seatOthers, favouritesOnly],
   );
   // THE CARD'S STATE IS THE SHELL'S (plus-card-store): a pinned card
   // outlives this rail's page, as the Tasks card does.

@@ -56,6 +56,9 @@ export interface RailRow {
    *  node's — drawn faded, under the node's own (`railRows`). The same on a
    *  file's rail: a chat of the file's folder that is not the file's. */
   off?: boolean;
+  /** A workspace's other tab's row (`railRows` `others`): that tab's place,
+   *  which its card's head names instead of the rail's own. */
+  at?: RailPlace;
 }
 
 /** Where the rail stands (header). `sessionless` admits rows with no session
@@ -471,27 +474,14 @@ function widePlace(place: RailPlace): RailPlace {
   return place;
 }
 
-/**
- * The rail's seats, top to bottom.
- *
- * `now` is read once by the caller and handed down, as `sortForList` asks:
- * every row is placed against one instant.
- */
-export function railRows(
+/** One place's seats, in the List's order, and its narrow place (the node,
+ *  the open file) when it has one — `railRows`' groups are cut from it. */
+function placeSeats(
   rows: readonly TaskPulseTask[],
   listing: ReadonlyMap<string, Task>,
   place: RailPlace,
-  now: number = Date.now(),
-): RailRow[] {
-  // A SELECTED NODE SORTS THE LIST, it no longer narrows it (owner,
-  // 2026-11-10: "we show all tasks, the tasks related with node will sort up
-  // and then there will be separator then the other tasks [faded]"): the
-  // seats are the whole canvas's, the node's first (each group in the List's
-  // order), the rest marked `off`.
-  // AN OPEN FILE SORTS ITS FOLDER'S LIST THE SAME WAY (owner, 2026-11-16:
-  // "let's do the same with file explorer, when we open a file"): the seats
-  // are the folder's (the folder page's own rail), the file's first, the
-  // rest marked `off`.
+  now: number,
+): { seats: RailRow[]; narrow: RailPlace | null } {
   const narrow =
     (place.kind === "canvas" && place.file) || (place.kind === "file" && place.dir) ? place : null;
   const at = narrow ? widePlace(narrow) : place;
@@ -530,14 +520,62 @@ export function railRows(
       return pulse ? { pulse, row: held.get(row.key) ?? null } : null;
     })
     .filter((r): r is RailRow => r !== null);
-  if (!narrow) return seats;
-  const ours: RailRow[] = [];
-  const rest: RailRow[] = [];
-  for (const s of seats) {
-    if (onRail(s.pulse, narrow)) ours.push(s);
-    else rest.push({ ...s, off: true });
+  return { seats, narrow };
+}
+
+/**
+ * The rail's seats, top to bottom.
+ *
+ * `now` is read once by the caller and handed down, as `sortForList` asks:
+ * every row is placed against one instant.
+ *
+ * `others` — A WORKSPACE'S OTHER TABS (SPEC §56 WS-27): the places of every
+ * other open tab. Their rows join the faded group, after the active place's
+ * own faded rest, each tab's in the List's order; a row already seated
+ * higher is not seated again. Each such seat carries its tab's place (`at`),
+ * so its card names where it lives. None: the rail of one page, unchanged.
+ */
+export function railRows(
+  rows: readonly TaskPulseTask[],
+  listing: ReadonlyMap<string, Task>,
+  place: RailPlace,
+  now: number = Date.now(),
+  others: readonly RailPlace[] = [],
+): RailRow[] {
+  // A SELECTED NODE SORTS THE LIST, it no longer narrows it (owner,
+  // 2026-11-10: "we show all tasks, the tasks related with node will sort up
+  // and then there will be separator then the other tasks [faded]"): the
+  // seats are the whole canvas's, the node's first (each group in the List's
+  // order), the rest marked `off`.
+  // AN OPEN FILE SORTS ITS FOLDER'S LIST THE SAME WAY (owner, 2026-11-16:
+  // "let's do the same with file explorer, when we open a file"): the seats
+  // are the folder's (the folder page's own rail), the file's first, the
+  // rest marked `off`.
+  const { seats, narrow } = placeSeats(rows, listing, place, now);
+  let out = seats;
+  if (narrow) {
+    const ours: RailRow[] = [];
+    const rest: RailRow[] = [];
+    for (const s of seats) {
+      if (onRail(s.pulse, narrow)) ours.push(s);
+      else rest.push({ ...s, off: true });
+    }
+    out = [...ours, ...rest];
   }
-  return [...ours, ...rest];
+  if (others.length === 0) return out;
+  // ALL TABS' TASKS, ONE FADED GROUP (owner, 2026-11-28: "only the active
+  // tab's tasks on top, the rest below a separator and faded … inside the
+  // faded group the tasks related to the active tab on top").
+  const seen = new Set(out.map((s) => s.pulse.key));
+  for (const other of others) {
+    for (const s of placeSeats(rows, listing, other, now).seats) {
+      if (seen.has(s.pulse.key)) continue;
+      seen.add(s.pulse.key);
+      // A file tab's folder rows live in the folder, not on the file.
+      out.push({ ...s, off: true, at: inPlace(s.pulse, other) ? other : widePlace(other) });
+    }
+  }
+  return out;
 }
 
 /** A QUEUED FORM ROW'S DOOR (owner, 2026-11-09: "with project queue flag on,

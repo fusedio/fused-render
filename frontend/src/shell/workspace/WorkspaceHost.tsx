@@ -48,7 +48,7 @@ import { displayName } from "@platform/lib/flavor";
 import { useFavicon } from "@platform/lib/hooks";
 import type { Config } from "@platform/lib/api";
 import { ClaudeRail, type NewTaskSeed } from "@shell/claude-rail/ClaudeRail";
-import type { RailPlace } from "@shell/claude-rail/claude-rail-lib";
+import { placeRoot, type RailPlace } from "@shell/claude-rail/claude-rail-lib";
 import type { RailPanel, RailPanelShows } from "@shell/claude-rail/rail-panel";
 import { readListing, readTasksRows } from "@shell/tasksPulse";
 import { taskChatTarget } from "@shell/tasks-lib";
@@ -68,6 +68,7 @@ import {
   normalizeOpenUrl,
   pageUrlOf,
   parseHostUrl,
+  placeOfUrl,
   parseRight,
   planOpen,
   readFrameLoc,
@@ -200,8 +201,19 @@ function readFavicon(doc: Document | null | undefined): string | null {
   }
 }
 
-export default function WorkspaceHost({ config }: { config: Config }) {
+export default function WorkspaceHost({
+  config,
+  onPagePath,
+}: {
+  config: Config;
+  /** The shown page's PATH changed without a tab op (a hop inside the active
+   *  tab): App re-reads what it derives from the address (the terminal's cwd).
+   *  A tab op says so itself (NAV_EVENT); a param write is not a path change. */
+  onPagePath?: () => void;
+}) {
   const [, rerender] = useReducer((n: number) => n + 1, 0);
+  const onPagePathRef = useRef(onPagePath);
+  onPagePathRef.current = onPagePath;
 
   // The whole strip, initialised once from the host URL. A reload keeps its ids
   // (the entry's state survives it), so Back into an older entry still matches.
@@ -270,7 +282,9 @@ export default function WorkspaceHost({ config }: { config: Config }) {
       JSON.stringify(cur?.wsIds ?? null) === JSON.stringify(state.wsIds) &&
       JSON.stringify(cur?.wsTitles ?? null) === JSON.stringify(state.wsTitles);
     if (location.pathname + location.search === url && sameState) return;
+    const path = location.pathname;
     history.replaceState({ ...(cur && typeof cur === "object" ? cur : null), ...state }, "", url);
+    if (location.pathname !== path) onPagePathRef.current?.();
   };
 
   // The window's title follows the active tab's.
@@ -352,7 +366,7 @@ export default function WorkspaceHost({ config }: { config: Config }) {
     const pub = R.places.get(id);
     if (pub && pub.win !== iframe.contentWindow) {
       R.places.delete(id);
-      if (id === st.active) rerender();
+      rerender();
     }
     const w = wireOf(id);
     w.loaded = true;
@@ -630,7 +644,8 @@ export default function WorkspaceHost({ config }: { config: Config }) {
       if (was && was.win === win && was.json === json) return;
       R.places.set(id, { win, info: JSON.parse(json) as WsPublishedPlace, json });
     }
-    if (id === st.active) rerender();
+    // Every tab's place rides the rail (the others faded, WS-27).
+    rerender();
   };
 
   // The panel chat's params are `_right`'s (panel-params.ts).
@@ -804,8 +819,43 @@ export default function WorkspaceHost({ config }: { config: Config }) {
     return p && p.win === frames.get(st.active)?.contentWindow ? p.info : null;
   })();
   const activeFrameWin = () => frames.get(st.active)?.contentWindow ?? null;
-  const railPlace = (activePub?.place as RailPlace | undefined) ?? NO_PLACE;
-  const railNewTask = (activePub?.newTask as NewTaskSeed | undefined) ?? NO_TASK;
+  // …and UNTIL ITS PAGE HAS SAID (a tab still loading), the place its URL
+  // names: its tasks stand on top from the first paint, not among the faded
+  // ones until the page publishes.
+  const activeUrl = st.tabs.get(st.active)?.url ?? "";
+  const urlPlace = useMemo(() => placeOfUrl(activeUrl), [activeUrl]);
+  const railPlace = (activePub?.place as RailPlace | undefined) ?? urlPlace ?? NO_PLACE;
+  // EVERY OTHER TAB'S PLACE (WS-27), in strip order: what its page published,
+  // else what its URL names (a tab not loaded since a reload has published
+  // nothing). One per place, none the active tab's. Keyed by its JSON, so the
+  // rail's seats re-derive only when a place changed.
+  const othersJson = JSON.stringify(
+    st.order
+      .filter((id) => id !== st.active)
+      .map((id) => {
+        const p = R.places.get(id);
+        if (p && p.win === frames.get(id)?.contentWindow) return p.info.place as RailPlace;
+        const t = st.tabs.get(id);
+        return t ? placeOfUrl(t.url) : null;
+      }),
+  );
+  const railRoot = placeRoot(railPlace);
+  const otherPlaces = useMemo(() => {
+    const roots = new Set([railRoot]);
+    const out: RailPlace[] = [];
+    for (const p of JSON.parse(othersJson) as (RailPlace | null)[]) {
+      if (!p || roots.has(placeRoot(p))) continue;
+      roots.add(placeRoot(p));
+      out.push(p);
+    }
+    return out;
+  }, [othersJson, railRoot]);
+  // The +'s target meanwhile: the folder or file that URL names.
+  const urlTask = useMemo((): NewTaskSeed => {
+    const target = !urlPlace ? null : urlPlace.kind === "folder" ? urlPlace.dir : urlPlace.kind === "file" ? urlPlace.file : null;
+    return target ? { target, waiting: null, on: null } : NO_TASK;
+  }, [urlPlace]);
+  const railNewTask = (activePub?.newTask as NewTaskSeed | undefined) ?? urlTask;
   const railGitPath = activePub?.git?.path ?? null;
   const railGit = useMemo(
     () => (railGitPath ? { path: railGitPath, onOpenGit: () => void live.current.openRightView({ kind: "git", path: railGitPath }) } : undefined),
@@ -938,6 +988,7 @@ export default function WorkspaceHost({ config }: { config: Config }) {
             }
           : {})}
         panel={panel}
+        otherPlaces={otherPlaces}
       />
     </div>
   );
