@@ -13495,9 +13495,13 @@ nothing here exists and nothing changes.
   list without Home gets it at 0, so turning the flag on while on a file gives
   Home and that file, the file active. Reload restores every tab.
 - **WS-9 History.** Every open, switch and close is a host history entry
-  carrying `{wsActive, wsIds, wsTitles}`; location syncs replace. Back/Forward
-  reconcile the strip in place, without reloading a frame; a traversal that
-  lands in a hidden tab shows it.
+  carrying `{wsActive, wsIds, wsTitles, wsPlaces}`; location syncs replace.
+  Back / Forward undo and redo every step: on a traversal the strip becomes
+  the entry's — a live tab the entry lacks is closed (Back over its opening,
+  Forward over its closing), a tab it names that is gone comes back
+  (unmounted until shown, so reloaded), and the entry's tab is shown. A tab
+  both have is left as it is (its own history covers where it is), so no
+  kept frame reloads; a traversal that lands in a hidden tab shows it.
 - **WS-10 Params stay in their tab.** The host is a param boundary and opaque:
   a page's params are its frame's own URL, and the runtime's global-params
   read (D72) stops before the host, whose URL mirrors another tab.

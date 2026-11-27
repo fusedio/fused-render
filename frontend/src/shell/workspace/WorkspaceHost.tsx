@@ -856,11 +856,16 @@ export default function WorkspaceHost({
     };
   }
 
-  // ---- popstate: reconcile in place ------------------------------------------
-  // The entry names a tab set; the live tabs are the truth about where each one
-  // is now (their own history covers that), so nothing is navigated and nothing
-  // removed — tabs the entry lacks stay, tabs it names that are gone come back
-  // (unmounted until shown), and the entry's active tab is selected.
+  // ---- popstate: the strip becomes the entry's --------------------------------
+  // BACK AND FORWARD UNDO AND REDO EVERY STEP (owner, 2026-11-27: "tab switch,
+  // tab open or close, right-panel change … each one history step; Back undoes
+  // the last one — a closed tab comes back, reloaded"). So an entry's tab set
+  // is the truth on a traversal: a live tab the entry lacks is CLOSED (Back
+  // over its opening, Forward over its closing) and a tab it names that is
+  // gone COMES BACK, unmounted until shown. A tab both have is left exactly
+  // as it is — its own history covers where it is — so nothing is navigated
+  // and no kept frame reloads. (It used to keep every live tab, which made
+  // Back a tab switch and Forward unable to redo a close.)
   const onPopState = () => {
     const parsed = parseHostUrl(location.pathname + location.search);
     // The panel follows the entry (WS-22): a chat whose query a traversal
@@ -901,8 +906,16 @@ export default function WorkspaceHost({
       used.add(id);
       parsedIds.push(id);
     });
+    // The entry's strip, in its order; what it does not name is closed.
+    const keep = new Set(parsedIds);
+    for (const id of st.order) if (!keep.has(id)) dropTab(id);
+    st.order = parsedIds;
     const idx = typeof state?.wsActive === "number" ? state.wsActive : parsed.active;
-    activate(parsedIds[idx] ?? parsedIds[parsed.active] ?? homeId(), "replace");
+    const target = parsedIds[idx] ?? parsedIds[parsed.active] ?? homeId();
+    // The shown tab may be one just closed: `activate` must not read it.
+    if (!st.tabs.has(st.active)) st.active = target;
+    activate(target, "replace");
+    rerender();
   };
 
   // Handlers close over `st` and stable maps but are re-created per render, so
@@ -1102,7 +1115,16 @@ export default function WorkspaceHost({
   };
   const peekSession = view?.kind === "tasks" && view.peek && !pendingEntryId(view.peek) ? view.peek : null;
   const panel: RailPanel = {
-    shows: showsOf(view),
+    // THE + IS LIT ONLY FOR THE HOME IT WOULD OPEN: a chat's Back leaves the
+    // panel on ITS folder's home, which is not the active tab's — the + must
+    // not read as open there (its click then brings the active tab's).
+    shows: ((): RailPanelShows => {
+      const shows = showsOf(view);
+      const homeOf = railNewTask.target || config.fused_dir;
+      return shows.kind === "home" && view?.kind === "chat" && view.file !== homeOf
+        ? { kind: "chat", sessionId: null, queued: null }
+        : shows;
+    })(),
     openChat: (t, row) => {
       const merged = row ? { ...row, status: t.status } : t;
       const file = taskChatTarget(merged);

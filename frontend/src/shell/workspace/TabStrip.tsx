@@ -118,13 +118,21 @@ export default function TabStrip({
     markEdges();
   }, [activeId, tabs.length, reveal, markEdges]);
 
+  // …and when the STRIP changes width (the right panel dragged wider, the
+  // window narrowed): the shown tab could end up past its edge with nothing
+  // having been opened or switched.
+  const activeRef = useRef(activeId);
+  activeRef.current = activeId;
   useEffect(() => {
     const el = strip.current;
     if (!el || typeof ResizeObserver === "undefined") return;
-    const ro = new ResizeObserver(markEdges);
+    const ro = new ResizeObserver(() => {
+      if (activeRef.current) reveal(activeRef.current);
+      markEdges();
+    });
     ro.observe(el);
     return () => ro.disconnect();
-  }, [markEdges]);
+  }, [markEdges, reveal]);
 
   // ONE TAB STOP for the whole strip (the shown tab), and the arrows walk it —
   // the tablist pattern. Twelve tabs were twenty-four stops before (each tab
