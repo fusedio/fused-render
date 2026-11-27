@@ -153,7 +153,7 @@ def test_the_agent_route_is_gated_on_its_action(home):
         body = {"action": action} if action is not None else {}
         assert call(app, "/api/claude/agent", "POST", body, headers=[cookie]) == 404, action
     assert call(app, "/api/claude/worktrees", "POST", {"action": "list"}, headers=[cookie]) == 200
-    assert call(app, "/api/claude/worktrees", "POST", {"action": "create"}, headers=[cookie]) == 404
+    assert call(app, "/api/claude/worktrees", "POST", {"action": "create"}, headers=[cookie]) == 200
     assert call(app, "/api/claude/worktrees", "POST", {"action": "remove"}, headers=[cookie]) == 404
     assert inner.hits == [h for h in inner.hits if h[1] == "/api/claude/worktrees"]
 
@@ -195,4 +195,12 @@ def test_a_phone_starts_agents_only_in_the_read_scope(home):
     # The actions with no folder in their body are not scoped.
     assert call(app, agent, "POST", {"action": "poll", "file": "/etc"}, headers=[cookie]) == 200
     assert call(app, "/api/schedule", headers=[cookie]) == 200
+    assert len(inner.hits) == 2
+    # A worktree is created only in the same scope; listing only reads.
+    inner.hits.clear()
+    wt = "/api/claude/worktrees"
+    assert call(app, wt, "POST", {"action": "create", "file": folder, "name": "x"}, headers=[cookie]) == 200
+    assert call(app, wt, "POST", {"action": "list", "file": str(home / "elsewhere")}, headers=[cookie]) == 200
+    for file in ("/", "~", str(home / "elsewhere"), ["x"]):
+        assert call(app, wt, "POST", {"action": "create", "file": file, "name": "x"}, headers=[cookie]) == 404, file
     assert len(inner.hits) == 2

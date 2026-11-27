@@ -79,6 +79,7 @@ export function WorktreeMenuBody({
 }: WorktreeMenuBodyProps) {
   const current = rows.find((r) => r.current) ?? null;
   const fieldOk = creating !== null && validWorktreeName(creating.trim());
+  const removable = !!current?.removable;
   return (
     <div className="chat-worktree-list" role="group" aria-label="Worktrees">
       {rows.map((row) => (
@@ -142,7 +143,7 @@ export function WorktreeMenuBody({
           ) : null}
         </div>
       )}
-      {current?.removable ? (
+      {removable ? (
         <button
           type="button"
           className="chat-worktree-row is-danger"
@@ -152,7 +153,7 @@ export function WorktreeMenuBody({
           {removeLabel(confirming, dirt ?? dirtyState(current))}
         </button>
       ) : null}
-      {current?.removable && running ? (
+      {removable && running ? (
         <div className="chat-worktree-note">Stop the run before removing this worktree.</div>
       ) : null}
       {error ? <div className="chat-worktree-note is-error">{error}</div> : null}

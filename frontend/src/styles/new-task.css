@@ -1830,3 +1830,18 @@ button.new-task-source:focus-visible {
   max-width: 36ch;
   text-align: center;
 }
+
+/* START IN A NEW WORKTREE: a toggle beside the Folder pill, and the name field
+   it opens. On, the toggle wears the foreground ink; the field is one pill tall. */
+.new-task-dialog .nt-pills .nt-pills-right .pp.nt-wt--on {
+  color: var(--fg);
+  background: var(--ctl-quiet-bg);
+}
+.new-task-dialog .nt-wt-field {
+  width: 150px;
+  min-width: 0;
+  height: 26px;
+  padding: 0 8px;
+  font-size: 12px;
+  font-family: var(--font-mono, ui-monospace, monospace);
+}

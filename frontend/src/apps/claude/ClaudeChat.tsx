@@ -450,7 +450,9 @@ const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
 /** WHETHER A WORKTREE MENU IS MOUNTED for this target: any file or folder the
  *  pane has named — the menu then hides itself unless its list says repo. */
 export function worktreeMenuTarget(file: string | null, noun: TargetNoun): boolean {
-  // Not on the phone: worktree create/remove are Mac-disk operations the LAN door 404s (lan.py `_DOORS`).
+  // Not on the phone: a switch navigates to a folder chat (`paneChatUrl`), a
+  // route the phone page does not have, and the LAN door 404s `remove`
+  // (lan.py `_DOORS`). The New task card's Worktree toggle is the phone's way.
   return !!file && !!noun && !isLanHost();
 }
 

@@ -19,6 +19,7 @@ import { Button } from "@platform/shadcn/ui/button";
 import { Checkbox } from "@platform/shadcn/ui/checkbox";
 import { RadioGroup, RadioGroupItem } from "@platform/shadcn/ui/radio-group";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@platform/shadcn/ui/tabs";
+import { enterIsNewline } from "@platform/lib/host";
 import { cn } from "@platform/lib/utils";
 import { isOverlayOpen } from "@platform/lib/ui-overlay";
 
@@ -409,7 +410,9 @@ export function QuestionCard({ row, onAnswer, onDismiss }: QuestionCardProps) {
    *  does nothing at all, Esc gives the options back, and keydown stops here so
    *  the pane's own shortcuts do not read an answer as commands. */
   function fieldKeys(i: number, q: Question, ev: React.KeyboardEvent<HTMLTextAreaElement>) {
-    if (ev.key === "Enter" && !ev.shiftKey) {
+    // On the phone Enter is a newline (`enterIsNewline`) — EXCEPT on a one-shot
+    // card, which draws no Send button: Enter is its only send.
+    if (ev.key === "Enter" && !ev.shiftKey && !(!oneShot && enterIsNewline() && !ev.ctrlKey && !ev.metaKey)) {
       ev.preventDefault();
       const value = (otherText[i] || "").trim();
       if (value) {

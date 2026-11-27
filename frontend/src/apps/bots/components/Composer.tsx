@@ -7,6 +7,7 @@
 // Dictation: push-to-talk, not live: record the mic (/api/capture), transcribe with the local speech model
 // (/api/ai/transcribe, a job), drop the text at the caret for review. Nothing is sent on its own.
 import { useEffect, useLayoutEffect, useRef, useState, type ClipboardEvent, type DragEvent, type KeyboardEvent, type RefObject } from "react";
+import { enterIsNewline } from "@platform/lib/host";
 import { screenContext } from "@platform/lib/screen-context";
 import { api, rawFileUrl, request, type Bot } from "../lib/api";
 import { canClear, commandFor, matchCommands, slashQuery, type Command } from "../lib/commands";
@@ -357,7 +358,8 @@ export function Composer({ b, reply, setReply, threadRef, floating = false }: Co
       // Esc while the mic records belongs to the recording (the document listener above discards it); the popup stays.
       if (e.key === "Escape") { if (micRec.current) return; e.preventDefault(); setCmd(null); return; }
     }
-    if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); void send(); }
+    // On the phone Enter is a newline (`enterIsNewline`); the send button sends, and Cmd/Ctrl+Enter still does.
+    if (e.key === "Enter" && !e.shiftKey && !(enterIsNewline() && !e.ctrlKey && !e.metaKey)) { e.preventDefault(); void send(); }
     if (e.key === "Escape" && reply) { e.preventDefault(); setReply(null); }
   };
 
