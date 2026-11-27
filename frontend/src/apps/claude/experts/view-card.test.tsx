@@ -19,6 +19,16 @@ describe("viewCardOf", () => {
     expect(viewCardOf(show())).toEqual(payload);
     expect(viewCardOf(show({ name: "mcp__expert-canvas__show" }))).toEqual(payload);
   });
+  test("a Windows server's path is a card too", () => {
+    const at = (path: string) => viewCardOf(show({ output: "[fused-card] " + JSON.stringify({ ...payload, path }) }));
+    const win = "C:\\Users\\u\\Fused\\canvas\\prod\\user\\Mine\\chart.json";
+    expect(at(win)).toEqual({ ...payload, path: win });
+    expect(at("C:/Users/u/chart.json")?.path).toBe("C:/Users/u/chart.json");
+    expect(at("\\\\host\\share\\chart.json")?.path).toBe("\\\\host\\share\\chart.json");
+    // The title falls back to the file's name whichever separator the path uses.
+    expect(viewCardOf(show({ output: "[fused-card] " + JSON.stringify({ kind: "widget", path: win }) }))?.title).toBe("chart.json");
+    expect(at("C:chart.json")).toBeNull();
+  });
   test("anything else stays a tool row", () => {
     expect(viewCardOf(show({ status: "running", output: null }))).toBeNull();
     expect(viewCardOf(show({ status: "error" }))).toBeNull();
