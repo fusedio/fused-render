@@ -14,6 +14,9 @@ export interface WorkspaceHostApi {
   openPage(url: string, opts?: { newTab?: boolean }): void;
   /** The right panel (specified by later clauses). */
   openRight?(view: string): void;
+  /** `from` just saved the bookmarks: every other document of this window
+   *  (the host's sidebar, the other tabs' ★) re-reads them now. */
+  bookmarksWritten?(from: Window): void;
 }
 
 /** What the mounted host registers: the API, plus what only the host's own
@@ -52,6 +55,7 @@ export function bootWorkspaceHost(fallback: (url: string) => void): void {
   window._fusedWorkspace = {
     openPage: (url, opts) => (impl ? impl.openPage(url, opts) : fallback(url)),
     openRight: (view) => impl?.openRight?.(view),
+    bookmarksWritten: (from) => impl?.bookmarksWritten?.(from),
   };
 }
 
@@ -112,4 +116,34 @@ export function installWorkspaceFrameSink(onboardingPath: string): void {
     }
     return false;
   });
+}
+
+// ---- bookmarks, across the window's documents -------------------------------
+//
+// Each document keeps its own copy of the bookmarks (platform/lib/bookmarks:
+// an in-memory mirror, re-read every 30 s). In a workspace the sidebar and
+// every tab are separate documents of ONE window: a ★ pressed in a tab left
+// the sidebar's Favourites stale until that poll, and a save made from a stale
+// copy could drop the other's change. So a save is announced, and every other
+// document re-reads at once.
+
+/** The event a document hears when another one of this window saved. */
+export const WS_BOOKMARKS_EVENT = "fused:ws-bookmarks";
+
+/** This document just saved the bookmarks (bookmarks.ts `commit`). Nothing
+ *  outside a workspace. */
+export function announceBookmarksWritten(): void {
+  if (typeof window === "undefined") return;
+  try {
+    workspaceHost()?.bookmarksWritten?.(window);
+  } catch {
+    /* a host that went away mid-call */
+  }
+}
+
+/** Run `refresh` when another document of this window saved the bookmarks. */
+export function onWorkspaceBookmarks(refresh: () => void): () => void {
+  if (typeof window === "undefined") return () => {};
+  window.addEventListener(WS_BOOKMARKS_EVENT, refresh);
+  return () => window.removeEventListener(WS_BOOKMARKS_EVENT, refresh);
 }

@@ -8,6 +8,7 @@ import { IS_EMBED, IS_SNAPSHOT, NO_SHELL_CHROME, navigateUrl } from "@platform/l
 import {
   bootWorkspaceHost,
   installWorkspaceFrameSink,
+  onWorkspaceBookmarks,
   shouldHostWorkspace,
 } from "@platform/lib/workspace-bridge";
 import { ONBOARDING_PATH } from "@shell/onboarding/state";
@@ -203,6 +204,9 @@ Promise.all([getConfig({ signal: AbortSignal.timeout(CONFIG_TIMEOUT_MS) }), uiSt
     // rest of the 30 s tick. Same "refresh on focus" posture as
     // ServerStatusBanner's health probe (D126).
     window.addEventListener("focus", pollBookmarks);
+    // …and the instant another document of this window saved them (a
+    // workspace's sidebar and tabs are separate documents: workspace-bridge).
+    onWorkspaceBookmarks(pollBookmarks);
   },
   (err: Error) => {
     reportShellError({ where: "boot", message: String(err.message || err), stack: err.stack });

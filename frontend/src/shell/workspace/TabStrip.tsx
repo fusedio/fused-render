@@ -2,7 +2,7 @@
 // no close, never moved — then one tab per page, each its page's icon, its
 // label and a ×. Presentational: what activating or closing means for history,
 // the URL and the frames is the host's; this only reports gestures.
-import { useState, type ReactNode } from "react";
+import { useCallback, useEffect, useLayoutEffect, useRef, useState, type KeyboardEvent, type ReactNode } from "react";
 import { AppWindow, Bot, FileText, Folder, ListTodo, Settings, Store, X } from "lucide-react";
 import { CanvasGlyph } from "@apps/canvases/glyph";
 import type { TabKind } from "./workspace-lib";
@@ -82,24 +82,91 @@ export default function TabStrip({
   onSelect: (id: string) => void;
   onClose: (id: string) => void;
 }) {
+  const strip = useRef<HTMLDivElement | null>(null);
+  const tabEls = useRef(new Map<string, HTMLDivElement>()).current;
+  const activeId = tabs.find((t) => t.active)?.id ?? null;
+
+  // MORE TABS THAN FIT: the strip scrolls sideways with no bar, so its edges
+  // fade where tabs lie beyond them (workspace.css reads the two attributes) —
+  // the only word that there is more.
+  const markEdges = useCallback(() => {
+    const el = strip.current;
+    if (!el) return;
+    el.toggleAttribute("data-more-left", el.scrollLeft > 1);
+    el.toggleAttribute("data-more-right", el.scrollLeft + el.clientWidth < el.scrollWidth - 1);
+  }, []);
+
+  // THE SHOWN TAB IS ON SCREEN. A tab opened past the strip's edge, or
+  // switched to from the sidebar while the strip was scrolled elsewhere, was
+  // active and invisible. Layout phase, so it never paints off screen; by
+  // hand, not scrollIntoView, which may scroll an ancestor too.
+  const reveal = useCallback(
+    (id: string) => {
+      const el = strip.current;
+      const tab = tabEls.get(id);
+      if (!el || !tab) return;
+      const s = el.getBoundingClientRect();
+      const t = tab.getBoundingClientRect();
+      // Clear of the edge's fade (workspace.css, 28px), not merely inside.
+      if (t.left < s.left) el.scrollLeft -= s.left - t.left + 32;
+      else if (t.right > s.right) el.scrollLeft += t.right - s.right + 32;
+    },
+    [tabEls],
+  );
+  useLayoutEffect(() => {
+    if (activeId) reveal(activeId);
+    markEdges();
+  }, [activeId, tabs.length, reveal, markEdges]);
+
+  useEffect(() => {
+    const el = strip.current;
+    if (!el || typeof ResizeObserver === "undefined") return;
+    const ro = new ResizeObserver(markEdges);
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, [markEdges]);
+
+  // ONE TAB STOP for the whole strip (the shown tab), and the arrows walk it —
+  // the tablist pattern. Twelve tabs were twenty-four stops before (each tab
+  // and each ×). Delete closes the focused tab; the × stays a pointer target.
+  const onKeyDown = (e: KeyboardEvent<HTMLDivElement>, t: StripTab) => {
+    if (e.target !== e.currentTarget) return;
+    if (e.key === "Enter" || e.key === " ") {
+      e.preventDefault();
+      onSelect(t.id);
+      return;
+    }
+    if ((e.key === "Delete" || e.key === "Backspace") && !t.home) {
+      e.preventDefault();
+      onClose(t.id);
+      return;
+    }
+    const i = tabs.findIndex((x) => x.id === t.id);
+    const to =
+      e.key === "ArrowRight" ? i + 1 : e.key === "ArrowLeft" ? i - 1 : e.key === "Home" ? 0 : e.key === "End" ? tabs.length - 1 : -1;
+    if (to < 0 || to >= tabs.length || to === i) return;
+    e.preventDefault();
+    reveal(tabs[to].id);
+    tabEls.get(tabs[to].id)?.focus({ preventScroll: true });
+    markEdges();
+  };
+
   return (
-    <div className="ws-strip" role="tablist" aria-label="Pages">
+    <div ref={strip} className="ws-strip" role="tablist" aria-label="Pages" onScroll={markEdges}>
       {tabs.map((t) => (
         <div
           key={t.id}
+          ref={(el) => {
+            if (el) tabEls.set(t.id, el);
+            else tabEls.delete(t.id);
+          }}
           role="tab"
           aria-selected={t.active}
-          tabIndex={0}
+          tabIndex={t.active ? 0 : -1}
           title={t.label}
           className={"ws-tab" + (t.active ? " is-active" : "") + (t.home ? " is-home" : "")}
           onClick={() => onSelect(t.id)}
-          onKeyDown={(e) => {
-            if (e.target !== e.currentTarget) return;
-            if (e.key === "Enter" || e.key === " ") {
-              e.preventDefault();
-              onSelect(t.id);
-            }
-          }}
+          onKeyDown={(e) => onKeyDown(e, t)}
         >
           <TabIcon tab={t} />
           <span className="ws-tab-label">{t.label}</span>
@@ -107,6 +174,7 @@ export default function TabStrip({
             <button
               type="button"
               className="ws-tab-close"
+              tabIndex={-1}
               aria-label={`Close ${t.label}`}
               title="Close tab"
               onClick={(e) => {

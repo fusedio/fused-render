@@ -9,6 +9,7 @@
 // components still subscribe via useBookmarksVersion (lib/hooks.ts) and call
 // notifyBookmarksChanged() after each mutation they trigger.
 import { getBookmarks, putBookmarks } from "@platform/lib/api";
+import { announceBookmarksWritten } from "@platform/lib/workspace-bridge";
 import { notifyArmedChanged } from "@platform/lib/hooks";
 import { splitShellSearch } from "@platform/lib/layout-codec";
 import { rewriteLegacyUrl } from "@platform/lib/router";
@@ -65,6 +66,8 @@ const clone = (items: BookmarkItem[]): BookmarkItem[] =>
 async function commit(items: BookmarkItem[]): Promise<void> {
   await putBookmarks(items);
   cache = items;
+  // In a workspace the window's other documents re-read now (workspace-bridge).
+  announceBookmarksWritten();
 }
 
 // All cache access runs through one serial promise chain — hydration, every

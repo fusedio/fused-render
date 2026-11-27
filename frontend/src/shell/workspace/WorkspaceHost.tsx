@@ -32,7 +32,7 @@ import {
 } from "@platform/lib/router";
 import { attachEmbedUrlChange, detachEmbedUrlChange, type UrlChangeHook } from "@platform/lib/layout-codec";
 import { TAB_VISIBILITY_EVENT } from "@platform/lib/pause-while-hidden";
-import { registerWorkspaceImpl } from "@platform/lib/workspace-bridge";
+import { registerWorkspaceImpl, WS_BOOKMARKS_EVENT } from "@platform/lib/workspace-bridge";
 import { displayName } from "@platform/lib/flavor";
 import { useFavicon } from "@platform/lib/hooks";
 import type { Config } from "@platform/lib/api";
@@ -500,6 +500,21 @@ export default function WorkspaceHost({ config: _config }: { config: Config }) {
       pageUrl: () => {
         const t = st.tabs.get(st.active);
         return t ? t.url : pageUrlOf(location.pathname + location.search);
+      },
+      // One document saved the bookmarks: every OTHER one of this window (the
+      // sidebar here, each loaded tab) re-reads now. Each event is made by the
+      // realm it is dispatched in.
+      bookmarksWritten: (from) => {
+        const wins: Window[] = [window];
+        for (const f of frames.values()) if (f.contentWindow) wins.push(f.contentWindow);
+        for (const w of wins) {
+          if (w === from) continue;
+          try {
+            w.dispatchEvent(new (w as Window & typeof globalThis).Event(WS_BOOKMARKS_EVENT));
+          } catch {
+            /* frame mid-navigation */
+          }
+        }
       },
     });
     // Every hop from the host's own chrome follows the open rules — except to

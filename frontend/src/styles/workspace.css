@@ -51,10 +51,26 @@
   display: none;
 }
 
-/* SIZED TO ITS LABEL: the tab is its icon and label (plus the × only while
-   that shows), clamped 72–220px, and shrinks toward the floor when the strip
-   runs out of room before it scrolls (owner, 2026-10-14). Scoped under the
-   strip so no element-level rule elsewhere can out-rank it. */
+/* More tabs beyond an edge: that edge fades (TabStrip marks the two sides).
+   A mask, so it fades whatever is under it in either theme. */
+.ws-strip[data-more-left] {
+  -webkit-mask-image: linear-gradient(to right, transparent 0, #000 28px);
+  mask-image: linear-gradient(to right, transparent 0, #000 28px);
+}
+.ws-strip[data-more-right] {
+  -webkit-mask-image: linear-gradient(to left, transparent 0, #000 28px);
+  mask-image: linear-gradient(to left, transparent 0, #000 28px);
+}
+.ws-strip[data-more-left][data-more-right] {
+  -webkit-mask-image: linear-gradient(to right, transparent 0, #000 28px, #000 calc(100% - 28px), transparent 100%);
+  mask-image: linear-gradient(to right, transparent 0, #000 28px, #000 calc(100% - 28px), transparent 100%);
+}
+
+/* SIZED TO ITS LABEL: the tab is its icon, its label and the ×'s seat,
+   clamped 120–220px, and shrinks toward the floor when the strip runs out of
+   room before it scrolls. The floor keeps about eight letters of the label:
+   at 72px a dozen folders all read "fol…". Scoped under the strip so no
+   element-level rule elsewhere can out-rank it. */
 .ws-strip > .ws-tab {
   position: relative;
   display: inline-flex;
@@ -63,7 +79,7 @@
   flex: 0 1 auto;
   width: auto;
   margin: 0;
-  min-width: 72px;
+  min-width: 120px;
   max-width: 220px;
   padding: 0 8px 0 10px;
   border: 1px solid transparent;
@@ -78,9 +94,10 @@
     color var(--dur-fast) var(--ease-out);
 }
 
-/* Home never shrinks below its own icon and name. */
+/* Home never shrinks below its own icon and name, and has no ×'s seat. */
 .ws-strip > .ws-tab.is-home {
   flex-shrink: 0;
+  min-width: 0;
   padding-right: 10px;
 }
 
@@ -97,8 +114,12 @@
   border-color: var(--border);
 }
 
+/* The sidebar's own ring (sidebar.css .sidebar-rail-btn), drawn inside: the
+   strip clips what leaves it. */
 .ws-tab:focus-visible {
-  box-shadow: inset 0 0 0 2px rgba(var(--tint), 0.25);
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
+  color: var(--fg);
 }
 
 .ws-tab-icon {
@@ -119,11 +140,14 @@
   white-space: nowrap;
 }
 
-/* Out of the layout unless shown — the active tab, a hovered or focused one —
-   so a background tab is exactly its label's width. */
+/* ITS SEAT IS ALWAYS THERE, the glyph only on the active tab and under the
+   pointer: a tab that grew by the × on hover pushed every tab to its right
+   along, and a press aimed at a neighbour's × landed beside it. */
 .ws-tab-close {
   flex: 0 0 auto;
-  display: none;
+  display: inline-flex;
+  visibility: hidden;
+  margin-left: auto;
   align-items: center;
   justify-content: center;
   width: 18px;
@@ -139,8 +163,8 @@
 
 .ws-tab.is-active .ws-tab-close,
 .ws-tab:hover .ws-tab-close,
-.ws-tab:focus-within .ws-tab-close {
-  display: inline-flex;
+.ws-tab:focus-visible .ws-tab-close {
+  visibility: visible;
 }
 
 .ws-tab-close:hover {
