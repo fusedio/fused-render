@@ -11,7 +11,7 @@
 // (SidebarFrame) and explorer-owned sections (Bookmarks), which only
 // the shell is allowed to import together (scripts/check-boundaries.mjs).
 import { useEffect, useRef, useState } from "react";
-import { Search, Sparkles, Store } from "lucide-react";
+import { Plug, Search, Sparkles, Store } from "lucide-react";
 import { ClaudeMark } from "@platform/ui/ClaudeMark";
 import { CanvasIcon } from "@platform/ui/NodeTypeIcons";
 import { SidebarFrame, NavItem } from "@platform/ui/sidebar/SidebarFrame";
@@ -113,6 +113,8 @@ const SKILLS_ICON = <Sparkles size={16} strokeWidth={2} aria-hidden="true" />;
 // A shop front (lucide Store) for the Marketplace: where community apps are
 // browsed and installed, sized like the lucide Tasks glyph above.
 // The app's launcher (the ⌥Space search panel over the apps and bots).
+// The plug Preferences draws beside its Integrations page.
+const INTEGRATIONS_ICON = <Plug size={16} strokeWidth={2} aria-hidden="true" />;
 const SEARCH_ICON = <Search size={16} strokeWidth={2} aria-hidden="true" />;
 const MARKETPLACE_ICON = <Store size={16} strokeWidth={1.9} aria-hidden="true" />;
 
@@ -602,6 +604,11 @@ export default function GlobalSidebar({ config }: { config: Config }) {
     // the trigger at once, as the Tasks note above says.
     { href: "/skills", label: "Skills", icon: SKILLS_ICON },
     { href: "/claude-config", label: "Claude Code", icon: CLAUDE_CODE_ICON },
+    // A quick way to one Preferences page (owner, 2026-11-27): Fused
+    // Workbench and the connectors are what people open Preferences for most.
+    // Its href carries a query, so it never matches `pathname` below: on that
+    // page the trigger is lit by the Preferences entry.
+    { href: "/preferences?tab=integrations", label: "Integrations", icon: INTEGRATIONS_ICON },
     { href: "/preferences", label: "Preferences", icon: PREFERENCES_ICON }
   );
   // The tour replays, at the menu's tail, behind ONE row: four sibling entries
