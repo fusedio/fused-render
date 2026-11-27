@@ -1,16 +1,23 @@
 import { describe, expect, test } from "bun:test";
 import {
   buildHostUrl,
+  classifyNav,
+  encodeRight,
   encodeTabsParam,
   isSpaUrl,
   neighborAfterClose,
   normalizeOpenUrl,
   pageUrlOf,
   parseHostUrl,
+  parseRight,
   planOpen,
+  rightSession,
+  sameRight,
   samePage,
+  splitArrival,
   tabKind,
   tabLabel,
+  type RightView,
 } from "./workspace-lib";
 
 const FILE = "/explorer/view/Users/me/a.html";
@@ -175,5 +182,104 @@ describe("a tab that has not loaded yet", () => {
     expect(tabKind("/explorer/view/Users/me/.config")).toBe("folder");
     expect(tabKind("/explorer/view/_tab?_layout=(/a,/b)")).toBe("page");
     expect(tabKind("/render?path=/a/app.html")).toBe("page");
+  });
+});
+
+describe("parseRight / encodeRight", () => {
+  const views: RightView[] = [
+    { kind: "tasks", peek: null },
+    { kind: "tasks", peek: "pending:abc" },
+    { kind: "bots", url: "/bots" },
+    { kind: "bots", url: "/bots/b1?tab=log&x=a:b" },
+    { kind: "chat", file: "/Users/me/a b:c.html", query: "" },
+    { kind: "chat", file: "/Users/me/dir", query: "session_id=s1&msg=m%3A1" },
+    { kind: "git", path: "/Users/me/dir" },
+    { kind: "mode", mode: "code", file: "/Users/me/a.html" },
+  ];
+  test("round-trips every view, `:` always escaped in arguments", () => {
+    for (const v of views) {
+      const raw = encodeRight(v);
+      expect(parseRight(raw)).toEqual(v);
+      // Query-safe as a param value: nothing that would end it.
+      expect(raw).not.toMatch(/[&#?= ]/);
+    }
+  });
+  test("short spellings", () => {
+    expect(encodeRight({ kind: "tasks", peek: null })).toBe("tasks");
+    expect(encodeRight({ kind: "bots", url: "/bots" })).toBe("bots");
+    expect(encodeRight({ kind: "chat", file: "/a", query: "" })).toBe("chat:%2Fa:");
+  });
+  test("junk is closed", () => {
+    for (const raw of [null, "", "nope", "chat", "chat:%2Fa", "chat::x", "git:", "mode:code", "bots:%2Fhome", "tasks:%E0", "tasks:a:b"]) {
+      expect(parseRight(raw)).toBeNull();
+    }
+  });
+  test("a leading ? on a chat query is dropped", () => {
+    expect(parseRight("chat:%2Fa:%3Fsession_id%3Ds")).toEqual({ kind: "chat", file: "/a", query: "session_id=s" });
+  });
+  test("sameRight and rightSession", () => {
+    expect(sameRight({ kind: "tasks", peek: null }, { kind: "tasks", peek: null })).toBe(true);
+    expect(sameRight({ kind: "tasks", peek: null }, null)).toBe(false);
+    expect(sameRight(null, null)).toBe(true);
+    // A chat is its file and conversation; its own params are not another chat.
+    expect(sameRight({ kind: "chat", file: "/a", query: "session_id=s&split=1" }, { kind: "chat", file: "/a", query: "session_id=s" })).toBe(true);
+    expect(sameRight({ kind: "chat", file: "/a", query: "session_id=s" }, { kind: "chat", file: "/a", query: "" })).toBe(false);
+    expect(sameRight({ kind: "chat", file: "/a", query: "" }, { kind: "chat", file: "/b", query: "" })).toBe(false);
+    expect(rightSession({ kind: "chat", file: "/a", query: "session_id=s1" })).toBe("s1");
+    expect(rightSession({ kind: "chat", file: "/a", query: "" })).toBeNull();
+  });
+});
+
+describe("classifyNav", () => {
+  test("a chat door goes right, with only the door params", () => {
+    expect(classifyNav("/explorer/view/Users/me/dir?_side=claude&sort=name&session_id=s1&queued=")).toEqual({
+      side: "right",
+      view: { kind: "chat", file: "/Users/me/dir", query: "session_id=s1" },
+    });
+    expect(classifyNav("/explorer/view/Users/me/a%20b.html?_side=claude&backend=codex&session_id=")).toEqual({
+      side: "right",
+      view: { kind: "chat", file: "/Users/me/a b.html", query: "backend=codex" },
+    });
+    expect(classifyNav("/explorer/view/Users/me/a.html?_mode=claude&session_id=s2")).toEqual({
+      side: "right",
+      view: { kind: "chat", file: "/Users/me/a.html", query: "session_id=s2" },
+    });
+  });
+  test("git companion goes right", () => {
+    expect(classifyNav("/explorer/view/Users/me/dir?_side=git")).toEqual({ side: "right", view: { kind: "git", path: "/Users/me/dir" } });
+    expect(classifyNav("/explorer/view/Users/me/a.py?_mode=git")).toEqual({ side: "right", view: { kind: "git", path: "/Users/me/a.py" } });
+  });
+  test("tasks and bots go right", () => {
+    expect(classifyNav("/tasks")).toEqual({ side: "right", view: { kind: "tasks", peek: null } });
+    expect(classifyNav("/tasks?peek=k1")).toEqual({ side: "right", view: { kind: "tasks", peek: "k1" } });
+    expect(classifyNav("/bots")).toEqual({ side: "right", view: { kind: "bots", url: "/bots" } });
+    expect(classifyNav("/bots/b1?tab=x")).toEqual({ side: "right", view: { kind: "bots", url: "/bots/b1?tab=x" } });
+  });
+  test("a canvas task door asks the host by session", () => {
+    expect(classifyNav("/canvases/prod/my_canvas?session_id=s9")).toEqual({ side: "session", sessionId: "s9" });
+    expect(classifyNav("/canvases/prod/my_canvas")).toEqual({ side: "left" });
+    expect(classifyNav("/canvases")).toEqual({ side: "left" });
+  });
+  test("everything else is left", () => {
+    for (const u of [FILE, FOLDER, FOLDER + "?_side=off", FILE + "?_mode=code", "/home", "/apps/x", "/botsy", "/render?path=/a"]) {
+      expect(classifyNav(u)).toEqual({ side: "left" });
+    }
+  });
+});
+
+describe("splitArrival", () => {
+  test("a chat pane on a folder: right chat, the tab keeps the folder", () => {
+    expect(splitArrival(FOLDER + "?sort=name&_side=claude&session_id=s1")).toEqual({
+      keep: FOLDER + "?sort=name",
+      right: { kind: "chat", file: "/Users/me/dir", query: "session_id=s1" },
+    });
+  });
+  test("a file on _mode=git: right git, the tab on its default mode", () => {
+    expect(splitArrival(FILE + "?_mode=git")).toEqual({ keep: FILE, right: { kind: "git", path: "/Users/me/a.html" } });
+  });
+  test("no pane: kept as is", () => {
+    expect(splitArrival(FILE + "?_mode=code")).toEqual({ keep: FILE + "?_mode=code", right: null });
+    expect(splitArrival(FOLDER + "?_side=off")).toEqual({ keep: FOLDER + "?_side=off", right: null });
+    expect(splitArrival("/tasks?peek=k")).toEqual({ keep: "/tasks?peek=k", right: null });
   });
 });

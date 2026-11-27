@@ -13438,8 +13438,8 @@ closed, killed after 2 s, directory removed) by `refuse_new()` +
 
 Behind `workspace_tabs_enabled` (Settings › Experimental flags › "Tabs and side
 panel", default off), a window becomes a workspace: its pages open as tabs on
-the left. The right panel is specified by later clauses. Off, nothing here
-exists and nothing changes.
+the left, and one panel on the right shows what the rail opens there. Off,
+nothing here exists and nothing changes.
 
 - **WS-1 Flag.** Only a stored `true` is on. `GET /api/prefs` answers
   `workspace_tabs: {enabled}`; `PUT` takes a boolean or answers 400.
@@ -13494,11 +13494,79 @@ exists and nothing changes.
   read (D72) stops before the host, whose URL mirrors another tab.
 - **WS-11 Pages lose their pane and rail.** In a frame the explorer folder and
   file views, the app page and the canvas page draw no Claude/Git side pane
-  and no Claude rail, and take the full width. The host stands the shell's
-  fallback rail at the window's right edge.
+  and no Claude rail, and take the full width. The host stands the window's
+  one rail (WS-20).
 - **WS-12 The sidebar.** No Home row in a host (Search takes its place); the
   brand row activates Home. Highlights compare against the active tab's own
   URL.
 - **WS-13 The wizard is the whole window.** A hop to `/onboarding` is never a
   tab: the host shows the wizard in place of its tabs, and leaving it brings
   the host back on the URL it left to.
+- **WS-14 The right panel's URL (D1515).** `_right` names the panel's one
+  view, every argument `encodeURIComponent`-ed so `:` only separates:
+  `tasks`, `tasks:<key>` (a peeked task), `bots`, `bots:<url under /bots>`,
+  `chat:<file>:<query>` (an empty query is that file's Claude home; a
+  `session_id` or `queued` is a task chat), `git:<path>`,
+  `mode:<mode>:<file>`. Absent or junk = the panel is closed.
+- **WS-15 Where a URL opens.** Every in-app hop in a host (the sidebar, a
+  notification, a card's Open) and every hop a frame would make is classified
+  by its URL: a chat door (`/explorer/view/<p>?…_side=claude…`, also
+  `_mode=claude`) opens the panel's chat on `<p>` with only its door params
+  (`session_id`, `queued`, `backend`, `run`, `msg`); `_side=git` or
+  `_mode=git` its Git; `/tasks` (`peek=`) Tasks; `/bots…` Bots; a canvas page
+  naming a `session_id` the chat of the task with that session (from the
+  tasks listing, else the pulse; none found = a page). Everything else is a
+  page on the left (WS-5). From the panel's own frame every page opens on the
+  left; the Bots frame navigates inside `/bots` itself.
+- **WS-16 Delinked.** Nothing on the right changes because of a left action
+  (a tab switch, a navigation, a canvas node select); the + fixes its folder
+  at the click. Opening what the panel already shows does nothing. Leaving a
+  chat view (another view, or closing) asks the composer's leave guard first.
+- **WS-17 Width and collapse.** The panel sits between the tabs and the rail
+  at the viewer's width (`ui_layout.workspace.rightWidth`, written once a
+  drag completes), floor 380px; the tabs keep 320px and the rail its own,
+  and a row too narrow for all three gives the panel what is left. Its left
+  edge is the pane seam: a drag resizes; let go more than 60px under the
+  floor, the panel closes and the stored width returns to the floor. The
+  hide button closes it at its width. Any rail click opens it again at the
+  stored width. It does not slide.
+- **WS-18 The chat view.** One chat in the page pane's posture (chat only, PR
+  chip, recap, hide in its head, place tags as links). Its params are
+  `_right`'s query, kept by the page URL store's own rules (a push after a
+  gesture, the throttle, Back). It is remounted when its file changes or its
+  query changes from outside it (a ring, Back), never on its own writes.
+- **WS-19 The other views.** Tasks: the Tasks page's in-card list; a task's
+  press peeks its chat beside the list when the panel is at least 780px
+  wide, else in the list's place with Back. Bots: the Bots page in a frame,
+  its URL mirrored into `_right` by replace. Git: the folder's Git companion
+  page (a file asks its folder). Mode: the file drawn in that mode. Every
+  non-chat head has the hide and a title at the task head's height.
+- **WS-20 One rail.** The host draws the window's only rail, at its right
+  edge past the panel, never hidden. A page in a tab draws none and tells
+  the host, as plain data, what its rail would show (place, the +'s target,
+  the Git path, the file's other modes with icon urls and frame addresses,
+  whether its node chips select in it); the host keeps it per tab, drops it
+  when that frame loads another document, and feeds the active tab's to the
+  rail (none: no place). A canvas tab's chip and tag selects are sent to its
+  frame as an event.
+- **WS-21 The rail's clicks.** Hover cards are as before. A click on a list
+  ring opens its chat in the panel (a draft keeps its New task card); the
+  Tasks, Bots, Git and mode doors their view; the + the active tab's Claude
+  home (its hover card stays the New task form). Window A's cards carry no
+  pin, a head drag does not pin, stored A pins are not restored; a press
+  inside one still holds it till one press outside. The item the panel shows
+  wears the open look and opens no hover card. Favourites and pinned bots
+  keep their cards and pins; their Open lands in the panel. The ⋮ has no Full
+  screen. The rail's pull seam is not drawn.
+- **WS-22 History.** Opening, changing or closing a view is a history entry;
+  a sync (the Bots page's own URL, a chat's own replace) is a replace.
+  Back/Forward restore the view; reload restores it.
+- **WS-23 The `/` key.** In a tab with nothing of its own to focus, `/` puts
+  the keyboard in the panel's chat composer when a chat shows there.
+- **WS-24 Pages' own doors.** App Doctor's "Open in git" opens the panel's
+  Git. A page's "Fix with AI" ask is not routed to the panel yet.
+- **WS-25 No companions in a tab.** A file or folder page in a tab offers no
+  Claude or Git mode. A tab whose URL arrives on one (`_side=claude|git`,
+  `_mode=claude|git`, with its session params) shows its default content,
+  drops those params from its URL, and — when it is the shown tab and the
+  host URL names no `_right` — opens that chat or Git in the panel.

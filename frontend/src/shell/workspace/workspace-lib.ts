@@ -11,6 +11,8 @@
 // byte-different from the one it was built from and the mirror's "only when
 // changed" guard would write on every sync.
 
+import { rootedFsPath } from "@platform/lib/path-url";
+
 export const HOME_URL = "/home";
 export const TABS_PARAM = "_tabs";
 export const RIGHT_PARAM = "_right";
@@ -430,4 +432,190 @@ export function readFrameLoc(frame: { contentWindow: Window | null } | null | un
   } catch {
     return null;
   }
+}
+
+// ---- the right panel (SPEC §56 WS-14…) -------------------------------------
+
+/** What the right panel shows — the host URL's `_right`, decoded. */
+export type RightView =
+  | { kind: "tasks"; peek: string | null }
+  | { kind: "bots"; url: string }
+  | { kind: "chat"; file: string; query: string }
+  | { kind: "git"; path: string }
+  | { kind: "mode"; mode: string; file: string };
+
+/** The chat params a chat door may carry into the panel: the ones that name
+ *  WHICH conversation (and how to open it), never the page's own. */
+export const CHAT_DOOR_PARAMS = ["session_id", "queued", "backend", "run", "msg"] as const;
+
+function decodeArg(s: string): string | null {
+  try {
+    return decodeURIComponent(s);
+  } catch {
+    return null;
+  }
+}
+
+/** Is `url` the Bots page or one of its pages? */
+function isBotsUrl(url: string): boolean {
+  const { path } = splitUrl(url);
+  return path === "/bots" || path.startsWith("/bots/");
+}
+
+/**
+ * The `_right` value, decoded. Every argument is `encodeURIComponent`-ed (which
+ * always escapes `:`), so `:` only ever separates. Junk (an unknown kind, a
+ * missing or undecodable argument) is null: the panel is closed.
+ */
+export function parseRight(raw: string | null | undefined): RightView | null {
+  if (!raw) return null;
+  const parts = raw.split(":");
+  const args = parts.slice(1).map(decodeArg);
+  if (args.some((a) => a === null)) return null;
+  const a = args as string[];
+  switch (parts[0]) {
+    case "tasks":
+      if (a.length > 1) return null;
+      return { kind: "tasks", peek: a[0] ? a[0] : null };
+    case "bots": {
+      if (a.length > 1) return null;
+      const url = a[0] || "/bots";
+      return isBotsUrl(url) ? { kind: "bots", url } : null;
+    }
+    case "chat":
+      if (a.length !== 2 || !a[0]) return null;
+      return { kind: "chat", file: a[0], query: a[1].replace(/^\?/, "") };
+    case "git":
+      return a.length === 1 && a[0] ? { kind: "git", path: a[0] } : null;
+    case "mode":
+      return a.length === 2 && a[0] && a[1] ? { kind: "mode", mode: a[0], file: a[1] } : null;
+    default:
+      return null;
+  }
+}
+
+/** …and back (`parseRight`'s inverse). */
+export function encodeRight(view: RightView): string {
+  const e = encodeURIComponent;
+  switch (view.kind) {
+    case "tasks":
+      return view.peek ? "tasks:" + e(view.peek) : "tasks";
+    case "bots":
+      return view.url === "/bots" ? "bots" : "bots:" + e(view.url);
+    case "chat":
+      return "chat:" + e(view.file) + ":" + e(view.query.replace(/^\?/, ""));
+    case "git":
+      return "git:" + e(view.path);
+    case "mode":
+      return "mode:" + e(view.mode) + ":" + e(view.file);
+  }
+}
+
+/** Do two views show the same thing? Two chats are the same conversation on
+ *  the same file — their other params (`split`, `run`, …) are the chat's own
+ *  state, not another chat. Opening what already shows does nothing. */
+export function sameRight(a: RightView | null, b: RightView | null): boolean {
+  if (!a || !b) return a === b;
+  if (a.kind === "chat" && b.kind === "chat") {
+    const pa = new URLSearchParams(a.query);
+    const pb = new URLSearchParams(b.query);
+    return a.file === b.file && (pa.get("session_id") || "") === (pb.get("session_id") || "") && (pa.get("queued") || "") === (pb.get("queued") || "");
+  }
+  return encodeRight(a) === encodeRight(b);
+}
+
+/** The query of a chat view, reduced to the door params present and
+ *  non-empty, in `CHAT_DOOR_PARAMS` order. */
+export function chatDoorQuery(query: string): string {
+  const params = new URLSearchParams(query.replace(/^\?/, ""));
+  const out = new URLSearchParams();
+  for (const k of CHAT_DOOR_PARAMS) {
+    const v = params.get(k);
+    if (v) out.set(k, v);
+  }
+  return out.toString();
+}
+
+/** A chat view's session, or null. */
+export function rightSession(view: RightView | null): string | null {
+  if (!view || view.kind !== "chat") return null;
+  return new URLSearchParams(view.query).get("session_id") || null;
+}
+
+/** Where a URL belongs in a workspace (WS-15): the right panel, the right
+ *  panel once the host has found the canvas task by its session, or the
+ *  left (the tab rules). */
+export type NavPlace =
+  | { side: "left" }
+  | { side: "right"; view: RightView }
+  | { side: "session"; sessionId: string };
+
+const EXPLORER_VIEW = "/explorer/view";
+
+/** The fs path an `/explorer/view/…` path names (router's own codec, DOM-free). */
+function fsPathOfViewPath(path: string): string | null {
+  if (path !== EXPLORER_VIEW && !path.startsWith(EXPLORER_VIEW + "/")) return null;
+  const segs = path.slice(EXPLORER_VIEW.length).split("/").filter((s) => s.length > 0);
+  const out: string[] = [];
+  for (const s of segs) {
+    const d = decodeArg(s);
+    if (d === null) return null;
+    out.push(d);
+  }
+  return out.length ? rootedFsPath(out.join("/")) : null;
+}
+
+/**
+ * Where `url` (same-origin path+query) opens in a workspace:
+ *   - a chat door (`/explorer/view/<p>?…_side=claude…`, what every taskHref /
+ *     chatUrl / chatPaneUrl builds) → the panel's chat on `<p>` with the door
+ *     params; `_side=git` → the panel's Git on `<p>`;
+ *   - `/tasks` (with `peek=`) → Tasks; `/bots…` → Bots;
+ *   - a canvas page naming a `session_id` (a canvas task's door) → the panel,
+ *     once the host finds the task by that session;
+ *   - anything else → the left.
+ */
+export function classifyNav(url: string): NavPlace {
+  const { path, query } = splitUrl(url);
+  const params = new URLSearchParams(query);
+  const fsPath = fsPathOfViewPath(path);
+  if (fsPath !== null) {
+    // `_mode=claude|git` is the same companion spelled as a content mode (an
+    // old link, a bookmark): in a workspace those live in the panel.
+    const side = [params.get("_side"), params.get("_mode")].find((v) => v === "claude" || v === "git");
+    if (side === "claude") return { side: "right", view: { kind: "chat", file: fsPath, query: chatDoorQuery(query) } };
+    if (side === "git") return { side: "right", view: { kind: "git", path: fsPath } };
+    return { side: "left" };
+  }
+  if (path === "/tasks") return { side: "right", view: { kind: "tasks", peek: params.get("peek") || null } };
+  if (isBotsUrl(path)) return { side: "right", view: { kind: "bots", url: joinUrl({ path, query, hash: "" }) } };
+  if (path.startsWith("/canvases/") && path.split("/").filter(Boolean).length === 3) {
+    const sid = params.get("session_id");
+    if (sid) return { side: "session", sessionId: sid };
+  }
+  return { side: "left" };
+}
+
+/**
+ * A TAB BOOTING ON A COMPANION PANE (WS-25): `/explorer/view/<p>?_side=claude
+ * &session_id=…` (or `_mode=claude|git`, `_side=git`) names a pane the page
+ * draws no more in a workspace. `right` is what the panel should show, and
+ * `keep` the tab's URL without the pane and its door params; a URL naming no
+ * pane is kept as it is (`right` null).
+ */
+export function splitArrival(url: string): { keep: string; right: RightView | null } {
+  const place = classifyNav(url);
+  const parts = splitUrl(url);
+  if (place.side !== "right" || (place.view.kind !== "chat" && place.view.kind !== "git") || !fsPathOfViewPath(parts.path)) {
+    return { keep: url, right: null };
+  }
+  const drop = (seg: string): boolean => {
+    const eq = seg.indexOf("=");
+    const name = eq === -1 ? seg : seg.slice(0, eq);
+    const value = eq === -1 ? "" : seg.slice(eq + 1);
+    if (name === "_side" || name === "_mode") return value === "claude" || value === "git";
+    return (CHAT_DOOR_PARAMS as readonly string[]).includes(name);
+  };
+  const query = querySegments(parts.query).filter((s) => !drop(s)).join("&");
+  return { keep: joinUrl({ ...parts, query }), right: place.view };
 }

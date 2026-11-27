@@ -67,6 +67,10 @@ export const SIDEBAR_WIDTH_DEFAULT = 232;
 export const RAIL_WIDTH_MIN = 180;
 export const RAIL_WIDTH_MAX = 400;
 export const RAIL_WIDTH_DEFAULT = 200;
+// The workspace's right panel width (shell/ui_layout.py WS_PANEL_MIN_W /
+// WS_PANEL_MAX_W; shell/workspace/panel-width.ts).
+export const WS_PANEL_WIDTH_MIN = 380;
+export const WS_PANEL_WIDTH_MAX = 4000;
 const VIEWSTATE_MAX_ENTRIES = 500;
 const VIEWSTATE_MAX_KEY = 4096;
 const VIEWSTATE_MAX_VALUE = 512;
@@ -135,6 +139,10 @@ export function sanitizeUiLayout(raw: unknown): UiLayoutDoc {
       width: clampInt(rl.width, RAIL_WIDTH_MIN, RAIL_WIDTH_MAX),
       expanded: rl.expanded === true,
     };
+  }
+  const ws = src.workspace;
+  if (isObj(ws) && isNum(ws.rightWidth)) {
+    out.workspace = { rightWidth: clampInt(ws.rightWidth, WS_PANEL_WIDTH_MIN, WS_PANEL_WIDTH_MAX) };
   }
   if (typeof src.bookmarksCollapsed === "boolean") out.bookmarksCollapsed = src.bookmarksCollapsed;
   if (typeof src.currentAppsCollapsed === "boolean") out.currentAppsCollapsed = src.currentAppsCollapsed;

@@ -2271,6 +2271,8 @@ export interface UiLayoutDoc {
   sidebar?: { width: number; collapsed: boolean };
   /** The right rail's width and expanded flag (platform/lib/railstate.ts). */
   rail?: { width: number; expanded: boolean };
+  /** The workspace's right panel width (shell/workspace/panel-width.ts). */
+  workspace?: { rightWidth: number };
   bookmarksCollapsed?: boolean;
   currentAppsCollapsed?: boolean;
   /** The sidebar's Canvases section fold (the desk's canvas half). */

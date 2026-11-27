@@ -57,6 +57,7 @@ import { dismissNotification, dismissPopup, notify } from "@platform/lib/notific
 import { syncRegistryToast, troubleReport } from "@platform/lib/trouble";
 import { templateModeIcon, modeTitle, KNOWN_SENTINEL_MODES } from "@apps/explorer/ModeSwitcher";
 import { embedSrc } from "@platform/lib/layout-codec";
+import { openInWorkspace, useWorkspacePlace } from "@platform/lib/workspace-bridge";
 import { nodeOfFile, nodePageShot, type NodeOfFile } from "@apps/explorer/lib/node-shot";
 import { useCanvasPageShotResponder } from "@apps/claude/shots/canvas-page-shot-responder";
 import {
@@ -1087,7 +1088,11 @@ function TemplatePreview({
   // the pending entry for the deep link's sake.
   // A remote cache copy never gets here with a companion in `templates`
   // (Preview drops them upstream), so this needs no remote case.
-  const contentModes = split.offered ? parts.content : offered;
+  // IN A WORKSPACE FRAME (SPEC §56 WS-25) the companions (Claude, Git) are no
+  // content modes either: they live in the window's right panel. A URL that
+  // arrives on `_mode=claude|git` was handed to the host at boot
+  // (workspace-bridge `adoptWorkspaceArrival`) and opens the default mode.
+  const contentModes = split.offered || (IS_WS_FRAME && parts.content.length > 0) ? parts.content : offered;
   const sidebarModes = split.offered ? split.all : [];
   // What the sidebar's switcher DRAWS, which is a longer list than the one above:
   // all three companions, the ones this file cannot show disabled and explaining
@@ -1334,6 +1339,30 @@ function TemplatePreview({
   const openClaudeSide = () => setSide("claude");
   // The rail's Git section opens the git companion where this file has one.
   const railGitDoor = sideTargets.some((e) => e.mode === "git") ? () => setSide("git", "git") : undefined;
+  // IN A WORKSPACE TAB the window's one rail stands instead (§56 WS-20): this
+  // page says what its rail would show, as data.
+  useWorkspacePlace(
+    IS_WS_FRAME && !stat.is_dir && !remoteUrl
+      ? {
+          place: railPlace,
+          newTask: { target: fsPath, waiting: null, on: null },
+          git: { path: fsPath },
+          fileModes: {
+            path: fsPath,
+            rev: snapshotSha ?? "",
+            doors: contentModes
+              .filter((t) => t.mode !== entry.mode && !isPending(t))
+              .map((t) => ({ mode: t.mode, title: modeTitle(t.mode), icon: t.icon })),
+            srcs: Object.fromEntries(
+              contentModes.map((t) => [
+                t.mode,
+                embedSrc(fsPath, "?" + new URLSearchParams({ _mode: t.mode, ...(snapshotSha ? { _snapshot: snapshotSha } : {}) }).toString()),
+              ]),
+            ),
+          },
+        }
+      : null,
+  );
 
   // The one writer. `null` CLOSES, and closing is a value (`_side=off`) rather
   // than a deleted param now that absence means open — while choosing the
@@ -2195,7 +2224,12 @@ function TemplatePreview({
     // has no sidebar of its own (see `applySide`'s definition above), so
     // there `onOpenGit` is left `undefined` and the row falls back to
     // navigating instead.
-    onOpenGit: splitCapable ? () => applySide("git", "git") : undefined,
+    // …and in a workspace tab, the window's right panel on Git (§56).
+    onOpenGit: splitCapable
+      ? () => applySide("git", "git")
+      : IS_WS_FRAME
+        ? () => void openInWorkspace(viewUrlForFsPath(fsPath, "?_side=git"))
+        : undefined,
   });
 
   // THE FILE MENU — one list, two surfaces (the kebab, the crumb bar's

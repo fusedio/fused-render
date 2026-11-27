@@ -70,6 +70,7 @@ import {
 import { useAutoReadOpenTasks, useDocumentVisible } from "@shell/task-open-read";
 import { DoorCard } from "./DoorCard";
 import { RailPinButton } from "./RailPin";
+import { isWorkspaceHost } from "@platform/lib/workspace-bridge";
 import { tasksCardStore, useTasksCard } from "./tasks-peek-store";
 
 // The page's own chunk (App.tsx lazy-loads the same module): not the shell's
@@ -264,7 +265,7 @@ export function TasksPeek() {
                     {...openInTasksProps(
                       openInTasksItem({ on: true, taskKey: task.key, onOpen: (href) => void api.openPage(href) }),
                     )}
-                    {...(taskHref(task) && opensInSidePane(taskHref(task)!) ? {
+                    {...(taskHref(task) && opensInSidePane(taskHref(task)!) && !isWorkspaceHost() ? {
                       fullScreen: {
                         on: false,
                         onToggle: () => {

@@ -34,9 +34,11 @@ import {
   useState,
   useSyncExternalStore,
 } from "react";
+import { openInWorkspace, useWorkspacePlace } from "@platform/lib/workspace-bridge";
 import {
   IS_PANEL_PANE,
   IS_WS_FRAME,
+  viewUrlForFsPath,
   IS_SNAPSHOT,
   confirmLeave,
   embedUrlForFsPath,
@@ -546,6 +548,13 @@ export default function Listing({
   const paneOpen = pane.on && sideState.open;
   // Where the Claude rail stands while the pane is shut (below): this folder.
   const railPlace = useMemo(() => ({ kind: "folder" as const, dir: fsPath }), [fsPath]);
+  // IN A WORKSPACE TAB the window's one rail stands instead (SPEC §56 WS-20):
+  // this folder says what its rail would show, as data.
+  useWorkspacePlace(
+    IS_WS_FRAME && !remote
+      ? { place: railPlace, newTask: { target: fsPath, waiting: null, on: null }, git: { path: fsPath }, fileModes: null }
+      : null,
+  );
   // One writer for both halves of the state, and it writes the URL only where the
   // listing owns one: a frozen-tree snapshot and a panel pane are each a whole
   // shell handed a column by something else (`paneEnabled` above), and neither
@@ -1035,7 +1044,9 @@ export default function Listing({
     // navigating instead.
     onOpenGit: paneEnabled
       ? () => setSide({ open: true, mode: "git" }, "git")
-      : undefined,
+      : IS_WS_FRAME
+        ? () => void openInWorkspace(viewUrlForFsPath(fsPath, "?_side=git"))
+        : undefined,
     // Open in embed — this listing under the chrome-free embed prefix, in a new
     // tab, `_mode=_listing` stamped so the embed shows the LISTING rather than
     // hopping to the folder's app entry (the same stamp the file preview's row

@@ -10,6 +10,8 @@
 // the next registration to take the caret once it mounts; else leave the key
 // alone so the browser's quick-find still gets it.
 import { isOverlayOpen } from "@platform/lib/ui-overlay";
+import { WS_ROLE } from "@platform/lib/router";
+import { workspaceHost } from "@platform/lib/workspace-bridge";
 import { anyModalOpen } from "@platform/ui/modal/esc-stack";
 
 /** Dispatched on `document`, cancelable. A host that opens its chat pane for it
@@ -91,7 +93,8 @@ export function handleSlashKey(e: KeyboardEvent): boolean {
   if (e.isComposing || e.defaultPrevented) return false;
   if (isEditableTarget(document.activeElement)) return false;
   if (isOverlayOpen() || anyModalOpen()) return false;
-  if (focusAnyChatComposer() || requestChatPane()) {
+  // In a workspace tab the chat lives in the host's right panel (SPEC §56).
+  if (focusAnyChatComposer() || requestChatPane() || (WS_ROLE !== null && !!workspaceHost()?.focusPanelChat?.())) {
     e.preventDefault();
     return true;
   }

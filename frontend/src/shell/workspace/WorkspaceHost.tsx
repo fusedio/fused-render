@@ -21,8 +21,9 @@
 //
 // State lives in a ref, because the bridge's `openPage` is synchronous and
 // reads it; a version counter is the re-render.
-import { useEffect, useLayoutEffect, useReducer, useRef } from "react";
+import { useEffect, useLayoutEffect, useMemo, useReducer, useRef } from "react";
 import {
+  confirmLeave,
   installNavSink,
   NAV_EVENT,
   NAVIGATE_URL_EVENT,
@@ -32,15 +33,33 @@ import {
 } from "@platform/lib/router";
 import { attachEmbedUrlChange, detachEmbedUrlChange, type UrlChangeHook } from "@platform/lib/layout-codec";
 import { TAB_VISIBILITY_EVENT } from "@platform/lib/pause-while-hidden";
-import { registerWorkspaceImpl } from "@platform/lib/workspace-bridge";
+import {
+  registerWorkspaceImpl,
+  WS_SELECT_NODE_EVENT,
+  type WsPublishedPlace,
+} from "@platform/lib/workspace-bridge";
+import type { WsRole } from "@platform/lib/router";
+import { embedSrc } from "@platform/lib/layout-codec";
+import { focusAnyChatComposer } from "@platform/lib/chat-focus";
+import { pendingEntryId } from "@platform/lib/queue";
+import type { Task, TaskPulseTask } from "@platform/lib/api";
 import { displayName } from "@platform/lib/flavor";
 import { useFavicon } from "@platform/lib/hooks";
 import type { Config } from "@platform/lib/api";
-import { FallbackRail } from "@shell/claude-rail/FallbackRail";
+import { ClaudeRail, type NewTaskSeed } from "@shell/claude-rail/ClaudeRail";
+import type { RailPlace } from "@shell/claude-rail/claude-rail-lib";
+import type { RailPanel, RailPanelShows } from "@shell/claude-rail/rail-panel";
+import { readListing, readTasksRows } from "@shell/tasksPulse";
+import { taskChatTarget } from "@shell/tasks-lib";
+import { templateModeIcon } from "@apps/explorer/ModeSwitcher";
+import { WorkspacePanel } from "./WorkspacePanel";
+import type { PanelParamsHost } from "./panel-params";
 import { ONBOARDING_PATH } from "@shell/onboarding/state";
 import TabStrip from "./TabStrip";
 import {
   buildHostUrl,
+  classifyNav,
+  encodeRight,
   HOME_URL,
   isHomeUrl,
   isSpaUrl,
@@ -48,13 +67,54 @@ import {
   normalizeOpenUrl,
   pageUrlOf,
   parseHostUrl,
+  parseRight,
   planOpen,
   readFrameLoc,
+  rightSession,
+  sameRight,
   samePage,
+  splitArrival,
   stripHash,
   tabKind,
   tabLabel,
+  type RightView,
 } from "./workspace-lib";
+
+/** No page has said where its rail stands (Home, Tasks, …): no place, so
+ *  nothing rides the list (FallbackRail's pair). */
+const NO_PLACE: RailPlace = { kind: "folder", dir: "\u0000" };
+const NO_TASK: NewTaskSeed = { target: null, waiting: null, on: null };
+const noop = () => {};
+const noPull = () => {};
+
+/** What a tab's page last published for the rail (plain data, cloned out of
+ *  the frame's realm), and the document that said it. */
+interface Published {
+  win: Window;
+  info: WsPublishedPlace;
+  json: string;
+}
+
+/** The rail's picture of what the panel shows. */
+function showsOf(view: RightView | null): RailPanelShows {
+  if (!view) return { kind: "none" };
+  switch (view.kind) {
+    case "tasks":
+      return { kind: "tasks" };
+    case "bots":
+      return { kind: "bots" };
+    case "git":
+      return { kind: "git" };
+    case "mode":
+      return { kind: "mode", mode: view.mode };
+    case "chat": {
+      const q = new URLSearchParams(view.query);
+      const sessionId = q.get("session_id") || null;
+      const queued = q.get("queued") || null;
+      return sessionId || queued ? { kind: "chat", sessionId, queued } : { kind: "home" };
+    }
+  }
+}
 
 interface Tab {
   id: string;
@@ -139,7 +199,7 @@ function readFavicon(doc: Document | null | undefined): string | null {
   }
 }
 
-export default function WorkspaceHost({ config: _config }: { config: Config }) {
+export default function WorkspaceHost({ config }: { config: Config }) {
   const [, rerender] = useReducer((n: number) => n + 1, 0);
 
   // The whole strip, initialised once from the host URL. A reload keeps its ids
@@ -163,6 +223,11 @@ export default function WorkspaceHost({ config: _config }: { config: Config }) {
   const st = S.current;
   const homeId = () => st.order[0];
 
+  // THE RIGHT PANEL'S OWN (SPEC §56 WS-16…): the chat's remount counter (bumped
+  // when its query changes from OUTSIDE the chat, ChatView's header), the
+  // private target its params store hears URL events on, and each tab's
+  // published rail (WS-20).
+  const R = useRef({ chatEpoch: 0, chatEvents: new EventTarget(), places: new Map<string, Published>() }).current;
   const frames = useRef(new Map<string, HTMLIFrameElement>()).current;
   const wiring = useRef(new Map<string, FrameWiring>()).current;
   const wireOf = (id: string): FrameWiring => {
@@ -281,6 +346,13 @@ export default function WorkspaceHost({ config: _config }: { config: Config }) {
     // Fade in rather than flash an unpainted frame (`.is-loaded`, workspace.css).
     iframe.classList.add("is-loaded");
     unwire(id);
+    // A new document: what the old one published for the rail goes (the new
+    // page publishes again from its own mount, which may already have run).
+    const pub = R.places.get(id);
+    if (pub && pub.win !== iframe.contentWindow) {
+      R.places.delete(id);
+      if (id === st.active) rerender();
+    }
     const w = wireOf(id);
     w.loaded = true;
     // A new document is a new Window: flag, listeners and hook all go back on.
@@ -421,6 +493,7 @@ export default function WorkspaceHost({ config: _config }: { config: Config }) {
     wiring.delete(id);
     st.tabs.delete(id);
     st.mounted = st.mounted.filter((x) => x !== id);
+    R.places.delete(id);
   };
 
   const close = (id: string) => {
@@ -436,6 +509,153 @@ export default function WorkspaceHost({ config: _config }: { config: Config }) {
     rerender();
   };
 
+  // ---- the right panel (WS-16…WS-19) ------------------------------------------
+  // `st.right` is the `_right` string itself; every change goes through here.
+  // A view a user action opens is a history entry; a sync is a replace.
+  const setRight = (next: string | null, how: "push" | "replace", own = false) => {
+    if (next === st.right) return;
+    const prev = parseRight(st.right);
+    const nv = parseRight(next);
+    st.right = next;
+    // The chat follows an OUTSIDE change of its conversation by a remount.
+    if (!own && nv?.kind === "chat" && prev?.kind === "chat" && prev.file === nv.file && prev.query !== nv.query) R.chatEpoch += 1;
+    if (how === "push") pushMirror();
+    else replaceMirror();
+    rerender();
+  };
+
+  // OPEN A VIEW (WS-16): what already shows does nothing; leaving a chat that
+  // may hold unsent words asks the composer's leave guard first (it lives in
+  // THIS document). Null closes the panel.
+  const openRightView = (view: RightView | null, how: "push" | "replace" = "push"): Promise<boolean> => {
+    const cur = parseRight(st.right);
+    if (view && cur && sameRight(cur, view)) return Promise.resolve(true);
+    if (!view && !cur) return Promise.resolve(true);
+    const go = () => setRight(view ? encodeRight(view) : null, how);
+    if (cur?.kind !== "chat") {
+      go();
+      return Promise.resolve(true);
+    }
+    return confirmLeave().then((ok) => {
+      if (ok) go();
+      return ok;
+    });
+  };
+
+  // A CANVAS TASK'S DOOR names only its session (classifyNav `session`): the
+  // task is found in the shared listing (else the pulse) and its chat opens
+  // on the right. Null when no row has that session.
+  const viewForSession = (sid: string): RightView | null => {
+    const row: (Task | TaskPulseTask) | undefined =
+      readListing()?.find((t) => t.session_id === sid) ?? readTasksRows().find((t) => t.session_id === sid);
+    if (!row) return null;
+    const file = taskChatTarget(row);
+    return file ? { kind: "chat", file, query: "session_id=" + encodeURIComponent(sid) } : null;
+  };
+
+  // WHERE A URL GOES (WS-15): the host sink, the rail's and the panel's doors.
+  const openHref = (raw: string, opts?: { newTab?: boolean; call?: NavCall }) => {
+    const n = normalizeOpenUrl(raw, location.href);
+    if (n && n.kind === "same" && !opts?.newTab && !isWizard(n.url)) {
+      const place = classifyNav(n.url);
+      if (place.side === "right") {
+        void openRightView(place.view);
+        return;
+      }
+      if (place.side === "session") {
+        const view = viewForSession(place.sessionId);
+        if (view) {
+          void openRightView(view);
+          return;
+        }
+      }
+    }
+    open(raw, opts);
+  };
+
+  // A FRAME'S HOP (workspace-bridge `takeHop`): true when the host took it.
+  const takeHop = (raw: string, role: WsRole): boolean => {
+    const n = normalizeOpenUrl(raw, location.href);
+    if (!n || n.kind !== "same" || isWizard(n.url)) return false;
+    const place = classifyNav(n.url);
+    if (place.side === "right") {
+      // The Bots page's own navigation stays in its frame (the host mirrors it).
+      if (role === "panel" && place.view.kind === "bots" && parseRight(st.right)?.kind === "bots") return false;
+      void openRightView(place.view);
+      return true;
+    }
+    if (place.side === "session") {
+      const view = viewForSession(place.sessionId);
+      if (view) {
+        void openRightView(view);
+        return true;
+      }
+    }
+    // From the panel, every page opens on the left (never inside the panel).
+    if (role === "panel") {
+      open(n.url);
+      return true;
+    }
+    return false;
+  };
+
+  // A TAB BOOTING ON A COMPANION PANE (WS-25, workspace-lib `splitArrival`).
+  const adoptArrival = (win: Window, url: string): string | null => {
+    const { keep, right } = splitArrival(url);
+    if (!right) return null;
+    const shown = frames.get(st.active)?.contentWindow === win;
+    // An explicit `_right` (a reload) wins over a tab's old pane.
+    if (shown && st.right === null) void openRightView(right, "replace");
+    return keep;
+  };
+
+  // A TAB'S PAGE SAYS WHERE ITS RAIL STANDS (WS-20). Plain data, cloned out
+  // of the frame's realm; an unchanged publish keeps the old object, so the
+  // rail's memoised derivations hold.
+  const publishPlace = (win: Window, info: WsPublishedPlace | null) => {
+    const id = st.order.find((x) => frames.get(x)?.contentWindow === win);
+    if (!id) return;
+    if (!info) {
+      if (R.places.get(id)?.win !== win) return;
+      R.places.delete(id);
+    } else {
+      let json: string;
+      try {
+        json = JSON.stringify(info);
+      } catch {
+        return;
+      }
+      const was = R.places.get(id);
+      if (was && was.win === win && was.json === json) return;
+      R.places.set(id, { win, info: JSON.parse(json) as WsPublishedPlace, json });
+    }
+    if (id === st.active) rerender();
+  };
+
+  // The panel chat's params are `_right`'s (panel-params.ts).
+  const chatHost = useRef<PanelParamsHost | null>(null);
+  if (!chatHost.current) {
+    chatHost.current = {
+      query: () => {
+        const v = parseRight(S.current?.right ?? null);
+        return v?.kind === "chat" ? v.query : "";
+      },
+      write: (query, how, state) => {
+        const st2 = S.current;
+        const v = parseRight(st2?.right ?? null);
+        if (!st2 || v?.kind !== "chat") return;
+        const next = encodeRight({ ...v, query });
+        if (next === st2.right) return;
+        st2.right = next;
+        if (how === "push") {
+          const { url, state: ws } = live.current.hostUrl();
+          history.pushState({ ...(state && typeof state === "object" ? state : null), ...ws }, "", url);
+        } else live.current.replaceMirror();
+        rerender();
+      },
+    };
+  }
+
   // ---- popstate: reconcile in place ------------------------------------------
   // The entry names a tab set; the live tabs are the truth about where each one
   // is now (their own history covers that), so nothing is navigated and nothing
@@ -443,7 +663,15 @@ export default function WorkspaceHost({ config: _config }: { config: Config }) {
   // (unmounted until shown), and the entry's active tab is selected.
   const onPopState = () => {
     const parsed = parseHostUrl(location.pathname + location.search);
+    // The panel follows the entry (WS-22): a chat whose query a traversal
+    // moved is remounted on it, and its params store drops a pending write.
+    const prevRight = parseRight(st.right);
     st.right = parsed.right;
+    const nextRight = parseRight(st.right);
+    if (prevRight?.kind === "chat" && nextRight?.kind === "chat" && prevRight.file === nextRight.file && prevRight.query !== nextRight.query) {
+      R.chatEpoch += 1;
+    }
+    R.chatEvents.dispatchEvent(new Event("popstate"));
     const state = history.state as HistoryWsState | null;
     // Ids are an optimisation: an entry whose ids name none of the live tabs
     // matches by page instead, or every tab would come back beside itself.
@@ -477,8 +705,8 @@ export default function WorkspaceHost({ config: _config }: { config: Config }) {
 
   // Handlers close over `st` and stable maps but are re-created per render, so
   // the effects below read them through a ref.
-  const live = useRef({ onPopState, open, close });
-  live.current = { onPopState, open, close };
+  const live = useRef({ onPopState, open, close, openHref, openRightView, takeHop, adoptArrival, publishPlace, hostUrl, replaceMirror });
+  live.current = { onPopState, open, close, openHref, openRightView, takeHop, adoptArrival, publishPlace, hostUrl, replaceMirror };
 
   // After a switch the shown frame takes focus, so the keyboard is in the page
   // the reader chose, not left on the strip or in a hidden frame.
@@ -497,6 +725,12 @@ export default function WorkspaceHost({ config: _config }: { config: Config }) {
   useLayoutEffect(() => {
     registerWorkspaceImpl({
       openPage: (url, opts) => live.current.open(String(url), { newTab: opts?.newTab }),
+      openHref: (url, opts) => live.current.openHref(String(url), { newTab: opts?.newTab }),
+      openRight: (view, opts) => void live.current.openRightView(parseRight(view), opts?.replace ? "replace" : "push"),
+      takeHop: (url, role) => live.current.takeHop(String(url), role),
+      adoptArrival: (win, url) => live.current.adoptArrival(win, String(url)),
+      publishPlace: (win, info) => live.current.publishPlace(win, info),
+      focusPanelChat: () => focusAnyChatComposer(),
       pageUrl: () => {
         const t = st.tabs.get(st.active);
         return t ? t.url : pageUrlOf(location.pathname + location.search);
@@ -504,9 +738,10 @@ export default function WorkspaceHost({ config: _config }: { config: Config }) {
     });
     // Every hop from the host's own chrome follows the open rules — except to
     // the wizard, which is an ordinary push (App then shows it, whole-window).
+    // …and a chat door, Tasks or Bots opens in the right panel (WS-15).
     installNavSink((href, call) => {
       if (isWizard(href)) return false;
-      live.current.open(href, { call });
+      live.current.openHref(href, { call });
       return true;
     });
     const onPop = () => live.current.onPopState();
@@ -546,8 +781,96 @@ export default function WorkspaceHost({ config: _config }: { config: Config }) {
   // The window's own icon follows the shown page's, as it did before tabs.
   useFavicon(st.tabs.get(st.active)?.icon ?? null);
 
-  // Stage 2 mounts the right panel here, between the tabs and the rail.
-  const rightPanel = null;
+  // ---- the right panel and the window's one rail (WS-16, WS-20, WS-21) ------
+  const view = parseRight(st.right);
+  const activePub = (() => {
+    const p = R.places.get(st.active);
+    return p && p.win === frames.get(st.active)?.contentWindow ? p.info : null;
+  })();
+  const activeFrameWin = () => frames.get(st.active)?.contentWindow ?? null;
+  const railPlace = (activePub?.place as RailPlace | undefined) ?? NO_PLACE;
+  const railNewTask = (activePub?.newTask as NewTaskSeed | undefined) ?? NO_TASK;
+  const railGitPath = activePub?.git?.path ?? null;
+  const railGit = useMemo(
+    () => (railGitPath ? { path: railGitPath, onOpenGit: () => void live.current.openRightView({ kind: "git", path: railGitPath }) } : undefined),
+    [railGitPath],
+  );
+  const pubModes = activePub?.fileModes ?? null;
+  const railModes = useMemo(() => {
+    if (!pubModes) return undefined;
+    const path = pubModes.path;
+    return {
+      path,
+      rev: pubModes.rev,
+      // Icons rebuilt here: only data crossed the frame (WS-20).
+      doors: pubModes.doors.map((d) => ({ mode: d.mode, title: d.title, icon: templateModeIcon({ mode: d.mode, path: null, icon: d.icon }) })),
+      src: (m: string) => pubModes.srcs[m] ?? embedSrc(path, "?_mode=" + encodeURIComponent(m)),
+      onOpen: (m: string) => void live.current.openRightView({ kind: "mode", mode: m, file: path }),
+    };
+  }, [pubModes]);
+  // A canvas tab's node chip and place tags select INSIDE that tab.
+  const canvasSelect = !!activePub?.canvasSelect;
+  const selectInTab = (udfName: string | null, sessionId: string | null | undefined, tag: boolean) => {
+    const win = activeFrameWin();
+    if (!win) return;
+    try {
+      const Ctor = (win as Window & typeof globalThis).CustomEvent;
+      win.dispatchEvent(new Ctor(WS_SELECT_NODE_EVENT, { detail: { udfName, sessionId: sessionId ?? null, tag } }));
+    } catch {
+      /* frame mid-navigation */
+    }
+  };
+  const peekSession = view?.kind === "tasks" && view.peek && !pendingEntryId(view.peek) ? view.peek : null;
+  const panel: RailPanel = {
+    shows: showsOf(view),
+    openChat: (t, row) => {
+      const merged = row ? { ...row, status: t.status } : t;
+      const file = taskChatTarget(merged);
+      if (!file) return false;
+      if (t.session_id) {
+        void openRightView({ kind: "chat", file, query: "session_id=" + encodeURIComponent(t.session_id) });
+        return true;
+      }
+      const queued = pendingEntryId(t.key);
+      if (queued && t.status === "queued") {
+        void openRightView({ kind: "chat", file, query: "queued=" + encodeURIComponent(queued) });
+        return true;
+      }
+      return false;
+    },
+    openTasks: () => void openRightView({ kind: "tasks", peek: null }),
+    openBots: () => void openRightView({ kind: "bots", url: "/bots" }),
+    openGit: () => {
+      if (railGitPath) void openRightView({ kind: "git", path: railGitPath });
+    },
+    openMode: (mode) => {
+      if (pubModes) void openRightView({ kind: "mode", mode, file: pubModes.path });
+    },
+    // The + is the ACTIVE TAB's Claude home, fixed at the click (WS-21):
+    // the place's target, else the default Fused folder.
+    openHome: () => {
+      const file = railNewTask.target || config.fused_dir;
+      if (file) void openRightView({ kind: "chat", file, query: "" });
+    },
+  };
+
+  const rightPanel = view ? (
+    <WorkspacePanel
+      view={view}
+      chatEpoch={R.chatEpoch}
+      chatHost={chatHost.current}
+      chatEvents={R.chatEvents}
+      onHide={() => void openRightView(null)}
+      onDragClose={() => void openRightView(null)}
+      onNavigate={(url) => openHref(url)}
+      onTasksPeek={(key, how = "push") => setRight(encodeRight({ kind: "tasks", peek: key }), how)}
+      onBotsSync={(url) => {
+        if (parseRight(st.right)?.kind !== "bots") return;
+        const p = classifyNav(url);
+        if (p.side === "right" && p.view.kind === "bots") setRight(encodeRight(p.view), "replace", true);
+      }}
+    />
+  ) : null;
 
   return (
     <div className="shell-main-row ws-row">
@@ -579,7 +902,27 @@ export default function WorkspaceHost({ config: _config }: { config: Config }) {
         </div>
       </div>
       {rightPanel}
-      <FallbackRail />
+      {/* THE WINDOW'S ONE RAIL (WS-20): fed by what the active tab's page
+          published, its clicks the panel's (`panel`). */}
+      <ClaudeRail
+        place={railPlace}
+        newTask={railNewTask}
+        {...(railGit ? { git: railGit } : {})}
+        {...(railModes ? { fileModes: railModes } : {})}
+        activeSessionId={rightSession(view) ?? peekSession}
+        onOpen={noop}
+        onOpenChat={(href) => {
+          openHref(href);
+        }}
+        onPullStart={noPull}
+        {...(canvasSelect
+          ? {
+              onSelectNode: (udfName: string | null) => selectInTab(udfName, null, false),
+              onTagSelect: (udfName: string | null, sessionId?: string | null) => selectInTab(udfName, sessionId, true),
+            }
+          : {})}
+        panel={panel}
+      />
     </div>
   );
 }

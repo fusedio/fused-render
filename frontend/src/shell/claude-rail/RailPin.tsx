@@ -12,10 +12,11 @@
 //     hears a press before whatever it landed on reacts; the ruling waits a
 //     tick for React's capture phase to say whether the press came from the
 //     card's own tree (a menu or picker portaled out of it).
-import { useCallback, useEffect, useRef, type Ref } from "react";
+import { createContext, useCallback, useContext, useEffect, useRef, type Ref } from "react";
 import { pinWords, pressVerdict, viewPress, type PressTarget, type PressWhere } from "./rail-pin-lib";
 import { useRailExtras } from "./rail-extras-flag";
 import { pinHint } from "./rail-slots-lib";
+import { usePanelRailOn } from "./rail-panel";
 
 /** The pin glyph (owner, 2026-11-02: "BsFillPinAngleFill use this"; and
  *  2026-11-16, of the pin the card showed with favourites off: "copy that
@@ -54,11 +55,17 @@ function CloseX({ size = 14 }: { size?: number }) {
   );
 }
 
+/** IS THIS CARD WINDOW A'S? Said by the card chassis (DoorCard, RailPeek)
+ *  so its pin can stand down beside the workspace's panel (rail-panel.ts)
+ *  without every head that draws one having to ask. */
+export const PinWindowA = createContext(false);
+
 export function RailPinButton({
   pinned,
   onToggle,
   variant = "head",
   btnRef,
+  windowA = false,
 }: {
   pinned: boolean;
   onToggle: () => void;
@@ -68,7 +75,12 @@ export function RailPinButton({
   /** The card's keyboard landing: with the pin no card has a ×, and the pin
    *  is the head's first button (DoorCard `closeRef`). */
   btnRef?: Ref<HTMLButtonElement>;
+  /** A window A card's pin: none while the workspace's panel rail stands
+   *  (rail-panel.ts — its clicks open the panel; nothing of A pins). */
+  windowA?: boolean;
 }) {
+  const panelOn = usePanelRailOn();
+  const inA = useContext(PinWindowA) || windowA;
   // FREE PINS (rail-slots-lib "A PINNED WINDOW CLOSES BY ITS ×"): "Pin" on a
   // non-pin card, "Close" on a pin — with no cap a pin's press replaces
   // nothing, so the caption names nothing it would close and no pinned
@@ -83,6 +95,7 @@ export function RailPinButton({
     },
     [btnRef],
   );
+  if (inA && panelOn) return null;
   return (
     <button
       ref={setRefs}

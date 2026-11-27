@@ -64,6 +64,8 @@ import type { DoorCardStore } from "./door-card-store";
 import { useFavPeekState } from "./fav-peek-store";
 import { publishWindowABox, setSnapGuides } from "./card-snap";
 import { viewPress } from "./rail-pin-lib";
+import { usePanelRailOn } from "./rail-panel";
+import { PinWindowA } from "./RailPin";
 import {
   FLOAT_GRIPS,
   RAIL_HEAD_SELECTOR,
@@ -196,6 +198,7 @@ export function DoorCard({
 }: DoorCardProps) {
   const on = enabled;
   const left = side === "left";
+  const panelOn = usePanelRailOn();
   const card = store.useCard();
   // …and window B's box (`favBox`): this card is window A's and keeps CLEAR
   // of the favourite's or the bot's card — above it, else to its left
@@ -271,7 +274,8 @@ export function DoorCard({
     shown: up && !left ? String(card.seq) : null,
     // A non-pin's head drag pins it (useCardMove `dragPins`): the pin icon's
     // own press (`togglePin`, below).
-    dragPins: !left && !card.held && up ? () => togglePinRef.current() : null,
+    // …never beside the workspace's panel (rail-panel.ts): A does not pin.
+    dragPins: !left && !card.held && up && !panelOn ? () => togglePinRef.current() : null,
   });
   // A LEFT card moves through its own store (header "EITHER SIDE").
   const ownCardMove = useOwnCardMove({
@@ -820,7 +824,11 @@ export function DoorCard({
           ))}
         {visible &&
           (move.floating ? FLOAT_GRIPS : left ? LEFT_GRIPS : ALL_GRIPS).map((e) => <div key={"ring-" + e} className={"rail-grip-ring is-" + e} aria-hidden="true" />)}
-        <div className="claude-rail-peek-card">{children(api)}</div>
+        <div className="claude-rail-peek-card">
+          {/* A door card on the rail is window A's: no pin beside the
+              workspace's panel (RailPin `PinWindowA`). */}
+          <PinWindowA.Provider value={!left}>{children(api)}</PinWindowA.Provider>
+        </div>
       </div>
     </>,
     document.body,

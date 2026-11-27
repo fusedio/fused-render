@@ -48,3 +48,12 @@ describe("sanitizeUiLayout chatTextScale", () => {
     expect(sanitizeUiLayout({ v: 1, chatTextScale: null }).chatTextScale).toBeUndefined();
   });
 });
+
+describe("sanitizeUiLayout workspace", () => {
+  it("keeps the right panel's width, clamped to the server's bounds", () => {
+    expect(sanitizeUiLayout({ v: 1, workspace: { rightWidth: 520.4 } }).workspace).toEqual({ rightWidth: 520 });
+    expect(sanitizeUiLayout({ v: 1, workspace: { rightWidth: 100 } }).workspace).toEqual({ rightWidth: 380 });
+    expect(sanitizeUiLayout({ v: 1, workspace: { rightWidth: "x" } }).workspace).toBeUndefined();
+    expect(sanitizeUiLayout({ v: 1 }).workspace).toBeUndefined();
+  });
+});

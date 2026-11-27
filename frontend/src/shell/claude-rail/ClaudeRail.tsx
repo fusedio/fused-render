@@ -484,6 +484,7 @@ import {
   type RailModeDoor,
 } from "./mode-peek-store";
 import { watchRailWidth } from "./rail-width-watch";
+import { panelShowsTask, registerPanelRail, type RailPanel } from "./rail-panel";
 import type { DoorCardState } from "./door-card-store";
 
 /** No mode doors (a stable empty list). */
@@ -867,6 +868,7 @@ export function ClaudeRail({
   paneOpen = false,
   onNewChat,
   favouritesOnly = false,
+  panel,
 }: {
   /** Where the rail stands (claude-rail-lib `RailPlace`): whose chats ride
    *  it. On a canvas the selected node's file narrows it (header). The
@@ -943,8 +945,19 @@ export function ClaudeRail({
    *  RAIL"): no place of its own — no list, no +, no Git, no panel glyph;
    *  only the favourites, and hidden while there are none. */
   favouritesOnly?: boolean;
+  /** THE WORKSPACE'S RIGHT PANEL (rail-panel.ts; SPEC §56 WS-21): a click on
+   *  a list ring, a door or the + opens it there instead of window A, and
+   *  window A pins nothing. Absent: every rule above, unchanged. */
+  panel?: RailPanel;
 }) {
   const rows = useTasksPulseRows();
+  // The panel's view, read at a click (handlers built before a re-render).
+  const panelRef = useRef(panel);
+  panelRef.current = panel;
+  const hasPanel = !!panel;
+  useLayoutEffect(() => (hasPanel ? registerPanelRail() : undefined), [hasPanel]);
+  const panelDoor = (kind: "tasks" | "bots" | "git" | "home") => panel?.shows.kind === kind;
+  const panelMode = (mode: string) => panel?.shows.kind === "mode" && panel.shows.mode === mode;
   // THE GIT SECTION'S FACTS (header; rail-git.ts). Read for no path on a
   // rail with no git — the hook is inert then.
   const railGit = useRailGit(git?.path ?? null);
@@ -1058,7 +1071,8 @@ export function ClaudeRail({
   cardRef.current = card;
   // THE PANEL GLYPH AND THE PULL SEAM: only while the pane is shut, and
   // never on the shell's fallback (no pane to show).
-  const chrome = !paneOpen && !favouritesOnly;
+  // …nor beside a workspace's panel: it has its own seam and hide (WS-21).
+  const chrome = !paneOpen && !favouritesOnly && !panel;
   // THE RAIL'S NAV DOORS (owner, 2026-11-07): Tasks and the + at the top, in
   // place of the panel glyph, and Bots at the foot — the left sidebar has no
   // Tasks or Bots rows (GlobalSidebar). They are on every rail, always: the
@@ -2297,6 +2311,11 @@ export function ClaudeRail({
     // Window A's ring, with another of window A's cards pinned (the +
     // popover, the Tasks card): no hover (`aHovers` below).
     if (to === intent && !aHovers()) return;
+    // The ring whose chat the workspace panel shows opens no hover card.
+    if (to === intent && panelRef.current) {
+      const t = seats.find((s) => s.pulse.key === key)?.pulse;
+      if (t && panelShowsTask(panelRef.current.shows, t)) return;
+    }
     to.enterRing(key, "pointer");
   };
   const waiting = newTask.waiting;
@@ -2533,6 +2552,12 @@ export function ClaudeRail({
   const aRestoredWords = useRef(new Set<string>());
   useEffect(() => {
     if (aRestored.current || bootFallback) return;
+    // Beside the workspace's panel nothing of window A pins, and a stored
+    // pin is not brought back (it is left in the document, not deleted).
+    if (panelRef.current) {
+      aRestored.current = true;
+      return;
+    }
     // FREE PINS (many pins, 2026-11-24): EVERY pinned door card and the + card
     // comes back on its own door, each once — a pinned list task's window is
     // its slot's (`ListSlotCard`), and needs nothing from here. A card whose
@@ -3147,7 +3172,7 @@ export function ClaudeRail({
     });
   // A hover on the + previews only where its press opens the popover card,
   // and never over a draft's (modal) card or another pinned window A card.
-  const plusHovers = () => !waiting && aHovers();
+  const plusHovers = () => !waiting && aHovers() && panel?.shows.kind !== "home";
   // WINDOW A'S SIZE, DRAGGED ON THE + POPOVER (owner, 2026-11-08: "that modal
   // is supposed to be window A, but resize is not working for that modal"):
   // the chassis' grips (Modal `popover.resize`) report the size let go at,
@@ -3273,6 +3298,14 @@ export function ClaudeRail({
     plusIntent.press(door);
   };
   const openNewTask = () => {
+    // BESIDE THE WORKSPACE'S PANEL the + is the active tab's Claude home
+    // there (WS-21); its hover card stays the New task form, and goes.
+    if (panel) {
+      plusIntent.cancelPreview();
+      if (card?.pop) setCardCloseSignal((n) => n + 1);
+      panel.openHome();
+      return;
+    }
     if (waiting || (card && !card.pop)) return;
     pressPopDoor(PLUS_DOOR);
   };
@@ -3619,6 +3652,14 @@ export function ClaudeRail({
     focus();
   };
   const pressTasksDoor = (e: ReactMouseEvent<HTMLAnchorElement>) => {
+    if (panel && !(e.metaKey || e.ctrlKey || e.shiftKey || e.altKey || e.button !== 0)) {
+      e.preventDefault();
+      hideHint();
+      // Closed whether up or still on its way (a hover a beat before).
+      closeTasksCard();
+      if (!panelDoor("tasks")) panel.openTasks();
+      return;
+    }
     const act = tasksDoorAction({
       modified: e.metaKey || e.ctrlKey || e.shiftKey || e.altKey || e.button !== 0,
       ready: tasksCard.ready,
@@ -3663,6 +3704,13 @@ export function ClaudeRail({
   }, [botsDoor]);
   const botsUp = botsCard.up;
   const pressBotsDoor = (e: ReactMouseEvent<HTMLAnchorElement>) => {
+    if (panel && !(e.metaKey || e.ctrlKey || e.shiftKey || e.altKey || e.button !== 0)) {
+      e.preventDefault();
+      hideHint();
+      closeBotsCard();
+      if (!panelDoor("bots")) panel.openBots();
+      return;
+    }
     const act = botsDoorAction({
       modified: e.metaKey || e.ctrlKey || e.shiftKey || e.altKey || e.button !== 0,
       ready: botsCard.ready,
@@ -3702,6 +3750,12 @@ export function ClaudeRail({
   }, [gitDoorShown]);
   const gitUp = gitCard.up;
   const pressGitDoor = (e: ReactMouseEvent<HTMLButtonElement>) => {
+    if (panel) {
+      hideHint();
+      closeGitCard();
+      panel.openGit();
+      return;
+    }
     const act = gitDoorAction({ ready: gitCard.ready, pinned: gitCard.up && gitCard.pinned });
     hideHint();
     if (act === "open") openGitRef.current?.();
@@ -3741,6 +3795,12 @@ export function ClaudeRail({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [modeSig]);
   const pressModeDoor = (e: ReactMouseEvent<HTMLButtonElement>, mode: string) => {
+    if (panel) {
+      hideHint();
+      modeCardStore(mode).close();
+      panel.openMode(mode);
+      return;
+    }
     const store = modeCardStore(mode);
     const c = store.state();
     const act = modeDoorAction({ ready: c.ready, pinned: c.up && c.pinned });
@@ -3975,6 +4035,8 @@ export function ClaudeRail({
                       ? ["peeked", ...(card.pinned ? ["is-pinned"] : [])].filter((c) => !wears.classes.includes(c))
                       : []),
                     ...(foot && !t.starred ? ["is-blocked"] : []),
+                    // The ring whose chat the workspace panel shows (WS-21).
+                    ...(!foot && panel && panelShowsTask(panel.shows, t) && !wears.classes.includes("peeked") ? ["peeked"] : []),
                   ].join(" ")}
                   aria-label={`${label} — ${words}`}
                   // The list row's own caption (platform/lib/hints): the
@@ -4141,6 +4203,15 @@ export function ClaudeRail({
                       if (act === "pin") setFavPinned(t.key);
                       return;
                     }
+                    // BESIDE THE WORKSPACE'S PANEL (WS-21) a list ring's
+                    // click is its chat there; a hover card of it goes. A
+                    // draft keeps its New task card (pressRing).
+                    if (panel && !draft) {
+                      hideHint();
+                      setHeld(false);
+                      intent.dismiss();
+                      if (panelShowsTask(panel.shows, t) || panel.openChat(t, row ?? null)) return;
+                    }
                     pressRing(t, href, e.detail);
                   }}
                 >
@@ -4283,7 +4354,7 @@ export function ClaudeRail({
         {...(card.pop
           ? {
               pinNode: (
-                <RailPinButton pinned={!!card.held} onToggle={() => plusPinRef.current()} />
+                <RailPinButton windowA pinned={!!card.held} onToggle={() => plusPinRef.current()} />
               ),
             }
           : {})}
@@ -4534,7 +4605,8 @@ export function ClaudeRail({
             },
           },
   });
-  const listCards = (freePins ? aSlots : ONE_SLOT).map((slot) => {
+  // Beside the workspace's panel, stored A pins are left unread (WS-21).
+  const listCards = (freePins ? (panel ? aSlots.filter((x) => x.pin === null) : aSlots) : ONE_SLOT).map((slot) => {
     const isFree = !freePins || slot.pin === null;
     return {
       id: slot.id,
@@ -4647,7 +4719,7 @@ export function ClaudeRail({
             ref={botsDoorRef}
             data-rail-door="bots"
             href="/bots"
-            className={"sidebar-rail-btn claude-rail-item" + doorOpen(botsUp, botsCard.pinned)}
+            className={"sidebar-rail-btn claude-rail-item" + (panelDoor("bots") ? " is-open" : doorOpen(botsUp, botsCard.pinned))}
             {...doorHint(botsTip ? `Bots — ${botsTip}` : "Bots", botsCard.ready && (botsUp || aHovers()))}
             aria-label="Bots"
             {...(botsHere ? { "aria-current": "page" as const } : {})}
@@ -4656,7 +4728,7 @@ export function ClaudeRail({
               : {})}
             onClick={pressBotsDoor}
             onPointerEnter={(e) => {
-              if (e.pointerType !== "touch" && !dragging(e) && botsCard.ready && aHovers()) botsCardIntent().enterRing(BOTS_CARD_KEY, "pointer");
+              if (e.pointerType !== "touch" && !dragging(e) && botsCard.ready && aHovers() && !panelDoor("bots")) botsCardIntent().enterRing(BOTS_CARD_KEY, "pointer");
             }}
             onPointerLeave={() => botsCardIntent().leaveRing("pointer")}
             onKeyDown={(e) => {
@@ -4682,7 +4754,7 @@ export function ClaudeRail({
           ref={tasksDoorRef}
           data-rail-door="tasks"
           href="/tasks"
-          className={"sidebar-rail-btn claude-rail-item" + doorOpen(tasksUp, tasksCard.pinned)}
+          className={"sidebar-rail-btn claude-rail-item" + (panelDoor("tasks") ? " is-open" : doorOpen(tasksUp, tasksCard.pinned))}
           {...doorHint(tasksTip ? `Tasks — ${tasksTip}` : "Tasks", tasksCard.ready && (tasksUp || aHovers()))}
           aria-label="Tasks"
           {...(tasksHere ? { "aria-current": "page" as const } : {})}
@@ -4691,7 +4763,7 @@ export function ClaudeRail({
             : {})}
           onClick={pressTasksDoor}
           onPointerEnter={(e) => {
-            if (e.pointerType !== "touch" && !dragging(e) && tasksCard.ready && aHovers()) tasksCardIntent().enterRing(TASKS_CARD_KEY, "pointer");
+            if (e.pointerType !== "touch" && !dragging(e) && tasksCard.ready && aHovers() && !panelDoor("tasks")) tasksCardIntent().enterRing(TASKS_CARD_KEY, "pointer");
           }}
           onPointerLeave={() => tasksCardIntent().leaveRing("pointer")}
           onKeyDown={(e) => {
@@ -4717,7 +4789,8 @@ export function ClaudeRail({
           type="button"
           data-rail-door="plus"
           className={
-            "sidebar-rail-btn claude-rail-item" + doorOpen(!!card?.pop && card.door === PLUS_DOOR, !!card?.pinned)
+            "sidebar-rail-btn claude-rail-item" +
+            (panelDoor("home") ? " is-open" : doorOpen(!!card?.pop && card.door === PLUS_DOOR, !!card?.pinned))
           }
           {...doorHint(plusLabel, (!!card?.pop && card.door === PLUS_DOOR) || plusHovers())}
           aria-label={plusLabel}
@@ -4796,13 +4869,13 @@ export function ClaudeRail({
                     type="button"
                     data-rail-door={MODE_DOOR}
                     data-rail-mode={d.mode}
-                    className={"sidebar-rail-btn claude-rail-item" + doorOpen(up, c.pinned)}
+                    className={"sidebar-rail-btn claude-rail-item" + (panelMode(d.mode) ? " is-open" : doorOpen(up, c.pinned))}
                     {...doorHint(d.title, c.ready && (up || aHovers()))}
                     aria-label={d.title}
                     {...(c.ready ? { "aria-haspopup": "dialog" as const, "aria-expanded": up, "aria-controls": store.id } : {})}
                     onClick={(e) => pressModeDoor(e, d.mode)}
                     onPointerEnter={(e) => {
-                      if (e.pointerType !== "touch" && !dragging(e) && c.ready && aHovers()) {
+                      if (e.pointerType !== "touch" && !dragging(e) && c.ready && aHovers() && !panelMode(d.mode)) {
                         setModeCardRail(d.mode, railRef.current);
                         store.intent().enterRing(store.key, "pointer");
                       }
@@ -4845,7 +4918,7 @@ export function ClaudeRail({
                 ref={gitDoorRef}
                 type="button"
                 data-rail-door="git"
-                className={"sidebar-rail-btn claude-rail-item" + doorOpen(gitUp, gitCard.pinned)}
+                className={"sidebar-rail-btn claude-rail-item" + (panelDoor("git") ? " is-open" : doorOpen(gitUp, gitCard.pinned))}
                 {...doorHint(gitDoorTitle(gitRepo), gitCard.ready && (gitUp || aHovers()))}
                 aria-label={gitLabel}
                 {...(gitCard.ready
@@ -4853,7 +4926,7 @@ export function ClaudeRail({
                   : {})}
                 onClick={pressGitDoor}
                 onPointerEnter={(e) => {
-                  if (e.pointerType !== "touch" && !dragging(e) && gitCard.ready && aHovers()) {
+                  if (e.pointerType !== "touch" && !dragging(e) && gitCard.ready && aHovers() && !panelDoor("git")) {
                     setGitCardRail(railRef.current);
                     gitCardIntent().enterRing(GIT_CARD_KEY, "pointer");
                   }

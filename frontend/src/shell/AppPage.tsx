@@ -78,7 +78,8 @@ import {
 import { useFavicon, useUrlVersion } from "@platform/lib/hooks";
 import { isRasterIconUrl, useThemedIconSrc } from "@platform/lib/app-icon-src";
 import { isOverlayOpen } from "@platform/lib/ui-overlay";
-import { IS_WS_FRAME, confirmLeave, navigateUrl, replaceSearch, spaLinkProps, urlForFsPath } from "@platform/lib/router";
+import { openInWorkspace, useWorkspacePlace } from "@platform/lib/workspace-bridge";
+import { IS_WS_FRAME, confirmLeave, navigateUrl, replaceSearch, spaLinkProps, urlForFsPath, viewUrlForFsPath } from "@platform/lib/router";
 import { snapshotFrameSrc } from "@platform/lib/snapshot-param";
 import {
   AppWindow,
@@ -737,11 +738,14 @@ export default function AppPage({
     else void confirmLeave().then((ok) => ok && go());
   };
   // App Doctor's "Open in git" row and the rail's Git card: the pane, on Git.
+  // IN A WORKSPACE TAB: the window's right panel, on this folder's Git.
   const openGit = () =>
-    switchTab(GIT_TAB, () => {
-      paneTab.showTab(GIT_TAB);
-      claude.show();
-    });
+    IS_WS_FRAME
+      ? void openInWorkspace(viewUrlForFsPath(dir, "?_side=git"))
+      : switchTab(GIT_TAB, () => {
+          paneTab.showTab(GIT_TAB);
+          claude.show();
+        });
   const gitShown = paneTab.tab === GIT_TAB;
   const gitAbsent =
     !paneTab.gitMode.pending && paneTab.gitMode.entry === null && !paneTab.gitMode.failed;
@@ -815,6 +819,13 @@ export default function AppPage({
   };
   // Where the rail stands (claude-rail-lib `RailPlace`): this app's folder.
   const railPlace = useMemo(() => ({ kind: "folder" as const, dir, word: "App" }), [dir]);
+  // IN A WORKSPACE TAB the window's one rail stands instead (SPEC §56 WS-20):
+  // this app says what its rail would show, as data.
+  useWorkspacePlace(
+    IS_WS_FRAME ? { place: railPlace, newTask: { target: dir, waiting: null, on: null }, git: { path: dir }, fileModes: null } : null,
+    // Over a folder listing its Files tab may mount: the app speaks.
+    1,
+  );
 
   // `home` is already forward-slash (getConfig folds it), matching `dir` and
   // the root, so the prefix test for "~/…" below compares like with like.
