@@ -504,7 +504,9 @@ export default function Listing({
   // `mcp` for the same reason as `git`: the manifest it curates covers the FOLDER
   // (templates/mcp/condition.py). Not a pane mode — it gates the kebab's "MCP
   // config" row (below) and the dialog behind it.
-  const folderMcp = useDirMode(paneEnabled ? fsPath : null, "mcp");
+  // …so it is asked wherever the app rows stand (`appRowsEnabled`), a
+  // workspace tab included, not only where the pane does.
+  const folderMcp = useDirMode(appRowsEnabled ? fsPath : null, "mcp");
   // While the probe is in flight the entries are PLACEHOLDERS with no template
   // path (lib/dir-mode), which would build a `path=null` iframe URL — so a
   // pending companion is not SELECTABLE yet. Unlike the file sidebar there is
