@@ -140,7 +140,7 @@ function monogram(name: string) {
 }
 function tilde(p: string) { return (p || "").replace(/^\/Users\/[^/]+/, "~"); }
 // @apps/canvases/api ENV_NAMES labels, copied: this entry must not pull the canvases app into its bundle for two strings.
-const ENV_LABELS: Record<string, string> = { unstable: "Unstable", prod: "Fused hosted", custom: "On-prem" };
+const ENV_LABELS: Record<string, string> = { unstable: "Unstable", staging: "Staging", prod: "Fused hosted", custom: "On-prem" };
 function subtitle(app: LauncherRow) {
   if (app.home) return app.kind === "bots" ? "Open your bots" : "Open the shell";
   // A canvas says which Fused it was cloned from, not its clone folder: the name is the title already.

@@ -55,6 +55,8 @@ import {
   HuggingFaceControl,
   WorkbenchCustomControl,
   WorkbenchProdControl,
+  WorkbenchStagingControl,
+  WorkbenchUnstableControl,
 } from "./accounts";
 import {
   CallLogControl,
@@ -114,6 +116,8 @@ export const CONTROLS: Record<SettingId, ComponentType<PrefControlProps>> = {
   connections: ConnectionsPointer,
   "workbench-prod": WorkbenchProdControl,
   "workbench-custom": WorkbenchCustomControl,
+  "workbench-unstable": WorkbenchUnstableControl,
+  "workbench-staging": WorkbenchStagingControl,
   huggingface: HuggingFaceControl,
   "call-log": CallLogControl,
   "call-params": CallParamsControl,

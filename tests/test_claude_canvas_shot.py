@@ -368,7 +368,7 @@ def test_the_fused_cli_note_names_the_clone_path_of_the_scoped_layout(agent, mon
     monkeypatch.setenv("FUSED_RENDER_FUSED_CLI_DIR", str(tmp_path / "cli"))
     for backend in ("", "copilot", "codex"):
         note = agent._fused_cli_note(backend)
-        assert "~/Fused/canvas/<unstable|prod|custom>/user/<canvas>/" in note, backend
+        assert "~/Fused/canvas/<unstable|staging|prod|custom>/user/<canvas>/" in note, backend
 
 
 def test_the_duplicated_canvas_facts_match_their_sources(agent, tmp_path):

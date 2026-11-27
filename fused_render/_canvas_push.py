@@ -89,7 +89,7 @@ _DEFAULT_FUSED_DIR = "~/Fused"
 # (`~/Fused/canvas/<env>/user/<name>`): fusedcli.WORKBENCH_ENV_CHOICES,
 # duplicated for the same no-heavy-imports reason. Anything else in that
 # position is not a clone of ours.
-_ENVS = ("unstable", "prod", "custom")
+_ENVS = ("unstable", "staging", "prod", "custom")
 # The scope folders under an environment (D1476; canvas_marker.SCOPES, and a
 # test pins the copies together). Clones live in `user/` and nowhere else;
 # `team/` and `public/` hold read-only reference copies written by `fused

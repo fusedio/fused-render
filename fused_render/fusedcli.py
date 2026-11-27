@@ -203,7 +203,7 @@ WORKBENCH_ENV_VAR = "FUSED_RENDER_WORKBENCH_ENV"
 # DEFAULT preference may name. The env var still accepts the CLI's full table
 # (stg, dev, a PR number) — but canvases.py refuses every canvas call under a
 # pin outside this tuple (`_require_env`).
-WORKBENCH_ENV_CHOICES = ("unstable", "prod", "custom")
+WORKBENCH_ENV_CHOICES = ("unstable", "staging", "prod", "custom")
 # The choice that names no Fused of its own: its runs get FUSED_ENV UNSET, so
 # the fused SDK keeps the `base_url` / `shared_udf_base_url` it loaded from
 # `~/.fused/settings.toml` — `fused._env("prod")` would overwrite them with
@@ -249,13 +249,20 @@ def workbench_env() -> str:
     return enabled[0]
 
 
-# The environments a PERSON turns on (Preferences > Integrations > Fused Workbench: "Fused
-# hosted" is prod, "On-prem" is custom). Unstable is not one of them (owner,
-# 2026-11-26): it has no switch and is never drawn — it joins the enabled list
-# by itself for a Fused employee signed in to hosted Fused (`_staff_unstable`).
-# A stored list from before that, naming unstable, simply loses it on read.
+# The environments ANYONE turns on (Preferences > Integrations > Fused Workbench: "Fused
+# hosted" is prod, "On-prem" is custom). The internal ones are not among them
+# (owner, 2026-11-26): they exist only for a Fused employee signed in to
+# hosted Fused (`is_staff`), who alone is shown their switches and may store
+# them. A stored `workbench_envs_enabled` naming one simply loses it on read.
 USER_WORKBENCH_ENVS = ("prod", "custom")
-STAFF_WORKBENCH_ENV = "unstable"
+# Fused's internal hosted environments (owner, 2026-11-27: staging joins
+# unstable, each with its own switch). All share prod's sign-in.
+STAFF_WORKBENCH_ENVS = ("unstable", "staging")
+# prefs.json key holding which internal environments a staff member turned
+# on. Absent means DEFAULT_STAFF_ENVS: unstable was on by itself for staff
+# before it had a switch, and stays on until they turn it off.
+STAFF_ENVS_PREF_KEY = "workbench_staff_envs"
+DEFAULT_STAFF_ENVS = ("unstable",)
 # The email domain whose hosted sign-in turns unstable on. Matched on the
 # address's domain part exactly (`is_staff_email`), never as a suffix.
 STAFF_EMAIL_DOMAIN = "fused.io"
@@ -275,11 +282,12 @@ def is_staff_email(email: object) -> bool:
     return bool(local) and domain.lower() == STAFF_EMAIL_DOMAIN
 
 
-def _staff_unstable(stored_prefs: dict) -> bool:
-    """Unstable is on for this machine: the last hosted whoami said staff AND
-    the hosted `fused login` store still exists (a logout removes it, and
-    unstable goes with it on the next read — no write needed). Unstable and
-    prod share that one store, so there is never a second sign-in."""
+def is_staff(stored_prefs: dict) -> bool:
+    """The internal environments exist on this machine: the last hosted
+    whoami said staff AND the hosted `fused login` store still exists (a
+    logout removes it, and they go with it on the next read — no write
+    needed). They share that one store with prod, so there is never a second
+    sign-in."""
     if stored_prefs.get(STAFF_PREF_KEY) is not True:
         return False
     # Lazy: canvases imports this module. Explicit "prod" never consults the
@@ -289,13 +297,23 @@ def _staff_unstable(stored_prefs: dict) -> bool:
     return os.path.isfile(credentials_file("prod"))
 
 
+def _staff_envs_from(stored_prefs: dict) -> tuple[str, ...]:
+    """The internal environments turned on, for staff; () for anyone else."""
+    if not is_staff(stored_prefs):
+        return ()
+    raw = stored_prefs.get(STAFF_ENVS_PREF_KEY)
+    if not isinstance(raw, list):
+        return DEFAULT_STAFF_ENVS
+    return tuple(e for e in STAFF_WORKBENCH_ENVS if e in raw)
+
+
 def _enabled_envs_from(stored_prefs: dict) -> tuple[str, ...]:
     """The enabled environments a prefs dict names, in WORKBENCH_ENV_CHOICES
     order and never empty: the person's own picks among USER_WORKBENCH_ENVS
     (with no `workbench_envs_enabled` stored, the default env plus whatever
     `workbench_env` they had chosen, so an install from before the toggles
-    keeps the environment it was using), plus unstable for staff
-    (`_staff_unstable`)."""
+    keeps the environment it was using), plus the internal ones a staff
+    member has on (`_staff_envs_from`)."""
     raw = stored_prefs.get("workbench_envs_enabled")
     if isinstance(raw, list):
         picked = {e for e in raw if e in USER_WORKBENCH_ENVS}
@@ -306,14 +324,13 @@ def _enabled_envs_from(stored_prefs: dict) -> tuple[str, ...]:
     if not picked:
         # Only unstable was on (Q6, 2026-11-26): hosted takes its place.
         picked = {DEFAULT_WORKBENCH_ENV}
-    if _staff_unstable(stored_prefs):
-        picked.add(STAFF_WORKBENCH_ENV)
+    picked.update(_staff_envs_from(stored_prefs))
     return tuple(e for e in WORKBENCH_ENV_CHOICES if e in picked)
 
 
 def enabled_workbench_envs() -> tuple[str, ...]:
     """The environments turned on: the person's (Preferences > Fused
-    Workbench) plus unstable for staff. What the canvas catalog's environment
+    Workbench) plus the internal ones a staff member has on. What the canvas catalog's environment
     picker offers and what the default environment is chosen from. It gates
     nothing else — a clone of an environment turned off keeps syncing. Under
     a FUSED_RENDER_WORKBENCH_ENV pin it is the pinned env alone (empty when

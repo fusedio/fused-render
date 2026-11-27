@@ -1762,7 +1762,7 @@ export interface Prefs {
   // pref: written by PUT /api/prefs `{workbench_env}` (putWorkbenchEnv).
   // `locked` = FUSED_RENDER_WORKBENCH_ENV pins it (the PUT answers 423).
   // OPTIONAL: an older server answers without it.
-  workbench?: { env: string; locked: boolean; choices: string[]; enabled?: string[] };
+  workbench?: { env: string; locked: boolean; choices: string[]; enabled?: string[]; staff?: boolean };
   // WHICH AGENTS MAY RUN CHATS AND TASKS (docs/COPILOT_BACKEND.md D17):
   // `claude_enabled` (default on) / `copilot_enabled` / `codex_enabled` /
   // `gemini_enabled` / `opencode_enabled` / `cursor_enabled` (default off,
@@ -2103,14 +2103,15 @@ export function putCanvasesEmbedProxy(enabled: boolean): Promise<Prefs> {
 /** The default Fused environment (`prefs.workbench.env`). 400 outside
  *  `unstable` / `prod` / `custom`, 423 while FUSED_RENDER_WORKBENCH_ENV pins
  *  it. The server re-exports the `fused` wrapper so its default follows. */
-export function putWorkbenchEnv(env: "unstable" | "prod" | "custom"): Promise<Prefs> {
+export function putWorkbenchEnv(env: "unstable" | "staging" | "prod" | "custom"): Promise<Prefs> {
   return putJson<Prefs>("/api/prefs", { workbench_env: env });
 }
 
 /** Which Fused environments are turned on (`prefs.workbench.enabled`): the
  *  canvas catalog's picker offers these. 400 for an empty list or a name
- *  outside the choices, 423 under a FUSED_RENDER_WORKBENCH_ENV pin. */
-export function putWorkbenchEnvsEnabled(envs: ("unstable" | "prod" | "custom")[]): Promise<Prefs> {
+ *  outside the choices (the internal ones are choices only for a Fused
+ *  employee), 423 under a FUSED_RENDER_WORKBENCH_ENV pin. */
+export function putWorkbenchEnvsEnabled(envs: ("unstable" | "staging" | "prod" | "custom")[]): Promise<Prefs> {
   return putJson<Prefs>("/api/prefs", { workbench_envs_enabled: envs });
 }
 
@@ -4071,7 +4072,7 @@ export interface Task {
    *  for every other row. The door lands on the canvas page, node selected,
    *  chat on the task's session, instead of the clone in the explorer.
    *  Optional: pulse rows and older fixtures do not carry it. */
-  canvas?: { env: "unstable" | "prod" | "custom"; name: string; file: string } | null;
+  canvas?: { env: "unstable" | "staging" | "prod" | "custom"; name: string; file: string } | null;
   session_id: string; // "" until the first run
   // How the transcript's own session ENTERED — "cli" for an interactive
   // terminal (`claude` typed by hand), "sdk-cli" for a headless/programmatic

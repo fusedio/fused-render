@@ -476,7 +476,7 @@ def test_only_environments_in_use_are_mirrored_on_a_schedule(harness, monkeypatc
     assert harness.client.get(f"/api/canvases/list?env={OTHER_ENV}",
                               headers=GUARD).status_code == 200
     assert canvas_mirror.eligible(OTHER_ENV) == (True, None)
-    assert canvas_mirror.eligible("staging") == (False, "unknown_env")
+    assert canvas_mirror.eligible("qa") == (False, "unknown_env")
     # custom needs its settings file.
     canvas_mirror.note_listed("custom")
     monkeypatch.setattr(canvases_mod, "fused_settings_configured", lambda: False)

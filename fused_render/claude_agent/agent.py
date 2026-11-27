@@ -418,7 +418,7 @@ CANVAS_PAGE_FRESH = 10.0
 _CANVAS_CLAIM_LOCK = threading.Lock()
 # fusedcli.WORKBENCH_ENV_CHOICES and canvases._NAME_RE, duplicated: this file
 # never imports `fused_render` (a test pins the copies together).
-_CANVAS_ENVS = ("unstable", "prod", "custom")
+_CANVAS_ENVS = ("unstable", "staging", "prod", "custom")
 _CANVAS_NAME_RE = re.compile(r"^[A-Za-z0-9_]{1,128}$")
 # The delimiters the PAGE wraps its send-time snapshot in. Stripped from every
 # user-facing copy of a message (the run's `meta.json`, hence the commit
@@ -1203,7 +1203,7 @@ def _in_canvases_root(target: str) -> bool:
 # (`<canvases_root>/<env>/user/<name>`): fusedcli.WORKBENCH_ENV_CHOICES,
 # duplicated because this module does not import the server's (see appenv's
 # own rule).
-_CLONE_ENVS = ("unstable", "prod", "custom")
+_CLONE_ENVS = ("unstable", "staging", "prod", "custom")
 # The scope folders under an environment (D1476): clones live in `user/` and
 # nowhere else; `team/` and `public/` hold read-only reference copies written
 # by `fused canvas mirror`. canvas_marker.SCOPES and MARKER_NAME, duplicated
@@ -1593,7 +1593,7 @@ def _fused_cli_note(backend: str = "") -> str:
         "browser round-trip that cannot complete here) — on an auth error, "
         "ask the user to sign in from fused-render's Canvases page or a "
         "terminal instead. Inside a canvas clone fused-render syncs "
-        "(~/Fused/canvas/<unstable|prod|custom>/user/<canvas>/), fused-render does "
+        "(~/Fused/canvas/<unstable|staging|prod|custom>/user/<canvas>/), fused-render does "
         "all the syncing: the folder publishes itself when your turn ends and "
         "server changes are merged into it for you, so never run `fused "
         "workbench canvas push` or `pull` there (both are refused); check your "
