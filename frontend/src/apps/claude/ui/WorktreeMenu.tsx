@@ -14,7 +14,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { GitBranch } from "lucide-react";
 import { Popover, PopoverContent, PopoverTrigger } from "@platform/shadcn/ui/popover";
-import { isLanHost } from "@platform/lib/host";
 import { confirmLeave } from "@platform/lib/router";
 import {
   defaultWorktreeName,
@@ -80,7 +79,7 @@ export function WorktreeMenuBody({
 }: WorktreeMenuBodyProps) {
   const current = rows.find((r) => r.current) ?? null;
   const fieldOk = creating !== null && validWorktreeName(creating.trim());
-  const removable = !!current?.removable && !isLanHost();
+  const removable = !!current?.removable;
   return (
     <div className="chat-worktree-list" role="group" aria-label="Worktrees">
       {rows.map((row) => (
@@ -144,7 +143,6 @@ export function WorktreeMenuBody({
           ) : null}
         </div>
       )}
-      {/* Not on the phone: the LAN door 404s `remove` (lan.py `_DOORS`). */}
       {removable ? (
         <button
           type="button"

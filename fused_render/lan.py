@@ -465,6 +465,11 @@ def _door_in_scope(path: str, method: str, args: dict) -> bool:
             return False
     elif path == "/api/schedule" and method == "POST":
         values.append(args.get("target"))
+    elif path == "/api/claude/worktrees":
+        # `create` writes a checkout and a branch into the repo `file` is in:
+        # only where the phone may start an agent. `list` only reads.
+        if args.get("action") == "create":
+            values.append(args.get("file"))
     return all(v in (None, "") or _in_read_scope(v) for v in values)
 
 
@@ -1106,7 +1111,7 @@ class LanApp:
                 return _not_found()
             device_id = str(device.get("id") or "")
             gate = door[2]
-            scoped = path in ("/api/claude/agent", "/api/schedule") and method == "POST"
+            scoped = path in ("/api/claude/agent", "/api/schedule", "/api/claude/worktrees") and method == "POST"
             if gate is None and not scoped:
                 return _AsDevice(self.inner, device_id)
             body = await _read_body(receive)

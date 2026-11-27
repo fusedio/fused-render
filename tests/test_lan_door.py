@@ -196,3 +196,11 @@ def test_a_phone_starts_agents_only_in_the_read_scope(home):
     assert call(app, agent, "POST", {"action": "poll", "file": "/etc"}, headers=[cookie]) == 200
     assert call(app, "/api/schedule", headers=[cookie]) == 200
     assert len(inner.hits) == 2
+    # A worktree is created only in the same scope; listing only reads.
+    inner.hits.clear()
+    wt = "/api/claude/worktrees"
+    assert call(app, wt, "POST", {"action": "create", "file": folder, "name": "x"}, headers=[cookie]) == 200
+    assert call(app, wt, "POST", {"action": "list", "file": str(home / "elsewhere")}, headers=[cookie]) == 200
+    for file in ("/", "~", str(home / "elsewhere"), ["x"]):
+        assert call(app, wt, "POST", {"action": "create", "file": file, "name": "x"}, headers=[cookie]) == 404, file
+    assert len(inner.hits) == 2

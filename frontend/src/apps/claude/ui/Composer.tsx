@@ -2366,6 +2366,10 @@ export function ComposerCard({
     [submit, running, hasQueued, onSendQueuedNow, onPullQueued, queuedCount, notSentCount, text, grow, history, recall, menuOpen, menuActive, menuRows, menuQ, pickCommand],
   );
 
+  // THE BUTTON IS STOP WHILE A RUN IS LIVE — except on the phone with words in
+  // the box: Enter is a newline there (`enterIsNewline`), so the button is the
+  // only way to send a follow-up mid-run. An empty box keeps Stop.
+  const stopFace = running && !pickSubmit && !(enterIsNewline() && !!text.trim());
   const draft = useCallback(() => text, [text]);
   const focusBox = useCallback(
     () => boxRef.current?.focus({ preventScroll: true }),
@@ -2446,7 +2450,7 @@ export function ComposerCard({
           // The submit event is the send BUTTON's path (Enter in the box never
           // reaches here): while a run is live the button is a stop button
           // (T:17909-17914).
-          if (running && !pickSubmit) {
+          if (stopFace) {
             onStop();
             return;
           }
@@ -2784,7 +2788,7 @@ export function ComposerCard({
           <button
             className="c-send"
             type="submit"
-            aria-label={pickSubmit ? "Start breakout" : running ? "Stop" : "Send"}
+            aria-label={pickSubmit ? "Start breakout" : stopFace ? "Stop" : "Send"}
             // AND THE SHUTTER WINDOW SAYS SO TOO (Bugbot, PR #1074). With the
       // `disabled` attribute gone (T:4187), the `title` is the one place to
       // say what the window IS — `sendBusy` can run to SECONDS on a large
@@ -2861,7 +2865,7 @@ export function ComposerCard({
             // hop is carrying (Bugbot 4034977395).
             {...(sendBlocked || hopFrozen ? { disabled: true } : {})}
           >
-            {running && !pickSubmit ? (
+            {stopFace ? (
               <svg
                 width="14"
                 height="14"
