@@ -115,7 +115,7 @@ describe("the Home card's trail", () => {
     expect(cardPageUrl("/explorer/embed/Users/me?_side=off")).toBe("/explorer/view/Users/me");
     expect(cardPageUrl("/explorer/embed/Users/me/a.html?_mode=code&embed=1&_nofocus=1&_preview=1#L3")).toBe("/explorer/view/Users/me/a.html?_mode=code#L3");
     expect(cardPageUrl("/explorer/embed/x?_side=claude")).toBe("/explorer/view/x?_side=claude");
-    expect(homeSearchUrl("visa photo")).toBe("/home?q=visa%20photo");
+    expect(homeSearchUrl("visa photo")).toBe("/home?q=visa%20photo&qmode=instant");
     expect(homeSearchUrl("  ")).toBe("/home");
   });
 });

@@ -448,6 +448,7 @@ export function FilesSearch({
   resultsHost,
   onGo,
   clearKey,
+  initialAi = true,
 }: {
   home: string;
   initialQuery: string;
@@ -465,6 +466,10 @@ export function FilesSearch({
   /** A new value empties the box, as its Clear does (the Home card's Back
    *  out of the results). */
   clearKey?: number;
+  /** `initialQuery` was a committed AI search (a `?q=` the page wrote), so
+   *  it runs one again. False: an instant search handed over (the Home
+   *  card's Open, `qmode=instant`) — its query is typed, no model call. */
+  initialAi?: boolean;
   /** The caret starts in the box (the page's own posture). Off for a box in
    *  a hover card (the shell's sidebar search preview), which must not take
    *  the keyboard until the reader presses into it. */
@@ -1051,7 +1056,7 @@ export function FilesSearch({
   useEffect(() => {
     if (ranInitial.current) return;
     ranInitial.current = true;
-    if (initialQuery.trim()) runAi(initialQuery);
+    if (initialAi && initialQuery.trim()) runAi(initialQuery);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 

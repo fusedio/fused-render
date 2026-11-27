@@ -186,6 +186,9 @@ function LeftCard({ itemKey, on }: { itemKey: string; on: boolean }) {
   const homeSrc = searchHome !== null && show?.kind === "frame" ? show.src : null;
   const [trail, setTrail] = useState<HomeStep[] | null>(null);
   const [homeFrame, setHomeFrame] = useState<string | null>(homeSrc);
+  // Each load the card asks for is a new frame, even on the address the frame
+  // was first given (Back to it after the frame hopped on its own).
+  const [frameGen, setFrameGen] = useState(0);
   const frameAt = useRef<string | null>(null);
   const [clearKey, setClearKey] = useState(0);
   const steps: HomeStep[] = homeSrc === null ? [] : (trail ?? [{ kind: "page", url: homeSrc }]);
@@ -200,7 +203,9 @@ function LeftCard({ itemKey, on }: { itemKey: string; on: boolean }) {
   }, [live, homeSrc]);
   // The step on top asks for another page than the frame is on: load it.
   useEffect(() => {
-    if (pageUrl !== null && pageUrl !== frameAt.current) setHomeFrame(pageUrl);
+    if (pageUrl === null || pageUrl === frameAt.current) return;
+    setHomeFrame(pageUrl);
+    setFrameGen((n) => n + 1);
   }, [pageUrl]);
   const src = homeSrc !== null ? homeFrame : show ? frameSrcOf(show, { pinned, stillFailed: failed }) : null;
   const [loaded, setLoaded] = useState<string | null>(null);
@@ -271,14 +276,14 @@ function LeftCard({ itemKey, on }: { itemKey: string; on: boolean }) {
       const report = () => {
         let url: string;
         try {
-          url = win.location.pathname + win.location.search;
+          url = win.location.pathname + win.location.search + win.location.hash;
         } catch {
           return;
         }
         frameAt.current = url;
         setTrail((t) => trailFrameAt(homeBase(t), url));
       };
-      const kinds = [NAV_EVENT, "popstate", "fused:urlchange"];
+      const kinds = [NAV_EVENT, "popstate", "hashchange", "fused:urlchange"];
       for (const k of kinds) win.addEventListener(k, report);
       frameHops.current = () => {
         for (const k of kinds) win.removeEventListener(k, report);
@@ -291,7 +296,7 @@ function LeftCard({ itemKey, on }: { itemKey: string; on: boolean }) {
   // the same address — the card back after its fade ran out — is not loaded
   // or painted yet. `loaded` and `painted`
   // name the frame they are about, and a new one drops the old one's poll.
-  const frameKey = src !== null ? `${mounts}#${src}` : null;
+  const frameKey = src !== null ? `${mounts}#${frameGen}#${src}` : null;
   useEffect(() => () => window.clearInterval(paintPoll.current), [frameKey]);
   const onFrameLoad = useCallback(
     (inner: HTMLIFrameElement) => {
@@ -418,7 +423,7 @@ function LeftCard({ itemKey, on }: { itemKey: string; on: boolean }) {
               <img className="claude-left-peek-still" src={still} alt="" draggable={false} onError={() => setStillFailed(still)} />
             )}
             {live && src !== null && (
-              <PeekFrame key={src} src={src} title={title} frameRef={frameRef} onLoad={onFrameLoad} />
+              <PeekFrame key={src + "#" + frameGen} src={src} title={title} frameRef={frameRef} onLoad={onFrameLoad} />
             )}
             {live && searchHome !== null && <div ref={setResultsEl} className="claude-left-peek-results" hidden={topStep?.kind !== "results"} />}
           </div>

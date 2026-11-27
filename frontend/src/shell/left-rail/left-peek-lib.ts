@@ -165,9 +165,10 @@ export function cardPageUrl(url: string): string {
 }
 
 /** The Home page with a search typed (the card's Open while its results
- *  show). */
+ *  show) — an INSTANT one (`qmode=instant`, SearchWidget): a bare `?q=` is a
+ *  committed AI search, which Home would run again (a model call). */
 export function homeSearchUrl(query: string): string {
-  return query.trim() ? "/home?q=" + encodeURIComponent(query) : "/home";
+  return query.trim() ? "/home?q=" + encodeURIComponent(query) + "&qmode=instant" : "/home";
 }
 
 /** The attribute every left door carries: its item's key. */
