@@ -490,6 +490,11 @@
   // instead (in picture mode, and on a plain open that carries no camera).
   var shotMode = ownParam("shot") === "1";
   var focusName = ownParam("focus") || "";
+  // `fit=1`: open on the whole canvas, fitted (the Fit button's camera),
+  // rather than the part that was on screen when it was saved — a small pane
+  // that shows the canvas as a preview (the sidebar's hover card) asks it.
+  // A camera the reader moved (cx/cy/z) and a `focus` still come first.
+  var fitOpen = ownParam("fit") === "1";
   if (shotMode) stage.classList.add("shot");
   // Ghost mode (CV-10): `ghost=1` is the canvas page showing this view over
   // the workbench frame until the workbench is up.
@@ -1128,6 +1133,7 @@
     var fb = focusBounds();
     if (fb) { cam = camForFrame(withDescriptions(fb)); return; }
     if (shotMode) { var ab = bounds(); cam = ab ? camForFrame(withDescriptions(ab)) : fitCam(); return; }
+    if (fitOpen) { cam = fitCam(); return; }
     // Then the part of the canvas that was on screen when it was saved: the
     // bounds hold whatever the size of this pane, which x/y/zoom do not.
     if (viewportBounds) { cam = camForBounds(viewportBounds, 0); return; }

@@ -545,6 +545,17 @@ def rail_extras_enabled() -> bool:
     return read_prefs().get("rail_extras_enabled") is True
 
 
+def left_rail_peek_enabled() -> bool:
+    """Whether the collapsed LEFT sidebar's icons preview their page in a
+    hover card (owner, 2026-11-27: "Left sidebar preview"): Home, Search, AI
+    Models, Community, each project, canvas and favourite get the Claude
+    rail's window A card — hover to preview, a press inside keeps it, its pin
+    holds it — while a click on the icon still navigates. Default off. Same
+    idiom as `rail_extras_enabled`: only a stored `true` is on.
+    """
+    return read_prefs().get("left_rail_peek_enabled") is True
+
+
 def task_summary_titles_enabled() -> bool:
     """Whether Tasks rows are titled ONLY by the server's stable `title` (a
     name the reader chose, else the app's own haiku AI title refreshed every
@@ -1275,6 +1286,9 @@ def _prefs_response() -> dict:
         # The rail's extras — mode doors, the expandable rail, free pins
         # (`rail_extras_enabled`; off by default).
         "rail_extras": {"enabled": rail_extras_enabled()},
+        # The collapsed left sidebar's hover previews
+        # (`left_rail_peek_enabled`; off by default).
+        "left_rail_peek": {"enabled": left_rail_peek_enabled()},
         # Stable AI Tasks titles (`task_summary_titles_enabled`).
         "task_summary_titles": {"enabled": task_summary_titles_enabled()},
         # Lean Claude sessions (`claude_strict_mcp_enabled`, default off).
@@ -1650,6 +1664,13 @@ def put_prefs(body: dict = Body(...), x_fused: str | None = Header(default=None)
                                     status_code=400)
             prefs["rail_extras_enabled"] = value
             changed = True
+        if "left_rail_peek_enabled" in body:
+            value = body.get("left_rail_peek_enabled")
+            if not isinstance(value, bool):
+                return JSONResponse({"error": "'left_rail_peek_enabled' must be a boolean"},
+                                    status_code=400)
+            prefs["left_rail_peek_enabled"] = value
+            changed = True
         if "task_summary_titles_enabled" in body:
             value = body.get("task_summary_titles_enabled")
             if not isinstance(value, bool):
@@ -2003,7 +2024,7 @@ def put_prefs(body: dict = Body(...), x_fused: str | None = Header(default=None)
                           "'project_queue_enabled', "
                           "'chat_recap_enabled', 'breakout_enabled', 'experts_enabled', "
                           "'canvas_shot_slow_fallback_enabled', "
-                          "'rail_extras_enabled', "
+                          "'rail_extras_enabled', 'left_rail_peek_enabled', "
                           "'task_summary_titles_enabled', "
                           "'claude_strict_mcp_enabled', 'claude_default_permission', "
                           "'bots_autostage', 'bots_sounds', 'bots_clear_enabled', "

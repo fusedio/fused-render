@@ -21,6 +21,16 @@ import { PresetThumb } from "./home/PresetThumb";
 import { WidgetGrid } from "./home/WidgetGrid";
 import { useHomeLayout } from "./home/useHomeLayout";
 import { SearchHostContext, useSearchHost } from "./home/widgets/SearchWidget";
+import { FilesSearch } from "@apps/explorer/FilesHome";
+import { IS_QUERY_EMBED } from "@platform/lib/router";
+import { SEARCH_ONLY_PARAM } from "./left-rail/left-peek-lib";
+
+/** THE SEARCH CARD (shell/left-rail, "Left sidebar preview"): `/home?embed=1&
+ *  searchonly=1` is this page narrowed to its file search — the box and its
+ *  results, nothing else — framed by the collapsed sidebar's Search card.
+ *  Fixed at load, like the embed itself. */
+const SEARCH_ONLY =
+  IS_QUERY_EMBED && typeof location !== "undefined" && new URLSearchParams(location.search).get(SEARCH_ONLY_PARAM) === "1";
 
 /** Files shows a bookmark folder when there is one to show. */
 function firstBookmarkFolderId(): string | undefined {
@@ -72,6 +82,23 @@ export default function Home({ config }: { config: Config }) {
   const search = useSearchHost(home);
   const searching = search.searching;
   const focusView = !edit && !searching && hasFocusPosture(layoutApi.layout);
+
+  if (SEARCH_ONLY) {
+    return (
+      <div className="files-home is-search-only">
+        <div className="files-home-inner">
+          <FilesSearch
+            home={home}
+            initialQuery={search.initialQuery}
+            indexScan={search.indexScan}
+            onActiveChange={search.setSearching}
+            onScanRequested={search.requestScan}
+            autoFocus={false}
+          />
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div className={"files-home" + (focusView ? " is-focus" : "")}>

@@ -7,6 +7,8 @@
 import { describe, expect, test } from "bun:test";
 import {
   BRIDGE_SELECTOR,
+  LEFT_CARD_SELECTOR,
+  RAIL_BRIDGE_SELECTOR,
   cardMode,
   cardStep,
   doorSelector,
@@ -179,6 +181,14 @@ describe("pressVerdict: what an outside press is (design.md 'Outside')", () => {
     expect(inRailView(at(".claude-rail"))).toBe(true);
     expect(inRailView(at())).toBe(false);
     expect(inRailView(null)).toBe(false);
+  });
+  test("THE LEFT SIDEBAR'S CARDS ARE NOT THIS RAIL'S VIEW (shell/left-rail): a press in one is outside", () => {
+    expect(pressVerdict(at(".claude-rail-peek", LEFT_CARD_SELECTOR), o)).toBe("outside");
+    expect(pressVerdict(at(BRIDGE_SELECTOR, LEFT_CARD_SELECTOR), o)).toBe("outside");
+    expect(inRailView(at(".claude-rail-peek", LEFT_CARD_SELECTOR))).toBe(false);
+    // …while the card's own boxes still come first.
+    expect(pressVerdict(at(card, LEFT_CARD_SELECTOR), o)).toBe("inside");
+    expect(RAIL_BRIDGE_SELECTOR).toBe(".claude-rail-peek-bridge:not(.is-left)");
   });
   test("a frame in a full modal (a chat's file preview) is the modal's, not the page's frame", () => {
     expect(inFullModal(at(FULL_MODAL_SELECTOR))).toBe(true);

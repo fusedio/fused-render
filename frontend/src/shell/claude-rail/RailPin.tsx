@@ -124,6 +124,12 @@ export function useTempOutside(o: {
   cardSelectors: readonly string[];
   ownSelectors: readonly string[];
   close: () => void;
+  /** Another view's reading of a press (the left sidebar's cards,
+   *  shell/left-rail): the classifier `pressVerdict` unless given. */
+  classify?: typeof pressVerdict;
+  /** The view's own "a press started in one of its windows" flag
+   *  (rail-pin-lib `viewPress`, the Claude rail's, unless given). */
+  viewFlag?: PressFlag;
 }): void {
   const now = useRef(o);
   now.current = o;
@@ -137,7 +143,9 @@ export function useTempOutside(o: {
       const at = now.current;
       // The DOM's half now (the target may leave the page before the tick);
       // React's half — a press from the card's own tree — at the tick.
-      const dom: PressWhere = pressVerdict(el, {
+      const classify = at.classify ?? pressVerdict;
+      const view = at.viewFlag ?? viewPress;
+      const dom: PressWhere = classify(el, {
         pressedInside: false,
         cardSelectors: at.cardSelectors,
         ownSelectors: at.ownSelectors,
@@ -146,11 +154,11 @@ export function useTempOutside(o: {
       // Lowered here, raised by whichever rail window the press started in
       // (rail-pin-lib `viewPress`): another window's portaled menu is the
       // view too, and closes nothing.
-      viewPress.inside = false;
+      view.inside = false;
       window.clearTimeout(tick);
       tick = window.setTimeout(() => {
         const later = now.current;
-        if (dom === "outside" && !later.flag.inside && !viewPress.inside) later.close();
+        if (dom === "outside" && !later.flag.inside && !view.inside) later.close();
       }, 0);
     };
     document.addEventListener("pointerdown", onDown, true);

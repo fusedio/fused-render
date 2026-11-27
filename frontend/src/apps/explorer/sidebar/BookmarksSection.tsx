@@ -3,6 +3,7 @@
 // folders, drag-reorder, inline rename, icon picker, hover card. Renders both
 // as the explorer sidebar's Bookmarks section and as the /explorer homepage's
 // launcher (FilesHome).
+import { sidebarDoorProps, useSidebarDoor } from "@platform/ui/sidebar/sidebar-doors";
 import React, { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { navigateUrl, currentUrl, rootedFsPath, VIEW_PREFIX } from "@platform/lib/router";
 import { isRemoteLocation } from "@platform/lib/remote";
@@ -235,6 +236,10 @@ interface BookmarkRowProps {
 
 // Template for a bookmark row (top-level or, with child=true, inside a folder).
 function BookmarkRow({ b, child, parentId, active, dirty, missing, isRenaming, onNameClick, onRename, onDelete, onCommitRename, onCancelRename, onGlyphClick, onMouseEnter, onMouseLeave, registerRef, dragProps, fsDropPath, pinned, onTogglePin }: BookmarkRowProps) {
+  // The sidebar owner's hover card for this bookmark, if it offers one (the
+  // shell's "Left sidebar preview", platform sidebar-doors): its hooks ride on the
+  // row, and while the card can stand this section's own hover tip stays away.
+  const door = useSidebarDoor("pin:" + b.id);
   return (
     <div
       className={"bookmark-row" + (child ? " child-row" : "") + (pinned ? " pinned" : "") + (active ? " active" : "") + (missing ? " missing" : "")}
@@ -247,8 +252,16 @@ function BookmarkRow({ b, child, parentId, active, dirty, missing, isRenaming, o
       data-fs-drop-path={fsDropPath ?? undefined}
       data-fs-drop-announce={fsDropPath ? "1" : undefined}
       draggable={dragProps ? "true" : "false"}
-      ref={registerRef}
-      onMouseEnter={onMouseEnter}
+      {...sidebarDoorProps(door)}
+      ref={
+        door?.ref
+          ? (el: HTMLDivElement | null) => {
+              registerRef(el);
+              door.ref?.(el);
+            }
+          : registerRef
+      }
+      onMouseEnter={door?.quietTip ? undefined : onMouseEnter}
       onMouseLeave={onMouseLeave}
       {...dragProps}
     >

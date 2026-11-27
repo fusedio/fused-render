@@ -2853,3 +2853,20 @@ a.hw-more:hover {
   opacity: 0.45;
   cursor: not-allowed;
 }
+
+/* THE SEARCH CARD (shell/left-rail, "Left sidebar preview"): Home narrowed to its
+   file search (`/home?embed=1&searchonly=1`, Home.tsx `SEARCH_ONLY`) in a card
+   ~360–420px wide — the box full width, close to the top, no "All files"
+   button beside it (the card's Open is the launcher). */
+.files-home.is-search-only .files-home-inner {
+  max-width: none;
+  padding: 10px 12px 24px;
+}
+.files-home.is-search-only .files-search-wrap {
+  width: 100%;
+  max-width: none;
+  box-sizing: border-box;
+}
+.files-home.is-search-only .files-search-allfiles {
+  display: none;
+}

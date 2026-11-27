@@ -42,6 +42,17 @@
   min-height: 0;
 }
 
+/* The list's wrapper and its narrow-page button (PlaygroundTab `pickerOpen`):
+ * on a wide page neither exists for the layout — the list is the body's own
+ * left column. The narrow rules are at the foot of this file. */
+.pg-pick {
+  display: contents;
+}
+
+.pg-picker {
+  display: none;
+}
+
 /* -- the model sidebar ------------------------------------------------------ */
 
 .pg-side {
@@ -2863,14 +2874,102 @@
     flex-direction: column;
   }
 
-  .pg-side {
+  .pg-body {
+    gap: 12px;
+  }
+
+  /* THE MODEL LIST IS A DROPDOWN HERE (owner, 2026-11-27: stacked, the list
+     and the stage each got half the height of the sidebar's AI Models card):
+     one button naming the selected model, the list dropping from it over the
+     stage, which keeps the rest of the page. */
+  .pg-pick {
+    display: block;
+    position: relative;
     flex: none;
+  }
+
+  .pg-picker {
+    display: flex;
+    align-items: center;
+    gap: 8px;
     width: 100%;
-    border-right: 0;
-    border-bottom: 1px solid var(--border);
-    padding-right: 0;
-    padding-bottom: 12px;
-    max-height: 38vh;
+    min-height: 40px;
+    padding: 8px 12px;
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    background: var(--pg-card-bg);
+    color: var(--fg);
+    font: inherit;
+    font-size: 13px;
+    font-weight: 600;
+    text-align: left;
+    cursor: pointer;
+  }
+
+  .pg-picker:hover,
+  .pg-pick.is-open .pg-picker {
+    border-color: var(--ctl-quiet-border-hover);
+  }
+
+  .pg-picker:focus-visible {
+    outline: 2px solid var(--accent);
+    outline-offset: 2px;
+  }
+
+  .pg-picker-icon {
+    display: inline-flex;
+    flex: none;
+    color: var(--fg-muted);
+  }
+
+  .pg-picker-name {
+    flex: 1 1 auto;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .pg-picker-size {
+    flex: none;
+    color: var(--fg-muted);
+    font-weight: 400;
+    font-variant-numeric: tabular-nums;
+  }
+
+  .pg-picker-caret {
+    flex: none;
+    width: 6px;
+    height: 6px;
+    margin: 0 2px 3px 2px;
+    border-right: 1.5px solid var(--fg-muted);
+    border-bottom: 1.5px solid var(--fg-muted);
+    transform: rotate(45deg);
+  }
+
+  .pg-pick.is-open .pg-picker-caret {
+    margin-bottom: -3px;
+    transform: rotate(-135deg);
+  }
+
+  .pg-side {
+    display: none;
+  }
+
+  .pg-pick.is-open .pg-side {
+    display: flex;
+    position: absolute;
+    z-index: 20;
+    top: calc(100% + 6px);
+    left: 0;
+    right: 0;
+    flex: none;
+    max-height: min(60vh, 440px);
+    padding: 12px;
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    background: var(--bg);
+    box-shadow: 0 18px 48px var(--scrim-lift);
   }
 
   /* The 64px gutter is hero-card breathing room; on a phone it is dead

@@ -184,6 +184,22 @@ export const EMBED_PARAM = "embed";
 // embed prefix without changing what the prefix-embed panes already do.
 export const IS_QUERY_EMBED = new URLSearchParams(boot.search).get(EMBED_PARAM) === "1";
 
+/** A same-origin address, with `?embed=1` kept on it when THIS document is a
+ *  query-spelled embed — for a framed shell route's own hops and query
+ *  rewrites (a tab, a filter), so the frame's address keeps saying it is
+ *  embedded (a reload of it stays chrome-free). Unchanged everywhere else. */
+export function keepQueryEmbed(url: string, embedded: boolean = IS_QUERY_EMBED): string {
+  if (!embedded || !url.startsWith("/") || url.startsWith("//")) return url;
+  const hash = url.indexOf("#");
+  const base = hash < 0 ? url : url.slice(0, hash);
+  const tail = hash < 0 ? "" : url.slice(hash);
+  const q = base.indexOf("?");
+  const params = new URLSearchParams(q < 0 ? "" : base.slice(q + 1));
+  if (params.get(EMBED_PARAM) === "1") return url;
+  params.set(EMBED_PARAM, "1");
+  return (q < 0 ? base : base.slice(0, q)) + "?" + params.toString() + tail;
+}
+
 export const IS_EMBED =
   boot.pathname.startsWith(EMBED_PREFIX) ||
   boot.pathname === "/explorer/embed" ||

@@ -10,7 +10,7 @@
 // then blurs it.
 import { useEffect, useRef, type MouseEvent, type RefObject } from "react";
 import { Search, Store, X } from "lucide-react";
-import { navigateUrl } from "@platform/lib/router";
+import { keepQueryEmbed, navigateUrl } from "@platform/lib/router";
 import { MARKETPLACE_HOME } from "@platform/lib/marketplace";
 
 export type StoreTab = "discover" | "installed" | null;
@@ -52,7 +52,8 @@ export function StoreHeader({ tab, q, onQ, onSubmit, scrolled, updates, installe
   const go = (url: string) => (e: MouseEvent<HTMLAnchorElement>) => {
     if (e.button !== 0 || e.metaKey || e.ctrlKey || e.shiftKey || e.altKey) return;
     e.preventDefault();
-    navigateUrl(url);
+    // A framed store (`?embed=1`) keeps saying so across its own tabs.
+    navigateUrl(keepQueryEmbed(url));
   };
 
   return (

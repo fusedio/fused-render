@@ -1720,6 +1720,32 @@ def test_rail_extras_defaults_off_toggles_and_rejects_junk(tmp_path, monkeypatch
     assert prefs_mod.rail_extras_enabled() is False
 
 
+def test_left_rail_peek_defaults_off_toggles_and_rejects_junk(tmp_path, monkeypatch):
+    """Left sidebar preview (the collapsed left rail's hover cards): the same
+    opt-in idiom as Rail extras — only a stored `true` is on — and a switch of
+    its own (Rail extras on does not turn it on)."""
+    client, home = _client(tmp_path, monkeypatch)
+    assert client.get("/api/prefs").json()["left_rail_peek"] == {"enabled": False}
+    client.put("/api/prefs", json={"rail_extras_enabled": True}, headers=FUSED)
+    assert client.get("/api/prefs").json()["left_rail_peek"] == {"enabled": False}
+    body = client.put("/api/prefs", json={"left_rail_peek_enabled": True},
+                      headers=FUSED).json()
+    assert body["left_rail_peek"]["enabled"] is True
+    stored = json.loads((home / "prefs.json").read_text(encoding="utf-8"))
+    assert stored["left_rail_peek_enabled"] is True
+    assert prefs_mod.left_rail_peek_enabled() is True
+    off = client.put("/api/prefs", json={"left_rail_peek_enabled": False},
+                     headers=FUSED).json()
+    assert off["left_rail_peek"]["enabled"] is False
+    bad = client.put("/api/prefs", json={"left_rail_peek_enabled": "yes"},
+                     headers=FUSED)
+    assert bad.status_code == 400
+    assert "left_rail_peek_enabled" in bad.json()["error"]
+    (home / "prefs.json").write_text(json.dumps({"left_rail_peek_enabled": 1}),
+                                     encoding="utf-8")
+    assert prefs_mod.left_rail_peek_enabled() is False
+
+
 def test_retired_rail_extras_and_task_icons_switches_are_ignored(tmp_path, monkeypatch):
     """Task icons are always on, and the three rail switches folded into
     `rail_extras_enabled` (no migration): their old keys left in prefs.json

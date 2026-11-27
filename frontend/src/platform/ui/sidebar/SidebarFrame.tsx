@@ -21,6 +21,9 @@ import {
 } from "@platform/lib/sidebarstate";
 import { reopenWidth, resizeWidth } from "@platform/lib/panel-drag";
 import { useSidebarState } from "@platform/lib/hooks";
+import { sidebarDoorProps, useSidebarDoor, type SidebarRailDoor } from "./sidebar-doors";
+
+export type { SidebarRailDoor } from "./sidebar-doors";
 
 /** One icon on the collapsed rail, and it is always a DESTINATION: click
     navigates there and the rail STAYS collapsed — only the chevron expands.
@@ -65,6 +68,12 @@ export interface SidebarRailItem {
       shell's Tasks dot). Drawn inside the button, which is the positioned
       ancestor it resolves against; the frame never says what it means. */
   badge?: React.ReactNode;
+  /** A HOVER CARD BEHIND THE ICON (the shell's "Left sidebar preview",
+      shell/left-rail): the owner's pointer, focus and key handlers and
+      attributes for the icon, run beside the frame's own. The frame stays
+      ignorant of what the card is; left out, the icon is exactly what it
+      always was. */
+  door?: SidebarRailDoor;
 }
 
 /** The rail's items as runs of equal `scrolls`, in order — a scrolling run
@@ -103,6 +112,19 @@ function renderRailLead(item: SidebarRailItem) {
 
 /** `bare`: the lead was already drawn outside this item's scroll box. */
 function renderRailItem(item: SidebarRailItem, tip: RailTip, bare = false) {
+  const door = item.door;
+  // The tooltip, unless the icon's card speaks for it (`quietTip`).
+  const showTip = (el: HTMLElement) => {
+    if (!door?.quietTip) tip.show(item.label, el);
+  };
+  const onFocus = (e: React.FocusEvent<HTMLElement>) => {
+    showTip(e.currentTarget);
+    door?.onFocus?.(e);
+  };
+  const onBlur = (e: React.FocusEvent<HTMLElement>) => {
+    tip.hide();
+    door?.onBlur?.(e);
+  };
   return (
     <React.Fragment key={item.key}>
       {!bare && renderRailLead(item)}
@@ -111,12 +133,14 @@ function renderRailItem(item: SidebarRailItem, tip: RailTip, bare = false) {
           type="button"
           className={"sidebar-rail-btn" + (item.active ? " active" : "")}
           aria-label={item.label}
-          onMouseEnter={(e) => tip.show(item.label, e.currentTarget)}
+          {...sidebarDoorProps(door)}
+          onMouseEnter={(e) => showTip(e.currentTarget)}
           onMouseLeave={tip.hide}
-          onFocus={(e) => tip.show(item.label, e.currentTarget)}
-          onBlur={tip.hide}
+          onFocus={onFocus}
+          onBlur={onBlur}
           onClick={(e) => {
             tip.hide();
+            door?.onActivate?.();
             item.onClick?.(e);
           }}
         >
@@ -131,13 +155,15 @@ function renderRailItem(item: SidebarRailItem, tip: RailTip, bare = false) {
             ((item.active ?? location.pathname === item.href) ? " active" : "")
           }
           aria-label={item.label}
-          onMouseEnter={(e) => tip.show(item.label, e.currentTarget)}
+          {...sidebarDoorProps(door)}
+          onMouseEnter={(e) => showTip(e.currentTarget)}
           onMouseLeave={tip.hide}
-          onFocus={(e) => tip.show(item.label, e.currentTarget)}
-          onBlur={tip.hide}
+          onFocus={onFocus}
+          onBlur={onBlur}
           onClick={(e) => {
             e.preventDefault();
             tip.hide();
+            door?.onActivate?.();
             if (item.onClick) item.onClick(e);
             else navigateUrl(item.href!);
           }}
@@ -167,6 +193,11 @@ export interface SidebarFrameProps {
    * may not read a shell pref, so the shell's own sidebar hands the answer down.
    */
   tuckOnCollapse?: boolean;
+  /** The sidebar's element (`nav#sidebar`, collapsed to its rail or
+      expanded — one node in both states) as it comes and goes. The shell's
+      hover cards stand beside it (shell/left-rail). Pass a STABLE function:
+      a new one each render is called with null and the element again. */
+  onRailEl?: (el: HTMLElement | null) => void;
 }
 
 // A plain sidebar nav row: highlights on exact pathname match, navigates
@@ -181,7 +212,11 @@ export function NavItem({
   active,
   title,
   onClick,
+  doorKey,
 }: {
+  /** The row's key among the sidebar's hover cards (sidebar-doors): the
+      owner's hooks for it, if it offers any. */
+  doorKey?: string;
   /** Left out, the row is an ACTION: a native <button> running `onClick`. */
   href?: string;
   label: string;
@@ -206,14 +241,20 @@ export function NavItem({
       it renders a <button>. */
   onClick?: () => void;
 }) {
+  const door = useSidebarDoor(doorKey);
+  const tip = door?.quietTip ? undefined : title || undefined;
   if (href === undefined) {
     return (
       <button
         type="button"
         id={id}
-        title={title || undefined}
+        title={tip}
         className={"sidebar-item" + (active ? " active" : "")}
-        onClick={() => onClick?.()}
+        {...sidebarDoorProps(door)}
+        onClick={() => {
+          door?.onActivate?.();
+          onClick?.();
+        }}
       >
         <span className="icon">
           {icon}
@@ -228,10 +269,12 @@ export function NavItem({
     <a
       href={href}
       id={id}
-      title={title || undefined}
+      title={tip}
       className={"sidebar-item" + ((active ?? location.pathname === href) ? " active" : "")}
+      {...sidebarDoorProps(door)}
       onClick={(e) => {
         e.preventDefault();
+        door?.onActivate?.();
         if (onClick) onClick();
         else navigateUrl(href);
       }}
@@ -256,6 +299,7 @@ export function SidebarFrame({
   rail,
   children,
   tuckOnCollapse = false,
+  onRailEl,
 }: SidebarFrameProps) {
   // Sidebar chrome: draggable width + collapsed flag, persisted once per
   // gesture (drag end / toggle), not per mousemove. The state lives in the
@@ -464,7 +508,11 @@ export function SidebarFrame({
     // one direction teaches you not to trust it.
     return (
       <>
-      <nav id="sidebar" className={"sidebar-collapsed" + (resizing ? " sidebar-no-transition" : "")}>
+      <nav
+        id="sidebar"
+        className={"sidebar-collapsed" + (resizing ? " sidebar-no-transition" : "")}
+        {...(onRailEl ? { ref: onRailEl } : {})}
+      >
         <button
           type="button"
           className="sidebar-rail-btn sidebar-rail-expand"
@@ -529,6 +577,7 @@ export function SidebarFrame({
         it would outrank the class and the panel would not narrow at all. */}
     <nav
       id="sidebar"
+      {...(onRailEl ? { ref: onRailEl } : {})}
       className={
         [
           tucking ? "sidebar-collapsed sidebar-tucking" : "",

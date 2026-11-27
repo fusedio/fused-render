@@ -2324,6 +2324,8 @@ offer it — a plain `.toml` never shows the mode at all.
   present — the part of the canvas that was on screen, fitted to this pane
   with no padding (the workbench's own restore) — else `[canvas.viewport]`
   (x/y/zoom), else **fit** all nodes with React Flow's fit at padding 0.1.
+  `fit=1` in the URL opens on that fit whatever the file's camera says (a
+  small pane showing the canvas as a preview: the sidebar's hover card).
   Zoom stays in [0.1, 2]. Scroll pans, pinch or ctrl/cmd + scroll zooms to the
   cursor (React Flow's step), drag pans; a bottom-right cluster shows the zoom
   and offers zoom in/out and an animated **Fit** (600 ms cubic ease-out,

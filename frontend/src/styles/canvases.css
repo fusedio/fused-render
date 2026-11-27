@@ -703,3 +703,28 @@ button.canvases-mirror.is-error:hover:not(:disabled) {
 .canvas-new-where code {
   color: var(--fg);
 }
+
+/* A NARROW CATALOG (the sidebar's "+ Canvas" card, shell/left-rail: this page
+   in a frame ~360–420px wide — and any window that narrow): the head wraps,
+   its controls take their own line, the search shrinks, one card per line. */
+@media (max-width: 520px) {
+  .canvases-inner {
+    padding: 16px 12px 32px;
+  }
+  .canvases-head {
+    flex-wrap: wrap;
+  }
+  .canvases-head-actions {
+    margin-left: 0;
+    flex-wrap: wrap;
+    width: 100%;
+  }
+  .canvases-search {
+    width: auto;
+    flex: 1 1 140px;
+    min-width: 0;
+  }
+  .canvases-grid {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}

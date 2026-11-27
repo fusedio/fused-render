@@ -73,6 +73,7 @@ import { PlusCardHost } from "@shell/claude-rail/PlusCardHost";
 import { BotsPeek } from "@shell/claude-rail/BotsPeek";
 import { GitPeek } from "@shell/claude-rail/GitPeek";
 import { ModePeek } from "@shell/claude-rail/ModePeek";
+import { LeftPeek } from "@shell/left-rail/LeftPeek";
 import { BotCardHostSlots } from "@shell/claude-rail/BotCardHost";
 import { FallbackRail } from "@shell/claude-rail/FallbackRail";
 import { ShareAppHost } from "@platform/ui/ShareAppModal";
@@ -1425,6 +1426,10 @@ export default function App({ config }: { config: Config }) {
           window A's too, mounted once here for the same reason (owner,
           2026-11-20: a file's other modes as doors above Git). */}
       {!IS_EMBED && <ModePeek />}
+      {/* The collapsed left sidebar's hover cards (shell/left-rail LeftPeek;
+          "Left sidebar preview", `left_rail_peek_enabled`, default off): mounted
+          once here so a held card survives a hop, like the cards above. */}
+      {!IS_EMBED && <LeftPeek />}
       {/* The pinned bot's card (shell/claude-rail BotCardHost): window B's
           other card, mounted once here for the favourite's reason — a page's
           view switch remounts its rail, and a card that lived there

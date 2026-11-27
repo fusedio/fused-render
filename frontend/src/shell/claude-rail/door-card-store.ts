@@ -23,6 +23,7 @@ import { aPinned, addAPin, dropAPin, setAPinned } from "@platform/lib/last-chat"
 import { useSyncExternalStore } from "react";
 import { PeekIntent, type Timers } from "./rail-peek-lib";
 import { railPace } from "./rail-zone";
+import type { HoverPace } from "./rail-zone-lib";
 import { railExtrasNow } from "./rail-extras-flag";
 
 export interface DoorCardState {
@@ -106,8 +107,14 @@ export interface DoorCardStore {
  *  from anywhere (the card's own Open, a rail that is gone) lets the mark go.
  *  FREE PINS (rail-slots-lib "MANY PINS", 2026-11-24): the mark is a list,
  *  and this card's word joins it and leaves it on its own — no other pin is
- *  touched. Off, the word is the window's one mark, as ever. */
-export function createDoorCardStore(key: string, id: string, pinWord?: string): DoorCardStore {
+ *  touched. Off, the word is the window's one mark, as ever.
+ *
+ *  `opts.pace`: whose cold and hot zones the hover waits on (rail-zone-lib) —
+ *  the Claude rail's (`railPace`) unless given; the collapsed left sidebar's
+ *  cards wait on their own zone (shell/left-rail left-rail-zone). A store
+ *  with no `pinWord` (the left sidebar's) writes no window A mark at all. */
+export function createDoorCardStore(key: string, id: string, pinWord?: string, opts: { pace?: HoverPace } = {}): DoorCardStore {
+  const pace = opts.pace ?? railPace;
   let state: DoorCardState = { up: false, pinned: false, held: false, seq: 0, ready: false };
   const press = { inside: false };
   const subs = new Set<() => void>();
@@ -169,7 +176,7 @@ export function createDoorCardStore(key: string, id: string, pinWord?: string): 
             warm: () => {},
           },
           testTimers,
-          railPace,
+          pace,
         );
       }
       return intent;
