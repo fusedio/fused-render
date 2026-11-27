@@ -168,7 +168,8 @@ let itemsSig = "";
 
 function showSig(s: LeftPeekShow): string {
   if (s.kind === "compose") return "compose";
-  return s.kind === "app" ? `app|${s.still}|${s.picture}|${s.live}` : `${s.kind}|${s.src}|${s.searchHome ?? ""}`;
+  if (s.kind === "app") return `app|${s.still}|${s.picture}|${s.live}`;
+  return `${s.kind}|${s.src}|${s.searchHome ?? ""}|${s.spin ? "spin" : ""}`;
 }
 
 /** What the collapsed sidebar's icons offer now (GlobalSidebar, each render

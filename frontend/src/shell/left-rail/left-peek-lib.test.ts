@@ -15,6 +15,7 @@ import {
   canvasShow,
   framePainted,
   frameSrcOf,
+  leftFrameLook,
   LEFT_RAIL_SELECTOR,
   leftDoorSelector,
   leftPressVerdict,
@@ -168,5 +169,34 @@ describe("leftPressVerdict: what a press is to a left card", () => {
     // A file's frame loading, then shown.
     expect(framePainted(doc(["#root > *", ".preview-body iframe"]))).toBe(false);
     expect(framePainted(doc(["#root > *", ".preview-body iframe", ".preview-body iframe.is-shown"]))).toBe(true);
+  });
+});
+
+describe("leftFrameLook: what a card shows while its frame loads", () => {
+  const app = appShow({ path: "/w/app", entry: "/w/app/index.html", rawUrl, embedUrl });
+  const look = (show: Parameters<typeof leftFrameLook>[0]["show"], o: { stillOk?: boolean; frameKey?: string | null; loaded?: string | null; painted?: string | null } = {}) =>
+    leftFrameLook({ show, stillOk: o.stillOk ?? false, frameKey: o.frameKey === undefined ? "1#0#a" : o.frameKey, loaded: o.loaded ?? null, painted: o.painted ?? null });
+
+  it("a canvas, the explorer, a favourite: no spinner, the frame fades in on its load", () => {
+    const canvas = canvasShow({ path: "/w/c", embedUrl });
+    expect(look(canvas)).toEqual({ ready: false, spinner: false, still: false });
+    expect(look(canvas, { loaded: "1#0#a" })).toEqual({ ready: true, spinner: false, still: false });
+  });
+  it("a slow page (spin) spins until its page has drawn", () => {
+    const slow = { kind: "frame" as const, src: "/ai-models?embed=1", spin: true };
+    expect(look(slow)).toEqual({ ready: false, spinner: true, still: false });
+    expect(look(slow, { loaded: "1#0#a" })).toEqual({ ready: true, spinner: true, still: false });
+    expect(look(slow, { loaded: "1#0#a", painted: "1#0#a" })).toEqual({ ready: true, spinner: false, still: false });
+  });
+  it("a project's still: alone while a preview, then under its live page until that page has drawn", () => {
+    expect(look(app, { stillOk: true, frameKey: null })).toEqual({ ready: true, spinner: false, still: true });
+    expect(look(app, { stillOk: true, loaded: "1#0#a" })).toEqual({ ready: false, spinner: false, still: true });
+    expect(look(app, { stillOk: true, loaded: "1#0#a", painted: "1#0#a" })).toEqual({ ready: true, spinner: false, still: false });
+  });
+  it("a project with no still (or a failed one): its picture fades in on load, no spinner", () => {
+    expect(look(app, { stillOk: false, loaded: "1#0#a" })).toEqual({ ready: true, spinner: false, still: false });
+  });
+  it("an older frame's load or paint says nothing of the new one", () => {
+    expect(look(app, { stillOk: true, frameKey: "2#0#a", loaded: "1#0#a", painted: "1#0#a" })).toEqual({ ready: false, spinner: false, still: true });
   });
 });

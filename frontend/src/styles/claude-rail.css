@@ -2469,6 +2469,52 @@ html[data-left-peek-open] #sidebar :is(.sidebar-rail-btn, .sidebar-item).active:
   background: none;
   box-shadow: inset 0 0 0 1px rgba(var(--tint), 0.14);
 }
+/* NO DEAD ZONES ON THE COLLAPSED LEFT RAIL (`<html data-left-rail-peek>`,
+   LeftPeek; owner, 2026-11-27: "between items there is spacing which messes
+   up the hover window — check the right side, there is a solution"): the
+   Claude rail's rings' box (`.claude-rail-chat::after` above). Each 28px
+   button's hit area reaches half the 4px gap up and down and nearly to the
+   48px rail's edges, and EVERY WASH IS PAINTED ON THAT SAME BOX — hover, the
+   page's `active`, an open card's look — so what lights up is exactly what
+   the pointer is over, and the pointer resting between two icons is on one
+   of them. Every rail button, so the column hovers alike. After the rules
+   above, which it repaints on the box. */
+html[data-left-rail-peek] #sidebar.sidebar-collapsed .sidebar-rail-btn {
+  isolation: isolate;
+}
+/* The rail's scrolling run (sidebar.css `.sidebar-rail-scroll`) is as wide as
+   its 28px column; the box reaches 9px past it each side, so the run widens
+   to hold it (centred over the column) — else it clips the box and scrolls
+   sideways. */
+html[data-left-rail-peek] #sidebar.sidebar-collapsed .sidebar-rail-scroll {
+  width: 46px;
+}
+html[data-left-rail-peek] #sidebar.sidebar-collapsed .sidebar-rail-btn::after {
+  content: "";
+  position: absolute;
+  inset: -2px -9px;
+  border-radius: 8px;
+  z-index: -1;
+}
+html[data-left-rail-peek] #sidebar.sidebar-collapsed .sidebar-rail-btn.sidebar-rail-btn {
+  background: none;
+  box-shadow: none;
+}
+html[data-left-rail-peek] #sidebar.sidebar-collapsed .sidebar-rail-btn:is(:hover, .active)::after {
+  background: rgba(var(--tint), 0.08);
+}
+html[data-left-rail-peek] #sidebar.sidebar-collapsed .sidebar-rail-btn[data-left-open]::after {
+  background: rgba(var(--tint), 0.12);
+  box-shadow: inset 0 0 0 1px rgba(var(--tint), 0.3);
+}
+html[data-left-rail-peek] #sidebar.sidebar-collapsed .sidebar-rail-btn[data-left-open="pinned"]::after {
+  background: rgba(var(--tint), 0.16);
+  box-shadow: inset 0 0 0 1px rgba(var(--tint), 0.45);
+}
+html[data-left-rail-peek][data-left-peek-open] #sidebar.sidebar-collapsed .sidebar-rail-btn.active:not([data-left-open])::after {
+  background: none;
+  box-shadow: inset 0 0 0 1px rgba(var(--tint), 0.14);
+}
 html[data-left-peek-open] #sidebar .bookmark-row.active:not([data-left-open]) {
   background: none;
   box-shadow: inset 0 0 0 1px rgba(var(--accent-rgb), 0.28);
