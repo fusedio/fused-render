@@ -4,6 +4,7 @@
 // bookmarks and recent files. Entering any target navigates into
 // /explorer/view/... (the explorer proper).
 import { useEffect, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import { navigate, navigateUrl, replaceSearch, spaLinkProps } from "@platform/lib/router";
 import { basename, formatMtime, formatMtimeFull, formatSize } from "@platform/lib/format";
 import { iconForEntry } from "@platform/ui/FileIcons";
@@ -444,9 +445,17 @@ export function FilesSearch({
   onScanRequested,
   compact,
   autoFocus = true,
+  resultsHost,
 }: {
   home: string;
   initialQuery: string;
+  /** THE BOX IN A CARD'S HEAD (the sidebar's Home card, shell/left-rail
+   *  LeftPeek): given, this box draws only itself where it is mounted and its
+   *  results — notes, banners, the list — in `resultsHost` (null: not drawn
+   *  yet, no results drawn). It then keeps to itself: no page-wide "typing
+   *  goes to the box", no `?q=` on the page's address, no "All files" (the
+   *  card's Open is that). */
+  resultsHost?: HTMLElement | null;
   /** The caret starts in the box (the page's own posture). Off for a box in
    *  a hover card (the shell's sidebar search preview), which must not take
    *  the keyboard until the reader presses into it. */
@@ -465,6 +474,7 @@ export function FilesSearch({
    */
   onScanRequested: () => void;
 }) {
+  const inCard = resultsHost !== undefined;
   const [query, setQuery] = useState(initialQuery);
   const [ai, setAi] = useState<AiPhase>(AI_OFF);
   const [picked, setPicked] = useState<RowId | null>(null);
@@ -920,6 +930,8 @@ export function FilesSearch({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
   useEffect(() => {
+    // A box in a card's head is not the page: the page's typing is its own.
+    if (inCard) return;
     const onKey = (e: KeyboardEvent) => {
       const el = e.target as HTMLElement | null;
       const claim = redirectsToSearch({
@@ -939,12 +951,13 @@ export function FilesSearch({
     };
     document.addEventListener("keydown", onKey);
     return () => document.removeEventListener("keydown", onKey);
-  }, []);
+  }, [inCard]);
 
   // -- AI search -------------------------------------------------------------
   const aiCtl = useRef<AbortController | null>(null);
   useEffect(() => () => aiCtl.current?.abort(), []);
   const syncQueryParam = (value: string | null) => {
+    if (inCard) return;
     const params = new URLSearchParams(location.search);
     if (value) params.set("q", value);
     else params.delete("q");
@@ -1275,73 +1288,10 @@ export function FilesSearch({
     if (current !== null) activateRow(current);
   };
 
-  return (
-    <div className="files-search-wrap">
-      <div className="files-search">
-        <span className="files-search-icon" aria-hidden="true">
-          <MagnifierIcon />
-        </span>
-        <input
-          ref={inputEl}
-          type="search"
-          className="files-search-input"
-          placeholder={compact ? "Search files…" : "Search your files — or paste a path like ~/Downloads"}
-          aria-label="Search your files"
-          role="combobox"
-          aria-expanded={active && !showingAi && listShown}
-          aria-controls="fh-result-list"
-          aria-activedescendant={
-            active && !showingAi && listShown && current !== null
-              ? "fh-row-" + current
-              : undefined
-          }
-          autoComplete="off"
-          spellCheck={false}
-          value={query}
-          onChange={(e) => edit(e.target.value)}
-          onKeyDown={(e) => {
-            if (e.key === "ArrowDown" || e.key === "ArrowUp") {
-              if (!active || showingAi || !listShown) return;
-              e.preventDefault();
-              // Step from `current` (the RESOLVED row, `activeRow` above), not
-              // the raw `highlight` state: the top file row can be active with
-              // `highlight` still null (activeRow's implicit pre-select), and
-              // stepping from null would land the first ArrowDown back on row
-              // 0 — the already-visible selection — instead of row 1.
-              pick(stepHighlight(current, rowModel, e.key === "ArrowDown" ? 1 : -1));
-            } else if (e.key === "Enter") {
-              e.preventDefault();
-              submit();
-            } else if (e.key === "Escape" && active) {
-              e.preventDefault();
-              clear();
-            }
-          }}
-        />
-        {active && (
-          <button type="button" className="files-search-clear" title="Clear search (esc)" onClick={clear}>
-            Clear
-          </button>
-        )}
-        {/* A navigation shortcut, not a search control — it does not read or
-            write `query`/`ai`/anything else in here, same reasoning as the
-            recents screen's own "Browse files" CTA (.files-hero-cta) whose
-            handler this reuses verbatim, so the two entry points into the
-            home directory cannot drift apart. */}
-        <button
-          type="button"
-          className="files-hero-cta files-search-allfiles"
-          aria-label="All files"
-          title="Open the file explorer at your home directory"
-          onClick={() => navigate(home, { isDir: true })}
-        >
-          All files
-          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-            <path d="M5 12h14M13 6l6 6-6 6" />
-          </svg>
-        </button>
-      </div>
-
+  // The notes, banners and the list under the box: under it on a page, in
+  // `resultsHost` for a box in a card's head.
+  const below = (
+    <>
       {ai.status === "failed" && <ErrorBanner>{ai.message}</ErrorBanner>}
 
       {/* A refetch failed while rows are still in hand. The rows stay — they
@@ -1594,6 +1544,81 @@ export function FilesSearch({
           )}
         </div>
       )}
+    </>
+  );
+
+  return (
+    <div className={"files-search-wrap" + (inCard ? " is-in-card" : "")}>
+      <div className="files-search">
+        <span className="files-search-icon" aria-hidden="true">
+          <MagnifierIcon />
+        </span>
+        <input
+          ref={inputEl}
+          type="search"
+          className="files-search-input"
+          placeholder={compact || inCard ? "Search files…" : "Search your files — or paste a path like ~/Downloads"}
+          aria-label="Search your files"
+          role="combobox"
+          aria-expanded={active && !showingAi && listShown}
+          aria-controls="fh-result-list"
+          aria-activedescendant={
+            active && !showingAi && listShown && current !== null
+              ? "fh-row-" + current
+              : undefined
+          }
+          autoComplete="off"
+          spellCheck={false}
+          value={query}
+          onChange={(e) => edit(e.target.value)}
+          onKeyDown={(e) => {
+            if (e.key === "ArrowDown" || e.key === "ArrowUp") {
+              if (!active || showingAi || !listShown) return;
+              e.preventDefault();
+              // Step from `current` (the RESOLVED row, `activeRow` above), not
+              // the raw `highlight` state: the top file row can be active with
+              // `highlight` still null (activeRow's implicit pre-select), and
+              // stepping from null would land the first ArrowDown back on row
+              // 0 — the already-visible selection — instead of row 1.
+              pick(stepHighlight(current, rowModel, e.key === "ArrowDown" ? 1 : -1));
+            } else if (e.key === "Enter") {
+              e.preventDefault();
+              submit();
+            } else if (e.key === "Escape" && active) {
+              e.preventDefault();
+              clear();
+            }
+          }}
+        />
+        {active && (
+          <button type="button" className="files-search-clear" title="Clear search (esc)" onClick={clear}>
+            Clear
+          </button>
+        )}
+        {!inCard && (
+          <>
+            {/* Not in a card (`inCard`): its Open is this. A navigation shortcut, not a search control — it does not read or
+                write `query`/`ai`/anything else in here, same reasoning as the
+                recents screen's own "Browse files" CTA (.files-hero-cta) whose
+                handler this reuses verbatim, so the two entry points into the
+                home directory cannot drift apart. */}
+            <button
+              type="button"
+              className="files-hero-cta files-search-allfiles"
+              aria-label="All files"
+              title="Open the file explorer at your home directory"
+              onClick={() => navigate(home, { isDir: true })}
+            >
+              All files
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                <path d="M5 12h14M13 6l6 6-6 6" />
+              </svg>
+            </button>
+          </>
+        )}
+      </div>
+
+      {inCard ? (resultsHost ? createPortal(<div className="files-search-wrap is-card-results">{below}</div>, resultsHost) : null) : below}
     </div>
   );
 }

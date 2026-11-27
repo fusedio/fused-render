@@ -1,7 +1,6 @@
 // Left sidebar preview, the parts that need no DOM (left-peek-lib).
 import { describe, expect, it } from "bun:test";
 import {
-  SEARCH_CARD_SRC,
   appShow,
   bookmarkFrameSrc,
   canvasShow,
@@ -10,7 +9,6 @@ import {
   LEFT_RAIL_SELECTOR,
   leftDoorSelector,
   leftPressVerdict,
-  searchHopTarget,
   sideOff,
   withQueryEmbed,
   withSearchParam,
@@ -32,9 +30,6 @@ describe("frame addresses", () => {
     expect(sideOff("/explorer/embed/x?_mode=code#L3")).toBe("/explorer/embed/x?_mode=code&_side=off#L3");
     expect(sideOff("/explorer/embed/x?_side=off#L3")).toBe("/explorer/embed/x?_side=off#L3");
     expect(withSearchParam("/p", "a", "1")).toBe("/p?a=1");
-  });
-  it("the search card is Home narrowed to its search, embedded", () => {
-    expect(SEARCH_CARD_SRC).toBe("/home?embed=1&searchonly=1");
   });
   it("a favourite: an explorer page's own embed, a shell route embedded, anything else no card", () => {
     expect(bookmarkFrameSrc("/explorer/view/Users/me/a.html?_mode=code")).toBe("/explorer/embed/Users/me/a.html?_mode=code&_side=off");
@@ -74,18 +69,6 @@ describe("frame addresses", () => {
     expect(app.live).not.toContain("_preview");
     expect(app.live).not.toContain("_nofocus");
     expect(frameSrcOf({ kind: "frame", src: "/x" }, { pinned: false, stillFailed: false })).toBe("/x");
-  });
-});
-
-describe("searchHopTarget", () => {
-  it("still on its search: nothing to open", () => {
-    expect(searchHopTarget("/home?embed=1&searchonly=1")).toBeNull();
-    expect(searchHopTarget("/home?embed=1&searchonly=1&q=report")).toBeNull();
-  });
-  it("a result: the top page's address — the view prefix, the frame's stamps dropped", () => {
-    expect(searchHopTarget("/explorer/embed/Users/me/report.pdf?embed=1&searchonly=1")).toBe("/explorer/view/Users/me/report.pdf");
-    expect(searchHopTarget("/explorer/embed/Users/me?sel=a.txt&_nofocus=1&_preview=1")).toBe("/explorer/view/Users/me?sel=a.txt");
-    expect(searchHopTarget("/preferences?tab=indexing")).toBe("/preferences?tab=indexing");
   });
 });
 

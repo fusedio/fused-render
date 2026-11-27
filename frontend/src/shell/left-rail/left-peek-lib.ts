@@ -1,28 +1,22 @@
 // SIDEBAR PREVIEWS, the parts that need no DOM (owner, 2026-11-27; the story
 // is left-peek-store's header): what each collapsed-sidebar icon's card shows,
 // the frame addresses, and what a press means to a left card.
-import { EMBED_PARAM, EMBED_PREFIX, PREVIEW_PARAM, VIEW_PREFIX, withPreviewFlag } from "@platform/lib/router";
-import { NO_FOCUS_PARAM } from "@platform/lib/frame-focus";
+import { EMBED_PARAM, EMBED_PREFIX, VIEW_PREFIX, withPreviewFlag } from "@platform/lib/router";
 import type { PressTarget, PressWhere } from "@shell/claude-rail/rail-pin-lib";
 
 /** WHAT A LEFT CARD SHOWS:
  *    - `frame`: a page, chrome-free, in the card (Home's explorer, AI Models,
- *      the Community, a canvas's canvas.toml view, a favourite);
- *    - `search`: Home's file search alone, in a frame whose result opens on
- *      the page, not in the card (LeftPeek);
+ *      the Community, a canvas's canvas.toml view, a favourite); with
+ *      `searchHome`, a file search box in the card's head over that folder —
+ *      typing swaps the page for the results (the Home card, LeftPeek);
  *    - `app`: a project — its `preview.png` still while a preview, its live
  *      entry page once pinned, or when it has no still. */
 export type LeftPeekShow =
-  | { kind: "frame"; src: string }
-  | { kind: "search"; src: string }
+  | { kind: "frame"; src: string; searchHome?: string }
   | { kind: "app"; still: string; picture: string; live: string }
   // The "+ New app" card: the New-app composer itself (the modal's content),
   // drawn in the card — no page, no frame.
   | { kind: "compose" };
-
-/** The Home page narrowed to its file search (shell/Home.tsx `SEARCH_ONLY`). */
-export const SEARCH_ONLY_PARAM = "searchonly";
-export const SEARCH_CARD_SRC = `/home?${EMBED_PARAM}=1&${SEARCH_ONLY_PARAM}=1`;
 
 /** `url` with one query param set: only its search part changes — the path
  *  and a `#fragment` are kept, and a second literal `?` stays inside the
@@ -94,22 +88,6 @@ export function frameSrcOf(show: LeftPeekShow, o: { pinned: boolean; stillFailed
   if (show.kind !== "app") return show.src;
   if (o.pinned) return show.live;
   return o.stillFailed ? show.picture : null;
-}
-
-/** THE SEARCH CARD'S RESULT OPENS ON THE PAGE: where the search frame went
- *  (its path and query), as the top page's address — the embed prefix back
- *  to the view prefix, the frame's own stamps dropped. Null while the frame
- *  is still on its search (nothing to open). */
-export function searchHopTarget(pathAndSearch: string): string | null {
-  const qAt = pathAndSearch.indexOf("?");
-  const path = qAt < 0 ? pathAndSearch : pathAndSearch.slice(0, qAt);
-  const query = qAt < 0 ? "" : pathAndSearch.slice(qAt + 1);
-  if (path === "/home") return null;
-  const q = new URLSearchParams(query);
-  for (const k of [EMBED_PARAM, SEARCH_ONLY_PARAM, NO_FOCUS_PARAM, PREVIEW_PARAM]) q.delete(k);
-  const top = path.startsWith(EMBED_PREFIX) ? VIEW_PREFIX + path.slice(EMBED_PREFIX.length) : path;
-  const qs = q.toString();
-  return top + (qs ? "?" + qs : "");
 }
 
 /** The attribute every left door carries: its item's key. */

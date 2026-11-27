@@ -8,8 +8,9 @@
 // frame behind the param boundary (peek-frame `PeekFrame`) — mounted while
 // the card is up and a beat after, never before its first opening; a
 // project's `preview.png` while a preview (its live page once pinned, or when
-// it has no still); the search card's result opens ON THE PAGE, never in the
-// card.
+// it has no still). THE HOME CARD has a file search in its head (`searchHome`,
+// Home's own FilesSearch): typing lays the results over the listing, Escape
+// (or emptying the box) takes them away, a result opens ON THE PAGE.
 //
 // A PREVIEW'S FRAME IS SHIELDED (`.claude-left-peek:not(.is-live)`, claude-
 // rail.css): it takes no pointer, so the pointer over it is over the card
@@ -19,13 +20,16 @@
 // it back (peek-frame `reclaimFocus`).
 //
 // THE HEAD: the pin (RailPinButton, the Git and mode cards'), the icon and
-// title, and Open — the icon's own click, then the card goes.
+// title, the Home card's search box, and Open — the entry's Open (Home's is
+// the file explorer at ~), then the card goes.
 import { useCallback, useEffect, useRef, useState } from "react";
-import { NAV_EVENT, navigateUrl } from "@platform/lib/router";
+import { NAV_EVENT } from "@platform/lib/router";
 import { DoorCard } from "@shell/claude-rail/DoorCard";
 import { RailPinButton, useTempOutside } from "@shell/claude-rail/RailPin";
 import { FRAME_LINGER_MS, PeekFrame, usePeekFrameRules } from "@shell/claude-rail/peek-frame";
-import { framePainted, frameSrcOf, leftDoorSelector, leftPressVerdict, searchHopTarget } from "./left-peek-lib";
+import { framePainted, frameSrcOf, leftDoorSelector, leftPressVerdict } from "./left-peek-lib";
+import { FilesSearch } from "@apps/explorer/FilesHome";
+import { useIndexStatus } from "@platform/lib/index-status";
 import { NewAppInline } from "@shell/CurrentAppsSection";
 import {
   closeLeftCards,
@@ -168,16 +172,16 @@ function LeftCard({ itemKey, on }: { itemKey: string; on: boolean }) {
   const paintPoll = useRef(0);
   useEffect(() => () => window.clearInterval(paintPoll.current), []);
   const compose = show?.kind === "compose";
-  // THE SEARCH CARD'S RESULT OPENS ON THE PAGE: the frame's own hop (a result
-  // pressed, a path typed) is taken to the top page, and the frame starts
-  // over on its search.
-  const [round, setRound] = useState(0);
-  const isSearch = show?.kind === "search";
+  // THE HOME CARD'S SEARCH (`searchHome`): the box in the head, its results
+  // in a layer over the listing while a query is live.
+  const searchHome = show?.kind === "frame" ? (show.searchHome ?? null) : null;
+  const [resultsEl, setResultsEl] = useState<HTMLDivElement | null>(null);
+  const [searching, setSearching] = useState(false);
   // READY PER FRAME, NOT PER ADDRESS (CodeRabbit on #2495): a new frame on
-  // the same address — the card back after its fade ran out, the search
-  // card's next round — is not loaded or painted yet. `loaded` and `painted`
+  // the same address — the card back after its fade ran out — is not loaded
+  // or painted yet. `loaded` and `painted`
   // name the frame they are about, and a new one drops the old one's poll.
-  const frameKey = src !== null ? `${mounts}#${round}#${src}` : null;
+  const frameKey = src !== null ? `${mounts}#${src}` : null;
   useEffect(() => () => window.clearInterval(paintPoll.current), [frameKey]);
   const onFrameLoad = useCallback(
     (inner: HTMLIFrameElement) => {
@@ -198,48 +202,9 @@ function LeftCard({ itemKey, on }: { itemKey: string; on: boolean }) {
         return true;
       };
       if (!ask()) paintPoll.current = window.setInterval(ask, 120);
-      if (!isSearch) return;
-      let w: Window | null = null;
-      try {
-        w = inner.contentWindow;
-      } catch {
-        return;
-      }
-      if (!w) return;
-      const win = w;
-      const hop = () => {
-        let to: string | null = null;
-        try {
-          to = searchHopTarget(win.location.pathname + win.location.search);
-        } catch {
-          return;
-        }
-        if (!to) return;
-        win.removeEventListener(NAV_EVENT, hop);
-        setRound((n) => n + 1);
-        void navigateUrl(to);
-      };
-      win.addEventListener(NAV_EVENT, hop);
-      hop();
     },
-    [frameKey, isSearch],
+    [frameKey],
   );
-
-  // THE SEARCH CARD TAKES THE KEYBOARD WHEN PRESSED: the press that made it
-  // temp landed on the shield (header), so the box is put under the reader's
-  // hands — after the press's own focus change (a mousedown on the card).
-  useEffect(() => {
-    if (!isSearch || !pinned) return;
-    const t = window.setTimeout(() => {
-      try {
-        const inner = frameRef.current?.contentDocument?.querySelector("iframe");
-        inner?.contentDocument?.querySelector<HTMLInputElement>("input.files-search-input")?.focus({ preventScroll: true });
-      } catch {
-        // A frame not ours to reach: the reader clicks into it.
-      }
-    }, 60);
-    return () => window.clearTimeout(t);
-  }, [isSearch, pinned]);
 
   const title = it?.title ?? "";
   const open = useCallback(
@@ -285,7 +250,11 @@ function LeftCard({ itemKey, on }: { itemKey: string; on: boolean }) {
                 )}
                 <span className="claude-left-peek-name">{title}</span>
               </span>
-              <span className="claude-rail-peek-gap" aria-hidden="true" />
+              {live && searchHome !== null ? (
+                <CardSearch home={searchHome} resultsHost={resultsEl} onActive={setSearching} />
+              ) : (
+                <span className="claude-rail-peek-gap" aria-hidden="true" />
+              )}
               <button type="button" className="btn claude-rail-peek-open" onClick={() => open(api.close)}>
                 Open
               </button>
@@ -311,11 +280,45 @@ function LeftCard({ itemKey, on }: { itemKey: string; on: boolean }) {
               <img className="claude-left-peek-still" src={still} alt="" draggable={false} onError={() => setStillFailed(still)} />
             )}
             {live && src !== null && (
-              <PeekFrame key={src + "#" + round} src={src} title={title} frameRef={frameRef} onLoad={onFrameLoad} />
+              <PeekFrame key={src} src={src} title={title} frameRef={frameRef} onLoad={onFrameLoad} />
             )}
+            {live && searchHome !== null && <div ref={setResultsEl} className="claude-left-peek-results" hidden={!searching} />}
           </div>
         </>
       )}
     </DoorCard>
+  );
+}
+
+/** THE HOME CARD'S SEARCH BOX: Home's own file search (FilesSearch — the
+ *  same ranking, keys and rows), the box here in the head, its results in
+ *  `resultsHost` over the listing. Its own index poll, as Home's page has
+ *  (SearchWidget `useSearchHost`), only while a query is live; no `?q=`
+ *  carried in (the page's address is not this card's). */
+function CardSearch({ home, resultsHost, onActive }: { home: string; resultsHost: HTMLElement | null; onActive: (active: boolean) => void }) {
+  const [active, setActive] = useState(false);
+  const [nonce, setNonce] = useState(0);
+  const indexScan = useIndexStatus(active, nonce);
+  const changed = useCallback(
+    (a: boolean) => {
+      setActive(a);
+      onActive(a);
+    },
+    [onActive],
+  );
+  // The box going (the card's fade ran out) takes its results with it.
+  useEffect(() => () => onActive(false), [onActive]);
+  return (
+    <div className="claude-left-peek-search">
+      <FilesSearch
+        home={home}
+        initialQuery=""
+        indexScan={indexScan}
+        onActiveChange={changed}
+        onScanRequested={() => setNonce((n) => n + 1)}
+        autoFocus={false}
+        resultsHost={resultsHost}
+      />
+    </div>
   );
 }
