@@ -27,7 +27,6 @@
 // becoming a history entry.
 import { useCallback, useEffect, useMemo, useRef, useState, type ComponentType, type SVGProps } from "react";
 import {
-  Cable,
   Search,
   SlidersHorizontal,
   Sparkles,
@@ -55,6 +54,8 @@ import {
   groupOf,
   navSections,
   parentOff,
+  CONNECTORS_SECTION,
+  legacyTabTarget,
   resolveGroup,
   searchableSettings,
   sectionsOf,
@@ -69,17 +70,10 @@ import { CONTROLS } from "./settings/controls";
 import { rowId, SettingsViewContext, type SettingsView } from "./settings/SettingRow";
 import { IndexStateProvider } from "./settings/indexing";
 import Connections from "./Connections";
-import { CanvasGlyph } from "@apps/canvases/glyph";
 
 /** The Claude Code group wears the Claude mark, not a terminal prompt: a `>_` reads as "developer only" to the people this page is for. The mark fills its 512 box edge to edge while lucide's 24-unit icons carry ~2px of padding, so it is drawn at 0.85 to look optically equal; the button's `[&_svg:not([class*='size-'])]:size-4` CSS sets the 16px box (it beats the width/height attributes). */
 function ClaudeNavIcon(props: SVGProps<SVGSVGElement>) {
   return <ClaudeMark {...props} className="scale-[0.85]" />;
-}
-
-/** Fused Workbench wears the Canvases glyph (connected nodes) — the switch on
- *  that page is what puts Canvases in the sidebar. */
-function WorkbenchNavIcon() {
-  return <CanvasGlyph />;
 }
 
 const GROUP_ICONS: Record<GroupId, ComponentType<SVGProps<SVGSVGElement>>> = {
@@ -91,9 +85,7 @@ const GROUP_ICONS: Record<GroupId, ComponentType<SVGProps<SVGSVGElement>>> = {
   apps: LayoutGrid,
   indexing: FolderSearch,
   lan: Wifi,
-  connections: Cable,
   integrations: Plug,
-  workbench: WorkbenchNavIcon,
   advanced: Wrench,
 };
 
@@ -175,7 +167,7 @@ function PreferencesPage({ claudeConfig }: { claudeConfig: boolean | null }) {
   const [error, setError] = useState<string | null>(null);
   const params = new URLSearchParams(location.search);
   const [query, setQueryState] = useState(() => params.get("q") ?? "");
-  const [flash, setFlash] = useState<string | null>(() => params.get("s"));
+  const [flash, setFlash] = useState<string | null>(() => params.get("s") ?? legacyTabTarget(params.get("tab")));
   // The selection lives in state, seeded from the URL once: a group switch is
   // an in-place URL sync (`replaceSearch`), which does not bump the nav epoch,
   // so the page keeps its mount, its nav and its fetched data.
@@ -395,11 +387,19 @@ function PreferencesPage({ claudeConfig }: { claudeConfig: boolean | null }) {
                           onChange={setPrefs}
                         />
                       ))
-                  : // Connections draws its own page: a card per provider
-                    // the server lists, not rows the registry knows.
-                    current === "connections"
-                    ? <Connections />
-                    : sectionsOf(entries, current).map((s, _i, all) => (
+                  : sectionsOf(entries, current).map((s, _i, all) =>
+                      // Connectors is a grid of cards: one per provider the
+                      // server lists (not rows the registry knows), then the
+                      // section's own rows (Hugging Face), a card each.
+                      s.section === CONNECTORS_SECTION ? (
+                        <Connections key={s.section}>
+                          {s.entries
+                            .filter((e) => e.id !== "connections")
+                            .map((e) => (
+                              <Section key={e.id} title={null} entries={[e]} prefs={prefs} onChange={setPrefs} />
+                            ))}
+                        </Connections>
+                      ) : (
                         <Section
                           key={s.section}
                           title={all.length > 1 ? s.section : null}
@@ -407,7 +407,8 @@ function PreferencesPage({ claudeConfig }: { claudeConfig: boolean | null }) {
                           prefs={prefs}
                           onChange={setPrefs}
                         />
-                      ))}
+                      ),
+                    )}
               </IndexStateProvider>
             </SettingsViewContext.Provider>
           </main>

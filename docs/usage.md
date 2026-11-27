@@ -252,7 +252,7 @@ where a first model comes from.
     the Hub publishes for the weights. Other files in the repo aren't counted,
     and a repo the Hub has no such metadata for shows no size rather than a
     guess.
-  - If this machine has a Hub token — from **Preferences → Accounts → Hugging Face**, an
+  - If this machine has a Hub token — from **Preferences → Integrations → Hugging Face**, an
     `HF_TOKEN` in the environment, or a `hf auth login` — it is used. That is
     what makes gated and private repos searchable and downloadable, and it
     raises the rate limit.

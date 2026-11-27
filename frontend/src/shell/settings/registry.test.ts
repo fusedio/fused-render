@@ -6,6 +6,7 @@ import {
   SETTINGS,
   navSections,
   searchableSettings,
+  legacyTabTarget,
   resolveGroup,
   sectionsOf,
   unavailableReason,
@@ -54,7 +55,7 @@ describe("the registry", () => {
     const seen = GROUPS.map((g) => order.indexOf(g.nav));
     expect([...seen].sort((a, b) => a - b)).toEqual(seen);
     expect(navSections(GROUPS).map((s) => [s.section.id, s.groups.map((g) => g.id)])).toEqual([
-      ["app", ["general", "integrations", "workbench", "connections", "features"]],
+      ["app", ["general", "integrations", "features"]],
       ["agents", ["ai", "tasks", "claude-cli"]],
       ["apps", ["apps", "indexing", "lan"]],
       ["developer", ["advanced"]],
@@ -75,9 +76,9 @@ describe("the registry", () => {
       const sections = sectionsOf(rows, g.id);
       if (sections.length < 2) continue;
       for (const sec of sections) {
-        // Accounts > Sign-ins is Hugging Face alone since the Fused rows got a
-        // section of their own (Fused Workbench): the one accepted exception.
-        if (g.id === "integrations" && sec.section === "Sign-ins") continue;
+        // Integrations > Fused Workbench is its switch alone while that switch
+        // is off (the environment rows wait for it): the one accepted exception.
+        if (g.id === "integrations" && sec.section === "Fused Workbench") continue;
         expect([g.id, sec.section, sec.entries.length >= 2]).toEqual([g.id, sec.section, true]);
       }
     }
@@ -222,8 +223,12 @@ describe("resolveGroup", () => {
     expect(resolveGroup("indexing", groups)).toBe("indexing");
     expect(resolveGroup("integrations", groups)).toBe("integrations");
   });
-  test("the old Accounts tab reads as Integrations", () => {
-    expect(resolveGroup("account", groups)).toBe("integrations");
+  test("the old Accounts, Fused Workbench and Connections tabs read as Integrations", () => {
+    for (const tab of ["account", "workbench", "connections"]) expect(resolveGroup(tab, groups)).toBe("integrations");
+    expect(legacyTabTarget("workbench")).toBe("canvases");
+    expect(legacyTabTarget("connections")).toBe("connections");
+    expect(legacyTabTarget("account")).toBeNull();
+    expect(legacyTabTarget("indexing")).toBeNull();
   });
   test("a tab with no visible group falls back", () => {
     expect(resolveGroup("indexing", GROUPS.filter((g) => g.id !== "indexing"))).toBe("general");

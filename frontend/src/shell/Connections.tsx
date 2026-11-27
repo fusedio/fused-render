@@ -1,7 +1,8 @@
-// Preferences → Connections (SPEC-connect-oauth.md §6, §11): one card per
-// provider the server's registry knows (Notion, GitHub, Slack...), each with
-// its sign-in, its state and the tool count its MCP server (or native pack)
-// offers. `?tab=connections`.
+// Preferences → Integrations → Connectors (SPEC-connect-oauth.md §6, §11): a
+// grid with one card per provider the server's registry knows (Notion,
+// GitHub, Slack...), each with its sign-in, its state and the tool count its
+// MCP server (or native pack) offers; the page adds its own cards (Hugging
+// Face) as children. `?tab=integrations&s=connections`.
 //
 // The client, the types and the polling live in platform/lib/connect.ts (the
 // bot Settings › Connections tab shares them: a sign-in is global); this file
@@ -56,33 +57,29 @@ export {
 
 // ── The page ────────────────────────────────────────────────────────────────
 
-export default function Connections() {
+export default function Connections({ children }: { children?: ReactNode }) {
   const { rows, error, stateOf, apply, login } = useConnections();
 
   return (
-    <section className="settings-section" aria-label="Services" id={rowId("connections")} data-setting="connections">
+    <section className="settings-section" aria-label="Connectors" id={rowId("connections")} data-setting="connections">
+      <h3 className="settings-section-title">Connectors</h3>
+      <p className="settings-connect-blurb">
+        Sign in once and a service's tools work in your apps, bots and tasks. Tokens stay on this machine.
+      </p>
       {error && <ErrorBanner>{error}</ErrorBanner>}
-      {!rows && !error && <SkeletonLines rows={3} label="Loading connections" />}
-      {rows && rows.length === 0 && (
-        <div className="settings-card">
-          <div className="settings-row">
-            <p className="settings-row-desc">No services to connect on this build.</p>
-          </div>
-        </div>
-      )}
-      {rows && rows.length > 0 && (
-        <div className="flex flex-col gap-3">
-          {rows.map((p) => (
-            <ProviderCard
-              key={p.key}
-              provider={p}
-              status={stateOf(p)}
-              onStatus={(st) => apply(p.key, st)}
-              onLogin={(body) => login(p.key, body)}
-            />
-          ))}
-        </div>
-      )}
+      {!rows && !error && <SkeletonLines rows={3} label="Loading connectors" />}
+      <div className="settings-connect-grid">
+        {rows?.map((p) => (
+          <ProviderCard
+            key={p.key}
+            provider={p}
+            status={stateOf(p)}
+            onStatus={(st) => apply(p.key, st)}
+            onLogin={(body) => login(p.key, body)}
+          />
+        ))}
+        {children}
+      </div>
     </section>
   );
 }
@@ -90,7 +87,7 @@ export default function Connections() {
 /** The registry row for search results: a door into the group. */
 export function ConnectionsPointer() {
   const view = useContext(SettingsViewContext);
-  return <PointerRow id="connections" to={() => view.jump("connections")} label="Connections" />;
+  return <PointerRow id="connections" to={() => view.jump("connections")} label="Connectors" />;
 }
 
 // ── One provider ───────────────────────────────────────────────────────────

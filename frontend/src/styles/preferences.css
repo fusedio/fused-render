@@ -1738,6 +1738,31 @@
   margin: 0 0 22px;
 }
 
+/* Integrations › Connectors: a card per service, in a grid. A card grows on
+   its own (a pending sign-in, Advanced), so the row does not stretch with it. */
+.settings-connect-blurb {
+  margin: 0 0 10px 2px;
+  font-size: 12.5px;
+  color: var(--fg-muted);
+}
+
+.settings-connect-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(250px, 1fr));
+  gap: 12px;
+  align-items: start;
+}
+
+.settings-connect-grid:empty {
+  display: none;
+}
+
+/* A page-supplied card (Hugging Face) is a one-row section in a cell. */
+.settings-connect-grid > .settings-section {
+  margin: 0;
+  min-width: 0;
+}
+
 .settings-section-title {
   margin: 0 0 8px 2px;
   font-size: 11.5px;

@@ -34,9 +34,7 @@ export type GroupId =
   | "apps"
   | "indexing"
   | "lan"
-  | "connections"
   | "integrations"
-  | "workbench"
   | "advanced";
 
 // THE NAV IS SECTIONED BY WHAT THE SETTING CHANGES: the app itself, the
@@ -73,19 +71,13 @@ export interface SettingsGroup {
 // In nav order: the sections above, and the groups inside each.
 export const GROUPS: readonly SettingsGroup[] = [
   { id: "general", nav: "app", label: "General" },
-  { id: "integrations", nav: "app", label: "Accounts" },
-  // FUSED WORKBENCH (owner, 2026-11-26): everything about the Fused Workbench
-  // integration on one page — the switch (which is also Canvases), the two
-  // environments a person can sign in to, and the on-prem proxy. It used to be
-  // spread over Experimental flags (Canvases, the proxy) and Accounts (one row
-  // per environment, Unstable included). Unstable has no row anywhere now.
-  { id: "workbench", nav: "app", label: "Fused Workbench" },
-  {
-    id: "connections",
-    nav: "app",
-    label: "Connections",
-    blurb: "Sign in once and a service's tools work in your apps, bots and tasks. Tokens stay on this machine.",
-  },
+  // INTEGRATIONS (owner, 2026-11-27): Accounts, Fused Workbench and Connections
+  // are one page. Fused Workbench comes first as plain rows (the switch, which
+  // is also Canvases, then one row per environment and the on-prem proxy);
+  // under it the Connectors grid, a card per service, Hugging Face among them
+  // (shell/Preferences.tsx draws the page, shell/Connections.tsx the grid).
+  // The old `?tab=` names still land here: see `resolveGroup`.
+  { id: "integrations", nav: "app", label: "Integrations" },
   {
     id: "features",
     nav: "app",
@@ -106,6 +98,9 @@ export const GROUPS: readonly SettingsGroup[] = [
   { id: "lan", nav: "apps", label: "Phone access" },
   { id: "advanced", nav: "developer", label: "Debugging" },
 ]
+
+/** The Integrations section drawn as a grid of cards, not as rows. */
+export const CONNECTORS_SECTION = "Connectors";
 
 export interface SettingEntry {
   id: string;
@@ -543,19 +538,6 @@ const ENTRIES = [
   },
 
 
-  // ── Connections ──────────────────────────────────────────────────────────
-  // The group draws its own page (shell/Connections.tsx: a card per provider
-  // the server lists, which the registry cannot know ahead of time); this row
-  // is what search finds, a pointer into it.
-  {
-    id: "connections",
-    group: "connections",
-    section: "Services",
-    label: "Connections",
-    description: "Notion, GitHub, Slack and other services whose tools your apps, bots and tasks can use.",
-    keywords: "connect connection oauth mcp sign in login api key notion github slack service tools",
-  },
-
   // ── Fused Workbench ──────────────────────────────────────────────────────
   // ONE SWITCH (owner, 2026-11-26): turning Fused Workbench on is turning
   // Canvases on — the row keeps the `canvases` id and the `canvases_enabled`
@@ -564,7 +546,7 @@ const ENTRIES = [
   {
     id: "canvases",
     needs: "fused",
-    group: "workbench",
+    group: "integrations",
     section: "Fused Workbench",
     label: "Enable Fused Workbench",
     description: "Adds Canvases to the sidebar — your Fused Workbench canvases, opened locally with the live workbench embedded — and the environments below to sign in to.",
@@ -578,8 +560,8 @@ const ENTRIES = [
   {
     id: "workbench-prod",
     needs: "fused",
-    group: "workbench",
-    section: "Environments",
+    group: "integrations",
+    section: "Fused Workbench",
     label: "Fused hosted",
     description: "Fused at fused.io. Used by Share and Canvases. Signing in opens fused.io in your browser.",
     keywords: "fused login sign in log out account workbench environment hosted prod production fused.io cloud canvases env default",
@@ -588,8 +570,8 @@ const ENTRIES = [
   {
     id: "workbench-custom",
     needs: "fused",
-    group: "workbench",
-    section: "Environments",
+    group: "integrations",
+    section: "Fused Workbench",
     label: "On-prem",
     description: "Your own Fused deployment, read from ~/.fused/settings.toml. Add its config first, then sign in.",
     keywords: "fused login sign in log out account workbench environment on-prem onprem self-hosted custom deployment settings.toml base_url config env",
@@ -598,8 +580,8 @@ const ENTRIES = [
   {
     id: "canvases-embed-proxy",
     needs: "fused",
-    group: "workbench",
-    section: "Environments",
+    group: "integrations",
+    section: "Fused Workbench",
     label: "Sign in to the workbench through a local proxy",
     description: "For an on-prem deployment whose workbench needs a browser login: it loads through a local proxy that adds your Fused token. Fused hosted is unaffected. canvases_embed_proxy_enabled under [render] in ~/.fused/settings.toml overrides this.",
     keywords: "proxy embed custom on-prem deployment settings.toml render workbench login gateway bearer token",
@@ -611,15 +593,26 @@ const ENTRIES = [
     },
   },
 
-  // ── Accounts ─────────────────────────────────────────────────────────────
+  // ── Connectors ───────────────────────────────────────────────────────────
+  // The grid is drawn by shell/Connections.tsx (a card per provider the
+  // server lists, which the registry cannot know ahead of time); this row is
+  // what search finds, a pointer into it. Hugging Face is a card in that grid.
+  {
+    id: "connections",
+    group: "integrations",
+    section: CONNECTORS_SECTION,
+    label: "Connectors",
+    description: "Notion, GitHub, Slack and other services whose tools your apps, bots and tasks can use.",
+    keywords: "connector connectors connect connection oauth mcp sign in login api key notion github slack service tools",
+  },
   {
     id: "huggingface",
     needs: "hf",
     group: "integrations",
-    section: "Sign-ins",
+    section: CONNECTORS_SECTION,
     label: "Hugging Face",
     description: "Faster model downloads and access to gated or private repos. The token is stored by huggingface_hub, as hf auth login does.",
-    keywords: "huggingface hf token hub model download gated login sign in",
+    keywords: "account accounts huggingface hf token hub model download gated login sign in",
   },
 
   // ── Advanced ─────────────────────────────────────────────────────────────
@@ -757,14 +750,21 @@ export function sectionsOf<T extends SettingEntry>(
   return out;
 }
 
-/** `?tab=` → the group to show. "render" was the old default tab's name,
- *  "account" the Accounts tab's (Integrations since 2026-10-20); anything
- *  unknown (a dead `?tab=engines` bookmark) or with no visible row falls
- *  back to the first group rather than an empty
- *  panel. */
+// Accounts, Fused Workbench and Connections were pages of their own until
+// 2026-11-27; each old `?tab=` name lands on Integrations, at its section.
+const INTEGRATION_TABS = new Map<string, string | null>(Object.entries({ account: null, workbench: "canvases", connections: "connections" }));
+
+/** The row an old `?tab=` name means, for the page to scroll to. */
+export function legacyTabTarget(tab: string | null): string | null {
+  return (tab && INTEGRATION_TABS.get(tab)) || null;
+}
+
+/** `?tab=` → the group to show. "render" was the old default tab's name;
+ *  "account", "workbench" and "connections" are Integrations now. Anything
+ *  unknown (a dead `?tab=engines` bookmark) or with no visible row falls back
+ *  to the first group rather than an empty panel. */
 export function resolveGroup(tab: string | null, groups: readonly SettingsGroup[]): GroupId {
-  const wanted =
-    tab === "render" ? "general" : tab === "account" ? "integrations" : tab;
+  const wanted = tab === "render" ? "general" : tab !== null && INTEGRATION_TABS.has(tab) ? "integrations" : tab;
   const hit = groups.find((g) => g.id === wanted);
   return (hit ?? groups[0] ?? GROUPS[0]).id;
 }

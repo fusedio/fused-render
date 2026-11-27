@@ -29,7 +29,7 @@ import { Switch } from "@platform/shadcn/ui/switch";
 import { normApp } from "../lib/botform";
 import { Row, Rows } from "./SettingsRow";
 
-export const PREFERENCES_CONNECTIONS_URL = "/preferences?tab=connections";
+export const PREFERENCES_CONNECTIONS_URL = "/preferences?tab=integrations&s=connections";
 
 export function ConnectionsSection({ botName, enabled, setEnabled, openPreferences }: {
   botName: string;
