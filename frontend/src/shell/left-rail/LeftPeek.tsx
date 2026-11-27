@@ -19,13 +19,14 @@
 // it back (peek-frame `reclaimFocus`).
 //
 // THE HEAD: the pin (RailPinButton, the Git and mode cards'), the icon and
-// title, and Open — the icon's own click, then the card goes.
+// title, and Open — the icon's own click, then the card goes. In a workspace
+// host only a favourite's card has the pin (SPEC §56 WS-28).
 import { useCallback, useEffect, useRef, useState } from "react";
 import { NAV_EVENT, navigateUrl } from "@platform/lib/router";
 import { DoorCard } from "@shell/claude-rail/DoorCard";
 import { RailPinButton, useTempOutside } from "@shell/claude-rail/RailPin";
 import { FRAME_LINGER_MS, PeekFrame, usePeekFrameRules } from "@shell/claude-rail/peek-frame";
-import { framePainted, frameSrcOf, leftDoorSelector, leftPressVerdict, searchHopTarget } from "./left-peek-lib";
+import { LEFT_DOOR_ATTR, framePainted, frameSrcOf, leftDoorSelector, leftPressVerdict, searchHopTarget } from "./left-peek-lib";
 import { NewAppInline } from "@shell/CurrentAppsSection";
 import {
   closeLeftCards,
@@ -39,6 +40,7 @@ import {
   type LeftPeekItem,
 } from "./left-peek-store";
 import { useSidebarState } from "@platform/lib/hooks";
+import { isWorkspaceHost } from "@platform/lib/workspace-bridge";
 import { useLeftRailPeek } from "./left-rail-peek-flag";
 import { installLeftRailZone } from "./left-rail-zone";
 
@@ -91,11 +93,17 @@ export function LeftPeek() {
       path = location.pathname;
       closeLeftCards((_k, s) => s.held);
     };
+    // In a workspace host the active tab's own hop (a search result, a
+    // favourite's Open) reaches the host's URL as a location sync — a
+    // replace, announced as `fused:urlchange` — not as a navigation.
+    const sync = isWorkspaceHost() ? "fused:urlchange" : null;
     window.addEventListener(NAV_EVENT, check);
     window.addEventListener("popstate", check);
+    if (sync) window.addEventListener(sync, check);
     return () => {
       window.removeEventListener(NAV_EVENT, check);
       window.removeEventListener("popstate", check);
+      if (sync) window.removeEventListener(sync, check);
     };
   }, []);
   return (
@@ -228,25 +236,41 @@ function LeftCard({ itemKey, on }: { itemKey: string; on: boolean }) {
   // THE SEARCH CARD TAKES THE KEYBOARD WHEN PRESSED: the press that made it
   // temp landed on the shield (header), so the box is put under the reader's
   // hands — after the press's own focus change (a mousedown on the card).
+  // IN A WORKSPACE HOST the Search row's click opens the card straight to
+  // temp, often on a frame still loading (a fresh one after a result went to
+  // a tab): ask again for a while, as long as the keyboard is still where
+  // the click left it (the page, the frame, a sidebar entry).
+  const searchRound = isWorkspaceHost() ? frameKey : null;
   useEffect(() => {
     if (!isSearch || !pinned) return;
-    const t = window.setTimeout(() => {
+    let tries = isWorkspaceHost() ? 30 : 1;
+    let t = 0;
+    const attempt = () => {
+      let done = false;
       try {
         const inner = frameRef.current?.contentDocument?.querySelector("iframe");
-        inner?.contentDocument?.querySelector<HTMLInputElement>("input.files-search-input")?.focus({ preventScroll: true });
+        const box = inner?.contentDocument?.querySelector<HTMLInputElement>("input.files-search-input");
+        box?.focus({ preventScroll: true });
+        done = !!box && inner?.contentDocument?.activeElement === box;
       } catch {
         // A frame not ours to reach: the reader clicks into it.
+        done = true;
       }
-    }, 60);
+      const a = document.activeElement;
+      const untouched = !a || a === document.body || a === frameRef.current || !!a.closest?.(`[${LEFT_DOOR_ATTR}]`);
+      if (!done && --tries > 0 && untouched) t = window.setTimeout(attempt, 100);
+    };
+    t = window.setTimeout(attempt, 60);
     return () => window.clearTimeout(t);
-  }, [isSearch, pinned]);
+  }, [isSearch, pinned, searchRound]);
 
   const title = it?.title ?? "";
+  const pinless = !!it?.pinless;
   const open = useCallback(
-    (close: () => void) => {
+    (close: () => void, newTab: boolean) => {
       const now = leftItem(itemKey);
       if (!now) return;
-      const went = now.onOpen();
+      const went = now.onOpen(newTab ? { newTab } : undefined);
       if (went instanceof Promise) {
         void went.then((ok) => {
           if (ok !== false) close();
@@ -268,6 +292,7 @@ function LeftCard({ itemKey, on }: { itemKey: string; on: boolean }) {
       className={"claude-left-peek" + (pinned ? " is-live" : "")}
       ariaLabel={title || "Preview"}
       enabled={on && item !== null}
+      pinless={pinless}
       subOpen={false}
       {...(compose ? { wishHeight: COMPOSE_HEIGHT } : {})}
     >
@@ -275,8 +300,10 @@ function LeftCard({ itemKey, on }: { itemKey: string; on: boolean }) {
         <>
           <div className="claude-rail-peek-head">
             <div className="claude-rail-peek-row">
-              {/* No ×: the pin in its seat (and the keyboard's landing). */}
-              <RailPinButton variant="legacy" btnRef={api.closeRef} pinned={api.pin.pinned} onToggle={api.pin.onToggle} />
+              {/* No ×: the pin in its seat (and the keyboard's landing) —
+                  none on a pinless card (a workspace host's non-favourite,
+                  left-peek-lib `leftCardPinnable`): Open is the landing. */}
+              {!pinless && <RailPinButton variant="legacy" btnRef={api.closeRef} pinned={api.pin.pinned} onToggle={api.pin.onToggle} />}
               <span className="claude-rail-tasks-title claude-rail-mode-title claude-left-peek-title">
                 {it && (
                   <span className="claude-rail-mode-icon" aria-hidden="true">
@@ -286,7 +313,13 @@ function LeftCard({ itemKey, on }: { itemKey: string; on: boolean }) {
                 <span className="claude-left-peek-name">{title}</span>
               </span>
               <span className="claude-rail-peek-gap" aria-hidden="true" />
-              <button type="button" className="btn claude-rail-peek-open" onClick={() => open(api.close)}>
+              <button
+                type="button"
+                className="btn claude-rail-peek-open"
+                ref={pinless ? api.closeRef : undefined}
+                // Shift: a new tab, in a workspace host (the entry's say).
+                onClick={(e) => open(api.close, e.shiftKey && isWorkspaceHost())}
+              >
                 Open
               </button>
             </div>

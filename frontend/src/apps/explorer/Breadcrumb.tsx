@@ -38,6 +38,7 @@ import {
   updateBookmarkUrl,
   armBookmark,
   disarmBookmark,
+  bookmarksHydrated,
   getArmedBookmark,
   sameSearch,
   splitBookmarkUrl,
@@ -233,6 +234,9 @@ function useUpdateButton(urlVersion: number, bookmarksVersion: number): boolean 
     // a folder (D44) — the top-level list alone would misread it as deleted.
     const bookmark = allBookmarks().find((b) => b.id === armed.id);
     if (!bookmark) {
+      // Not loaded yet (a fresh workspace tab, armed by the click that opened
+      // it): ask again once they are (bookmarksVersion).
+      if (!bookmarksHydrated()) return setVisible(false);
       disarmBookmark(); // bookmark deleted out from under us
       return setVisible(false);
     }

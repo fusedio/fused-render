@@ -13583,3 +13583,25 @@ nothing here exists and nothing changes.
   tab keep their own copy of the bookmarks. A save in one (a tab's ★, a
   sidebar rename) is announced through the host, and every other document of
   the window re-reads at once instead of on its 30 s poll.
+- **WS-28 Left cards in a host.** With "Left sidebar preview" on, every
+  sidebar entry keeps its hover card, and a press inside one holds it until
+  one press outside. Only a favourite's card (a bookmark: a collapsed rail
+  icon or a non-folder Favourites row) has a pin; every other card has none,
+  and a head drag pins nothing. A click on any other entry loads its page in
+  the tab (WS-5) and puts its card down; its card's Open does the same.
+- **WS-29 A favourite's click.** A plain click (or Enter) on a favourite
+  shows its card, held till one press outside, and opens nothing; its pin
+  holds it across presses and tab switches. The card's Open loads it in the
+  tab by WS-5 and arms it (Update-bookmark); Shift+click on the row or on
+  Open opens a new tab, armed too. A favourite with no card (another site,
+  `/api`) and every favourite with the preview off open on click as before;
+  folder rows are unchanged.
+- **WS-30 The shown entry.** The entry whose page the active tab shows (a
+  favourite: its url equals the tab's) opens no card on hover or
+  ArrowRight and keeps its active look and tooltip; a click on it opens
+  what is already shown.
+- **WS-31 Search.** The Search row is first, collapsed and expanded, where
+  the launcher exists or the preview is on. Hover: the file-search card.
+  Click: the launcher; with none (a browser), the search card, held till
+  one press outside. A result from the card opens as a tab (WS-5), and the
+  card goes. Its Open is the launcher, else Home.
