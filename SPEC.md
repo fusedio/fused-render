@@ -13445,7 +13445,8 @@ nothing here exists and nothing changes.
   `workspace_tabs: {enabled}`; `PUT` takes a boolean or answers 400.
   `/api/config` carries `workspace_tabs_enabled`, because the shell decides
   before its first render. A window is a host or not for its whole life, so
-  the switch reloads the top window after a successful save.
+  the switch reloads the top window after a successful save — switched off
+  from inside a tab, onto that tab's own URL (no `_tabs` / `_right`).
 - **WS-2 Host and frames.** A window is a host when the flag is on, it is the
   top window and not an embed. It keeps the window's chrome (sidebar, status
   bar, terminal drawer, card hosts, notifiers) and draws its page column as a
@@ -13455,12 +13456,20 @@ nothing here exists and nothing changes.
   (`home` | `tab`; `panel` is reserved) before setting its `src`; a page reads
   its role once at load (`router.ts WS_ROLE`).
 - **WS-3 Tabs.** Home is tab 0: drawn first with the house and "Home", no
-  close, never moved, never replaced. Every other tab shows its page's
-  favicon, its title without the brand suffix, and a close shown on hover and
-  on the active tab. A tab's frame mounts the first time it is shown and is
-  kept alive hidden after; a hidden frame reads as hidden to its polls
-  (`_fusedTabHidden`, `fused:tab-visibility`). After a switch the shown frame
-  takes focus.
+  close, never moved, never replaced. Every other tab shows an icon — the
+  page's own (an app's) when it sets one, else its kind's (folder, file, app,
+  canvas, AI Models, Community, settings; the left sidebar's drawing where it
+  has one) — its title without the brand suffix, and a close whose seat is
+  always there and whose glyph shows on hover and on the active tab, so a tab
+  never changes width under the pointer. A tab is 120–220px wide; past that
+  the strip scrolls sideways with no bar, its edges fading where tabs lie
+  beyond them, and the shown tab is always scrolled into view. The strip is
+  one tab stop: the arrows, Home and End walk it, Enter or Space shows the
+  focused tab, Delete closes it. A tab's frame mounts the first time it is
+  shown and is kept alive hidden after; a hidden frame reads as hidden to its
+  polls (`_fusedTabHidden`, `fused:tab-visibility`). After a switch the shown
+  frame takes focus. A tab not loaded yet (a reload mounts only the shown one)
+  is labelled from the entry's remembered title, else its page's own name.
 - **WS-4 Same page, one tab.** Two urls name the same page when their decoded
   pathnames match (`/` is `/home`); for a non-SPA page (`/render`) and the
   explorer's `_panel`/`_tab` routes the query counts too.
@@ -13486,7 +13495,7 @@ nothing here exists and nothing changes.
   list without Home gets it at 0, so turning the flag on while on a file gives
   Home and that file, the file active. Reload restores every tab.
 - **WS-9 History.** Every open, switch and close is a host history entry
-  carrying `{wsActive, wsIds}`; location syncs replace. Back/Forward
+  carrying `{wsActive, wsIds, wsTitles}`; location syncs replace. Back/Forward
   reconcile the strip in place, without reloading a frame; a traversal that
   lands in a hidden tab shows it.
 - **WS-10 Params stay in their tab.** The host is a param boundary and opaque:
@@ -13570,3 +13579,7 @@ nothing here exists and nothing changes.
   `_mode=claude|git`, with its session params) shows its default content,
   drops those params from its URL, and — when it is the shown tab and the
   host URL names no `_right` — opens that chat or Git in the panel.
+- **WS-26 Bookmarks across the window's documents.** The sidebar and every
+  tab keep their own copy of the bookmarks. A save in one (a tab's ★, a
+  sidebar rename) is announced through the host, and every other document of
+  the window re-reads at once instead of on its 30 s poll.

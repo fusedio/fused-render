@@ -327,9 +327,15 @@ export function WorkspaceTabsControl({ prefs, onChange }: PrefControlProps) {
       id="workspace-tabs"
       checked={prefs.workspace_tabs?.enabled === true}
       put={putWorkspaceTabsEnabled}
-      after={() => {
+      after={(next) => {
         try {
-          (window.top ?? window).location.reload();
+          const top = window.top ?? window;
+          // SWITCHED OFF FROM INSIDE A TAB: the window comes back as the plain
+          // shell on THIS page, not on the host's address — that one still
+          // carries `_tabs` / `_right`, which mean nothing there.
+          if (next.workspace_tabs?.enabled !== true && top !== window) {
+            top.location.replace(location.pathname + location.search);
+          } else top.location.reload();
         } catch {
           // A cross-origin top (an external page framing this one): reload
           // what we can reach.
