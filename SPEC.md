@@ -13592,6 +13592,9 @@ nothing here exists and nothing changes.
   once, in the highest group it belongs to. A tab with no place adds
   nothing; an active tab with none leaves every row faded, no hairline. A
   tab that has not published (not loaded since a reload) counts by the
+  place its page LAST published — the host remembers it in the history
+  entry (`wsPlaces`), since a URL alone cannot tell a folder from a file —
+  and a tab that never loaded in this window (a pasted address) by the
   place its URL names: `/apps/<p>` its folder, `/canvases/<env>/<name>` its
   canvas, `/explorer/view/<p>` its folder, or — the last segment read as a
   file — the file in its parent. A published place wins. A faded ring's
