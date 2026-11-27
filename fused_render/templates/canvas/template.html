@@ -527,13 +527,32 @@
   }
   function px(n) { return n + "px"; }
 
-  // ---- shell /view/ URL codec (mirrors router.ts urlForFsPath) -----------
-  // Sibling files open in a NEW TAB (SPEC §28 out-of-scope: no in-shell nav).
+  // ---- shell /view/ URL codec + navigation (mirrors router.ts) -----------
+  // Clicking a node opens its file in place, like a link in a note:
+  // pushState + "fused:navigate" on the top window, in the prefix this
+  // session is in (SPEC §28 CV-6).
+  function shellPrefix() {
+    try {
+      var p = window.top.location.pathname;
+      if (p.indexOf("/explorer/embed/") === 0 || p === "/explorer/embed") return "/explorer/embed/";
+    } catch (e) { /* cross-origin — assume the normal shell */ }
+    return "/explorer/view/";
+  }
   function urlForFsPath(fsPath) {
     var norm = /^[A-Za-z]:[\\/]/.test(fsPath) ? fsPath.replace(/\\/g, "/") : fsPath;
     var rest = norm.replace(/^\/+/, "");
     var encoded = rest.split("/").filter(Boolean).map(encodeURIComponent).join("/");
-    return "/explorer/view/" + encoded;
+    return shellPrefix() + encoded;
+  }
+  function navigateShell(url) {
+    try {
+      var top = window.top;
+      void top.location.href; // throws when cross-origin
+      top.history.pushState(null, "", url);
+      top.dispatchEvent(new Event("fused:navigate"));
+      return;
+    } catch (e) { /* fall through */ }
+    try { window.top.location.href = url; } catch (e) { location.href = url; }
   }
 
   // ---- colours (the workbench's color-utils.ts) ---------------------------
@@ -877,7 +896,7 @@
       }
     }
     node.appendChild(frame);
-    node.addEventListener("click", function () { select(node, "node", n); });
+    node.addEventListener("click", function (e) { openNode(e, node, n); });
     return node;
   }
 
@@ -1180,6 +1199,25 @@
     selected = { el: elm, kind: kind, n: n };
     elm.classList.add("selected");
     if (kind === "node") showNode(n); else showFolder(n);
+  }
+
+  // Clicking a node opens its source file in place (canvas/node.py,
+  // node.json, node.md…); cmd/ctrl/shift/middle click opens it in a new tab.
+  // A link inside a note stays the link's; a node with no file next to the
+  // toml shows the detail panel instead.
+  function nodeFileUrl(n) {
+    var exts = siblingExts(n.udfName);
+    if (!n.udfName || !exts.length) return null;
+    var ext = exts.indexOf(KIND_EXT[n.kind]) >= 0 ? KIND_EXT[n.kind] : exts[0];
+    return urlForFsPath(fileDir.replace(/\/$/, "") + "/" + n.udfName + ext);
+  }
+  function openNode(e, elm, n) {
+    if (dragMoved || ghostMode) return;
+    if (e.target.closest && e.target.closest("a[href]")) return;
+    var url = nodeFileUrl(n);
+    if (!url) { select(elm, "node", n); return; }
+    if (e.metaKey || e.ctrlKey || e.shiftKey) { window.open(url, "_blank", "noopener"); return; }
+    navigateShell(url);
   }
 
   function showNode(n) {
