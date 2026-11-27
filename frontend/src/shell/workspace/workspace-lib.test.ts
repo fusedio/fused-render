@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import { chatUrl } from "@platform/lib/queue";
 import {
+  adoptedRun,
   buildHostUrl,
   chatHoldKey,
   classifyNav,
@@ -428,5 +429,26 @@ describe("what a restored tab may be", () => {
     expect(buildHostUrl(["/home", "/tasks?embed=%31"], 1)).toMatch(/^\/home\?_tabs=/);
     expect(buildHostUrl(["/home", "/tasks?embed=1"], 1)).toMatch(/^\/home\?_tabs=/);
     expect(buildHostUrl(["/home", "/tasks?embedded=1"], 1)).toMatch(/^\/tasks\?embedded=1&_tabs=/);
+  });
+});
+
+describe("a run that became its session (the canvas fix chat)", () => {
+  const chat = (query: string): RightView => ({ kind: "chat", file: "/clone", query });
+  test("the chat's own write from run to session is the pair", () => {
+    expect(adoptedRun("run=r1", "session_id=s1")).toEqual(["r1", "s1"]);
+    expect(adoptedRun("run=r1&split=1", "session_id=s1&split=1")).toEqual(["r1", "s1"]);
+    expect(adoptedRun("run=r1", "run=r1")).toBeNull();
+    expect(adoptedRun("session_id=s0&run=r1", "session_id=s1")).toBeNull();
+    expect(adoptedRun("", "session_id=s1")).toBeNull();
+  });
+  test("a door on that run is the chat on screen, not a new view", () => {
+    const adopted = (run: string) => (run === "r1" ? "s1" : undefined);
+    expect(sameRight(chat("session_id=s1"), chat("run=r1"), adopted)).toBe(true);
+    expect(sameRight(chat("run=r1"), chat("run=r1"), adopted)).toBe(true);
+    // Another session on the same file, or a run nobody adopted: a new view.
+    expect(sameRight(chat("session_id=s2"), chat("run=r1"), adopted)).toBe(false);
+    expect(sameRight(chat("session_id=s1"), chat("run=r9"), adopted)).toBe(false);
+    expect(sameRight(chat("session_id=s1"), chat("run=r1"))).toBe(false);
+    expect(sameRight(chat(""), chat("run=r1"), adopted)).toBe(false);
   });
 });

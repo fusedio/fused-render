@@ -537,22 +537,45 @@ export function encodeRight(view: RightView): string {
 /** Does `b` show what `a` shows? Two chats are the same conversation on the
  *  same file — their other params (`split`, …) are the chat's own state, not
  *  another chat. A `run` that `b` names counts (a canvas's fix opens its run
- *  on a Claude home that names none, WS-35). Opening what already shows does
- *  nothing. */
-export function sameRight(a: RightView | null, b: RightView | null): boolean {
+ *  on a Claude home that names none, WS-35) — and a chat opened on a run soon
+ *  names the SESSION that run became instead (`adopted`, the host's record of
+ *  it): asking for that run again is asking for the chat on screen. Opening
+ *  what already shows does nothing. */
+export function sameRight(
+  a: RightView | null,
+  b: RightView | null,
+  adopted?: (run: string) => string | undefined,
+): boolean {
   if (!a || !b) return a === b;
   if (a.kind === "chat" && b.kind === "chat") {
     const pa = new URLSearchParams(a.query);
     const pb = new URLSearchParams(b.query);
+    if (a.file !== b.file) return false;
     const run = pb.get("run") || "";
+    const session = pa.get("session_id") || "";
+    // `b` names only a run: `a` is that run, or the session it became.
+    if (run && !pb.get("session_id") && !pb.get("queued")) {
+      return run === (pa.get("run") || "") || (!!session && adopted?.(run) === session);
+    }
     return (
-      a.file === b.file &&
-      (pa.get("session_id") || "") === (pb.get("session_id") || "") &&
+      session === (pb.get("session_id") || "") &&
       (pa.get("queued") || "") === (pb.get("queued") || "") &&
       (!run || run === (pa.get("run") || ""))
     );
   }
   return encodeRight(a) === encodeRight(b);
+}
+
+/** A chat's own param write that turns a run into its session (`run=R` gone,
+ *  `session_id=S` there): `[R, S]`, else null. The host keeps the pairs so a
+ *  later door on that run finds the chat it became (`sameRight`). */
+export function adoptedRun(prevQuery: string, nextQuery: string): [string, string] | null {
+  const prev = new URLSearchParams(prevQuery);
+  const next = new URLSearchParams(nextQuery);
+  const run = prev.get("run") || "";
+  const session = next.get("session_id") || "";
+  if (!run || prev.get("session_id") || !session) return null;
+  return [run, session];
 }
 
 /** The query of a chat view, reduced to the door params present and

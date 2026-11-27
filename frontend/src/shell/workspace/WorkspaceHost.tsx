@@ -74,6 +74,7 @@ import {
   liftRightTabs,
   pageUrlOf,
   parseHostUrl,
+  adoptedRun,
   placeOfUrl,
   parseRight,
   planOpen,
@@ -635,7 +636,7 @@ export default function WorkspaceHost({
   // THIS document). Null closes the panel.
   const openRightView = (view: RightView | null, how: "push" | "replace" = "push"): Promise<boolean> => {
     const cur = parseRight(st.right);
-    if (view && cur && sameRight(cur, view)) return Promise.resolve(true);
+    if (view && cur && sameRight(cur, view, (run) => runSessions.current.get(run))) return Promise.resolve(true);
     if (!view && !cur) return Promise.resolve(true);
     const go = () => setRight(view ? encodeRight(view) : null, how);
     if (cur?.kind !== "chat") {
@@ -795,6 +796,7 @@ export default function WorkspaceHost({
 
   // The panel chat's params are `_right`'s (panel-params.ts).
   const chatHost = useRef<PanelParamsHost | null>(null);
+  const runSessions = useRef(new Map<string, string>());
   if (!chatHost.current) {
     chatHost.current = {
       query: () => {
@@ -807,6 +809,10 @@ export default function WorkspaceHost({
         if (!st2 || v?.kind !== "chat") return;
         const next = encodeRight({ ...v, query });
         if (next === st2.right) return;
+        // A run that became its session (the fix chat): remembered, so the
+        // canvas's "see chat" finds the chat on screen (workspace-lib).
+        const pair = adoptedRun(v.query, query);
+        if (pair) runSessions.current.set(pair[0], pair[1]);
         st2.right = next;
         if (how === "push") {
           const { url, state: ws } = live.current.hostUrl();
