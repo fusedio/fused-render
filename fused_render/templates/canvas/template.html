@@ -522,13 +522,32 @@
   }
   function px(n) { return n + "px"; }
 
-  // ---- shell /view/ URL codec (mirrors router.ts urlForFsPath) -----------
-  // Sibling files open in a NEW TAB (SPEC §28 out-of-scope: no in-shell nav).
+  // ---- shell /view/ URL codec + navigation (mirrors router.ts) -----------
+  // A node's file opens in place, like a link in a note: pushState +
+  // "fused:navigate" on the top window, in the prefix this session is in
+  // (SPEC §28 CV-6). Cmd/ctrl/shift/middle click keep the browser's new tab.
+  function shellPrefix() {
+    try {
+      var p = window.top.location.pathname;
+      if (p.indexOf("/explorer/embed/") === 0 || p === "/explorer/embed") return "/explorer/embed/";
+    } catch (e) { /* cross-origin — assume the normal shell */ }
+    return "/explorer/view/";
+  }
   function urlForFsPath(fsPath) {
     var norm = /^[A-Za-z]:[\\/]/.test(fsPath) ? fsPath.replace(/\\/g, "/") : fsPath;
     var rest = norm.replace(/^\/+/, "");
     var encoded = rest.split("/").filter(Boolean).map(encodeURIComponent).join("/");
-    return "/explorer/view/" + encoded;
+    return shellPrefix() + encoded;
+  }
+  function navigateShell(url) {
+    try {
+      var top = window.top;
+      void top.location.href; // throws when cross-origin
+      top.history.pushState(null, "", url);
+      top.dispatchEvent(new Event("fused:navigate"));
+      return;
+    } catch (e) { /* fall through */ }
+    try { window.top.location.href = url; } catch (e) { location.href = url; }
   }
 
   // ---- colours (the workbench's color-utils.ts) ---------------------------
@@ -1180,8 +1199,8 @@
     var exts = siblingExts(n.udfName);
     var files = exts.map(function (ext) {
       var abs = fileDir.replace(/\/$/, "") + "/" + n.udfName + ext;
-      return '<a href="' + esc(urlForFsPath(abs)) + '" target="_blank" rel="noopener">'
-        + esc(n.udfName + ext) + "</a>";
+      return '<a href="' + esc(urlForFsPath(abs)) + '" target="_blank" rel="noopener"'
+        + ' title="Open ' + esc(n.udfName + ext) + '">' + esc(n.udfName + ext) + "</a>";
     }).join("");
     var html = '<div class="p-head"><span class="p-title">' + esc(n.title || n.udfName || "node")
       + '</span><span class="p-kind">' + esc(KIND_LABEL[n.kind] || "UDF") + '</span>'
@@ -1214,6 +1233,13 @@
     panel = el("div", "panel");
     panel.innerHTML = html;
     panel.querySelector(".p-close").addEventListener("click", clearPanel);
+    panel.querySelectorAll(".p-files a").forEach(function (a) {
+      a.addEventListener("click", function (e) {
+        if (e.button !== 0 || e.metaKey || e.ctrlKey || e.shiftKey || e.altKey) return;
+        e.preventDefault();
+        navigateShell(a.getAttribute("href"));
+      });
+    });
     stage.appendChild(panel);
   }
 

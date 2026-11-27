@@ -2335,8 +2335,10 @@ offer it — a plain `.toml` never shows the mode at all.
   are echo-guarded in `onChange`; a `_file` change reloads.
 - **CV-6** **Detail panel.** Clicking a node selects it and opens a footer
   panel: title, kind, udfName, description, size, position, its folder, and
-  sibling files as links that open `/view/<abs sibling path>` in a **new tab**
-  (no in-shell navigation, v0). Clicking a folder or its name shows its name,
+  sibling files as links to `/view/<abs sibling path>`: a plain click opens
+  the file in place (pushState + `fused:navigate` on the top window, in the
+  session's `/explorer/view/` or `/explorer/embed/` prefix, like a note link);
+  cmd/ctrl/shift/middle click keep the browser's new tab. Clicking a folder or its name shows its name,
   size and child list; clicking empty space clears.
 - **CV-8** **A picture of the layout, for an agent (D1512).** An agent that
   has added, moved or resized nodes, or re-arranged folders, looks at the
@@ -2465,7 +2467,7 @@ offer it — a plain `.toml` never shows the mode at all.
   the app's own `marked`, `canvas-node.js` and font), ES2020, and — like every
   template — no runtime script tag (`window.fused` is injected).
   Out of scope (v0): editing/writing the toml, rendering a node's output,
-  executing UDFs, in-shell sibling navigation, non-v2 canvas versions.
+  executing UDFs, non-v2 canvas versions.
 ## 29. Recents — Sidebar Last-Opened Files (D115)
 
 Goal: getting back to what you were just working on is one click — the sidebar
