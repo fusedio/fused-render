@@ -120,7 +120,15 @@ export function usePeekFrameRules(o: {
   // …OR, SHIELDED, A PREVIEW NEVER TAKES THE KEYBOARD ON ITS OWN (header).
   useEffect(() => {
     if (!up || !reclaimFocus) return;
-    const was = document.activeElement;
+    // The page's own focus, kept up to date while the preview stands — the
+    // element the reader was on when the frame took the keyboard, not the
+    // one they were on when the card opened (CodeRabbit on #2495).
+    let was = document.activeElement;
+    const onFocusIn = (e: FocusEvent) => {
+      const t = e.target;
+      if (t instanceof Element && t !== frameRef.current && !(frameRef.current && t.contains(frameRef.current))) was = t;
+    };
+    document.addEventListener("focusin", onFocusIn, true);
     let tick = 0;
     const onBlur = () => {
       window.clearTimeout(tick);
@@ -135,6 +143,7 @@ export function usePeekFrameRules(o: {
     return () => {
       window.clearTimeout(tick);
       window.removeEventListener("blur", onBlur);
+      document.removeEventListener("focusin", onFocusIn, true);
     };
   }, [up, store, reclaimFocus, frameRef]);
   // …A PRESS INTO A FRAME OUTSIDE THE CARD CLOSES A TEMP ONE (header).

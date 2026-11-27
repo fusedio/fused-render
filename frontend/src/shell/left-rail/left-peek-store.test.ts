@@ -16,6 +16,7 @@ import {
   setLeftPeekBlocked,
   setLeftRail,
   leftSidebarFolded,
+  leftKeyOpens,
   type LeftPeekItem,
 } from "./left-peek-store";
 
@@ -144,6 +145,37 @@ describe("the hover", () => {
   });
 });
 
+describe("the keyboard's way in (ArrowRight)", () => {
+  it("a bare ArrowRight, on an entry whose card can stand, not from a field, nothing else holding the sidebar", () => {
+    const base = { key: "ArrowRight", modified: false, ready: true, editable: false, blocked: false };
+    expect(leftKeyOpens(base)).toBe(true);
+    expect(leftKeyOpens({ ...base, key: "Enter" })).toBe(false);
+    expect(leftKeyOpens({ ...base, key: "ArrowDown" })).toBe(false);
+    expect(leftKeyOpens({ ...base, modified: true })).toBe(false);
+    expect(leftKeyOpens({ ...base, ready: false })).toBe(false);
+    expect(leftKeyOpens({ ...base, editable: true })).toBe(false);
+    expect(leftKeyOpens({ ...base, blocked: true })).toBe(false);
+  });
+  it("opens the card temp at once; Enter does nothing here (the link navigates); the door says its shortcut", () => {
+    publishLeftItems([item("home")]);
+    offs.push(ready("home"));
+    expect(leftDoorFor("home")!.attrs?.["aria-keyshortcuts"]).toBe("ArrowRight");
+    let prevented = 0;
+    const key = (k: string) =>
+      ({ key: k, target: null, altKey: false, ctrlKey: false, metaKey: false, shiftKey: false, preventDefault: () => prevented++ }) as unknown as ReactKeyboardEvent<HTMLElement>;
+    leftDoorFor("home", "row")!.onKeyDown!(key("Enter"));
+    expect(state("home").up).toBe(false);
+    expect(prevented).toBe(0);
+    leftDoorFor("home", "row")!.onKeyDown!(key("ArrowRight"));
+    expect(prevented).toBe(1);
+    expect(state("home")).toMatchObject({ up: true, pinned: true, held: false });
+  });
+  it("no shortcut on an entry with no card to stand", () => {
+    publishLeftItems([item("home")]);
+    expect(leftDoorFor("home")!.attrs?.["aria-keyshortcuts"]).toBeUndefined();
+  });
+});
+
 describe("the rules between the cards", () => {
   beforeEach(() => {
     publishLeftItems([item("home"), item("ai-models"), item("marketplace")]);
@@ -232,6 +264,33 @@ describe("the rules between the cards", () => {
   it("one key, two slots: the rail icon and the expanded row are two refs of one card", () => {
     expect(leftDoorFor("home", "rail")!.ref).not.toBe(leftDoorFor("home", "row")!.ref);
     expect(leftDoorFor("home", "row")!.ref).toBe(leftDoorFor("home", "row")!.ref);
+  });
+  it("a card losing its hold while up is non-held again: the other non-held card goes (free pins off)", () => {
+    setRailExtrasForTests(false);
+    open("home");
+    pressIn("home");
+    leftCardStore("home").setHeld(true);
+    open("ai-models");
+    pressIn("ai-models");
+    expect(state("home").up && state("ai-models").up).toBe(true);
+    leftCardStore("home").setHeld(false);
+    expect(state("home").up).toBe(true);
+    expect(state("ai-models").up).toBe(false);
+  });
+  it("a hover still waiting on its delay opens nothing once the Settings menu, a context menu or a fold took the sidebar", () => {
+    for (const busy of [
+      () => setLeftPeekBlocked(true),
+      () => leftDoorFor("marketplace")!.onContextMenu!({} as never),
+      () => leftSidebarFolded(),
+    ]) {
+      setLeftPeekBlocked(false);
+      leftDoorFor("home")!.onPointerLeave!({} as ReactPointerEvent<HTMLElement>);
+      enter("home");
+      clock.tick(PEEK_OPEN_MS - 10);
+      busy();
+      clock.tick(PEEK_OPEN_MS);
+      expect(state("home").up).toBe(false);
+    }
   });
   it("closeLeftCards keeps what it is asked to keep", () => {
     open("home");

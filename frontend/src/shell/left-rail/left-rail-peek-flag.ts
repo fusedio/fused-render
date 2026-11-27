@@ -70,11 +70,20 @@ onPrefsWrittenElsewhere((p) => {
 // Another window flipped the switch and this one came back (platform/lib
 // prefs-reread), followed from the first hook on (rail-extras-flag's rule).
 let following = false;
+// A re-read is a NEWER read than any still out (CodeRabbit on #2495): it
+// takes a generation of its own, so the first read landing after it is old
+// news. Failed, it changes nothing — and if the read it outdated was the
+// only answer coming, a fresh read is asked for.
 function onReread(p: Promise<Prefs>): void {
+  generation += 1;
   const departed = generation;
   p.then((prefs) => {
     if (generation === departed) set(fromPrefs(prefs.left_rail_peek));
-  }).catch(() => {});
+  }).catch(() => {
+    if (generation !== departed || answer !== null) return;
+    reading = null;
+    if (listeners.size > 0) void read();
+  });
 }
 
 /** The switch is on (not answered yet reads as off, the flag's default). The
@@ -118,6 +127,10 @@ export function resetLeftRailPeekFlagForTests() {
   answer = null;
   for (const listener of [...listeners]) listener(null);
   for (const fn of [...watchers]) fn();
+}
+/** A re-read's answer, as platform/lib/prefs-reread hands it (tests). */
+export function rereadLeftRailPeekForTests(p: Promise<Prefs>): void {
+  onReread(p);
 }
 export function setLeftRailPeekForTests(on: boolean) {
   publishLeftRailPeek({ enabled: on });

@@ -11,7 +11,9 @@ import {
   leftDoorSelector,
   leftPressVerdict,
   searchHopTarget,
+  sideOff,
   withQueryEmbed,
+  withSearchParam,
 } from "./left-peek-lib";
 
 const rawUrl = (p: string) => "/api/fs/raw?path=" + encodeURIComponent(p);
@@ -22,6 +24,14 @@ describe("frame addresses", () => {
     expect(withQueryEmbed("/marketplace")).toBe("/marketplace?embed=1");
     expect(withQueryEmbed("/ai-models/playground?model=x")).toBe("/ai-models/playground?model=x&embed=1");
     expect(withQueryEmbed("/tasks?embed=1")).toBe("/tasks?embed=1");
+  });
+  it("only the search part changes: a #fragment is kept, a second literal ? stays in the query", () => {
+    expect(withQueryEmbed("/tasks#details")).toBe("/tasks?embed=1#details");
+    expect(withQueryEmbed("/tasks?view=a#x?y")).toBe("/tasks?view=a&embed=1#x?y");
+    expect(withQueryEmbed("/a?q=what?why")).toBe("/a?q=what%3Fwhy&embed=1");
+    expect(sideOff("/explorer/embed/x?_mode=code#L3")).toBe("/explorer/embed/x?_mode=code&_side=off#L3");
+    expect(sideOff("/explorer/embed/x?_side=off#L3")).toBe("/explorer/embed/x?_side=off#L3");
+    expect(withSearchParam("/p", "a", "1")).toBe("/p?a=1");
   });
   it("the search card is Home narrowed to its search, embedded", () => {
     expect(SEARCH_CARD_SRC).toBe("/home?embed=1&searchonly=1");

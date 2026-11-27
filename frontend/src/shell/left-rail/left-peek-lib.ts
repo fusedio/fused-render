@@ -24,23 +24,31 @@ export type LeftPeekShow =
 export const SEARCH_ONLY_PARAM = "searchonly";
 export const SEARCH_CARD_SRC = `/home?${EMBED_PARAM}=1&${SEARCH_ONLY_PARAM}=1`;
 
+/** `url` with one query param set: only its search part changes — the path
+ *  and a `#fragment` are kept, and a second literal `?` stays inside the
+ *  query (its first `?` starts the query, its first `#` ends it). */
+export function withSearchParam(url: string, name: string, value: string): string {
+  const hashAt = url.indexOf("#");
+  const base = hashAt < 0 ? url : url.slice(0, hashAt);
+  const hash = hashAt < 0 ? "" : url.slice(hashAt);
+  const qAt = base.indexOf("?");
+  const path = qAt < 0 ? base : base.slice(0, qAt);
+  const q = new URLSearchParams(qAt < 0 ? "" : base.slice(qAt + 1));
+  if (q.get(name) === value) return url;
+  q.set(name, value);
+  return path + "?" + q.toString() + hash;
+}
+
 /** A shell route's address with the query spelling of embed mode
  *  (`?embed=1`, router IS_QUERY_EMBED), kept once. */
 export function withQueryEmbed(url: string): string {
-  const [path, query = ""] = url.split("?", 2) as [string, string?];
-  const q = new URLSearchParams(query);
-  if (q.get(EMBED_PARAM) === "1") return url;
-  q.set(EMBED_PARAM, "1");
-  return path + "?" + q.toString();
+  return withSearchParam(url, EMBED_PARAM, "1");
 }
 
 /** An explorer page with its companion pane (Claude, Git) shut: in a card
  *  the pane would take most of the width and leave the listing a sliver. */
 export function sideOff(url: string): string {
-  const [path, query = ""] = url.split("?", 2) as [string, string?];
-  const q = new URLSearchParams(query);
-  q.set("_side", "off");
-  return path + "?" + q.toString();
+  return withSearchParam(url, "_side", "off");
 }
 
 /** A FAVOURITE'S CARD: an explorer page's own embed (`/explorer/view/…` →
@@ -93,7 +101,9 @@ export function frameSrcOf(show: LeftPeekShow, o: { pinned: boolean; stillFailed
  *  to the view prefix, the frame's own stamps dropped. Null while the frame
  *  is still on its search (nothing to open). */
 export function searchHopTarget(pathAndSearch: string): string | null {
-  const [path, query = ""] = pathAndSearch.split("?", 2) as [string, string?];
+  const qAt = pathAndSearch.indexOf("?");
+  const path = qAt < 0 ? pathAndSearch : pathAndSearch.slice(0, qAt);
+  const query = qAt < 0 ? "" : pathAndSearch.slice(qAt + 1);
   if (path === "/home") return null;
   const q = new URLSearchParams(query);
   for (const k of [EMBED_PARAM, SEARCH_ONLY_PARAM, NO_FOCUS_PARAM, PREVIEW_PARAM]) q.delete(k);

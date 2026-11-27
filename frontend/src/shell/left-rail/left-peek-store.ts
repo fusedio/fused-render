@@ -85,6 +85,7 @@ const stores = new Map<string, DoorCardStore>();
 /** The `seq` each store last opened with: a new one is a card coming up. */
 const seqs = new Map<string, number>();
 const wasUp = new Map<string, boolean>();
+const wasHeld = new Map<string, boolean>();
 let testTimers: Timers | undefined;
 let idSeq = 0;
 
@@ -109,6 +110,11 @@ function onStoreChange(key: string): void {
     seqs.set(key, s.seq);
     closeLeftCards((k, c) => k === key || c.held);
   }
+  // …AND A CARD LOSING ITS HOLD WHILE UP (its pin pressed again, free pins
+  // off) is a non-held card again: the others that are not held go, so one
+  // stays (CodeRabbit on #2495).
+  if (s.up && wasHeld.get(key) && !s.held) closeLeftCards((k, c) => k === key || c.held);
+  wasHeld.set(key, s.up && s.held);
   // A card going down with FREE PINS (rail-slots-lib): its pin is gone, so is
   // where it floated — the next opening stands by its icon. Without them the
   // spot is kept for the next pin, as window A's is.
@@ -133,6 +139,14 @@ export function leftCardStore(key: string): DoorCardStore {
     emit();
   }
   return store;
+}
+
+/** SOMETHING ELSE TAKES THE SIDEBAR (the Settings menu, a context menu, a
+ *  fold): every card that is not held goes, and no hover still waiting on
+ *  its delay opens one after (PeekIntent `forget`). */
+function quietLeftCards(): void {
+  for (const store of stores.values()) store.intent().forget(store.key);
+  closeLeftCards((_k, s) => s.held);
 }
 
 /** Every left card that is up and that `keep` does not ask to stand. */
@@ -203,7 +217,7 @@ export function leftRail(): HTMLElement | null {
  *  entry in the new layout if that draws one (the doors registered in the
  *  commit), else in the box it stood in. */
 export function leftSidebarFolded(): void {
-  closeLeftCards((_k, s) => s.held);
+  quietLeftCards();
   emit();
   // A collapse may hold the expanded rows for its slide (SidebarFrame's tuck)
   // and swap in the rail's icons after it: read the doors again then.
@@ -221,7 +235,7 @@ let blocked = false;
 export function setLeftPeekBlocked(on: boolean): void {
   if (blocked === on) return;
   blocked = on;
-  if (on) closeLeftCards((_k, s) => s.held);
+  if (on) quietLeftCards();
   emit();
 }
 
@@ -275,6 +289,32 @@ export function leftDoorRef(key: string, slot: LeftDoorSlot = "rail"): (el: HTML
   return fn;
 }
 
+/** WHETHER A KEY ON AN ENTRY OPENS ITS CARD: a bare ArrowRight, on an entry
+ *  whose card can stand, not typed into a field, nothing else holding the
+ *  sidebar. (Up / Down stay sidebarArrowNav's; Enter stays the link's.) */
+export function leftKeyOpens(o: { key: string; modified: boolean; ready: boolean; editable: boolean; blocked: boolean }): boolean {
+  return o.key === "ArrowRight" && !o.modified && o.ready && !o.editable && !o.blocked;
+}
+
+function isEditable(t: EventTarget | null): boolean {
+  const el = t as (Element & { isContentEditable?: boolean }) | null;
+  if (!el || typeof el.closest !== "function") return false;
+  return !!el.closest("input, textarea, select") || el.isContentEditable === true;
+}
+
+/** The keyboard into a card the key just opened: its first seat, once it is
+ *  drawn (ClaudeRail `cardFocusSoon`: a few frames' retries). */
+function focusCardSoon(store: DoorCardStore): void {
+  if (typeof requestAnimationFrame === "undefined" || typeof document?.getElementById !== "function") return;
+  let tries = 0;
+  const attempt = () => {
+    const card = document.getElementById(store.id);
+    if (store.focusCard() && card?.contains(document.activeElement)) return;
+    if (++tries < 12) requestAnimationFrame(attempt);
+  };
+  requestAnimationFrame(attempt);
+}
+
 /** SOMETHING ELSE HAS THE SIDEBAR'S ATTENTION: a context menu or a menu is
  *  open (a row's, the Settings menu), a dialog (the New app composer, a
  *  rename), or a field in the sidebar has the keyboard (a bookmark's inline
@@ -316,15 +356,24 @@ export function leftDoorFor(key: string, slot: LeftDoorSlot = "rail"): SidebarRa
     // glyph's icon picker, a drag's start — puts its card down unless held.
     onPointerDown: putDownOwn,
     // Its context menu opening: every card that is not held goes.
-    onContextMenu: () => closeLeftCards((_k, c) => c.held),
+    onContextMenu: quietLeftCards,
     // The keyboard: Escape lets a preview go (a held card closes by its pin
     // or Open only) — the Claude rail's Git door's rule; a focus opens
-    // nothing, as there.
+    // nothing, as there. ARROWRIGHT OPENS THE CARD (CodeRabbit on #2495; Enter
+    // still navigates): the door's press, from the keyboard — the card opens
+    // temp and the keyboard lands in it; its Escape hands it back here
+    // (DoorCard `close`). Not from a field (a row's inline rename).
     onKeyDown: (e: ReactKeyboardEvent<HTMLElement>) => {
       const c = store.state();
       if (e.key === "Escape" && c.up && !c.held) {
         e.preventDefault();
         store.close(true);
+        return;
+      }
+      if (leftKeyOpens({ key: e.key, modified: e.altKey || e.ctrlKey || e.metaKey || e.shiftKey, ready: c.ready, editable: isEditable(e.target), blocked: blocked || sidebarBusy() })) {
+        e.preventDefault();
+        store.intent().press(store.key);
+        focusCardSoon(store);
       }
     },
     // THE CLICK NAVIGATES (header): a card of this icon that is not held goes
@@ -335,7 +384,9 @@ export function leftDoorFor(key: string, slot: LeftDoorSlot = "rail"): SidebarRa
       // THE ENTRY WHOSE CARD IS UP LOOKS OPEN (claude-rail.css; the Claude
       // rail's `doorOpen`): a preview or temp card, or a held one.
       ...(s.up ? { [LEFT_OPEN_ATTR]: s.held ? "pinned" : "open" } : {}),
-      ...(s.ready ? { "aria-haspopup": "dialog", "aria-expanded": s.up ? "true" : "false", "aria-controls": store.id } : {}),
+      ...(s.ready
+        ? { "aria-haspopup": "dialog", "aria-expanded": s.up ? "true" : "false", "aria-controls": store.id, "aria-keyshortcuts": "ArrowRight" }
+        : {}),
     },
     // The card speaks for the icon: no tooltip beside it.
     quietTip: s.ready,
@@ -407,6 +458,7 @@ export function resetLeftPeekForTests(timers?: Timers): void {
   leftSizeNow = null;
   seqs.clear();
   wasUp.clear();
+  wasHeld.clear();
   leftViewPress.inside = false;
   for (const [key, store] of stores) {
     store.resetForTests(timers);

@@ -120,8 +120,14 @@ function LeftCard({ itemKey, on }: { itemKey: string; on: boolean }) {
 
   // THE FRAME: up, and a beat after (its fade).
   const [live, setLive] = useState(false);
+  // Each time the frame mounts afresh (the card up again after its fade ran
+  // out) is a new frame: `mounts` counts them (`frameKey` below).
+  const [mounts, setMounts] = useState(0);
+  const liveRef = useRef(false);
+  liveRef.current = live;
   useEffect(() => {
     if (up) {
+      if (!liveRef.current) setMounts((n) => n + 1);
       setLive(true);
       return;
     }
@@ -167,11 +173,17 @@ function LeftCard({ itemKey, on }: { itemKey: string; on: boolean }) {
   // over on its search.
   const [round, setRound] = useState(0);
   const isSearch = show?.kind === "search";
+  // READY PER FRAME, NOT PER ADDRESS (CodeRabbit on #2495): a new frame on
+  // the same address — the card back after its fade ran out, the search
+  // card's next round — is not loaded or painted yet. `loaded` and `painted`
+  // name the frame they are about, and a new one drops the old one's poll.
+  const frameKey = src !== null ? `${mounts}#${round}#${src}` : null;
+  useEffect(() => () => window.clearInterval(paintPoll.current), [frameKey]);
   const onFrameLoad = useCallback(
     (inner: HTMLIFrameElement) => {
-      setLoaded(src);
+      setLoaded(frameKey);
       window.clearInterval(paintPoll.current);
-      const at = src;
+      const at = frameKey;
       const since = Date.now();
       const ask = () => {
         let ok = false;
@@ -210,7 +222,7 @@ function LeftCard({ itemKey, on }: { itemKey: string; on: boolean }) {
       win.addEventListener(NAV_EVENT, hop);
       hop();
     },
-    [src, isSearch],
+    [frameKey, isSearch],
   );
 
   // THE SEARCH CARD TAKES THE KEYBOARD WHEN PRESSED: the press that made it
@@ -282,7 +294,7 @@ function LeftCard({ itemKey, on }: { itemKey: string; on: boolean }) {
           <div
             className={
               "claude-rail-peek-body claude-rail-mode-body claude-left-peek-body" +
-              ((src !== null && loaded === src) || (src === null && still !== null) ? " is-loaded" : "") +
+              ((frameKey !== null && loaded === frameKey) || (src === null && still !== null) ? " is-loaded" : "") +
               (compose ? " is-compose" : "")
             }
           >
@@ -290,7 +302,7 @@ function LeftCard({ itemKey, on }: { itemKey: string; on: boolean }) {
                 kept while the card is up, so a half-typed prompt survives the
                 pointer leaving and coming back within the fade. */}
             {live && compose && <NewAppInline onCreated={api.close} />}
-            {live && src !== null && painted !== src && (
+            {live && src !== null && painted !== frameKey && (
               <span className="claude-left-peek-wait" role="status" aria-label="Loading">
                 <span className="claude-left-peek-spin" aria-hidden="true" />
               </span>
