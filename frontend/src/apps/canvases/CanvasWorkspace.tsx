@@ -3469,8 +3469,10 @@ export default function CanvasWorkspace({
             <strong style={{ minWidth: 0, overflowWrap: "anywhere" }}>
               {pushLeg.reason ?? "Publishing failed"}
             </strong>
-            {/* Claude's feature (D17): no door while Claude is switched off. */}
-            {!claudeOff && <button
+            {/* Claude's feature (D17): no door while Claude is switched off —
+                nor in a workspace tab, which draws no pane for the fix's chat
+                to stand in (the button would read "see chat" with none). */}
+            {!claudeOff && !IS_WS_FRAME && <button
               className="btn btn-primary"
               disabled={fixBusy || fixActive}
               onClick={() => void onFix()}

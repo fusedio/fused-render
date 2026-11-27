@@ -4,6 +4,7 @@ import {
   classifyNav,
   encodeRight,
   encodeTabsParam,
+  isPlainPath,
   isSpaUrl,
   neighborAfterClose,
   normalizeOpenUrl,
@@ -302,5 +303,27 @@ describe("placeOfUrl (an unloaded tab's rail place, WS-27)", () => {
     for (const u of ["/home", "/tasks", "/ai-models", "/marketplace", "/preferences", "/explorer", "/explorer/view/_panel", "/explorer/view/s3:/bucket/k", "/render?path=/a"]) {
       expect(placeOfUrl(u)).toBeNull();
     }
+  });
+});
+
+describe("what a restored tab may be", () => {
+  test("a path this origin serves, as a browser would resolve it", () => {
+    expect(isPlainPath("/explorer/view/Users/me/a b.html?x=1")).toBe(true);
+    expect(isPlainPath("//evil.example/x")).toBe(false);
+    // The URL parser reads a backslash as a slash and drops tabs / newlines.
+    expect(isPlainPath("/\\evil.example/x")).toBe(false);
+    expect(isPlainPath("/\t/evil.example/x")).toBe(false);
+    expect(isPlainPath("/\n/evil.example/x")).toBe(false);
+    expect(isPlainPath("https://evil.example/")).toBe(false);
+  });
+  test("such an item in _tabs is dropped, not framed", () => {
+    const bad = encodeURIComponent("/\\evil.example/page");
+    expect(parseHostUrl("/home?_tabs=.," + bad).tabs).toEqual(["/home"]);
+  });
+  test("an embed spelling, however it is written, is never the host's own address", () => {
+    // `embed=%31` decodes to embed=1 at boot (router IS_QUERY_EMBED).
+    expect(buildHostUrl(["/home", "/tasks?embed=%31"], 1)).toMatch(/^\/home\?_tabs=/);
+    expect(buildHostUrl(["/home", "/tasks?embed=1"], 1)).toMatch(/^\/home\?_tabs=/);
+    expect(buildHostUrl(["/home", "/tasks?embedded=1"], 1)).toMatch(/^\/tasks\?embedded=1&_tabs=/);
   });
 });

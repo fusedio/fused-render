@@ -201,8 +201,19 @@ function readFavicon(doc: Document | null | undefined): string | null {
   }
 }
 
-export default function WorkspaceHost({ config }: { config: Config }) {
+export default function WorkspaceHost({
+  config,
+  onPagePath,
+}: {
+  config: Config;
+  /** The shown page's PATH changed without a tab op (a hop inside the active
+   *  tab): App re-reads what it derives from the address (the terminal's cwd).
+   *  A tab op says so itself (NAV_EVENT); a param write is not a path change. */
+  onPagePath?: () => void;
+}) {
   const [, rerender] = useReducer((n: number) => n + 1, 0);
+  const onPagePathRef = useRef(onPagePath);
+  onPagePathRef.current = onPagePath;
 
   // The whole strip, initialised once from the host URL. A reload keeps its ids
   // (the entry's state survives it), so Back into an older entry still matches.
@@ -271,7 +282,9 @@ export default function WorkspaceHost({ config }: { config: Config }) {
       JSON.stringify(cur?.wsIds ?? null) === JSON.stringify(state.wsIds) &&
       JSON.stringify(cur?.wsTitles ?? null) === JSON.stringify(state.wsTitles);
     if (location.pathname + location.search === url && sameState) return;
+    const path = location.pathname;
     history.replaceState({ ...(cur && typeof cur === "object" ? cur : null), ...state }, "", url);
+    if (location.pathname !== path) onPagePathRef.current?.();
   };
 
   // The window's title follows the active tab's.
