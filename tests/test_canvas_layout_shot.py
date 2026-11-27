@@ -387,11 +387,11 @@ def test_the_canvas_view_has_a_picture_mode():
               encoding="utf-8") as fh:
         html = fh.read()
     # `shot=1`: whole canvas, no controls, whatever camera the URL or file holds.
-    assert 'fused.params.get("shot") === "1"' in html
+    assert 'ownParam("shot") === "1"' in html
     assert ".stage.shot .controls { display: none; }" in html
     assert "!shotMode && px0 !== null" in html
     # `focus=<name>` frames one node or folder by udfName or folderName.
-    assert 'fused.params.get("focus")' in html
+    assert 'ownParam("focus")' in html
     assert "n.udfName === focusName || n.folderName === focusName" in html
     # The page says when it is drawn: "failed" until the canvas is built and
     # its typeface is in, then "ready" (what the picture waits for).

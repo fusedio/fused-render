@@ -2427,6 +2427,40 @@ offer it — a plain `.toml` never shows the mode at all.
     reference copy is never checked. No watcher and no sign-in are needed,
     and the check never fails a hook. The baseline is held in memory per
     (session, clone). Claude sessions only: the other agents have no hook.
+- **CV-10** **The canvas page's ghost (D1513).** The canvas page
+  (`/canvases/<env>/<name>`) frames the hosted workbench, which takes
+  seconds to load (17 s measured on a cold cache, 3 s warm) and showed one
+  line of text meanwhile. The canvas is already on disk in the clone, so the
+  page lays this view over the workbench frame until the workbench is up.
+  - **Ghost mode.** `ghost=1` on the view's URL: a 48px bar with the canvas's
+    name where the workbench's header will be (underscores shown as spaces,
+    as the workbench writes it), the canvas below it fitted with React
+    Flow's fit at padding 0.1 (how the workbench opens a canvas) and refitted
+    when the pane resizes, node bodies shimmering where output will be, no
+    counts, no controls, nothing that can be pressed, no camera kept in the
+    URL. `ghost`, `shot` and `focus` are read off the frame's own address:
+    inside the app `fused.params` is the shell page's store and does not
+    hold a framed view's query.
+  - **The view tells its frame.** In ghost mode it posts `{type:
+    "fused-canvas-ghost", state: "ready" | "failed", file}` to its parent
+    (same origin) when `data-cv` turns (CV-8).
+  - **The page** (`apps/canvases/CanvasGhost.tsx`, rules in
+    `canvas-ghost.ts`). `GET /api/canvases/status` names the view's page
+    (`layout_view`); the ghost's address is that page on
+    `<clone>/canvas.toml`. The ghost is framed as soon as status answers,
+    hidden until it says "ready", then shown over the workbench frame
+    (absolute, full size, no pointer events, under the screenshot scrim). It
+    stays until the workbench's `fused-embed-hello`, 350 ms more, then fades
+    over 250 ms and is removed. A frame that reloads gets a new ghost.
+  - **No ghost** when the view says "failed" (a first open has no
+    `canvas.toml` yet) or never answers, when the workbench is up before the
+    ghost was shown, on an older server without `layout_view`, and while the
+    page shows an error or another process owns the clone: the page's own
+    loading line shows, as before.
+  - **Not aligned to the pixel.** The workbench fits the canvas inside its
+    own chrome (its code panel may be open inside the frame, at a width the
+    page is not told), so nodes can sit elsewhere after the handover; the
+    fade covers the move.
 - **CV-7** Dark, in the workbench's colours; no network (the page loads only
   the app's own `marked`, `canvas-node.js` and font), ES2020, and — like every
   template — no runtime script tag (`window.fused` is injected).

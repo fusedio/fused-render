@@ -219,6 +219,8 @@ import { ChatMount, ShotViewer, type CanvasShot, type CanvasShotAnswer, type Can
 import { statPath } from "@platform/lib/api";
 import { EMBED_PREFIX, NAV_EVENT, VIEW_PREFIX, confirmLeave, embedUrlForFsPath, navigateUrl, spaLinkProps, viewUrlForFsPath } from "@platform/lib/router";
 import { ErrorBanner } from "@platform/ui/ErrorBanner";
+import { CanvasGhost } from "./CanvasGhost";
+import { ghostFile, ghostSrc } from "./canvas-ghost";
 import {
   CanvasOwnedError,
   ackDelta,
@@ -664,6 +666,16 @@ export default function CanvasWorkspace({
   const [workbenchBase, setWorkbenchBase] = useState<string | null>(null);
   const [handle, setHandle] = useState<string | null>(null);
   const [dir, setDir] = useState<string | null>(null);
+  // The canvas ghost (canvas-ghost.ts): the canvas.toml view over the
+  // workbench frame while that loads. `ghostView` is the view's page and
+  // `ghostDir` the clone folder, both from status (the first answer the page
+  // gets, well before the frame's address is known); `frameUp` mirrors
+  // `frameUpRef` as state, since it decides what is drawn; `ghostLoad` counts
+  // the frame's loads, so a reload gets a ghost of the file as it is then.
+  const [ghostView, setGhostView] = useState<string | null>(null);
+  const [ghostDir, setGhostDir] = useState<string | null>(null);
+  const [frameUp, setFrameUp] = useState(false);
+  const [ghostLoad, setGhostLoad] = useState(0);
   // The claude template's path, from the clone dir's own stat — the same
   // resolution the explorer's sidebar uses, so a user override (§16) wins here
   // too. Needed because the chat is framed DIRECTLY via /render (below), not
@@ -1513,6 +1525,8 @@ export default function CanvasWorkspace({
         // (CodeRabbit on #1795). Idempotent on the server; the section
         // refetches on the window event (it cannot see this POST's answer).
         const cloneDir = status.envs[env].canvases_dir.replace(/\/+$/, "") + "/" + name;
+        setGhostView(status.layout_view ?? null);
+        setGhostDir(cloneDir);
         void addCurrentApp(cloneDir)
           .then(() => window.dispatchEvent(new Event(CURRENT_APPS_CHANGED_EVENT)))
           .catch(() => undefined);
@@ -2456,7 +2470,9 @@ export default function CanvasWorkspace({
         if (type === "fused-embed-auth-ready") {
           // A fresh document: down until its next hello (the selection gate
           // below), whether or not the src changed.
+          if (frameUpRef.current) setGhostLoad((n) => n + 1);
           frameUpRef.current = false;
+          setFrameUp(false);
           const kept = pendingSelectRef.current;
           // The workbench's own last selection, not the pane's node
           // (2026-11-06; `wbSelRef`).
@@ -2583,6 +2599,7 @@ export default function CanvasWorkspace({
         // not mark the frame up, nor say what it can capture.
         if (event.source !== frameRef.current?.contentWindow) return;
         frameUpRef.current = true;
+        setFrameUp(true);
         // What this build can capture (`capture: ["canvas","udf","rects"]`
         // from the workbench's `postEmbedHello`); a hello without the list is
         // a build from before the question existed.
@@ -3336,8 +3353,11 @@ export default function CanvasWorkspace({
   // the AI runs it had in flight have no reader left.
   useEffect(() => {
     frameUpRef.current = false;
+    setFrameUp(false);
     abortAllAi();
   }, [frameSrc, abortAllAi]);
+  const ghostAt = ghostSrc(ghostView, ghostDir);
+  const ghostOf = ghostFile(ghostDir);
 
   // No header bar (owner call): the workspace is the two panes, full height,
   // under ONE line — the sync strip (SyncStrip.tsx): the worst of the four
@@ -3576,6 +3596,12 @@ export default function CanvasWorkspace({
             ) : (
               <p style={{ padding: 16 }}>Loading workbench…</p>
             ))
+          )}
+          {ghostAt && ghostOf && !error && !owned && (
+            // The canvas as its canvas.toml lays it out, until the workbench
+            // has drawn it (canvas-ghost.ts). Keyed on the canvas and on the
+            // frame's load count: each load starts its own.
+            <CanvasGhost key={`${env}/${name}/${ghostLoad}`} src={ghostAt} file={ghostOf} up={frameUp} />
           )}
           {shotPhase && (
             // Over the frame, taking the pointer: see canvas-shot-scrim.ts.
