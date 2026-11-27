@@ -640,3 +640,47 @@ def test_reader_empty_canvas(reader, tmp_path):
     out = reader.main(file=str(d / "canvas.toml"))
     assert out["nodes"] == [] and out["folders"] == [] and out["edges"] == []
     assert out["siblings"] == {}
+
+
+def test_template_has_a_ghost_mode_for_the_canvas_page():
+    # `ghost=1` (SPEC 28 CV-10): the canvas page frames this view over the
+    # workbench while that loads.
+    with open(os.path.join(TEMPLATES_DIR, "canvas", "template.html"), encoding="utf-8") as f:
+        html = f.read()
+    # Read off the frame's OWN address: inside the app `fused.params` is the
+    # shell page's store, where this frame's query is not.
+    assert "new URLSearchParams(window.location.search).get(key)" in html
+    assert 'var ghostMode = ownParam("ghost") === "1";' in html
+    # The file as well: the page matches the ghost's word by this path.
+    assert 'var file = ownParam("_file") || "";' in html
+    assert html.index("function ownParam(key)") < html.index('var file = ownParam("_file")')
+    # Every body shimmers: a widget's own colour is not set inline in a ghost.
+    assert 'if (n.kind !== "udf" && !ghostMode) {' in html
+    # It stands where the workbench will: fitted like it, nothing to press,
+    # nothing kept.
+    assert "if (ghostMode) { cam = fitCam(); return; }" in html
+    assert "if (ghostMode || e.button !== 0 || onChrome(e.target)) return;" in html
+    assert "if (ghostMode || onChrome(e.target)) return;" in html
+    assert "if (dragMoved || ghostMode) return;" in html
+    assert "if (ghostMode) return; // a ghost keeps no camera" in html
+    assert ".ghost .head .counts, .ghost .controls, .ghost .loading, .ghost .stand-in { display: none; }" in html
+    # And tells the page that framed it when it is drawn, or could not be.
+    assert 'type: "fused-canvas-ghost", state: state, file: file' in html
+    assert 'tellHost("ready");' in html and 'tellHost("failed");' in html
+
+
+def test_status_names_the_layout_view(tmp_path, monkeypatch):
+    # The canvas page cannot name a template folder itself: status hands it
+    # the canvas.toml view's page, which it frames in ghost mode.
+    from fastapi.testclient import TestClient
+
+    from fused_render.server import create_app
+
+    monkeypatch.setenv("FUSED_RENDER_HOME", str(tmp_path / "home"))
+    monkeypatch.setenv("FUSED_RENDER_CANVASES_DIR", str(tmp_path / "canvases"))
+    monkeypatch.setenv("FUSED_RENDER_FUSED_CREDENTIALS", str(tmp_path / "creds.json"))
+    client = TestClient(create_app(start_dir=str(tmp_path)))
+    body = client.get("/api/canvases/status").json()
+    assert body["layout_view"] == os.path.join(TEMPLATES_DIR, "canvas", "template.html")
+    assert os.path.isfile(body["layout_view"])
+

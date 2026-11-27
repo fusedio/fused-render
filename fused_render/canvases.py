@@ -1174,8 +1174,14 @@ def api_canvases_status(env: str = ""):
     # verdict needs a whoami, run in the background when none is cached.
     _kick_staff_check()
     login = _login_for(credentials_file(auth_env))
+    from fused_render.server import templates as _server_templates
+
     return {
         "cli_found": cli is not None,
+        # The canvas.toml view's page (templates/canvas/): the canvas page
+        # frames it in ghost mode over the workbench while that loads
+        # (SPEC §28 CV-10). The page cannot name a template folder itself.
+        "layout_view": os.path.join(_server_templates.TEMPLATES_DIR, "canvas", "template.html"),
         "logged_in": _logged_in(auth_env),
         # Which env's login the two fields around this describe.
         "auth_env": auth_env,

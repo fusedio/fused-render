@@ -33,6 +33,7 @@
 // frame's CSS px, which are this page's CSS px too) and crops the still to
 // the answer. No answer (an older workbench build), or a node not fully on
 // screen → null, and the embed road draws it instead.
+import { ghostOver } from "./canvas-ghost";
 import {
   captureNative,
   encode,
@@ -165,7 +166,9 @@ export function shotGateOf(
   return {
     visible: doc.visibilityState === "visible",
     focused,
-    covered: frameCovered(frame, doc),
+    // The ghost over a loading frame takes no pointer, so `frameCovered`
+    // sees through it: asked by name (canvas-ghost.ts).
+    covered: ghostOver(frame) || frameCovered(frame, doc),
   };
 }
 

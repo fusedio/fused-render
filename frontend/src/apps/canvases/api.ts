@@ -21,6 +21,10 @@ const GUARD = { headers: { "X-Fused": "1" } };
 
 export interface CanvasesStatus {
   cli_found: boolean;
+  /** The canvas.toml view's page on disk (templates/canvas/template.html):
+   *  what the canvas page frames in ghost mode while the workbench loads.
+   *  OPTIONAL: an older server answers without it (then no ghost). */
+  layout_view?: string;
   /** `auth_env`'s `fused login` store exists. */
   logged_in: boolean;
   /** Which env's login `logged_in` / `creds_stamp` describe: the `env` the

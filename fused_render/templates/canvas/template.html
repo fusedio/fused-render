@@ -91,6 +91,27 @@
   .stage.dragging { cursor: grabbing; }
   /* Picture mode (`shot=1`, CV-8): the page is photographed, not used. */
   .stage.shot .controls { display: none; }
+
+  /* Ghost mode (`ghost=1`, CV-10): the canvas page shows this over the
+     workbench frame while the workbench loads. It stands where the workbench
+     will: a 48px bar for its header with the canvas's name, the canvas below
+     it fitted the way the workbench fits it, node bodies shimmering where
+     output will be. Nothing in it can be pressed. */
+  .ghost .head {
+    height: 48px; padding: 0 16px 0 74px;
+    border-bottom-color: transparent;
+  }
+  .ghost .head .name { font-size: 20px; font-weight: 300; color: var(--bar-fg); }
+  .ghost .head .counts, .ghost .controls, .ghost .loading, .ghost .stand-in { display: none; }
+  .ghost .stage, .ghost .node, .ghost .folder, .ghost .ftag { cursor: default; }
+  .ghost .node:not(.note) .body {
+    background: linear-gradient(100deg, var(--surface) 30%, #2a2a2a 50%, var(--surface) 70%);
+    background-size: 300% 100%;
+    animation: shimmer 1.4s linear infinite;
+  }
+  @media (prefers-reduced-motion: reduce) {
+    .ghost .node:not(.note) .body { animation: none; }
+  }
   .stage > svg.bg { position: absolute; inset: 0; width: 100%; height: 100%; pointer-events: none; }
   .stage > svg.defs { position: absolute; width: 0; height: 0; }
   /* The world holds everything in canvas units; the camera is one transform. */
@@ -443,7 +464,19 @@
   var dotsPattern = document.getElementById("cv-dots");
   var linesPattern = document.getElementById("cv-lines");
 
-  var file = fused.params.get("_file") || "";
+  // These are words to THIS frame from whoever framed it, so they are read
+  // off its own address: `fused.params` is the shell page's parameter store,
+  // and a frame inside the app does not find its own query there.
+  function ownParam(key) {
+    try {
+      var own = new URLSearchParams(window.location.search).get(key);
+      if (own !== null) return own;
+    } catch (e) { /* no address to read */ }
+    return fused.params.get(key);
+  }
+  // The file too: a framed view's `_file` is in its own address, and the
+  // page that framed a ghost matches the ghost's word by this very path.
+  var file = ownParam("_file") || "";
   // Windows drive paths arrive with backslashes; normalize before slicing so
   // fileDir/folderName (and the sibling links built from them) stay correct.
   var normFile = /^[A-Za-z]:[\\/]/.test(file) ? file.replace(/\\/g, "/") : file;
@@ -455,14 +488,20 @@
   // an agent checking a layout — the whole canvas, fitted, whatever camera
   // the file or the URL holds. `focus=<name>` frames one node or folder
   // instead (in picture mode, and on a plain open that carries no camera).
-  var shotMode = fused.params.get("shot") === "1";
-  var focusName = fused.params.get("focus") || "";
+  var shotMode = ownParam("shot") === "1";
+  var focusName = ownParam("focus") || "";
   if (shotMode) stage.classList.add("shot");
+  // Ghost mode (CV-10): `ghost=1` is the canvas page showing this view over
+  // the workbench frame until the workbench is up.
+  var ghostMode = ownParam("ghost") === "1";
+  if (ghostMode) document.getElementById("app").classList.add("ghost");
+  // The workbench writes a canvas's name with spaces for its underscores.
+  function shownName(name) { return ghostMode ? String(name).replace(/_/g, " ") : name; }
 
   // Header renders immediately from the path, BEFORE the reader runs — so a
   // reader error (which surfaces via the runtime's traceback overlay, SPEC §28)
   // still leaves a titled page rather than a blank one.
-  nameEl.textContent = folderName;
+  nameEl.textContent = shownName(folderName);
 
   // ---- small helpers -----------------------------------------------------
   function esc(s) {
@@ -598,7 +637,18 @@
   function markFailed() {
     if (document.documentElement.getAttribute("data-cv") !== "ready") {
       document.documentElement.setAttribute("data-cv", "failed");
+      tellHost("failed");
     }
+  }
+  // A ghost is framed by the canvas page, which shows it only once it is
+  // drawn (and never when it could not be): it is told both, by name of the
+  // file, so a page that has moved on to another canvas ignores the word.
+  function tellHost(state) {
+    if (!ghostMode || window.parent === window) return;
+    try {
+      window.parent.postMessage({ type: "fused-canvas-ghost", state: state, file: file },
+                                window.location.origin);
+    } catch (e) { /* no parent to tell */ }
   }
   window.addEventListener("unhandledrejection", markFailed);
   window.addEventListener("error", markFailed);
@@ -622,7 +672,7 @@
   var viewport = data.viewport || null;
   var viewportBounds = data.viewportBounds || null;
 
-  if (data.name) nameEl.textContent = data.name;
+  if (data.name) nameEl.textContent = shownName(data.name);
   countsEl.textContent = nodes.length + (nodes.length === 1 ? " node" : " nodes")
     + " · " + edges.length + (edges.length === 1 ? " edge" : " edges")
     + (folders.length ? " · " + folders.length + (folders.length === 1 ? " folder" : " folders") : "");
@@ -792,7 +842,9 @@
       bar.appendChild(uname);
       frame.appendChild(bar);
 
-      if (n.kind !== "udf") {
+      // A ghost's bodies all shimmer (its stylesheet rule): a widget's own
+      // colour, set inline, would win over that and sit still.
+      if (n.kind !== "udf" && !ghostMode) {
         var wbg = String(n.widgetBackgroundColor || "").trim();
         var wp = parseHex(wbg);
         body.style.background = wbg === "transparent" ? "transparent"
@@ -1058,6 +1110,9 @@
   function num(v) { var n = parseFloat(v); return isFinite(n) ? n : null; }
 
   function initCamera() {
+    // A ghost stands in for the workbench, which opens a canvas fitted
+    // (React Flow's fit at padding 0.1), whatever camera was saved.
+    if (ghostMode) { cam = fitCam(); return; }
     // URL params (post-interaction) come first (SPEC §28); a zoom from a URL
     // or the file is kept inside the zoom range, so a hand-edited value
     // cannot restore an unusable camera.
@@ -1087,6 +1142,7 @@
   var writeTimer = null;
   var lastWritten = "";
   function scheduleWrite() {
+    if (ghostMode) return; // a ghost keeps no camera
     if (writeTimer) clearTimeout(writeTimer);
     writeTimer = setTimeout(writeCamera, 150);
   }
@@ -1113,7 +1169,7 @@
     if (selected) { selected.el.classList.remove("selected"); selected = null; }
   }
   function select(elm, kind, n) {
-    if (dragMoved) return;
+    if (dragMoved || ghostMode) return;
     clearPanel();
     selected = { el: elm, kind: kind, n: n };
     elm.classList.add("selected");
@@ -1180,7 +1236,7 @@
 
   var dragging = false, lastX = 0, lastY = 0, downX = 0, downY = 0;
   stage.addEventListener("mousedown", function (e) {
-    if (e.button !== 0 || onChrome(e.target)) return;
+    if (ghostMode || e.button !== 0 || onChrome(e.target)) return;
     dragging = true; dragMoved = false;
     lastX = downX = e.clientX; lastY = downY = e.clientY;
     stage.classList.add("dragging");
@@ -1217,7 +1273,7 @@
   });
   var isMac = /Mac|iPhone|iPad/.test(navigator.platform || "");
   stage.addEventListener("wheel", function (e) {
-    if (onChrome(e.target)) return;
+    if (ghostMode || onChrome(e.target)) return;
     e.preventDefault();
     var rect = stage.getBoundingClientRect();
     var unit = e.deltaMode === 1 ? 20 : 1;
@@ -1254,6 +1310,11 @@
     if (token === lastWritten) return; // our own write echoed back — ignore
   });
 
+  // A ghost fills a pane the user may be resizing: it stays fitted.
+  if (ghostMode) {
+    window.addEventListener("resize", function () { cam = fitCam(); draw(); });
+  }
+
   // ---- boot -------------------------------------------------------------
   initCamera();
   draw();
@@ -1268,6 +1329,7 @@
     tagFontPx = null;
     fitTags();
     document.documentElement.setAttribute("data-cv", "ready");
+    tellHost("ready");
   }
   // A note's pictures count too: one still loading would be a hole in the
   // picture. Each is waited for until it loads or fails, inside the same two
