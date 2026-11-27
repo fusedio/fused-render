@@ -10,6 +10,7 @@ import {
   pageUrlOf,
   parseHostUrl,
   parseRight,
+  placeOfUrl,
   planOpen,
   rightSession,
   sameRight,
@@ -281,5 +282,25 @@ describe("splitArrival", () => {
     expect(splitArrival(FILE + "?_mode=code")).toEqual({ keep: FILE + "?_mode=code", right: null });
     expect(splitArrival(FOLDER + "?_side=off")).toEqual({ keep: FOLDER + "?_side=off", right: null });
     expect(splitArrival("/tasks?peek=k")).toEqual({ keep: "/tasks?peek=k", right: null });
+  });
+});
+
+describe("placeOfUrl (an unloaded tab's rail place, WS-27)", () => {
+  test("an app page is its folder", () => {
+    expect(placeOfUrl("/apps/Users/me/my%20app?_tab=tasks")).toEqual({ kind: "folder", dir: "/Users/me/my app", word: "App" });
+  });
+  test("a canvas page is its canvas, its clone not known", () => {
+    expect(placeOfUrl("/canvases/prod/demo_1?node=x")).toEqual({ kind: "canvas", env: "prod", name: "demo_1", dir: null });
+    expect(placeOfUrl("/canvases/nope/demo")).toBeNull();
+  });
+  test("an explorer folder, or a file in its parent folder", () => {
+    expect(placeOfUrl(FOLDER + "?sort=name")).toEqual({ kind: "folder", dir: "/Users/me/dir" });
+    expect(placeOfUrl(FILE)).toEqual({ kind: "file", file: "/Users/me/a.html", dir: "/Users/me" });
+    expect(placeOfUrl("/explorer/view/Users/me/b%20c.py")).toEqual({ kind: "file", file: "/Users/me/b c.py", dir: "/Users/me" });
+  });
+  test("anything else has no place", () => {
+    for (const u of ["/home", "/tasks", "/ai-models", "/marketplace", "/preferences", "/explorer", "/explorer/view/_panel", "/explorer/view/s3:/bucket/k", "/render?path=/a"]) {
+      expect(placeOfUrl(u)).toBeNull();
+    }
   });
 });

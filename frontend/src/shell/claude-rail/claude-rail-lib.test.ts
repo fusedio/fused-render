@@ -541,6 +541,81 @@ describe("railRows on an open file (the folder's list, the file's first; 2026-11
   });
 });
 
+describe("railRows with a workspace's other tabs (SPEC §56 WS-27)", () => {
+  const A = "/home/me/a";
+  const B = "/home/me/b";
+  const C = "/home/me/c";
+  const NO_PLACE: RailPlace = { kind: "folder", dir: "\u0000" };
+  const a1 = pulse(task({ key: "a1", target: A, project: A, happened_at: 100, last_active: 100 }));
+  const a2 = pulse(task({ key: "a2", target: `${A}/x.py`, project: A, happened_at: 300, last_active: 300 }));
+  const b1 = pulse(task({ key: "b1", target: B, project: B, happened_at: 200, last_active: 200 }));
+  const b2 = pulse(task({ key: "b2", target: B, project: B, happened_at: 400, last_active: 400 }));
+  const c1 = pulse(task({ key: "c1", target: C, project: C, happened_at: 500, last_active: 500 }));
+  const far = pulse(task({ key: "far", target: "/elsewhere", project: "/elsewhere", happened_at: 900, last_active: 900 }));
+  const all = [a1, a2, b1, b2, c1, far];
+  const keysOff = (seats: ReturnType<typeof railRows>) => seats.map((s) => [s.pulse.key, !!s.off]);
+  const folder = (dir: string): RailPlace => ({ kind: "folder", dir });
+  /** One group in the List's order, each key with its `off`. */
+  const group = (rows: TaskPulseTask[], off: boolean) => sortForList(rows as Task[], 1_000).map((t) => [t.key, off]);
+
+  it("no others: exactly the rail of one page", () => {
+    for (const place of [folder(A), { kind: "file", file: `${A}/x.py`, dir: A } as RailPlace, PLACE, { ...PLACE, file: "n.py" } as RailPlace]) {
+      expect(railRows(all, new Map(), place, 1_000, [])).toEqual(railRows(all, new Map(), place, 1_000));
+    }
+  });
+  it("the active tab's rows full strength, then every other tab's faded, tab by tab, each in the List's order", () => {
+    const seats = railRows(all, new Map(), folder(A), 1_000, [folder(B), folder(C)]);
+    expect(keysOff(seats)).toEqual([...group([a1, a2], false), ...group([b1, b2], true), ["c1", true]]);
+    // Each other tab's seat names its own place for its card.
+    expect(seats.find((s) => s.pulse.key === "b1")?.at).toEqual(folder(B));
+    expect(seats.find((s) => s.pulse.key === "a1")?.at).toBeUndefined();
+  });
+  it("a selected node: the node's rows, the canvas's rest, then the other tabs — one faded group", () => {
+    const NODE: RailPlace = { ...PLACE, file: "n.py" };
+    const onNode = pulse(task({ key: "n", target: `${DIR}/n.py`, happened_at: 100, last_active: 100 }));
+    const rest = pulse(task({ key: "r", target: `${DIR}/other.py`, happened_at: 50, last_active: 50 }));
+    const seats = railRows([b2, rest, onNode], new Map(), NODE, 1_000, [folder(B)]);
+    expect(keysOff(seats)).toEqual([
+      ["n", false],
+      ["r", true],
+      ["b2", true],
+    ]);
+  });
+  it("an open file: the file's rows, its folder's rest, then the other tabs", () => {
+    const seats = railRows(all, new Map(), { kind: "file", file: `${A}/x.py`, dir: A }, 1_000, [folder(B)]);
+    expect(keysOff(seats)).toEqual([["a2", false], ["a1", true], ...group([b1, b2], true)]);
+  });
+  it("another tab on a file: its file's and its folder's rows, the folder's named as the folder", () => {
+    const FILE_TAB: RailPlace = { kind: "file", file: `${A}/x.py`, dir: A };
+    const seats = railRows(all, new Map(), folder(B), 1_000, [FILE_TAB]);
+    expect(keysOff(seats)).toEqual([...group([b1, b2], false), ...group([a1, a2], true)]);
+    expect(seats.find((s) => s.pulse.key === "a2")?.at).toEqual(FILE_TAB);
+    expect(seats.find((s) => s.pulse.key === "a1")?.at).toEqual({ kind: "folder", dir: A, sessionless: undefined });
+  });
+  it("an active tab with no place: every other tab's rows, all faded", () => {
+    const seats = railRows(all, new Map(), NO_PLACE, 1_000, [folder(A), folder(B)]);
+    expect(keysOff(seats)).toEqual([...group([a1, a2], true), ...group([b1, b2], true)]);
+  });
+  it("a task in two tabs' places is seated once, in the highest group it belongs to", () => {
+    // `shared` is A's by its target and B's by its project.
+    const shared = pulse(task({ key: "s", target: A, project: B, happened_at: 600, last_active: 600 }));
+    const rows = [...all, shared];
+    expect(railRows(rows, new Map(), folder(C), 1_000, [folder(A), folder(B)]).filter((s) => s.pulse.key === "s")).toHaveLength(1);
+    const seats = railRows(rows, new Map(), folder(A), 1_000, [folder(B)]);
+    expect(seats.filter((s) => s.pulse.key === "s").map((s) => !!s.off)).toEqual([false]);
+    const twice = railRows(rows, new Map(), NO_PLACE, 1_000, [folder(B), folder(A)]);
+    expect(twice.filter((s) => s.pulse.key === "s").map((s) => s.at)).toEqual([folder(B)]);
+  });
+  it("another tab's drafts ride its group when it admits them; archived rows never", () => {
+    const draft = task({ key: "draft:b", kind: "draft", status: "upcoming", session_id: "", target: B, project: B, happened_at: 50 } as Partial<Task> & { key: string });
+    const archived = pulse(task({ key: "gone", target: B, project: B, status: "archived", happened_at: 999, last_active: 999 }));
+    const listing = new Map([[draft.key, draft]]);
+    const rows = [a1, b1, archived];
+    expect(railRows(rows, listing, folder(A), 1_000, [{ kind: "folder", dir: B, sessionless: true }]).map((s) => s.pulse.key)).toEqual(["a1", "draft:b", "b1"]);
+    expect(railRows(rows, listing, folder(A), 1_000, [folder(B)]).map((s) => s.pulse.key)).toEqual(["a1", "b1"]);
+  });
+});
+
 describe("activeRing (one active ring per section)", () => {
   it("the open favourite wins over the section's last press", () => {
     expect(activeRing(["A", "B", "C"], ["B", "C"])).toBe("B");

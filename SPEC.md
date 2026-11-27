@@ -13583,3 +13583,17 @@ nothing here exists and nothing changes.
   tab keep their own copy of the bookmarks. A save in one (a tab's ★, a
   sidebar rename) is announced through the host, and every other document of
   the window re-reads at once instead of on its 30 s poll.
+- **WS-27 Every tab's chats on the rail.** The rail's list holds the chats of
+  every open tab's place. Top: the active tab's own, full strength — its
+  narrow place's when it has one (the selected node's, the open file's),
+  else its whole place's. Then the hairline and ONE faded group: the active
+  tab's remaining rows (the rest of its canvas or folder), then every other
+  tab's in strip order, each group in the List's order. A chat is listed
+  once, in the highest group it belongs to. A tab with no place adds
+  nothing; an active tab with none leaves every row faded, no hairline. A
+  tab that has not published (not loaded since a reload) counts by the
+  place its URL names: `/apps/<p>` its folder, `/canvases/<env>/<name>` its
+  canvas, `/explorer/view/<p>` its folder, or — the last segment read as a
+  file — the file in its parent. A published place wins. A faded ring's
+  card names its own place; its click opens its chat in the panel and
+  never switches the tab. A switch starts the list at its top.

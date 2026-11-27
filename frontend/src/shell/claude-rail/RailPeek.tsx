@@ -289,7 +289,8 @@ function seatFacts(seat: RailRow, place: RailPlace): SeatFacts {
   const line = cardTitleLine(merged);
   const draft = !!row && isDraftTask(row);
   const href = (row && draft ? draftHref(row) : null) ?? taskHref(merged) ?? queuedEditHref(row, t.status);
-  const at = chipPlace(merged, place);
+  // Another workspace tab's row names that tab's place (`railRows` `at`).
+  const at = seat.at ?? chipPlace(merged, place);
   return {
     t,
     row,

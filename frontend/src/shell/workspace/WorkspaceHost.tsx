@@ -48,7 +48,7 @@ import { displayName } from "@platform/lib/flavor";
 import { useFavicon } from "@platform/lib/hooks";
 import type { Config } from "@platform/lib/api";
 import { ClaudeRail, type NewTaskSeed } from "@shell/claude-rail/ClaudeRail";
-import type { RailPlace } from "@shell/claude-rail/claude-rail-lib";
+import { placeRoot, type RailPlace } from "@shell/claude-rail/claude-rail-lib";
 import type { RailPanel, RailPanelShows } from "@shell/claude-rail/rail-panel";
 import { readListing, readTasksRows } from "@shell/tasksPulse";
 import { taskChatTarget } from "@shell/tasks-lib";
@@ -68,6 +68,7 @@ import {
   normalizeOpenUrl,
   pageUrlOf,
   parseHostUrl,
+  placeOfUrl,
   parseRight,
   planOpen,
   readFrameLoc,
@@ -352,7 +353,7 @@ export default function WorkspaceHost({ config }: { config: Config }) {
     const pub = R.places.get(id);
     if (pub && pub.win !== iframe.contentWindow) {
       R.places.delete(id);
-      if (id === st.active) rerender();
+      rerender();
     }
     const w = wireOf(id);
     w.loaded = true;
@@ -630,7 +631,8 @@ export default function WorkspaceHost({ config }: { config: Config }) {
       if (was && was.win === win && was.json === json) return;
       R.places.set(id, { win, info: JSON.parse(json) as WsPublishedPlace, json });
     }
-    if (id === st.active) rerender();
+    // Every tab's place rides the rail (the others faded, WS-27).
+    rerender();
   };
 
   // The panel chat's params are `_right`'s (panel-params.ts).
@@ -805,6 +807,31 @@ export default function WorkspaceHost({ config }: { config: Config }) {
   })();
   const activeFrameWin = () => frames.get(st.active)?.contentWindow ?? null;
   const railPlace = (activePub?.place as RailPlace | undefined) ?? NO_PLACE;
+  // EVERY OTHER TAB'S PLACE (WS-27), in strip order: what its page published,
+  // else what its URL names (a tab not loaded since a reload has published
+  // nothing). One per place, none the active tab's. Keyed by its JSON, so the
+  // rail's seats re-derive only when a place changed.
+  const othersJson = JSON.stringify(
+    st.order
+      .filter((id) => id !== st.active)
+      .map((id) => {
+        const p = R.places.get(id);
+        if (p && p.win === frames.get(id)?.contentWindow) return p.info.place as RailPlace;
+        const t = st.tabs.get(id);
+        return t ? placeOfUrl(t.url) : null;
+      }),
+  );
+  const railRoot = placeRoot(railPlace);
+  const otherPlaces = useMemo(() => {
+    const roots = new Set([railRoot]);
+    const out: RailPlace[] = [];
+    for (const p of JSON.parse(othersJson) as (RailPlace | null)[]) {
+      if (!p || roots.has(placeRoot(p))) continue;
+      roots.add(placeRoot(p));
+      out.push(p);
+    }
+    return out;
+  }, [othersJson, railRoot]);
   const railNewTask = (activePub?.newTask as NewTaskSeed | undefined) ?? NO_TASK;
   const railGitPath = activePub?.git?.path ?? null;
   const railGit = useMemo(
@@ -938,6 +965,7 @@ export default function WorkspaceHost({ config }: { config: Config }) {
             }
           : {})}
         panel={panel}
+        otherPlaces={otherPlaces}
       />
     </div>
   );

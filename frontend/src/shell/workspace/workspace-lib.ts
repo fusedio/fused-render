@@ -12,6 +12,9 @@
 // changed" guard would write on every sync.
 
 import { rootedFsPath } from "@platform/lib/path-url";
+import { appPathFromPath } from "@shell/current-apps-lib";
+import type { RailPlace } from "@shell/claude-rail/claude-rail-lib";
+import type { WorkbenchEnv } from "@apps/canvases/api";
 
 export const HOME_URL = "/home";
 export const TABS_PARAM = "_tabs";
@@ -563,6 +566,28 @@ function fsPathOfViewPath(path: string): string | null {
     out.push(d);
   }
   return out.length ? rootedFsPath(out.join("/")) : null;
+}
+
+/**
+ * WHERE A TAB'S RAIL WOULD STAND, read off its URL alone (SPEC §56 WS-27): the
+ * stand-in for a tab whose page has not published (a reload mounts only the
+ * shown tab). An app page is its folder; a canvas page its canvas (no clone
+ * dir known); an explorer page its folder, or — the last segment read as a
+ * file, `tabKind`'s guess — the file in its parent folder. Anything else has
+ * no place (null).
+ */
+export function placeOfUrl(url: string): RailPlace | null {
+  const { path } = splitUrl(url);
+  const app = appPathFromPath(path);
+  if (app !== null) return { kind: "folder", dir: app, word: "App" };
+  const canvas = /^\/canvases\/(unstable|prod|custom)\/([A-Za-z0-9_]+)$/.exec(path);
+  if (canvas) return { kind: "canvas", env: canvas[1] as WorkbenchEnv, name: canvas[2], dir: null };
+  if (!path.startsWith(EXPLORER_VIEW + "/") || isLayoutSentinel(path)) return null;
+  const fsPath = fsPathOfViewPath(path);
+  if (fsPath === null || fsPath.startsWith("s3://")) return null;
+  if (tabKind(url) !== "file") return { kind: "folder", dir: fsPath };
+  const cut = fsPath.lastIndexOf("/");
+  return { kind: "file", file: fsPath, dir: cut > 0 ? fsPath.slice(0, cut) : null };
 }
 
 /**
