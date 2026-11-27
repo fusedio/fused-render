@@ -464,7 +464,19 @@
   var dotsPattern = document.getElementById("cv-dots");
   var linesPattern = document.getElementById("cv-lines");
 
-  var file = fused.params.get("_file") || "";
+  // These are words to THIS frame from whoever framed it, so they are read
+  // off its own address: `fused.params` is the shell page's parameter store,
+  // and a frame inside the app does not find its own query there.
+  function ownParam(key) {
+    try {
+      var own = new URLSearchParams(window.location.search).get(key);
+      if (own !== null) return own;
+    } catch (e) { /* no address to read */ }
+    return fused.params.get(key);
+  }
+  // The file too: a framed view's `_file` is in its own address, and the
+  // page that framed a ghost matches the ghost's word by this very path.
+  var file = ownParam("_file") || "";
   // Windows drive paths arrive with backslashes; normalize before slicing so
   // fileDir/folderName (and the sibling links built from them) stay correct.
   var normFile = /^[A-Za-z]:[\\/]/.test(file) ? file.replace(/\\/g, "/") : file;
@@ -476,16 +488,6 @@
   // an agent checking a layout — the whole canvas, fitted, whatever camera
   // the file or the URL holds. `focus=<name>` frames one node or folder
   // instead (in picture mode, and on a plain open that carries no camera).
-  // These are words to THIS frame from whoever framed it, so they are read
-  // off its own address: `fused.params` is the shell page's parameter store,
-  // and a frame inside the app does not find its own query there.
-  function ownParam(key) {
-    try {
-      var own = new URLSearchParams(window.location.search).get(key);
-      if (own !== null) return own;
-    } catch (e) { /* no address to read */ }
-    return fused.params.get(key);
-  }
   var shotMode = ownParam("shot") === "1";
   var focusName = ownParam("focus") || "";
   if (shotMode) stage.classList.add("shot");
@@ -840,7 +842,9 @@
       bar.appendChild(uname);
       frame.appendChild(bar);
 
-      if (n.kind !== "udf") {
+      // A ghost's bodies all shimmer (its stylesheet rule): a widget's own
+      // colour, set inline, would win over that and sit still.
+      if (n.kind !== "udf" && !ghostMode) {
         var wbg = String(n.widgetBackgroundColor || "").trim();
         var wp = parseHex(wbg);
         body.style.background = wbg === "transparent" ? "transparent"

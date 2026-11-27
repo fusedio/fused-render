@@ -1,13 +1,16 @@
 import { describe, expect, test } from "bun:test";
 import {
+  GHOST_ATTR,
   GHOST_FADE_MS,
   GHOST_HOLD_MS,
   GHOST_MESSAGE,
   ghostFile,
+  ghostOver,
   ghostPhase,
   ghostSrc,
   ghostWord,
 } from "./canvas-ghost";
+import { shotGateOf } from "./canvas-shot-native";
 
 describe("the ghost's address", () => {
   test("is the canvas.toml view on the clone's canvas.toml, in ghost mode", () => {
@@ -61,3 +64,36 @@ describe("where the ghost stands", () => {
     expect(ghostPhase({ ...up, sinceUpMs: GHOST_HOLD_MS + GHOST_FADE_MS })).toBe("gone");
   });
 });
+
+describe("a ghost over the frame", () => {
+  // The ghost takes no pointer, so `elementFromPoint` sees through it: the
+  // screenshot gate has to be told by name.
+  const frameWith = (phase: string | null) => ({
+    parentElement: {
+      querySelector: (sel: string) =>
+        phase && sel.includes(`[${GHOST_ATTR}="${phase}"]`) ? {} : null,
+    },
+  });
+  test("counts while it is shown or fading, not before or after", () => {
+    expect(ghostOver(frameWith("shown"))).toBe(true);
+    expect(ghostOver(frameWith("leaving"))).toBe(true);
+    expect(ghostOver(frameWith("loading"))).toBe(false);
+    expect(ghostOver(frameWith(null))).toBe(false);
+    expect(ghostOver({ parentElement: null })).toBe(false);
+    expect(ghostOver({})).toBe(false);
+  });
+  test("is cover to the screenshot gate", () => {
+    const rect = { left: 0, top: 0, width: 100, height: 100 };
+    const frame = (phase: string | null) => {
+      const f: Record<string, unknown> = { getBoundingClientRect: () => rect, ...frameWith(phase) };
+      return f as unknown as HTMLIFrameElement;
+    };
+    const docFor = (f: HTMLIFrameElement) =>
+      ({ visibilityState: "visible", hasFocus: () => true, elementFromPoint: () => f }) as unknown as Document;
+    const clear = frame(null);
+    expect(shotGateOf(clear, "user", docFor(clear)).covered).toBe(false);
+    const ghosted = frame("shown");
+    expect(shotGateOf(ghosted, "user", docFor(ghosted)).covered).toBe(true);
+  });
+});
+

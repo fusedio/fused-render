@@ -1,6 +1,6 @@
 // The canvas ghost's element (rules and reasons: canvas-ghost.ts).
 import { useEffect, useRef, useState } from "react";
-import { GHOST_FADE_MS, GHOST_HOLD_MS, ghostPhase, ghostWord } from "./canvas-ghost";
+import { GHOST_ATTR, GHOST_FADE_MS, GHOST_HOLD_MS, ghostPhase, ghostWord } from "./canvas-ghost";
 
 /** The canvas.toml view over the workbench frame until the workbench is up.
  *
@@ -31,6 +31,21 @@ export function CanvasGhost({ src, file, up }: { src: string; file: string; up: 
     return () => window.removeEventListener("message", onMessage);
   }, [file]);
 
+  // The workbench went down again under the same ghost (the page mints a new
+  // one for a reload it sees coming, this is for one it does not): start
+  // over. What was drawn belongs to a frame this element may have dropped,
+  // so it is hidden again until the view in it says "ready" afresh.
+  const wasUpRef = useRef(up);
+  useEffect(() => {
+    if (wasUpRef.current && !up) {
+      upAtRef.current = null;
+      setReady(false);
+      setFailed(false);
+      setWasShown(false);
+    }
+    wasUpRef.current = up;
+  }, [up]);
+
   if (up && upAtRef.current === null) upAtRef.current = performance.now();
   const sinceUpMs = up && upAtRef.current !== null ? Math.max(0, now - upAtRef.current) : 0;
   const phase = ghostPhase({ ready, failed, up, wasShown, sinceUpMs });
@@ -56,7 +71,7 @@ export function CanvasGhost({ src, file, up }: { src: string; file: string; up: 
       title="Canvas layout while the workbench loads"
       aria-hidden="true"
       tabIndex={-1}
-      data-canvas-ghost={phase}
+      {...{ [GHOST_ATTR]: phase }}
       style={{
         position: "absolute",
         inset: 0,

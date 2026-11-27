@@ -16,6 +16,21 @@
 /** The ghost's word to the page (the view's `tellHost`). */
 export const GHOST_MESSAGE = "fused-canvas-ghost";
 
+/** On the ghost's element: its phase. */
+export const GHOST_ATTR = "data-canvas-ghost";
+
+/** Is a ghost on screen over this workbench frame (shown, or still fading)?
+ *  It takes no pointer, so nothing that asks "what is at this point" finds
+ *  it: a screenshot of the frame's place on screen has to ask here instead,
+ *  or it photographs the ghost and calls it the workbench. */
+export function ghostOver(frame: { parentElement?: { querySelector(sel: string): unknown } | null }): boolean {
+  try {
+    return !!frame.parentElement?.querySelector(`[${GHOST_ATTR}="shown"], [${GHOST_ATTR}="leaving"]`);
+  } catch {
+    return false;
+  }
+}
+
 /** How long the ghost stays after the workbench's hello before it starts to
  *  go: the hello is the workbench HYDRATED, and its first fitted paint of the
  *  canvas lands a moment after. */

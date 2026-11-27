@@ -651,6 +651,11 @@ def test_template_has_a_ghost_mode_for_the_canvas_page():
     # shell page's store, where this frame's query is not.
     assert "new URLSearchParams(window.location.search).get(key)" in html
     assert 'var ghostMode = ownParam("ghost") === "1";' in html
+    # The file as well: the page matches the ghost's word by this path.
+    assert 'var file = ownParam("_file") || "";' in html
+    assert html.index("function ownParam(key)") < html.index('var file = ownParam("_file")')
+    # Every body shimmers: a widget's own colour is not set inline in a ghost.
+    assert 'if (n.kind !== "udf" && !ghostMode) {' in html
     # It stands where the workbench will: fitted like it, nothing to press,
     # nothing kept.
     assert "if (ghostMode) { cam = fitCam(); return; }" in html

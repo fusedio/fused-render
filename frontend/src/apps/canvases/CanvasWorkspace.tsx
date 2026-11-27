@@ -3352,6 +3352,10 @@ export default function CanvasWorkspace({
   // A frame that reloads (new src) is down again until its next hello, and
   // the AI runs it had in flight have no reader left.
   useEffect(() => {
+    // An address change under a frame that was up (whoami correcting a
+    // remembered handle) is a new load: it gets a ghost of its own, counted
+    // here because the auth-ready that follows finds the frame already down.
+    if (frameUpRef.current) setGhostLoad((n) => n + 1);
     frameUpRef.current = false;
     setFrameUp(false);
     abortAllAi();
