@@ -1472,23 +1472,30 @@ def test_auto_install_does_nothing_when_the_setting_is_off(monkeypatch):
 
 
 def test_auto_install_never_retries_a_failed_install(monkeypatch):
-    # "error" is user-retry territory: an unattended loop re-downloading
-    # hundreds of MB every five minutes against a broken artifact would run away.
     _auto_download(monkeypatch, True)
     manager = _manager(monkeypatch, available="9.9.9")
     calls = []
 
     def boom(manifest):
-        calls.append(1)
+        calls.append(manifest["version"])
         raise RuntimeError("nope")
 
     monkeypatch.setattr(manager, "_install_dmg", boom)
-    manager.check()
-    manager.maybe_auto_install()
+
+    def tick():
+        manager.check(force=True)
+        manager.maybe_auto_install()
+        manager._install_thread.join(timeout=5)
+
+    tick()
+    tick()
+    assert calls == ["9.9.9"]
+    manager.install()
     manager._install_thread.join(timeout=5)
-    assert manager.status()["state"] == "error"
-    manager.maybe_auto_install()
-    assert calls == [1]
+    assert calls == ["9.9.9", "9.9.9"]
+    _manager(monkeypatch, available="9.9.10")
+    tick()
+    assert calls == ["9.9.9", "9.9.9", "9.9.10"]
 
 
 # ---- the swapped-away bundle outlives the process that swapped it ------------

@@ -148,6 +148,7 @@ class UpdateManager:
         self._state = "idle"
         self._latest: dict | None = None
         self._error: str | None = None
+        self._failed_version: str | None = None
         self._progress: float | None = None
         self._progress_total: float | None = None
         self._phase: str | None = None
@@ -278,17 +279,16 @@ class UpdateManager:
                          name="fused-render-update-auto").start()
 
     def maybe_auto_install(self) -> None:
-        """Start the download when the "Automatically download updates"
-        pref is on and a check has just found one. Only from "available": an
-        "error" is the user's to retry (an unattended loop re-fetching a broken
-        artifact every tick would run away), and install() itself refuses for
-        a check-only manager. Restart is never triggered from here."""
+        """Start the download when the "Automatically download updates" pref
+        is on and a check has found a version that has not already failed to
+        install: retrying that one is the user's call. Never restarts."""
         from fused_render.shell import prefs  # lazy: prefs imports half the app
 
         if not prefs.auto_download_updates_enabled():
             return
         with self._lock:
-            if self._state != "available" or self._latest is None:
+            if (self._state != "available" or self._latest is None
+                    or self._latest["version"] == self._failed_version):
                 return
             expected = self._latest["version"]
         self.install(expected_version=expected)
@@ -589,6 +589,7 @@ class UpdateManager:
             with self._lock:
                 self._state = "error"
                 self._error = str(error)
+                self._failed_version = manifest["version"]
             return
         # NO ROW AT ALL ON SUCCESS (Akshil, 2026-09-19). A finished install
         # used to write a terminal row — "Installed — restart to finish", on
