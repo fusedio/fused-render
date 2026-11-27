@@ -118,7 +118,24 @@ function hostCanSit(url: string): boolean {
   if (!isSpaUrl(url)) return false;
   const { path, query } = splitUrl(url);
   if (path.startsWith("/explorer/embed")) return false;
-  return !querySegments(query).includes("embed=1");
+  // DECODED, as the page itself reads it (router.ts IS_QUERY_EMBED goes
+  // through URLSearchParams): `embed=%31` boots an embed too.
+  return !querySegments(query).some((seg) => {
+    try {
+      return decodeURIComponent(seg.replace(/\+/g, " ")) === "embed=1";
+    } catch {
+      return false;
+    }
+  });
+}
+
+/** A path+query this origin serves, as a browser would resolve it. Starting
+ *  with one `/` is not enough: the URL parser reads `\` as `/` and drops tabs
+ *  and newlines before resolving, so `/\evil.example/x` and `/<tab>/evil…` name
+ *  another origin. Nothing a tab's own URL holds needs those characters raw. */
+export function isPlainPath(url: string): boolean {
+  if (!url.startsWith("/") || url.startsWith("//")) return false;
+  return !/[\\\u0000-\u001f\u007f]/.test(url);
 }
 
 /** Is `url` Home (`/` is the front door, which is Home)? */
@@ -285,7 +302,7 @@ export function parseHostUrl(url: string): ParsedHost {
       }
       // Same-origin paths only: an item becomes an iframe src, so a
       // hand-edited `https://…` or `javascript:` must not become a tab.
-      if (!decoded.startsWith("/") || decoded.startsWith("//")) continue;
+      if (!isPlainPath(decoded)) continue;
       if (explicit && active === -1) active = tabs.length;
       tabs.push(stripHash(decoded));
     }

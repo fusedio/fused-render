@@ -495,7 +495,7 @@ const ENTRIES = [
     group: "features",
     section: "Other",
     label: "Tabs and side panel",
-    description: "Pages open as tabs on the left. Claude, Tasks and Bots open in one panel on the right. The window reloads when you switch it.",
+    description: "Pages open as tabs on the left, with Home as the first tab. The window reloads when you switch it.",
     keywords: "tabs tab strip workspace panel side right left pages split window",
   },
   // EXPERTS (docs/experts.md): a kind of bot on the Bots page, and

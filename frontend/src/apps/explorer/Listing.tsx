@@ -442,6 +442,10 @@ export default function Listing({
   // rail and the listing takes the whole width. Stage 2's "open this chat on
   // the right" hooks in here.
   const paneEnabled = !IS_SNAPSHOT && !IS_PANEL_PANE && !IS_WS_FRAME && !remote;
+  // The folder's APP ROWS (Share, Open as project, App Doctor, MCP) are not the
+  // pane's: a workspace tab has no pane and still is the folder's own page, so
+  // it keeps them. Off where the pane is off for the page's OWN sake.
+  const appRowsEnabled = !IS_SNAPSHOT && !IS_PANEL_PANE && !remote;
   // Drag-to-close hands off to the same `_side=off` the pane header's close
   // button writes (`closeSide`, below) — one vocabulary for "the pane is shut",
   // whichever gesture said it. A closure, called only from pointer events, so
@@ -1017,8 +1021,8 @@ export default function Listing({
   // the hook contributes nothing there and the menu is the folder ops alone.
   const appRows = useAppActionRows({
     fsPath: appEntryPath ? canonFsPath(appEntryPath) : fsPath + "/index.html",
-    isEntry: paneEnabled && appEntryPath !== null,
-    mcp: paneEnabled
+    isEntry: appRowsEnabled && appEntryPath !== null,
+    mcp: appRowsEnabled
       ? {
           available: mcpSrc !== null,
           pending: folderMcp.pending,
