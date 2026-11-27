@@ -590,7 +590,7 @@ OPTIONS = {
         # Automation prompt names this app, and the grant lives under its name.
         "NSAppleEventsUsageDescription": (
             f"{_APP} reads and adds to your Notes and Calendar when you connect them under "
-            "Preferences > Connections, and runs the automations you ask for."),
+            "Preferences > Integrations, and runs the automations you ask for."),
         # No LSUIElement (D34): regular app, Dock icon + menu bar item both.
         # Finder "Open with Fused Render" (SPEC DM-8).
         "CFBundleDocumentTypes": DOCUMENT_TYPES,

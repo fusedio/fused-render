@@ -292,7 +292,7 @@ while the task has not read the web (the posture in §6 stands). Revoked under
 Settings → Permissions → Approved forever (`allow_rules_remove`: removals only, applied to the live list, since the task thread writes it too); the `clone` copies them.
 `connections`: provider keys of `fused_render.connect` (`notion`, `github`,
 `slack`…, normalised like app folders) this bot may use (2026-11-04). The
-sign-in is GLOBAL (Preferences → Connections, one token per service on this
+sign-in is GLOBAL (Preferences → Integrations, one token per service on this
 Mac); access is PER BOT and off by default. A `tool` call into a service not
 listed raises an approval card on EVERY call, read-only or not, and under
 "Never ask" too (`tools.must_ask`, read by both engines before `approval`:

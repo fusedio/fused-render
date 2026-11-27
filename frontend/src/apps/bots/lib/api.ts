@@ -192,7 +192,7 @@ export interface Bot {
    *  permission: a build this bot finished and an "Always approve" on a tool/script card both tick it. */
   trusted_apps?: string[];
   /** Connected services (provider keys: notion, github, slack…) this bot may use (Settings › Connections). Sign-in
-   *  is global (Preferences › Connections); access is per bot and off by default: a call into a service not listed
+   *  is global (Preferences › Integrations); access is per bot and off by default: a call into a service not listed
    *  raises a card every time, even under "Never ask", and "Always approve" on it ticks the service here. */
   connections?: string[];
   /** Calls the user approved forever from a card; revoked under Settings › Permissions. */

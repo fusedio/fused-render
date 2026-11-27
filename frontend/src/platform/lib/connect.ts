@@ -1,7 +1,7 @@
 // The `/api/connect` client (SPEC-connect-oauth.md §11 manager.list / manager.status)
 // and the one hook that drives it: the provider rows, each one's live status,
 // the login → consent tab → poll → connected round trip. Shared by the
-// Preferences › Connections page (shell/Connections.tsx) and the bot
+// Preferences › Integrations page (shell/Connections.tsx) and the bot
 // Settings › Connections tab (apps/bots/dialogs/ConnectionsSection.tsx): a
 // sign-in is GLOBAL (one token per service on this machine), so both surfaces
 // read and write the same thing through this file.

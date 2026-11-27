@@ -37,7 +37,7 @@ import { RowSwitch, SettingRow, type PrefControlProps } from "./SettingRow";
 
 const FUSED_LOGIN_POLL_MS = 1500;
 
-// FUSED WORKBENCH (Preferences > Fused Workbench): one row per environment a
+// FUSED WORKBENCH (Preferences > Integrations > Fused Workbench): one row per environment a
 // person can turn on — Fused hosted (prod) and On-prem (custom) — each a
 // switch. Unstable has no row (owner, 2026-11-26): the server adds it to the
 // enabled list by itself for a Fused employee signed in to Fused hosted

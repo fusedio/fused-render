@@ -773,7 +773,7 @@ def set_trusted_apps(meta, add=(), remove=()):
 
 # ---- connections: a per-bot whitelist of connected services ------------------------
 # bot.json `connections`: provider keys (`fused_render.connect`, normalised like app
-# folders) this bot may use. Sign-in is GLOBAL (Preferences › Connections, one token per
+# folders) this bot may use. Sign-in is GLOBAL (Preferences › Integrations, one token per
 # service on this machine); access is PER BOT and off by default: a `tool` call into a
 # service not in the list raises an approval card every time, read-only or not, even
 # under "Never ask" (tools.must_ask), and "Always approve" on that card ticks the
