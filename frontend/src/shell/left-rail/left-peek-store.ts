@@ -1,6 +1,6 @@
 // SIDEBAR PREVIEWS (owner, 2026-11-27: "the same hover-card behaviour on the
 // collapsed left rail's icons", behind `left_rail_peek_enabled`, default
-// off). Each icon of the collapsed LEFT sidebar — Home, Search, AI Models,
+// off). Each icon of the collapsed LEFT sidebar — Home, AI Models,
 // Community, every project, canvas and favourite — opens the Claude rail's
 // window A card (DoorCard, `side: "left"`), to the right of the sidebar:
 //
@@ -41,7 +41,7 @@ import { leftPace } from "./left-rail-zone";
 
 /** One collapsed-sidebar icon's card, as GlobalSidebar describes it. */
 export interface LeftPeekItem {
-  /** The rail item's own key (`home`, `search`, `app:<path>`, `pin:<id>` …). */
+  /** The rail item's own key (`home`, `app:<path>`, `pin:<id>` …). */
   key: string;
   title: string;
   icon: ReactNode;
@@ -51,13 +51,16 @@ export interface LeftPeekItem {
    *  the card's Open in a workspace host (an entry that has no use for it
    *  ignores it). */
   onOpen: (o?: { newTab?: boolean }) => Promise<boolean> | void;
-  /** IN A WORKSPACE HOST (left-peek-lib, SPEC §56 WS-28…): the active tab
-   *  shows this entry's page — no card on hover or ArrowRight. */
+  /** The entry is the page on screen (lit active): a hover or ArrowRight
+   *  opens no card for it (owner, 2026-11-27: "if the page is active it
+   *  shouldn't popup"); a card already up stays as it is. In a workspace
+   *  host, the page the active tab shows. */
   active?: boolean;
-  /** …a plain click shows the card, held till one press outside, instead of
-   *  the entry's own click (a favourite; Search with no launcher). */
+  /** IN A WORKSPACE HOST (left-peek-lib, SPEC §56 WS-28…): a plain click
+   *  shows the card, held till one press outside, instead of the entry's own
+   *  click (a favourite; Search with no launcher). */
   clickShowsCard?: boolean;
-  /** …the card has no pin: no button, no head-drag pin. */
+  /** …and the card has no pin: no button, no head-drag pin. */
   pinless?: boolean;
 }
 
@@ -175,7 +178,7 @@ let itemsSig = "";
 
 function showSig(s: LeftPeekShow): string {
   if (s.kind === "compose") return "compose";
-  return s.kind === "app" ? `app|${s.still}|${s.picture}|${s.live}` : `${s.kind}|${s.src}`;
+  return s.kind === "app" ? `app|${s.still}|${s.picture}|${s.live}` : `${s.kind}|${s.src}|${s.searchHome ?? ""}`;
 }
 
 function rulesSig(i: LeftPeekItem): string {
@@ -354,9 +357,8 @@ export function leftDoorFor(key: string, slot: LeftDoorSlot = "rail"): SidebarRa
   const store = stores.get(key);
   if (!store || !items.has(key)) return undefined;
   const s = store.state();
-  // An entry the active tab shows (a workspace host) opens no card: it keeps
-  // its tooltip and says no popup.
-  const opens = s.ready && !items.get(key)?.active;
+  /** The entry's page is on screen: nothing opens (`LeftPeekItem.active`). */
+  const here = () => items.get(key)?.active === true;
   const putDownOwn = () => {
     const c = store.state();
     if (c.up && !c.held) store.close();
@@ -366,9 +368,8 @@ export function leftDoorFor(key: string, slot: LeftDoorSlot = "rail"): SidebarRa
     onPointerEnter: (e: ReactPointerEvent<HTMLElement>) => {
       // A touch is no hover; a pointer dragging something (a row's reorder,
       // the width seam) opens nothing; nor does one while a menu, a dialog
-      // or a rename has the sidebar; nor the entry the active tab shows.
-      if (e.pointerType === "touch" || e.buttons !== 0 || blocked || sidebarBusy()) return;
-      if (items.get(key)?.active) return;
+      // or a rename has the sidebar.
+      if (e.pointerType === "touch" || e.buttons !== 0 || blocked || sidebarBusy() || here()) return;
       if (!store.state().ready) return;
       store.intent().enterRing(store.key, "pointer");
     },
@@ -397,8 +398,7 @@ export function leftDoorFor(key: string, slot: LeftDoorSlot = "rail"): SidebarRa
         store.close(true);
         return;
       }
-      if (items.get(key)?.active) return;
-      if (leftKeyOpens({ key: e.key, modified: e.altKey || e.ctrlKey || e.metaKey || e.shiftKey, ready: c.ready, editable: isEditable(e.target), blocked: blocked || sidebarBusy() })) {
+      if (leftKeyOpens({ key: e.key, modified: e.altKey || e.ctrlKey || e.metaKey || e.shiftKey, ready: c.ready && !here(), editable: isEditable(e.target), blocked: blocked || sidebarBusy() })) {
         e.preventDefault();
         store.intent().press(store.key);
         focusCardSoon(store);
@@ -424,12 +424,12 @@ export function leftDoorFor(key: string, slot: LeftDoorSlot = "rail"): SidebarRa
       // THE ENTRY WHOSE CARD IS UP LOOKS OPEN (claude-rail.css; the Claude
       // rail's `doorOpen`): a preview or temp card, or a held one.
       ...(s.up ? { [LEFT_OPEN_ATTR]: s.held ? "pinned" : "open" } : {}),
-      ...(opens
+      ...(s.ready && (s.up || !here())
         ? { "aria-haspopup": "dialog", "aria-expanded": s.up ? "true" : "false", "aria-controls": store.id, "aria-keyshortcuts": "ArrowRight" }
         : {}),
     },
     // The card speaks for the icon: no tooltip beside it.
-    quietTip: opens,
+    quietTip: s.ready && (s.up || !here()),
   };
 }
 

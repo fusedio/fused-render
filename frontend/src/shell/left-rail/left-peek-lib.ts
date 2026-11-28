@@ -7,22 +7,17 @@ import type { PressTarget, PressWhere } from "@shell/claude-rail/rail-pin-lib";
 
 /** WHAT A LEFT CARD SHOWS:
  *    - `frame`: a page, chrome-free, in the card (Home's explorer, AI Models,
- *      the Community, a canvas's canvas.toml view, a favourite);
- *    - `search`: Home's file search alone, in a frame whose result opens on
- *      the page, not in the card (LeftPeek);
+ *      the Community, a canvas's canvas.toml view, a favourite); with
+ *      `searchHome`, a file search box in the card's head over that folder —
+ *      typing swaps the page for the results (the Home card, LeftPeek);
  *    - `app`: a project — its `preview.png` still while a preview, its live
  *      entry page once pinned, or when it has no still. */
 export type LeftPeekShow =
-  | { kind: "frame"; src: string }
-  | { kind: "search"; src: string }
+  | { kind: "frame"; src: string; searchHome?: string }
   | { kind: "app"; still: string; picture: string; live: string }
   // The "+ New app" card: the New-app composer itself (the modal's content),
   // drawn in the card — no page, no frame.
   | { kind: "compose" };
-
-/** The Home page narrowed to its file search (shell/Home.tsx `SEARCH_ONLY`). */
-export const SEARCH_ONLY_PARAM = "searchonly";
-export const SEARCH_CARD_SRC = `/home?${EMBED_PARAM}=1&${SEARCH_ONLY_PARAM}=1`;
 
 /** `url` with one query param set: only its search part changes — the path
  *  and a `#fragment` are kept, and a second literal `?` stays inside the
@@ -96,20 +91,84 @@ export function frameSrcOf(show: LeftPeekShow, o: { pinned: boolean; stillFailed
   return o.stillFailed ? show.picture : null;
 }
 
-/** THE SEARCH CARD'S RESULT OPENS ON THE PAGE: where the search frame went
- *  (its path and query), as the top page's address — the embed prefix back
- *  to the view prefix, the frame's own stamps dropped. Null while the frame
- *  is still on its search (nothing to open). */
-export function searchHopTarget(pathAndSearch: string): string | null {
-  const qAt = pathAndSearch.indexOf("?");
-  const path = qAt < 0 ? pathAndSearch : pathAndSearch.slice(0, qAt);
-  const query = qAt < 0 ? "" : pathAndSearch.slice(qAt + 1);
-  if (path === "/home") return null;
-  const q = new URLSearchParams(query);
-  for (const k of [EMBED_PARAM, SEARCH_ONLY_PARAM, NO_FOCUS_PARAM, PREVIEW_PARAM]) q.delete(k);
+/** THE HOME CARD'S TRAIL (owner, 2026-11-27: "we open everything in card
+ *  unless user clicks open in top right, when it does we open whatever view
+ *  we are in"): what the card has shown, oldest first — a framed page
+ *  (`page`: the address the frame is on, as the frame sees it) or the search
+ *  results (`results`). The last step is what shows; Back drops it. The
+ *  first step (the ~ listing) never goes. */
+export type HomeStep = { kind: "results" } | { kind: "page"; url: string };
+
+/** A query became live: its results show on top (once). */
+export function trailResults(trail: readonly HomeStep[]): HomeStep[] {
+  return trail[trail.length - 1]?.kind === "results" ? [...trail] : [...trail, { kind: "results" }];
+}
+
+/** The query emptied (Esc, Clear, the box wiped): its results go — on top,
+ *  or under a page they led to (Back never lands on empty results). */
+export function trailNoResults(trail: readonly HomeStep[]): HomeStep[] {
+  return trail.filter((step, i) => i === 0 || step.kind !== "results");
+}
+
+/** A page opened in the card (a result picked): it shows on top. */
+export function trailOpen(trail: readonly HomeStep[], url: string): HomeStep[] {
+  return [...trail, { kind: "page", url }];
+}
+
+function pathOf(url: string): string {
+  const cut = url.search(/[?#]/);
+  return cut < 0 ? url : url.slice(0, cut);
+}
+
+/** THE FRAME WENT SOMEWHERE ON ITS OWN (a folder opened in the listing): a
+ *  new path is a new step; the same path with another query (a view
+ *  param, a selection) only updates the step it is. Nothing while the
+ *  results are on top — the frame under them is not what shows. */
+export function trailFrameAt(trail: readonly HomeStep[], url: string): HomeStep[] {
+  const top = trail[trail.length - 1];
+  if (!top || top.kind !== "page") return [...trail];
+  if (top.url === url) return [...trail];
+  if (pathOf(top.url) === pathOf(url)) return [...trail.slice(0, -1), { kind: "page", url }];
+  return [...trail, { kind: "page", url }];
+}
+
+/** Back: the step on top goes (never the first). */
+export function trailBack(trail: readonly HomeStep[]): HomeStep[] {
+  return trail.length > 1 ? trail.slice(0, -1) : [...trail];
+}
+
+/** The page the frame should be on: the last page step. */
+export function trailPage(trail: readonly HomeStep[]): string | null {
+  for (let i = trail.length - 1; i >= 0; i--) {
+    const s = trail[i];
+    if (s.kind === "page") return s.url;
+  }
+  return null;
+}
+
+/** A FRAMED PAGE AS THE TOP PAGE'S ADDRESS (the card's Open): the embed
+ *  prefix back to the view prefix, the card's own stamps dropped (`embed`,
+ *  `_nofocus`, `_preview`, and the shut side pane `_side=off`, so the page
+ *  keeps its own pane). */
+export function cardPageUrl(url: string): string {
+  const hashAt = url.indexOf("#");
+  const base = hashAt < 0 ? url : url.slice(0, hashAt);
+  const hash = hashAt < 0 ? "" : url.slice(hashAt);
+  const qAt = base.indexOf("?");
+  const path = qAt < 0 ? base : base.slice(0, qAt);
+  const q = new URLSearchParams(qAt < 0 ? "" : base.slice(qAt + 1));
+  for (const k of [EMBED_PARAM, NO_FOCUS_PARAM, PREVIEW_PARAM]) q.delete(k);
+  if (q.get("_side") === "off") q.delete("_side");
   const top = path.startsWith(EMBED_PREFIX) ? VIEW_PREFIX + path.slice(EMBED_PREFIX.length) : path;
   const qs = q.toString();
-  return top + (qs ? "?" + qs : "");
+  return top + (qs ? "?" + qs : "") + hash;
+}
+
+/** The Home page with a search typed (the card's Open while its results
+ *  show) — an INSTANT one (`qmode=instant`, SearchWidget): a bare `?q=` is a
+ *  committed AI search, which Home would run again (a model call). */
+export function homeSearchUrl(query: string): string {
+  return query.trim() ? "/home?q=" + encodeURIComponent(query) + "&qmode=instant" : "/home";
 }
 
 /** The attribute every left door carries: its item's key. */
@@ -200,10 +259,11 @@ export function leftEntryPress(o: {
   return "page";
 }
 
-/** THE SEARCH ROW STANDS where it can do something: the launcher, or — in a
- *  host, where it takes Home's place — the search card. */
+/** THE SEARCH ROW STANDS IN A HOST ONLY, in Home's place, and where it can
+ *  do something: the launcher, or the Home card it carries (the file search).
+ *  Outside a host the Home row has that card and there is no Search row. */
 export function leftSearchRowShown(o: { workspace: boolean; launcher: boolean; peekOn: boolean }): boolean {
-  return o.launcher || (o.workspace && o.peekOn);
+  return o.workspace && (o.launcher || o.peekOn);
 }
 
 /** A LEFT CARD CARRIES A PIN (its button, a head drag): always outside a
@@ -212,10 +272,11 @@ export function leftCardPinnable(o: { workspace: boolean; kind: LeftEntryKind })
   return !o.workspace || o.kind === "bookmark";
 }
 
-/** A HOVER OR ARROWRIGHT OPENS THE ENTRY'S CARD, unless — in a host — the
- *  active tab already shows its page. */
-export function leftCardOnHover(o: { workspace: boolean; active: boolean }): boolean {
-  return !(o.workspace && o.active);
+/** A HOVER OR ARROWRIGHT OPENS THE ENTRY'S CARD, unless its page is the one
+ *  on screen (owner, 2026-11-27: "if the page is active it shouldn't popup")
+ *  — in a host, the page the active tab shows. */
+export function leftCardOnHover(o: { active: boolean }): boolean {
+  return !o.active;
 }
 
 /** Where a plain press on an entry landed: on its own link (the rail icon
