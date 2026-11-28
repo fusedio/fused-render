@@ -5,6 +5,7 @@ import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import type { PointerEvent as ReactPointerEvent, KeyboardEvent as ReactKeyboardEvent } from "react";
 import { PEEK_OPEN_MS, type Timers } from "@shell/claude-rail/rail-peek-lib";
 import {
+  cardOpenTarget,
   leftCardOnHover,
   leftCardPinnable,
   leftEntryPress,
@@ -176,5 +177,29 @@ describe("the doors in a host", () => {
     expect(state("ai-models").up).toBe(false);
     door.onKeyDown!({ key: "ArrowRight", target: null, altKey: false, ctrlKey: false, metaKey: false, shiftKey: false, preventDefault() {} } as unknown as ReactKeyboardEvent<HTMLElement>);
     expect(state("ai-models").up).toBe(false);
+  });
+});
+
+describe("what a trail card's Open loads (WS-39)", () => {
+  const BASE = "/explorer/embed/Users/me/sandbox?_side=off";
+  const page = (url: string) => ({ kind: "page" as const, url });
+  it("a card still on the page it came up on: the entry's own Open (a favourite's arms it)", () => {
+    expect(cardOpenTarget({ base: BASE, top: page(BASE), searchHome: false, query: "" })).toBeNull();
+    // The frame's own stamps are not a move.
+    expect(cardOpenTarget({ base: BASE, top: page(BASE + "&_nofocus=1"), searchHome: false, query: "" })).toBeNull();
+  });
+  it("a card that went somewhere: that page, as the page's own address", () => {
+    expect(cardOpenTarget({ base: BASE, top: page("/explorer/embed/Users/me/sandbox/lens?_side=off"), searchHome: false, query: "" })).toBe(
+      "/explorer/view/Users/me/sandbox/lens",
+    );
+    // The same folder seen another way is a view of its own too.
+    expect(cardOpenTarget({ base: BASE, top: page("/explorer/embed/Users/me/sandbox?_side=off&sort=size"), searchHome: false, query: "" })).toBe(
+      "/explorer/view/Users/me/sandbox?sort=size",
+    );
+    expect(cardOpenTarget({ base: "/ai-models?embed=1", top: page("/ai-models/benchmarks?embed=1"), searchHome: false, query: "" })).toBe("/ai-models/benchmarks");
+  });
+  it("the Home card: always the view it is on; Home with the query while the results show", () => {
+    expect(cardOpenTarget({ base: BASE, top: page(BASE), searchHome: true, query: "" })).toBe("/explorer/view/Users/me/sandbox");
+    expect(cardOpenTarget({ base: BASE, top: { kind: "results" }, searchHome: true, query: "tax 2026" })).toBe("/home?q=tax%202026&qmode=instant");
   });
 });

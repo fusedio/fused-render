@@ -1,22 +1,33 @@
 import { describe, expect, test } from "bun:test";
+import { chatUrl } from "@platform/lib/queue";
 import {
+  adoptedRun,
   asRailPlace,
   buildHostUrl,
+  chatHoldKey,
   classifyNav,
   encodeRight,
   encodeTabsParam,
   isPlainPath,
   isSpaUrl,
+  landPendingArms,
+  liftRightTabs,
+  liveTabArm,
   neighborAfterClose,
+  nextTabArm,
+  panelLayout,
   normalizeOpenUrl,
   pageUrlOf,
   parseHostUrl,
   parseRight,
   placeOfUrl,
   planOpen,
+  reloadPendingArms,
+  rightOnlyView,
   rightSession,
   sameRight,
   samePage,
+  settlePendingArm,
   splitArrival,
   tabKind,
   tabLabel,
@@ -35,6 +46,13 @@ describe("samePage", () => {
   test("/ is Home", () => {
     expect(samePage("/", "/home")).toBe(true);
     expect(samePage("/?a=1", "/home")).toBe(true);
+  });
+  test("a path reads the way the router reads it: every escape in a segment is decoded", () => {
+    expect(samePage("/explorer/view/tmp/a%3Bb.html", "/explorer/view/tmp/a;b.html")).toBe(true);
+    expect(samePage("/explorer/view/tmp/a%2Cb%23c.html", "/explorer/view/tmp/a,b%23c.html")).toBe(true);
+    // A segment that does not decode is compared as written.
+    expect(samePage("/explorer/view/tmp/100%.html", "/explorer/view/tmp/100%.html")).toBe(true);
+    expect(samePage("/explorer/view/tmp/100%.html", "/explorer/view/tmp/100.html")).toBe(false);
   });
   test("decoded pathnames compare equal", () => {
     expect(samePage("/explorer/view/Users/me/a%20b", "/explorer/view/Users/me/a b")).toBe(true);
@@ -228,6 +246,19 @@ describe("parseRight / encodeRight", () => {
     expect(sameRight({ kind: "chat", file: "/a", query: "session_id=s&split=1" }, { kind: "chat", file: "/a", query: "session_id=s" })).toBe(true);
     expect(sameRight({ kind: "chat", file: "/a", query: "session_id=s" }, { kind: "chat", file: "/a", query: "" })).toBe(false);
     expect(sameRight({ kind: "chat", file: "/a", query: "" }, { kind: "chat", file: "/b", query: "" })).toBe(false);
+    // A run the opened view names is another chat to show (a canvas fix).
+    expect(sameRight({ kind: "chat", file: "/a", query: "" }, { kind: "chat", file: "/a", query: "run=r1" })).toBe(false);
+    expect(sameRight({ kind: "chat", file: "/a", query: "run=r1" }, { kind: "chat", file: "/a", query: "run=r1&split=1" })).toBe(true);
+    // A home door naming an agent is another view from a home on another (or none).
+    expect(sameRight({ kind: "chat", file: "/a", query: "" }, { kind: "chat", file: "/a", query: "backend=codex" })).toBe(false);
+    expect(sameRight({ kind: "chat", file: "/a", query: "backend=claude" }, { kind: "chat", file: "/a", query: "backend=codex" })).toBe(false);
+    expect(sameRight({ kind: "chat", file: "/a", query: "backend=codex&split=1" }, { kind: "chat", file: "/a", query: "backend=codex" })).toBe(true);
+    // …one naming none is any home; a conversation is its session, agent or not.
+    expect(sameRight({ kind: "chat", file: "/a", query: "backend=codex" }, { kind: "chat", file: "/a", query: "" })).toBe(true);
+    expect(sameRight({ kind: "chat", file: "/a", query: "session_id=s" }, { kind: "chat", file: "/a", query: "session_id=s&backend=codex" })).toBe(true);
+    // A run-only chat on screen is not the home + asks for.
+    expect(sameRight({ kind: "chat", file: "/a", query: "run=r1" }, { kind: "chat", file: "/a", query: "" })).toBe(false);
+    expect(sameRight({ kind: "chat", file: "/a", query: "session_id=s&run=r1" }, { kind: "chat", file: "/a", query: "session_id=s" })).toBe(true);
     expect(rightSession({ kind: "chat", file: "/a", query: "session_id=s1" })).toBe("s1");
     expect(rightSession({ kind: "chat", file: "/a", query: "" })).toBeNull();
   });
@@ -280,6 +311,12 @@ describe("splitArrival", () => {
   test("a file on _mode=git: right git, the tab on its default mode", () => {
     expect(splitArrival(FILE + "?_mode=git")).toEqual({ keep: FILE, right: { kind: "git", path: "/Users/me/a.html" } });
   });
+  test("the pane's params are read decoded; every other param is kept byte for byte", () => {
+    expect(splitArrival(FOLDER + "?q=a%20b&_side=%63laude&session%5Fid=s1&x=%2F")).toEqual({
+      keep: FOLDER + "?q=a%20b&x=%2F",
+      right: { kind: "chat", file: "/Users/me/dir", query: "session_id=s1" },
+    });
+  });
   test("no pane: kept as is", () => {
     expect(splitArrival(FILE + "?_mode=code")).toEqual({ keep: FILE + "?_mode=code", right: null });
     expect(splitArrival(FOLDER + "?_side=off")).toEqual({ keep: FOLDER + "?_side=off", right: null });
@@ -307,6 +344,101 @@ describe("placeOfUrl (an unloaded tab's rail place, WS-27)", () => {
   });
 });
 
+describe("rightOnlyView (WS-34)", () => {
+  test("Tasks and Bots are panel views, never tabs", () => {
+    expect(rightOnlyView("/tasks")).toEqual({ kind: "tasks", peek: null });
+    expect(rightOnlyView("/tasks?peek=abc")).toEqual({ kind: "tasks", peek: "abc" });
+    expect(rightOnlyView("/bots")).toEqual({ kind: "bots", url: "/bots" });
+    expect(rightOnlyView("/bots/x?tab=1")).toEqual({ kind: "bots", url: "/bots/x?tab=1" });
+  });
+  test("a chat door, a canvas with a session and any other page keep their tab", () => {
+    expect(rightOnlyView(FOLDER + "?_side=claude&session_id=s1")).toBeNull();
+    expect(rightOnlyView("/canvases/prod/c1?session_id=s1")).toBeNull();
+    expect(rightOnlyView("/home")).toBeNull();
+    expect(rightOnlyView("/botsy")).toBeNull();
+  });
+});
+
+describe("liftRightTabs (WS-34)", () => {
+  test("a host booting on /tasks?peek= is Home plus the Tasks view", () => {
+    const out = liftRightTabs(parseHostUrl("/tasks?peek=k1"));
+    expect(out.tabs).toEqual(["/home"]);
+    expect(out.active).toBe(0);
+    expect(parseRight(out.right)).toEqual({ kind: "tasks", peek: "k1" });
+  });
+  test("a deep link into Bots", () => {
+    const out = liftRightTabs(parseHostUrl("/bots/x"));
+    expect(out.tabs).toEqual(["/home"]);
+    expect(parseRight(out.right)).toEqual({ kind: "bots", url: "/bots/x" });
+  });
+  test("a _tabs item naming one is dropped; the active tab keeps its place", () => {
+    const host = buildHostUrl(["/home", "/tasks", FOLDER], 2);
+    const out = liftRightTabs(parseHostUrl(host));
+    expect(out.tabs).toEqual(["/home", FOLDER]);
+    expect(out.active).toBe(1);
+    expect(out.kept).toEqual([0, 2]);
+    expect(parseRight(out.right)).toEqual({ kind: "tasks", peek: null });
+  });
+  test("an explicit _right wins; the active lifted one beats an earlier one", () => {
+    const named = liftRightTabs(parseHostUrl(buildHostUrl(["/home", "/tasks"], 1, "git:%2Fa")));
+    expect(named.right).toBe("git:%2Fa");
+    expect(named.active).toBe(0);
+    const both = liftRightTabs(parseHostUrl(buildHostUrl(["/home", "/tasks", "/bots"], 2)));
+    expect(both.tabs).toEqual(["/home"]);
+    expect(parseRight(both.right)).toEqual({ kind: "bots", url: "/bots" });
+  });
+  test("a strip with none is untouched", () => {
+    const parsed = parseHostUrl(buildHostUrl(["/home", FILE], 1, "tasks"));
+    expect(liftRightTabs(parsed)).toEqual({ ...parsed, kept: [0, 1] });
+  });
+});
+
+test("a canvas fix's door opens the clone's chat on its run (WS-35)", () => {
+  expect(classifyNav(chatUrl("/Users/me/clone", "") + "&run=r1")).toEqual({
+    side: "right",
+    view: { kind: "chat", file: "/Users/me/clone", query: "run=r1" },
+  });
+});
+
+test("a mode view carries the tab's revision (absent = live)", () => {
+  const live: RightView = { kind: "mode", mode: "code", file: "/a/b.py" };
+  const snap: RightView = { kind: "mode", mode: "code", file: "/a/b.py", rev: "abc123" };
+  expect(encodeRight(live)).toBe("mode:code:%2Fa%2Fb.py");
+  expect(encodeRight(snap)).toBe("mode:code:%2Fa%2Fb.py:abc123");
+  expect(parseRight(encodeRight(snap))).toEqual(snap);
+  expect(parseRight(encodeRight(live))).toEqual(live);
+  expect(sameRight(live, snap)).toBe(false);
+  expect(parseRight("mode:code:%2Fa:r:x")).toBeNull();
+});
+
+describe("panelLayout (WS-17)", () => {
+  test("side by side while the tabs keep 320 and the panel 380", () => {
+    expect(panelLayout(1200, 48, 320, 380)).toEqual({ overlay: false, width: 380 });
+    expect(panelLayout(748, 48, 320, 380).overlay).toBe(false);
+  });
+  test("a narrower row makes it a drawer at its floor, or the room there is", () => {
+    expect(panelLayout(747, 48, 320, 380)).toEqual({ overlay: true, width: 380 });
+    expect(panelLayout(300, 48, 320, 380)).toEqual({ overlay: true, width: 252 });
+  });
+});
+
+describe("chatHoldKey (WS-33)", () => {
+  const rows = [
+    { key: "k-run", session_id: "s1" },
+    { key: "pending:e9", session_id: null },
+  ];
+  test("a session's row key, else the session id", () => {
+    expect(chatHoldKey("s1", null, rows)).toBe("k-run");
+    expect(chatHoldKey("s2", null, rows)).toBe("s2");
+  });
+  test("a chat that has not run is its pending row", () => {
+    expect(chatHoldKey(null, "e9", rows)).toBe("pending:e9");
+  });
+  test("a Claude home holds nothing", () => {
+    expect(chatHoldKey(null, null, rows)).toBeNull();
+  });
+});
+
 describe("what a restored tab may be", () => {
   test("a path this origin serves, as a browser would resolve it", () => {
     expect(isPlainPath("/explorer/view/Users/me/a b.html?x=1")).toBe(true);
@@ -329,6 +461,27 @@ describe("what a restored tab may be", () => {
   });
 });
 
+describe("a run that became its session (the canvas fix chat)", () => {
+  const chat = (query: string): RightView => ({ kind: "chat", file: "/clone", query });
+  test("the chat's own write from run to session is the pair", () => {
+    expect(adoptedRun("run=r1", "session_id=s1")).toEqual(["r1", "s1"]);
+    expect(adoptedRun("run=r1&split=1", "session_id=s1&split=1")).toEqual(["r1", "s1"]);
+    expect(adoptedRun("run=r1", "run=r1")).toBeNull();
+    expect(adoptedRun("session_id=s0&run=r1", "session_id=s1")).toBeNull();
+    expect(adoptedRun("", "session_id=s1")).toBeNull();
+  });
+  test("a door on that run is the chat on screen, not a new view", () => {
+    const adopted = (run: string) => (run === "r1" ? "s1" : undefined);
+    expect(sameRight(chat("session_id=s1"), chat("run=r1"), adopted)).toBe(true);
+    expect(sameRight(chat("run=r1"), chat("run=r1"), adopted)).toBe(true);
+    // Another session on the same file, or a run nobody adopted: a new view.
+    expect(sameRight(chat("session_id=s2"), chat("run=r1"), adopted)).toBe(false);
+    expect(sameRight(chat("session_id=s1"), chat("run=r9"), adopted)).toBe(false);
+    expect(sameRight(chat("session_id=s1"), chat("run=r1"))).toBe(false);
+    expect(sameRight(chat(""), chat("run=r1"), adopted)).toBe(false);
+  });
+});
+
 describe("asRailPlace (a place remembered in the history entry)", () => {
   test("a place comes back as itself", () => {
     expect(asRailPlace({ kind: "folder", dir: "/Users/me/data.v2" })).toEqual({ kind: "folder", dir: "/Users/me/data.v2" });
@@ -346,5 +499,99 @@ describe("asRailPlace (a place remembered in the history entry)", () => {
     for (const x of [null, undefined, "folder", 3, {}, { kind: "folder" }, { kind: "folder", dir: "" }, { kind: "file", file: 1 }, { kind: "canvas", env: "x", name: "a", dir: null }]) {
       expect(asRailPlace(x)).toBeNull();
     }
+  });
+});
+
+describe("a tab's own armed bookmark (WS-38)", () => {
+  const docA = { n: "a" };
+  const docB = { n: "b" };
+  const arm = { id: "b1", url: "/explorer/view/Users/me/a.html?x=1" };
+
+  test("a tab that says what it follows is held with the document that said it", () => {
+    expect(nextTabArm(undefined, docA, arm)).toEqual({ doc: docA, arm });
+    // Copied out of the frame's realm: never the object it was handed.
+    expect((nextTabArm(undefined, docA, arm) as { arm: object }).arm).not.toBe(arm);
+  });
+  test("the same arm from the same document changes nothing; a new url (Update bookmark) or a new document does", () => {
+    const held = { doc: docA, arm };
+    expect(nextTabArm(held, docA, { ...arm })).toBe("same");
+    expect(nextTabArm(held, docA, { ...arm, url: arm.url + "&y=2" })).toEqual({ doc: docA, arm: { ...arm, url: arm.url + "&y=2" } });
+    expect(nextTabArm(held, docB, { ...arm })).toEqual({ doc: docB, arm });
+  });
+  test("letting go clears it; letting go of nothing changes nothing", () => {
+    expect(nextTabArm({ doc: docA, arm }, docA, null)).toBeNull();
+    expect(nextTabArm(undefined, docA, null)).toBe("same");
+  });
+  test("anything that is not an arm reads as letting go", () => {
+    for (const said of [undefined, "b1", 3, {}, { id: "b1" }, { id: 1, url: "/x" }, { id: "", url: "/x" }, { id: "b1", url: "" }]) {
+      expect(nextTabArm({ doc: docA, arm }, docA, said)).toBeNull();
+      expect(nextTabArm(undefined, docA, said)).toBe("same");
+    }
+  });
+  test("the arm is the document's: after a reload, or with no frame, the tab follows nothing", () => {
+    const held = { doc: docA, arm };
+    expect(liveTabArm(held, docA)).toEqual(arm);
+    expect(liveTabArm(held, docB)).toBeNull();
+    expect(liveTabArm(held, null)).toBeNull();
+    expect(liveTabArm({ doc: null, arm }, null)).toBeNull();
+    expect(liveTabArm(undefined, docA)).toBeNull();
+  });
+});
+
+describe("an arm waiting on its hop (WS-38)", () => {
+  const A = { id: "a", url: "/explorer/view/Users/me/a.html?x=1" };
+  const B = { id: "b", url: "/explorer/view/Users/me/b.html" };
+  const AT_A = "/explorer/view/Users/me/a.html?x=1";
+  const AT_A_OTHER_QUERY = "/explorer/view/Users/me/a.html?x=9";
+  const ELSEWHERE = "/explorer/view/Users/me/notes.md";
+  const routed = (arm: typeof A, hop: number) => ({ arm, hop, load: false });
+  const loaded = (arm: typeof A, hop: number) => ({ arm, hop, load: true });
+  const riding = (arm: typeof A) => ({ arm, hop: null, load: false });
+
+  test("a hop that went by the router delivers its arm when the tab stands on the bookmark's page", () => {
+    expect(settlePendingArm([routed(A, 1)], 1, true, AT_A)).toEqual({ left: [], deliver: A });
+    // The page, not the params: the saved params applied, or the page rewrote them.
+    expect(settlePendingArm([routed(A, 1)], 1, true, AT_A_OTHER_QUERY)).toEqual({ left: [], deliver: A });
+  });
+  test("…and spends it without delivering when the tab ended up elsewhere, or cannot be read", () => {
+    expect(settlePendingArm([routed(A, 1)], 1, true, ELSEWHERE)).toEqual({ left: [], deliver: null });
+    expect(settlePendingArm([routed(A, 1)], 1, true, null)).toEqual({ left: [], deliver: null });
+  });
+  test("a hop the leave guard refused takes its arm with it, wherever the tab stands", () => {
+    expect(settlePendingArm([routed(A, 1)], 1, false, AT_A)).toEqual({ left: [], deliver: null });
+  });
+  test("a second click dropped while the first is still asked about spends only its own arm", () => {
+    // Bookmark A's hop (1) waits on the dialog; bookmark B's (2) is dropped by it.
+    const afterDrop = settlePendingArm([routed(A, 1), routed(B, 2)], 2, false, ELSEWHERE);
+    expect(afterDrop).toEqual({ left: [routed(A, 1)], deliver: null });
+    // The reader then says yes to the first: A is followed.
+    expect(settlePendingArm(afterDrop.left, 1, true, AT_A)).toEqual({ left: [], deliver: A });
+  });
+  test("a number nothing waits on changes nothing (an unarmed hop settling)", () => {
+    expect(settlePendingArm([routed(A, 1)], 5, false, AT_A)).toEqual({ left: [routed(A, 1)], deliver: null });
+    expect(settlePendingArm([], 5, true, AT_A)).toEqual({ left: [], deliver: null });
+  });
+  test("a hop that leaves by a full load has gone, not arrived: its arm waits for the new document", () => {
+    const gone = settlePendingArm([loaded(A, 3)], 3, true, ELSEWHERE);
+    expect(gone).toEqual({ left: [riding(A)], deliver: null });
+    expect(landPendingArms(gone.left, AT_A)).toEqual({ left: [], deliver: A });
+    // Refused, it never leaves.
+    expect(settlePendingArm([loaded(A, 3)], 3, false, ELSEWHERE)).toEqual({ left: [], deliver: null });
+  });
+  test("a location read spends the arms riding a load: delivered on the bookmark's page, dropped anywhere else", () => {
+    expect(landPendingArms([riding(A)], AT_A)).toEqual({ left: [], deliver: A });
+    expect(landPendingArms([riding(A)], ELSEWHERE)).toEqual({ left: [], deliver: null });
+    expect(landPendingArms([riding(B), riding(A)], AT_A)).toEqual({ left: [], deliver: A });
+    expect(landPendingArms([], AT_A)).toEqual({ left: [], deliver: null });
+  });
+  test("…and leaves a numbered arm alone: a refused hop's arm is never picked up by a later page", () => {
+    // The hop is still being asked about; the page changes its own address meanwhile.
+    expect(landPendingArms([routed(A, 1)], AT_A_OTHER_QUERY)).toEqual({ left: [routed(A, 1)], deliver: null });
+    // Refused: gone. The tab reaching the bookmark's page some other way follows nothing.
+    const left = settlePendingArm([routed(A, 1)], 1, false, ELSEWHERE).left;
+    expect(landPendingArms(left, AT_A)).toEqual({ left: [], deliver: null });
+  });
+  test("a new document: numbered arms can no longer settle and go; an arm riding the load stays", () => {
+    expect(reloadPendingArms([routed(A, 1), riding(B), loaded(A, 2)])).toEqual([riding(B)]);
   });
 });

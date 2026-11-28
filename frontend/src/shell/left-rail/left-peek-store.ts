@@ -196,7 +196,15 @@ export function publishLeftItems(list: readonly LeftPeekItem[]): void {
   const next = new Map(list.map((i) => [i.key, i] as const));
   // The facts are refreshed every time (the click's closure is the render's);
   // only a change in what is drawn is news.
-  for (const [key, item] of next) items.set(key, item);
+  for (const [key, item] of next) {
+    // An entry that BECAME the active tab's (no card on hover) drops a hover
+    // still waiting on its delay, or the card opens over the active entry.
+    if (item.active && !items.get(key)?.active) {
+      const store = stores.get(key);
+      store?.intent().forget(store.key);
+    }
+    items.set(key, item);
+  }
   const gone = [...items.keys()].filter((k) => !next.has(k));
   for (const k of gone) {
     items.delete(k);

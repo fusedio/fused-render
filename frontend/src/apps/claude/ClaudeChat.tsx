@@ -317,6 +317,14 @@ export interface ClaudeChatProps {
    *  place of the project's name. */
   pageRoot?: string | null;
   onSelectNode?: (udfName: string | null, sessionId?: string | null) => void;
+  /** A chat that stands on no page (the workspace's panel, SPEC §56 WS-18):
+   *  its head names the place too, as a rail card's does, not only where in
+   *  it — the pane's "a pane IS its place" does not hold there. */
+  placeInHead?: boolean;
+  /** NO ← IN THE HEAD (the workspace's panel; owner, 2026-11-28: "remove
+   *  back button … no need"): the panel shows one thing at a time and the
+   *  rail's + is the way to the folder's chats, so the × alone stands. */
+  noBack?: boolean;
   params: ChatParamsSource;
   /** A HOST stated this conversation's model/effort through `ChatMount`'s
    *  `model`/`effort` props, so the `model`/`effort` params on this mount's
@@ -5816,6 +5824,18 @@ function ChatBody(props: ChatBodyProps) {
         part="where"
       />
     ) : null;
+  // A CHAT ON NO PAGE (`placeInHead`, the workspace's panel) names its place
+  // in the head's place seat, as a rail card does.
+  const headPlace =
+    props.placeInHead && placeTag && inChat && head.task ? (
+      <PlaceTags
+        scope={railScope(head.task, ownPlace(head.task))}
+        at={ownPlace(head.task)}
+        pageRoot={props.pageRoot ?? null}
+        sessionId={head.task.session_id ?? null}
+        part="place"
+      />
+    ) : undefined;
   const headerExtra =
     props.prChip && head.task ? (
       <>
@@ -6137,9 +6157,9 @@ function ChatBody(props: ChatBodyProps) {
   const unifiedHead = headUnified ? (
     <TaskHead
       className="c-task-head"
-      {...(inChat && hidePaneBtn ? { preLead: hidePaneBtn } : {})}
+      {...(inChat && hidePaneBtn && !props.noBack ? { preLead: hidePaneBtn } : {})}
       lead={
-        inChat
+        inChat && !props.noBack
           ? {
               kind: "back",
               label: "Back to chats",
@@ -6163,9 +6183,10 @@ function ChatBody(props: ChatBodyProps) {
       queue={headQueue}
       status={inChat ? limitWord : ""}
       place={
-        inChat && head.task
+        headPlace ??
+        (inChat && head.task
           ? (placeTag || props.mergedHead ? null : <TaskPeekProject task={head.task} />)
-          : null
+          : null)
       }
       {...(inChat && whereTag ? { where: whereTag } : {})}
       chips={
@@ -6327,7 +6348,7 @@ function ChatBody(props: ChatBodyProps) {
             ) : null}
             {/* The way back, at the strip's left end (T:3941). Absent on the
                 landing: there is no chat to leave. */}
-            {inChat && !mergedHeadRow ? backBtn : null}
+            {inChat && !mergedHeadRow && !props.noBack ? backBtn : null}
             {/* NO SPACER ELEMENT HERE. The slack is `#anncta`'s own
                 `margin-left: auto` (T:255-262, chat.css), which is not the same
                 thing: a spacer is a flex ITEM, so it kept its 12px gap even

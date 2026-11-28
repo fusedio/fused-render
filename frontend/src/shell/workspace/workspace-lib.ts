@@ -12,6 +12,7 @@
 // changed" guard would write on every sync.
 
 import { rootedFsPath } from "@platform/lib/path-url";
+import { PENDING_KEY_PREFIX } from "@platform/lib/queue";
 import { appPathFromPath } from "@shell/current-apps-lib";
 import type { RailPlace } from "@shell/claude-rail/claude-rail-lib";
 import type { WorkbenchEnv } from "@apps/canvases/api";
@@ -149,12 +150,21 @@ export function isHomeUrl(url: string): boolean {
   return path === HOME_URL || path === "/" || path === "";
 }
 
+// Segment by segment, as the router reads a path (`fsPathFromLocation`):
+// `decodeURI` leaves `%3B`, `%2C`, `%23` … encoded, so `a%3Bb.html` and
+// `a;b.html` — one file — read as two pages. A segment that does not decode
+// is kept as it is.
 function decodePath(path: string): string {
-  try {
-    return decodeURI(path);
-  } catch {
-    return path;
-  }
+  return path
+    .split("/")
+    .map((seg) => {
+      try {
+        return decodeURIComponent(seg);
+      } catch {
+        return seg;
+      }
+    })
+    .join("/");
 }
 
 function isLayoutSentinel(path: string): boolean {
@@ -462,7 +472,8 @@ export type RightView =
   | { kind: "bots"; url: string }
   | { kind: "chat"; file: string; query: string }
   | { kind: "git"; path: string }
-  | { kind: "mode"; mode: string; file: string };
+  /** `rev`: the git snapshot the tab shows (`_snapshot`); absent = live. */
+  | { kind: "mode"; mode: string; file: string; rev?: string };
 
 /** The chat params a chat door may carry into the panel: the ones that name
  *  WHICH conversation (and how to open it), never the page's own. */
@@ -508,7 +519,8 @@ export function parseRight(raw: string | null | undefined): RightView | null {
     case "git":
       return a.length === 1 && a[0] ? { kind: "git", path: a[0] } : null;
     case "mode":
-      return a.length === 2 && a[0] && a[1] ? { kind: "mode", mode: a[0], file: a[1] } : null;
+      if ((a.length !== 2 && a.length !== 3) || !a[0] || !a[1]) return null;
+      return a[2] ? { kind: "mode", mode: a[0], file: a[1], rev: a[2] } : { kind: "mode", mode: a[0], file: a[1] };
     default:
       return null;
   }
@@ -527,21 +539,58 @@ export function encodeRight(view: RightView): string {
     case "git":
       return "git:" + e(view.path);
     case "mode":
-      return "mode:" + e(view.mode) + ":" + e(view.file);
+      return "mode:" + e(view.mode) + ":" + e(view.file) + (view.rev ? ":" + e(view.rev) : "");
   }
 }
 
-/** Do two views show the same thing? Two chats are the same conversation on
- *  the same file — their other params (`split`, `run`, …) are the chat's own
- *  state, not another chat. Opening what already shows does nothing. */
-export function sameRight(a: RightView | null, b: RightView | null): boolean {
+/** Does `b` show what `a` shows? Two chats are the same conversation on the
+ *  same file — their other params (`split`, …) are the chat's own state, not
+ *  another chat. A `run` that `b` names counts (a canvas's fix opens its run
+ *  on a Claude home that names none, WS-35) — and a chat opened on a run soon
+ *  names the SESSION that run became instead (`adopted`, the host's record of
+ *  it): asking for that run again is asking for the chat on screen. Opening
+ *  what already shows does nothing. */
+export function sameRight(
+  a: RightView | null,
+  b: RightView | null,
+  adopted?: (run: string) => string | undefined,
+): boolean {
   if (!a || !b) return a === b;
   if (a.kind === "chat" && b.kind === "chat") {
     const pa = new URLSearchParams(a.query);
     const pb = new URLSearchParams(b.query);
-    return a.file === b.file && (pa.get("session_id") || "") === (pb.get("session_id") || "") && (pa.get("queued") || "") === (pb.get("queued") || "");
+    if (a.file !== b.file) return false;
+    const run = pb.get("run") || "";
+    const aRun = pa.get("run") || "";
+    const session = pa.get("session_id") || "";
+    // `b` names only a run: `a` is that run, or the session it became.
+    if (run && !pb.get("session_id") && !pb.get("queued")) {
+      return run === aRun || (!!session && adopted?.(run) === session);
+    }
+    // With no session, the agent a door names is part of what it opens (a
+    // home on another agent is another view), and a door naming no run is
+    // not the run-only chat on screen (+ opens the home over it).
+    const backend = pb.get("backend") || "";
+    return (
+      session === (pb.get("session_id") || "") &&
+      (pa.get("queued") || "") === (pb.get("queued") || "") &&
+      (run ? run === aRun : !!session || !aRun) &&
+      (!!session || !backend || backend === (pa.get("backend") || ""))
+    );
   }
   return encodeRight(a) === encodeRight(b);
+}
+
+/** A chat's own param write that turns a run into its session (`run=R` gone,
+ *  `session_id=S` there): `[R, S]`, else null. The host keeps the pairs so a
+ *  later door on that run finds the chat it became (`sameRight`). */
+export function adoptedRun(prevQuery: string, nextQuery: string): [string, string] | null {
+  const prev = new URLSearchParams(prevQuery);
+  const next = new URLSearchParams(nextQuery);
+  const run = prev.get("run") || "";
+  const session = next.get("session_id") || "";
+  if (!run || prev.get("session_id") || !session) return null;
+  return [run, session];
 }
 
 /** The query of a chat view, reduced to the door params present and
@@ -560,6 +609,33 @@ export function chatDoorQuery(query: string): string {
 export function rightSession(view: RightView | null): string | null {
   if (!view || view.kind !== "chat") return null;
   return new URLSearchParams(view.query).get("session_id") || null;
+}
+
+/**
+ * THE PANEL BESIDE THE TABS OR OVER THEM (WS-17): side by side while the row,
+ * less the rail, holds the tabs' floor and the panel's; else the panel is a
+ * drawer over the tabs' right part, at its floor or the room there is when
+ * that is less — never squeezed under its floor beside them.
+ */
+export function panelLayout(rowW: number, railW: number, leftMin: number, panelMin: number): { overlay: boolean; width: number } {
+  const room = Math.max(0, rowW - railW);
+  if (room >= leftMin + panelMin) return { overlay: false, width: panelMin };
+  return { overlay: true, width: Math.min(panelMin, room) };
+}
+
+/**
+ * THE TASK KEY THE PANEL'S CHAT HOLDS OPEN (WS-33, task-open-read): the row
+ * whose session it shows (a run task's key need not be its session id), else
+ * the session id itself; a chat that has not run yet (`queued=`) is its
+ * `pending:<entry>` row. Null for a Claude home with no conversation.
+ */
+export function chatHoldKey(
+  sessionId: string | null,
+  queued: string | null,
+  rows: readonly { key: string; session_id?: string | null }[],
+): string | null {
+  if (sessionId) return rows.find((r) => r.session_id === sessionId)?.key ?? sessionId;
+  return queued ? PENDING_KEY_PREFIX + queued : null;
 }
 
 /** Where a URL belongs in a workspace (WS-15): the right panel, the right
@@ -674,6 +750,49 @@ export function classifyNav(url: string): NavPlace {
 }
 
 /**
+ * A URL THAT IS NEVER A TAB (WS-34): Tasks and Bots live in the panel only.
+ * Their view, or null for every other URL (a chat door is a real explorer page
+ * that keeps its tab, `splitArrival`; a canvas with a session too).
+ */
+export function rightOnlyView(url: string): RightView | null {
+  const { path } = splitUrl(url);
+  if (path !== "/tasks" && !isBotsUrl(path)) return null;
+  const place = classifyNav(url);
+  return place.side === "right" ? place.view : null;
+}
+
+/**
+ * A HOST BOOTING WITH TASKS OR BOTS IN ITS STRIP (WS-34): a pasted `/tasks?
+ * peek=…`, a deep link `/bots/x`, or a `_tabs` item naming one. Those tabs go
+ * (Home, never one, stays at 0); when the active one went, Home is active. The
+ * panel shows the active one's view — else the first lifted — unless the URL
+ * already names a `_right`. `kept` is each surviving tab's index in `parsed`.
+ */
+export function liftRightTabs(parsed: ParsedHost): ParsedHost & { kept: number[] } {
+  const kept: number[] = [];
+  let lifted: RightView | null = null;
+  let activeLifted: RightView | null = null;
+  parsed.tabs.forEach((u, i) => {
+    const view = i === 0 ? null : rightOnlyView(u);
+    if (!view) {
+      kept.push(i);
+      return;
+    }
+    lifted ??= view;
+    if (i === parsed.active) activeLifted = view;
+  });
+  if (kept.length === parsed.tabs.length) return { ...parsed, kept };
+  const active = Math.max(0, kept.indexOf(parsed.active));
+  const pick = activeLifted ?? lifted;
+  return {
+    tabs: kept.map((i) => parsed.tabs[i]),
+    active,
+    right: parsed.right ?? (pick ? encodeRight(pick) : null),
+    kept,
+  };
+}
+
+/**
  * A TAB BOOTING ON A COMPANION PANE (WS-25): `/explorer/view/<p>?_side=claude
  * &session_id=…` (or `_mode=claude|git`, `_side=git`) names a pane the page
  * draws no more in a workspace. `right` is what the panel should show, and
@@ -686,13 +805,118 @@ export function splitArrival(url: string): { keep: string; right: RightView | nu
   if (place.side !== "right" || (place.view.kind !== "chat" && place.view.kind !== "git") || !fsPathOfViewPath(parts.path)) {
     return { keep: url, right: null };
   }
+  // Read DECODED, as `classifyNav` read them (`_side=%63laude` is a chat
+  // door too); every other segment is kept byte for byte.
+  const decode = (raw: string): string => {
+    try {
+      return decodeURIComponent(raw.replace(/\+/g, " "));
+    } catch {
+      return raw;
+    }
+  };
   const drop = (seg: string): boolean => {
     const eq = seg.indexOf("=");
-    const name = eq === -1 ? seg : seg.slice(0, eq);
-    const value = eq === -1 ? "" : seg.slice(eq + 1);
+    const name = decode(eq === -1 ? seg : seg.slice(0, eq));
+    const value = decode(eq === -1 ? "" : seg.slice(eq + 1));
     if (name === "_side" || name === "_mode") return value === "claude" || value === "git";
     return (CHAT_DOOR_PARAMS as readonly string[]).includes(name);
   };
   const query = querySegments(parts.query).filter((s) => !drop(s)).join("&");
   return { keep: joinUrl({ ...parts, query }), right: place.view };
+}
+
+// ---- a tab's own armed bookmark (WS-38) ---------------------------------------
+
+/** The bookmark a tab follows, as plain data. */
+export interface TabArm {
+  id: string;
+  url: string;
+}
+
+/** What the host holds of it: the arm, and the DOCUMENT that said it (a
+ *  frame keeps its window across a navigation, never its document — the
+ *  rule a published rail place follows). */
+export interface HeldTabArm<D> {
+  doc: D | null;
+  arm: TabArm;
+}
+
+/**
+ * A TAB SAID WHAT IT FOLLOWS: `said` is its arm (`{ id, url }`, from another
+ * realm — anything else, null included, means it let go), `doc` the document
+ * that said it. Answers what the host holds next: the new record, `null` (the
+ * tab follows nothing), or `"same"` when nothing changed (no re-render).
+ */
+export function nextTabArm<D>(was: HeldTabArm<D> | undefined, doc: D | null, said: unknown): HeldTabArm<D> | null | "same" {
+  const a = said as { id?: unknown; url?: unknown } | null | undefined;
+  if (a && typeof a === "object" && typeof a.id === "string" && typeof a.url === "string" && a.id && a.url) {
+    if (was && was.doc === doc && was.arm.id === a.id && was.arm.url === a.url) return "same";
+    return { doc, arm: { id: a.id, url: a.url } };
+  }
+  return was ? null : "same";
+}
+
+/** The arm of the document a frame holds NOW: one an earlier document said
+ *  (a reload, another page loaded whole) is nobody's. */
+export function liveTabArm<D>(held: HeldTabArm<D> | undefined, docNow: D | null): TabArm | null {
+  if (!held || held.doc === null || held.doc !== docNow) return null;
+  return held.arm;
+}
+
+/**
+ * A BOOKMARK'S ARM WAITING ON THE HOP THAT CARRIES IT TO ITS TAB (WS-38). The
+ * arm is that hop's and no other's:
+ *   - `hop` a number: the hop was handed to the tab's own router, which says
+ *     how it ended (`settlePendingArm`) — it went, or the page's leave guard
+ *     refused it. `load`: it leaves by a whole-document load (a `/render`
+ *     page), so "went" is not yet "arrived";
+ *   - `hop` null: it rides a whole-document load — a new tab, a frame with no
+ *     router, a numbered load that went — and arrives at the tab's next
+ *     location (`landPendingArms`).
+ */
+export interface PendingArm {
+  arm: TabArm;
+  hop: number | null;
+  load: boolean;
+}
+
+const armPath = (url: string): string => url.split(/[?#]/, 1)[0];
+
+/**
+ * A NUMBERED HOP SETTLED. Refused: its arm goes, and only its (another hop
+ * still being asked about keeps its own). Went by the router: the tab stands
+ * on the page now (`loc`, its location; null when it cannot be read) and the
+ * arm is delivered if that is the bookmark's page. Went by a full load: the
+ * arm waits for the new document. A number nothing waits on changes nothing.
+ */
+export function settlePendingArm(
+  list: readonly PendingArm[],
+  hop: number,
+  ok: boolean,
+  loc: string | null,
+): { left: PendingArm[]; deliver: TabArm | null } {
+  const at = list.findIndex((p) => p.hop === hop);
+  if (at === -1) return { left: list.slice(), deliver: null };
+  const mine = list[at];
+  const left = list.filter((_, i) => i !== at);
+  if (!ok) return { left, deliver: null };
+  if (mine.load) return { left: [...left, { arm: mine.arm, hop: null, load: false }], deliver: null };
+  return { left, deliver: loc !== null && armPath(loc) === armPath(mine.arm.url) ? mine.arm : null };
+}
+
+/**
+ * THE TAB'S LOCATION WAS READ (a load, a change): every arm riding a
+ * whole-document load is spent — the last one whose page this is gets
+ * delivered — and the numbered ones wait for their own word.
+ */
+export function landPendingArms(list: readonly PendingArm[], loc: string): { left: PendingArm[]; deliver: TabArm | null } {
+  let deliver: TabArm | null = null;
+  for (const p of list) if (p.hop === null && armPath(loc) === armPath(p.arm.url)) deliver = p.arm;
+  return { left: list.filter((p) => p.hop !== null), deliver };
+}
+
+/** A NEW DOCUMENT IN THE FRAME: a numbered hop's router went with the old
+ *  one and will never say how it ended — its arm goes. */
+export function reloadPendingArms(list: readonly PendingArm[]): PendingArm[] {
+  return list.filter((p) => p.hop === null);
 }

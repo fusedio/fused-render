@@ -13453,7 +13453,7 @@ nothing here exists and nothing changes.
   tab strip over a stack of frames, one per tab. A frame loads the page's
   ordinary URL (no embed spelling) and keeps its page chrome; it draws none of
   the window's. The host marks each frame element `data-ws-role`
-  (`home` | `tab`; `panel` is reserved) before setting its `src`; a page reads
+  (`home` | `tab`; `panel` for the panel's frames) before setting its `src`; a page reads
   its role once at load (`router.ts WS_ROLE`).
 - **WS-3 Tabs.** Home is tab 0: drawn first with the house and "Home", no
   close, never moved, never replaced. Every other tab shows an icon — the
@@ -13495,9 +13495,13 @@ nothing here exists and nothing changes.
   list without Home gets it at 0, so turning the flag on while on a file gives
   Home and that file, the file active. Reload restores every tab.
 - **WS-9 History.** Every open, switch and close is a host history entry
-  carrying `{wsActive, wsIds, wsTitles}`; location syncs replace. Back/Forward
-  reconcile the strip in place, without reloading a frame; a traversal that
-  lands in a hidden tab shows it.
+  carrying `{wsActive, wsIds, wsTitles, wsPlaces}`; location syncs replace.
+  Back / Forward undo and redo every step: on a traversal the strip becomes
+  the entry's — a live tab the entry lacks is closed (Back over its opening,
+  Forward over its closing), a tab it names that is gone comes back
+  (unmounted until shown, so reloaded), and the entry's tab is shown. A tab
+  both have is left as it is (its own history covers where it is), so no
+  kept frame reloads; a traversal that lands in a hidden tab shows it.
 - **WS-10 Params stay in their tab.** The host is a param boundary and opaque:
   a page's params are its frame's own URL, and the runtime's global-params
   read (D72) stops before the host, whose URL mirrors another tab.
@@ -13516,7 +13520,8 @@ nothing here exists and nothing changes.
   `tasks`, `tasks:<key>` (a peeked task), `bots`, `bots:<url under /bots>`,
   `chat:<file>:<query>` (an empty query is that file's Claude home; a
   `session_id` or `queued` is a task chat), `git:<path>`,
-  `mode:<mode>:<file>`. Absent or junk = the panel is closed.
+  `mode:<mode>:<file>[:<rev>]` (`rev` the git snapshot the tab shows, drawn
+  with `_snapshot`; absent = live). Absent or junk = the panel is closed.
 - **WS-15 Where a URL opens.** Every in-app hop in a host (the sidebar, a
   notification, a card's Open) and every hop a frame would make is classified
   by its URL: a chat door (`/explorer/view/<p>?…_side=claude…`, also
@@ -13533,20 +13538,27 @@ nothing here exists and nothing changes.
   chat view (another view, or closing) asks the composer's leave guard first.
 - **WS-17 Width and collapse.** The panel sits between the tabs and the rail
   at the viewer's width (`ui_layout.workspace.rightWidth`, written once a
-  drag completes), floor 380px; the tabs keep 320px and the rail its own,
-  and a row too narrow for all three gives the panel what is left. Its left
-  edge is the pane seam: a drag resizes; let go more than 60px under the
-  floor, the panel closes and the stored width returns to the floor. The
+  drag completes), floor 380px; the tabs keep 320px and the rail its own.
+  It never goes under its floor: a row (less the rail) too narrow for 320 +
+  380 makes it a drawer over the tabs' right part, at 380px or the room
+  there is, the tabs keeping the whole row under it and no seam drawn. Its
+  left edge is the pane seam: a drag resizes; let go more than 60px under the
+  floor, the panel closes and the stored width returns to the floor — only
+  once it closed: a chat's leave guard saying no keeps the panel and its
+  width as they were before the drag. The
   hide button closes it at its width. Any rail click opens it again at the
   stored width. It does not slide.
 - **WS-18 The chat view.** One chat in the page pane's posture (chat only, PR
-  chip, recap, hide in its head, place tags as links). Its params are
+  chip, recap, hide in its head, place tags as links) — its head names the
+  place itself too (the project, the canvas), as a rail card's does, since
+  no page stands for it. Its params are
   `_right`'s query, kept by the page URL store's own rules (a push after a
   gesture, the throttle, Back). It is remounted when its file changes or its
   query changes from outside it (a ring, Back), never on its own writes.
 - **WS-19 The other views.** Tasks: the Tasks page's in-card list; a task's
-  press peeks its chat beside the list when the panel is at least 780px
-  wide, else in the list's place with Back. Bots: the Bots page in a frame,
+  press peeks its chat beside the list when the panel is at least 720px
+  wide (its close the panel-close glyph, the list's head keeping the ×),
+  else in the list's place with Back. Bots: the Bots page in a frame,
   its URL mirrored into `_right` by replace. Git: the folder's Git companion
   page (a file asks its folder). Mode: the file drawn in that mode. Every
   non-chat head has the hide and a title at the task head's height.
@@ -13573,7 +13585,7 @@ nothing here exists and nothing changes.
 - **WS-23 The `/` key.** In a tab with nothing of its own to focus, `/` puts
   the keyboard in the panel's chat composer when a chat shows there.
 - **WS-24 Pages' own doors.** App Doctor's "Open in git" opens the panel's
-  Git. A page's "Fix with AI" ask is not routed to the panel yet.
+  Git. A page's staged asks go to the panel (WS-36).
 - **WS-25 No companions in a tab.** A file or folder page in a tab offers no
   Claude or Git mode. A tab whose URL arrives on one (`_side=claude|git`,
   `_mode=claude|git`, with its session params) shows its default content,
@@ -13625,3 +13637,50 @@ nothing here exists and nothing changes.
   result, or a folder in the listing, opens in the card, and Back walks it.
   Its Open loads the view the card is on in the tab by WS-5 (Home with the
   query while results show); Shift+Open, in a new tab.
+- **WS-32 Tasks and Bots are kept.** Each mounts the first time it shows and
+  stays, hidden in place and inert, while another view shows or the panel
+  is closed: the list keeps its filters, rows and scroll, the Bots frame is
+  never reloaded and reads as hidden to its polls meanwhile. A hidden Tasks
+  view holds no peek: reopening it shows the list unless the URL names one.
+  Closed is still no `_right` and nothing open on the rail.
+- **WS-33 The panel's chat is open.** While it shows, its task counts as
+  open (marked read as replies land, no "finished" notice), as a held card's
+  does: the row with its session, else the session; a not-yet-run chat its
+  `pending:` row.
+- **WS-34 Tasks and Bots are never tabs.** A host booting on `/tasks…` or
+  `/bots…`, or with one in `_tabs`, drops that tab (Home active if it was)
+  and shows it in the panel unless `_right` names a view. An open of one,
+  even as a new tab, opens the panel. A tab that lands on one by a full load
+  goes back (a reload of where it was, else it closes) and
+  the panel shows it. A canvas page naming a `session_id` stays a tab and,
+  shown with no `_right`, also opens that task's chat once the listing has
+  it — unless that tab was closed first.
+- **WS-35 A canvas fix in a tab.** "Fix with Claude" works in a canvas tab:
+  the run's chat opens in the panel (the clone's chat with `run=`), and
+  "Claude is on it — see chat →" opens it again.
+- **WS-36 Staged asks.** "Fix with AI", "Explain with AI", a repo update's
+  "Fix with Claude" and the panel Git's "Fix with AI" open the target's
+  Claude home in the panel, a new mount, the ask handed to that one mount
+  only; the page does not move.
+- **WS-37 The terminal is the window's.** In a tab or the panel's frame,
+  "Run in terminal" and "Open in Terminal" ask the host's drawer through the
+  bridge. A real embed still has none.
+- **WS-38 Armed bookmarks.** A tab keeps its own armed bookmark, not the
+  window's shared one. A sidebar bookmark opened into a tab arms that tab
+  once it lands on the bookmark's page, so its "Update bookmark" works. The
+  sidebar's arm goes to the one open that follows the click and to no later
+  one, and a hop the tab's leave guard refuses takes its arm with it. The
+  host holds no arm of its own: each tab tells it what it follows, and a
+  favourite's row is marked (active, changed `*`) from the tab on screen.
+- **WS-39 Left cards keep their clicks.** In a host every left card that
+  shows a page keeps what is opened in it: a folder, a file or a link opens
+  in the card, and Back (in its head once it has gone somewhere) walks it.
+  Open loads the view the card is on in the tab by WS-5, Shift+Open in a new
+  tab; a card still on the page it came up on uses the entry's own Open (a
+  favourite's arms it). The Search row's card takes the keyboard in its
+  search box when the row's click brings it up.
+- **WS-40 No Back in the panel.** A chat in the panel has no back arrow: its
+  × hides the panel, and the rail's + shows the folder's chats. A task picked
+  in a narrow Tasks view has one × that returns to the list. Its head is the
+  Tasks page's two-line head. The + card has no pin beside the panel, by
+  button or by a drag of its head.

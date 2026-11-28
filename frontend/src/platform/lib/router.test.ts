@@ -22,6 +22,7 @@ const {
   spaLinkProps,
   confirmLeave,
   registerLeaveGuard,
+  runHostNav,
   rootedFsPath,
   encodeFsPathSegments,
   urlForFsPath,
@@ -553,6 +554,77 @@ describe("confirmLeave", () => {
     });
     expect(await confirmLeave()).toBe(true);
     off();
+  });
+});
+
+// A workspace host hands a tab its hops (NAVIGATE_URL_EVENT) and numbers them:
+// what it holds for a hop (a bookmark's arm) follows how THAT hop ended, so
+// every numbered hop says so exactly once — it went, or the leave guard
+// refused it.
+describe("a host's hop run in this document (runHostNav)", () => {
+  const settle = () => new Promise<void>((r) => setTimeout(r, 0));
+  // The hop's own push, kept off the shared shim's history.
+  async function run(detail: Parameters<typeof runHostNav>[0]): Promise<{ said: [number, boolean][]; pushed: string[] }> {
+    const hist = globalThis.history as { pushState: (state: unknown, title: string, url: string) => void };
+    const prevPush = hist.pushState;
+    const said: [number, boolean][] = [];
+    const pushed: string[] = [];
+    hist.pushState = (_state, _title, url) => void pushed.push(url);
+    try {
+      runHostNav(detail, (hop, ok) => void said.push([hop, ok]));
+      await settle();
+    } finally {
+      hist.pushState = prevPush;
+    }
+    return { said, pushed };
+  }
+  const URL_A = "/explorer/view/Users/me/a.html?x=1";
+  const PATH_A = "/Users/me/a.html";
+
+  test("a numbered hop that goes says so once, after its push: no guard, or a guard that lets it", async () => {
+    expect(await run({ fn: "navigateUrl", url: URL_A, hop: 8 })).toEqual({ said: [[8, true]], pushed: [URL_A] });
+    const off = registerLeaveGuard(() => true);
+    try {
+      expect(await run({ fn: "navigateUrl", url: URL_A, hop: 9 })).toEqual({ said: [[9, true]], pushed: [URL_A] });
+    } finally {
+      off();
+    }
+  });
+
+  test("a numbered hop the leave guard refuses says so, and does not happen", async () => {
+    const off = registerLeaveGuard(() => false);
+    try {
+      expect(await run({ fn: "navigateUrl", url: URL_A, hop: 7 })).toEqual({ said: [[7, false]], pushed: [] });
+    } finally {
+      off();
+    }
+  });
+
+  test("the same for a `navigate` call: its refusal is said too", async () => {
+    const went = await run({ fn: "navigate", fsPath: PATH_A, hop: 3 });
+    expect(went.said).toEqual([[3, true]]);
+    expect(went.pushed).toHaveLength(1);
+    const off = registerLeaveGuard(() => false);
+    try {
+      expect(await run({ fn: "navigate", fsPath: PATH_A, hop: 4 })).toEqual({ said: [[4, false]], pushed: [] });
+    } finally {
+      off();
+    }
+  });
+
+  test("a hop the host did not number says nothing, refused or not", async () => {
+    expect(await run({ fn: "navigateUrl", url: URL_A })).toEqual({ said: [], pushed: [URL_A] });
+    const off = registerLeaveGuard(() => false);
+    try {
+      expect(await run({ fn: "navigateUrl", url: URL_A })).toEqual({ said: [], pushed: [] });
+    } finally {
+      off();
+    }
+  });
+
+  test("anything that is no call is ignored", async () => {
+    expect(await run(null)).toEqual({ said: [], pushed: [] });
+    expect(await run({ fn: "navigateUrl", hop: 1 } as never)).toEqual({ said: [], pushed: [] });
   });
 });
 

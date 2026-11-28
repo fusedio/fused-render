@@ -114,6 +114,15 @@ describe("the hover", () => {
     clock.tick(1);
     expect(state("home").up).toBe(true);
   });
+  it("an entry that becomes the active tab's before its hover's delay is up opens nothing", () => {
+    publishLeftItems([item("home"), item("app:/w/a")]);
+    offs.push(ready("app:/w/a"));
+    enter("app:/w/a");
+    clock.tick(PEEK_OPEN_MS - 1);
+    publishLeftItems([item("home"), { ...item("app:/w/a"), active: true }]);
+    clock.tick(PEEK_OPEN_MS);
+    expect(state("app:/w/a").up).toBe(false);
+  });
   it("the page on screen (an active entry) opens nothing — hover or ArrowRight — and keeps its tooltip", () => {
     publishLeftItems([{ ...item("home"), active: true }]);
     offs.push(ready("home"));

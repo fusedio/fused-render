@@ -698,8 +698,10 @@ export type NavSink = (href: string, call: NavCall) => boolean;
 
 /** What a host puts in a NAVIGATE_URL_EVENT's detail: the call to re-run, or
  *  `load` — a url this document's router cannot show (a `/render` page), left
- *  for by a full load, still behind this page's leave guard. */
-export type NavDetail = NavCall | { fn: "load"; url: string };
+ *  for by a full load, still behind this page's leave guard. `hop`: the host's
+ *  own number for this hop, said back in a NAV_SETTLED_EVENT once it went or
+ *  the leave guard refused it. */
+export type NavDetail = (NavCall | { fn: "load"; url: string }) & { hop?: number };
 
 let navSink: NavSink | null = null;
 
@@ -710,10 +712,25 @@ export function installNavSink(sink: NavSink | null): void {
 /** The event a host dispatches on a frame's window to navigate it. */
 export const NAVIGATE_URL_EVENT = "fused:navigate-url";
 
+/** The event a frame dispatches on its OWN window when a NUMBERED hop the
+ *  host handed it has settled (detail `{ hop, ok }`; `ok` false: this page's
+ *  leave guard refused it). What the host held for that hop — a bookmark's
+ *  arm, SPEC §56 WS-38 — is delivered or let go on exactly that word. */
+export const NAV_SETTLED_EVENT = "fused:navigate-settled";
+
 export function navigate(
   fsPath: string,
   opts?: { isDir?: boolean; mode?: string; sel?: string | null; q?: string },
 ): void {
+  void navigateAsk(fsPath, opts);
+}
+
+// `navigate` itself, answering whether the hop went (false: the leave guard
+// refused it) — what `runHostNav` reports for a hop a host numbered.
+function navigateAsk(
+  fsPath: string,
+  opts?: { isDir?: boolean; mode?: string; sel?: string | null; q?: string },
+): Promise<boolean> {
   // Navigating between files/dirs drops old view params (fresh query string) —
   // EXCEPT the preview pane's own state (`_side`: which of its three modes it is
   // showing, or that it is shut — listing/pane-side.ts), which is sticky FROM ONE
@@ -831,8 +848,8 @@ export function navigate(
   // THE URL IS BUILT NOW AND PUSHED WHEN THE GUARD ANSWERS: everything above
   // reads `location.search`, which is still this page's while the question is up.
   const href = urlForFsPath(fsPath, search);
-  if (navSink && navSink(href, { fn: "navigate", fsPath, opts })) return;
-  void guarded(() => {
+  if (navSink && navSink(href, { fn: "navigate", fsPath, opts })) return Promise.resolve(true);
+  return guarded(() => {
     pushHistory(state, href);
     notifyNavigate();
   });
@@ -936,20 +953,33 @@ export function navigateUrl(url: string, opts?: { isDir?: boolean; replace?: boo
   });
 }
 
+/** A host's hop, run in THIS document (the listener below; exported for its
+ *  tests). The call re-runs here as an ordinary hop — or through this frame's
+ *  own sink first (Home's rule), exactly as if a click in here had made it.
+ *  `settled` hears every NUMBERED hop once, with how it ended: true when it
+ *  went, false when this page's leave guard refused it. A hop the host did
+ *  not number says nothing. */
+export function runHostNav(d: NavDetail | null | undefined, settled: (hop: number, ok: boolean) => void): void {
+  if (!d || typeof d !== "object") return;
+  const hop = typeof d.hop === "number" ? d.hop : null;
+  const done = (ok: boolean) => {
+    if (hop !== null) settled(hop, ok);
+  };
+  if (d.fn === "navigate" && typeof d.fsPath === "string") void navigateAsk(d.fsPath, d.opts).then(done);
+  else if (d.fn === "navigateUrl" && typeof d.url === "string") void navigateUrl(d.url, d.opts).then(done);
+  else if (d.fn === "load" && typeof d.url === "string") {
+    const target = d.url;
+    void guarded(() => location.assign(target)).then(done);
+  }
+}
+
 // The receiving end of a host's sink, in EVERY document: a frame cannot know
 // it will be asked until its host speaks, and registering costs one listener.
-// The call re-runs here as an ordinary hop — or through this frame's own sink
-// first (Home's rule), exactly as if a click in here had made it.
 if (typeof window !== "undefined" && typeof window.addEventListener === "function") {
   window.addEventListener(NAVIGATE_URL_EVENT, (e: Event) => {
-    const d = (e as CustomEvent<NavDetail | null>).detail;
-    if (!d || typeof d !== "object") return;
-    if (d.fn === "navigate" && typeof d.fsPath === "string") navigate(d.fsPath, d.opts);
-    else if (d.fn === "navigateUrl" && typeof d.url === "string") void navigateUrl(d.url, d.opts);
-    else if (d.fn === "load" && typeof d.url === "string") {
-      const target = d.url;
-      void guarded(() => location.assign(target));
-    }
+    runHostNav((e as CustomEvent<NavDetail | null>).detail, (hop, ok) => {
+      window.dispatchEvent(new CustomEvent(NAV_SETTLED_EVENT, { detail: { hop, ok } }));
+    });
   });
 }
 

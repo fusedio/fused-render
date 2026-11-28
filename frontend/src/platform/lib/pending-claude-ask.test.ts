@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import {
   peekPendingClaudeAsk,
   pendingClaudeAskVersion,
+  noteAskBackend,
   stageClaudeAsk,
   subscribePendingClaudeAsk,
   takePendingClaudeAsk,
@@ -204,5 +205,12 @@ describe("an ask that names its agent (\"Fix with Claude\", D17)", () => {
     stageClaudeAsk("/Users/me/repo", "explain this");
     expect(takePendingClaudeAsk("/Users/me/repo")).toBe("explain this");
     expect(takenAskBackend("explain this")).toBe("");
+  });
+
+  test("a handed-over ask that names none clears the last one's agent", () => {
+    noteAskBackend("fix the push", "claude");
+    expect(takenAskBackend("fix the push")).toBe("claude");
+    noteAskBackend("fix the push");
+    expect(takenAskBackend("fix the push")).toBe("");
   });
 });

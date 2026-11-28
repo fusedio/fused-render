@@ -47,6 +47,7 @@ import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react
 import type { ReactNode } from "react";
 import { shortTaskId } from "@platform/lib/task-id";
 import { stageClaudeAsk } from "@platform/lib/pending-claude-ask";
+import { askInWorkspace } from "@platform/lib/workspace-bridge";
 import { pauseWhileHidden } from "@platform/lib/pause-while-hidden";
 import { getJson, postJson } from "@platform/lib/api";
 import { navigate, navigateToJobPage, navigateUrl, viewUrlForFsPath } from "@platform/lib/router";
@@ -319,7 +320,13 @@ export function SyncFailureRowView({
     }
   };
   const fixWithClaude = async () => {
-    // CLAUDE'S, by name (D17): never the catalog's default agent.
+    // CLAUDE'S, by name (D17): never the catalog's default agent. In a
+    // workspace the panel takes it, and the page stays (§56 WS-36).
+    // The row goes either way (D949): it was handed over.
+    if (askInWorkspace(failure.root, syncFixPrompt(failure), "claude")) {
+      void dismiss();
+      return;
+    }
     stageClaudeAsk(failure.root, syncFixPrompt(failure), { backend: "claude" });
     if (leaveTo) {
       // The page is about to be replaced: let the dismiss land first.
@@ -668,8 +675,10 @@ function RepoRowView({
       command: failure.command,
       output: failure.output,
     });
-    stageClaudeAsk(row.repo.root, prompt, { backend: "claude" });
-    navigate(row.repo.root, { isDir: true });
+    if (!askInWorkspace(row.repo.root, prompt, "claude")) {
+      stageClaudeAsk(row.repo.root, prompt, { backend: "claude" });
+      navigate(row.repo.root, { isDir: true });
+    }
     onDismiss();
   };
 

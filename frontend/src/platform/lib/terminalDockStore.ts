@@ -16,7 +16,8 @@
 // setter, subscribed to with `useSyncExternalStore` so a re-render only
 // happens when the value actually changes.
 import { useSyncExternalStore } from "react";
-import { NO_SHELL_CHROME } from "./router";
+import { IS_WS_FRAME, NO_SHELL_CHROME } from "./router";
+import { workspaceHost } from "./workspace-bridge";
 
 /** Whether `TerminalDrawer` is actually mounted right now. `!IS_EMBED` is
  * necessary but not sufficient: App.tsx only mounts the
@@ -46,6 +47,16 @@ function subscribeMounted(listener: () => void): () => void {
 }
 
 function canRunSnapshot(): boolean {
+  // A WORKSPACE TAB (or the panel's frame) has no drawer of its own: the
+  // window's is the host's, asked through the bridge (§56 WS-37). A real
+  // embed still has none.
+  if (IS_WS_FRAME) {
+    try {
+      return workspaceHost()?.canRunInTerminal?.() ?? false;
+    } catch {
+      return false;
+    }
+  }
   return !NO_SHELL_CHROME && mounted;
 }
 
@@ -154,6 +165,15 @@ const pendingListeners = new Set<() => void>();
  * `req` (or one with both fields undefined) just opens the drawer, same as
  * `toggleTerminalDock()` when already closed. */
 export function openTerminal(req?: TerminalRequest): void {
+  if (IS_WS_FRAME) {
+    // The host's drawer (above); only plain data crosses.
+    try {
+      workspaceHost()?.openTerminal?.(req ? { cwd: req.cwd, command: req.command, execute: req.execute } : {});
+    } catch {
+      /* host gone */
+    }
+    return;
+  }
   if (req && (req.cwd !== undefined || req.command !== undefined)) {
     pendingRequest = req;
     pendingVersion += 1;

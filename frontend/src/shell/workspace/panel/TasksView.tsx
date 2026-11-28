@@ -10,7 +10,6 @@
 // rekey. TasksPeek's own copy is wired into DoorCard's api (pin, Escape,
 // focus seats) and sharing it would change that card's behaviour.
 import { Component, lazy, Suspense, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from "react";
-import { X } from "lucide-react";
 import { getSchedule, type Task } from "@platform/lib/api";
 import { pendingEntryId, queueCaption } from "@platform/lib/queue";
 import { breakoutOpener } from "@platform/lib/breakouts";
@@ -28,8 +27,8 @@ import { useAutoReadOpenTasks, useDocumentVisible } from "@shell/task-open-read"
 
 const Scheduled = lazy(() => import("@shell/Scheduled"));
 
-/** Side by side from here (the list's room + the chat's 400px floor). */
-export const TASKS_SPLIT_W = 780;
+/** Side by side from here (the list's 320px + the chat's 400px floor). */
+export const TASKS_SPLIT_W = 720;
 
 class ListBoundary extends Component<{ children: ReactNode }, { failed: boolean }> {
   state = { failed: false };
@@ -154,20 +153,20 @@ export function TasksView({ peek, onPeek, onHide, onNavigate }: TasksViewProps) 
     <TaskHead
       key="chat"
       className="ws-panel-head"
-      // Narrow: the chat holds the panel, ← is the way back to the list and
-      // the panel's hide stands before it. Wide: the list beside it has the
-      // hide; the chat's × closes the peek only.
-      {...(split
-        ? { lead: { kind: "close" as const, label: "Close the chat", onPress: () => onPeek(null, "push") } }
-        : {
-            preLead: (
-              <button type="button" className="task-head-btn task-head-lead is-close" aria-label="Hide the panel" data-hint="Hide the panel" onClick={onHide}>
-                <X size={14} strokeWidth={2} aria-hidden="true" />
-              </button>
-            ),
-            lead: { kind: "back" as const, label: "Back to tasks", onPress: () => onPeek(null, "push") },
-          })}
+      // ONE CORNER CONTROL, and it closes the TASK (owner, 2026-11-28: no ←
+      // in the panel): narrow, the × gives the panel back to the list, whose
+      // own × hides the panel; wide, the list beside it has that ×, so this
+      // one wears the collapse glyph — a × twice would read as one.
+      lead={
+        split
+          ? { kind: "collapse" as const, label: "Close the task panel", hint: "Close", onPress: () => onPeek(null, "push") }
+          : { kind: "close" as const, label: "Back to tasks", hint: "Back to tasks", onPress: () => onPeek(null, "push") }
+      }
       task={task}
+      // THE TASKS PAGE'S OWN HEAD (TaskPeek): two lines, the star in its
+      // slot — the same task wears the same head wherever it is read.
+      twoLine
+      star
       chips={task ? <TaskPrChip task={task} /> : null}
       chipsRef={setChipsHost}
       statusRef={setStatusHost}
