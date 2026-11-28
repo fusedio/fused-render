@@ -150,12 +150,21 @@ export function isHomeUrl(url: string): boolean {
   return path === HOME_URL || path === "/" || path === "";
 }
 
+// Segment by segment, as the router reads a path (`fsPathFromLocation`):
+// `decodeURI` leaves `%3B`, `%2C`, `%23` … encoded, so `a%3Bb.html` and
+// `a;b.html` — one file — read as two pages. A segment that does not decode
+// is kept as it is.
 function decodePath(path: string): string {
-  try {
-    return decodeURI(path);
-  } catch {
-    return path;
-  }
+  return path
+    .split("/")
+    .map((seg) => {
+      try {
+        return decodeURIComponent(seg);
+      } catch {
+        return seg;
+      }
+    })
+    .join("/");
 }
 
 function isLayoutSentinel(path: string): boolean {

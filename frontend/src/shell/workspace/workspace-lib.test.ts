@@ -47,6 +47,13 @@ describe("samePage", () => {
     expect(samePage("/", "/home")).toBe(true);
     expect(samePage("/?a=1", "/home")).toBe(true);
   });
+  test("a path reads the way the router reads it: every escape in a segment is decoded", () => {
+    expect(samePage("/explorer/view/tmp/a%3Bb.html", "/explorer/view/tmp/a;b.html")).toBe(true);
+    expect(samePage("/explorer/view/tmp/a%2Cb%23c.html", "/explorer/view/tmp/a,b%23c.html")).toBe(true);
+    // A segment that does not decode is compared as written.
+    expect(samePage("/explorer/view/tmp/100%.html", "/explorer/view/tmp/100%.html")).toBe(true);
+    expect(samePage("/explorer/view/tmp/100%.html", "/explorer/view/tmp/100.html")).toBe(false);
+  });
   test("decoded pathnames compare equal", () => {
     expect(samePage("/explorer/view/Users/me/a%20b", "/explorer/view/Users/me/a b")).toBe(true);
   });
