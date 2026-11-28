@@ -60,6 +60,8 @@ import {
   leftMove,
   leftSidebarFolded,
   leftSize,
+  leftSwapReady,
+  leftSwapRole,
   leftViewPress,
   useLeftPeek,
   type LeftPeekItem,
@@ -142,7 +144,10 @@ export function LeftPeek() {
 
 function LeftCard({ itemKey, on }: { itemKey: string; on: boolean }) {
   const store = leftCardStore(itemKey);
-  const { items, rail } = useLeftPeek();
+  const snap = useLeftPeek();
+  const { items, rail } = snap;
+  // THE SWAP (left-peek-store): the newcomer, or the card held up under it.
+  const swap = leftSwapRole(snap, itemKey);
   const item = items.get(itemKey) ?? null;
   // The facts the card last drew, while it fades out after its icon went.
   const last = useRef<LeftPeekItem | null>(item);
@@ -334,6 +339,19 @@ function LeftCard({ itemKey, on }: { itemKey: string; on: boolean }) {
   );
 
   const look = leftFrameLook({ show, stillOk: still !== null && !failed, frameKey, loaded, painted });
+  // The newcomer is SHOWN (DoorCard `onVisible`: placed, then on) and its
+  // content drawn (the composer, a still at once): the card it replaced goes.
+  // Only once this opening's body is mounted (`live`): the first render of an
+  // opening still carries the last one's frame facts.
+  const [shown, setShown] = useState(false);
+  const drawn = shown && live && (compose || look.ready);
+  useEffect(() => {
+    if (up && swap === "in" && drawn) leftSwapReady(itemKey);
+  }, [up, swap, drawn, itemKey]);
+  // ONLY A FAVOURITE'S CARD HOLDS (owner, 2026-11-28: "remove the pin for
+  // everything on the left sidebar except the favourite bookmarks"): the rest
+  // preview, and a press inside keeps them up until a press outside.
+  const canHold = itemKey.startsWith("pin:");
 
   const title = it?.title ?? "";
   // THE HOME CARD'S OPEN: the view it is on — Home with the query while the
@@ -373,9 +391,14 @@ function LeftCard({ itemKey, on }: { itemKey: string; on: boolean }) {
       sizeStore={leftSize}
       viewFlag={leftViewPress}
       scrollerOf={scrollerOf}
-      className={"claude-left-peek" + (pinned ? " is-live" : "")}
+      className={
+        "claude-left-peek" +
+        (pinned ? " is-live" : "") +
+        (swap === "in" ? " is-swap-in" : swap === "hold" ? " is-swap-hold" : swap === "cut" ? " is-swap-cut" : "")
+      }
       ariaLabel={title || "Preview"}
       enabled={on && item !== null}
+      onVisible={setShown}
       subOpen={false}
       {...(compose ? { wishHeight: COMPOSE_HEIGHT } : {})}
     >
@@ -383,8 +406,9 @@ function LeftCard({ itemKey, on }: { itemKey: string; on: boolean }) {
         <>
           <div className="claude-rail-peek-head">
             <div className="claude-rail-peek-row">
-              {/* No ×: the pin in its seat (and the keyboard's landing). */}
-              <RailPinButton variant="legacy" btnRef={api.closeRef} pinned={api.pin.pinned} onToggle={api.pin.onToggle} />
+              {/* No ×: the pin in its seat (and the keyboard's landing) — a
+                  favourite's only; the others land the keyboard on Open. */}
+              {canHold && <RailPinButton variant="legacy" btnRef={api.closeRef} pinned={api.pin.pinned} onToggle={api.pin.onToggle} />}
               {homeSrc !== null && steps.length > 1 && (
                 <button type="button" className="claude-rail-peek-btn claude-rail-peek-close" aria-label="Back" data-hint="Back" onClick={back}>
                   <ArrowLeft size={14} aria-hidden="true" />
@@ -411,7 +435,7 @@ function LeftCard({ itemKey, on }: { itemKey: string; on: boolean }) {
               ) : (
                 <span className="claude-rail-peek-gap" aria-hidden="true" />
               )}
-              <button type="button" className="btn claude-rail-peek-open" onClick={() => open(api.close, homeOpenUrl())}>
+              <button type="button" ref={canHold ? undefined : api.closeRef} className="btn claude-rail-peek-open" onClick={() => open(api.close, homeOpenUrl())}>
                 Open
               </button>
             </div>

@@ -2000,6 +2000,25 @@ a.claude-rail-peek-scope:focus-visible {
 .claude-rail-peek.is-left.is-on .claude-rail-peek-card {
   transform: none;
 }
+/* THE SWAP (left-peek-store; owner, 2026-11-28: "the window shouldn't open
+   and close, only the content should change"): the newcomer is simply there
+   — no fade, no slide; the card it replaces stands under it, untouchable,
+   until the newcomer's content is drawn, then goes with no fade. */
+.claude-rail-peek.is-left.is-swap-in,
+.claude-rail-peek.is-left.is-swap-cut {
+  transition: none;
+}
+.claude-rail-peek.is-left.is-swap-hold {
+  opacity: 1;
+  visibility: visible;
+  pointer-events: none;
+  transition: none;
+  z-index: 45;
+}
+.claude-rail-peek.is-left:is(.is-swap-in, .is-swap-hold) .claude-rail-peek-card {
+  transform: none;
+  transition: none;
+}
 .claude-left-peek-title {
   min-width: 0;
 }
@@ -2463,11 +2482,12 @@ html.claude-rail-resizing :is(.claude-rail-peek, .claude-rail-peek .claude-rail-
   box-shadow: inset 0 0 0 1px rgba(var(--tint), 0.45);
 }
 /* …AND WHILE A CARD THAT IS NOT HELD STANDS (`<html data-left-peek-open>`,
-   left-peek-store), the page's own entry quietens its `active` fill to an
-   outline, so only the entry the card belongs to reads as "this one". */
+   left-peek-store), the page's own entry drops its `active` look — no fill,
+   no outline (owner, 2026-11-28: "I see an outline on Home, let's not do
+   that") — so only the entry the card belongs to reads as "this one". */
 html[data-left-peek-open] #sidebar :is(.sidebar-rail-btn, .sidebar-item).active:not([data-left-open]) {
   background: none;
-  box-shadow: inset 0 0 0 1px rgba(var(--tint), 0.14);
+  box-shadow: none;
 }
 /* NO DEAD ZONES ON THE COLLAPSED LEFT RAIL (`<html data-left-rail-peek>`,
    LeftPeek; owner, 2026-11-27: "between items there is spacing which messes
@@ -2513,10 +2533,19 @@ html[data-left-rail-peek] #sidebar.sidebar-collapsed .sidebar-rail-btn[data-left
 }
 html[data-left-rail-peek][data-left-peek-open] #sidebar.sidebar-collapsed .sidebar-rail-btn.active:not([data-left-open])::after {
   background: none;
-  box-shadow: inset 0 0 0 1px rgba(var(--tint), 0.14);
+  box-shadow: none;
 }
 html[data-left-peek-open] #sidebar .bookmark-row.active:not([data-left-open]) {
   background: none;
-  box-shadow: inset 0 0 0 1px rgba(var(--accent-rgb), 0.28);
+  box-shadow: none;
   --row-bg: var(--bg-alt);
+}
+/* THE FIRST ROW UNDER A SECTION'S HEADING (Projects, Canvases, Favourites;
+   owner, 2026-11-28: "the first item in every section gets clipped"): the
+   sticky heading's 1px shadow (sidebar.css) covers the row's top edge, and
+   with it the top of the open card's hairline. 2px of room under the heading
+   — a margin on the first row, as sidebar.css's own 1px is, so a folded
+   section stays its heading's height. */
+html[data-left-rail-peek] #sidebar .sidebar-section-body > .sidebar-fold > .sidebar-fold-inner > :first-child {
+  margin-top: 2px;
 }
