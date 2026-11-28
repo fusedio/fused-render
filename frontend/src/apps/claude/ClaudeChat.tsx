@@ -6159,7 +6159,7 @@ function ChatBody(props: ChatBodyProps) {
       className="c-task-head"
       {...(inChat && hidePaneBtn && !props.noBack ? { preLead: hidePaneBtn } : {})}
       lead={
-        inChat && !(props.noBack && props.onHidePane)
+        inChat && !props.noBack
           ? {
               kind: "back",
               label: "Back to chats",

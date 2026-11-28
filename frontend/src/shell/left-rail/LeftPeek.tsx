@@ -214,6 +214,16 @@ function LeftCard({ itemKey, on }: { itemKey: string; on: boolean }) {
     setHomeFrame(homeSrc);
     frameAt.current = null;
   }, [live, homeSrc]);
+  // THE BASE ITSELF CHANGED while the card is up (a host's project card: its
+  // picture, then — pressed — its live page): the trail starts over on it.
+  const baseWas = useRef(homeSrc);
+  useEffect(() => {
+    if (baseWas.current === homeSrc) return;
+    baseWas.current = homeSrc;
+    setTrail(null);
+    setHomeFrame(homeSrc);
+    frameAt.current = null;
+  }, [homeSrc]);
   // The step on top asks for another page than the frame is on: load it.
   useEffect(() => {
     if (pageUrl === null || pageUrl === frameAt.current) return;
