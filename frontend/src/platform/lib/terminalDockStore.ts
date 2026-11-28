@@ -16,7 +16,7 @@
 // setter, subscribed to with `useSyncExternalStore` so a re-render only
 // happens when the value actually changes.
 import { useSyncExternalStore } from "react";
-import { IS_EMBED } from "./router";
+import { NO_SHELL_CHROME } from "./router";
 
 /** Whether `TerminalDrawer` is actually mounted right now. `!IS_EMBED` is
  * necessary but not sufficient: App.tsx only mounts the
@@ -46,7 +46,7 @@ function subscribeMounted(listener: () => void): () => void {
 }
 
 function canRunSnapshot(): boolean {
-  return !IS_EMBED && mounted;
+  return !NO_SHELL_CHROME && mounted;
 }
 
 /** Whether a "run in terminal" affordance may show at all, read once and not

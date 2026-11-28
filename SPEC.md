@@ -13433,3 +13433,85 @@ an id not started yet; `close` interrupts and cancels a session's queue;
 stdin EOF exits at once. Spawned by the first query/insert; stopped (stdin
 closed, killed after 2 s, directory removed) by `refuse_new()` +
 `sql-engine` in `_stop_children` and an always-on shutdown hook.
+
+## 56. Workspace — Tabs On The Left, One Panel On The Right (D1514)
+
+Behind `workspace_tabs_enabled` (Settings › Experimental flags › "Tabs and side
+panel", default off), a window becomes a workspace: its pages open as tabs on
+the left. The right panel is specified by later clauses. Off, nothing here
+exists and nothing changes.
+
+- **WS-1 Flag.** Only a stored `true` is on. `GET /api/prefs` answers
+  `workspace_tabs: {enabled}`; `PUT` takes a boolean or answers 400.
+  `/api/config` carries `workspace_tabs_enabled`, because the shell decides
+  before its first render. A window is a host or not for its whole life, so
+  the switch reloads the top window after a successful save — switched off
+  from inside a tab, onto that tab's own URL (no `_tabs` / `_right`).
+- **WS-2 Host and frames.** A window is a host when the flag is on, it is the
+  top window and not an embed. It keeps the window's chrome (sidebar, status
+  bar, terminal drawer, card hosts, notifiers) and draws its page column as a
+  tab strip over a stack of frames, one per tab. A frame loads the page's
+  ordinary URL (no embed spelling) and keeps its page chrome; it draws none of
+  the window's. The host marks each frame element `data-ws-role`
+  (`home` | `tab`; `panel` is reserved) before setting its `src`; a page reads
+  its role once at load (`router.ts WS_ROLE`).
+- **WS-3 Tabs.** Home is tab 0: drawn first with the house and "Home", no
+  close, never moved, never replaced. Every other tab shows an icon — the
+  page's own (an app's) when it sets one, else its kind's (folder, file, app,
+  canvas, AI Models, Community, settings; the left sidebar's drawing where it
+  has one) — its title without the brand suffix, and a close whose seat is
+  always there and whose glyph shows on hover and on the active tab, so a tab
+  never changes width under the pointer. A tab is 120–220px wide; past that
+  the strip scrolls sideways with no bar, its edges fading where tabs lie
+  beyond them, and the shown tab is always scrolled into view. The strip is
+  one tab stop: the arrows, Home and End walk it, Enter or Space shows the
+  focused tab, Delete closes it. A tab's frame mounts the first time it is
+  shown and is kept alive hidden after; a hidden frame reads as hidden to its
+  polls (`_fusedTabHidden`, `fused:tab-visibility`). After a switch the shown
+  frame takes focus. A tab not loaded yet (a reload mounts only the shown one)
+  is labelled from the entry's remembered title, else its page's own name.
+- **WS-4 Same page, one tab.** Two urls name the same page when their decoded
+  pathnames match (`/` is `/home`); for a non-SPA page (`/render`) and the
+  explorer's `_panel`/`_tab` routes the query counts too.
+- **WS-5 Opening.** A same-origin page (a sidebar row, a notification, the
+  brand row, a frame's hop forwarded up) opens by these rules, in order: a tab
+  already on that page is activated, and navigated too when the request
+  carries its own query or hash that differs from where the tab is; Shift+click
+  on a sidebar or Settings-menu link opens a new tab at the end; from Home, a
+  new tab at the end; otherwise the active tab goes there, by re-running the
+  navigation call inside its frame (its leave guard asks there). A foreign
+  origin opens outside the app. Cmd/Ctrl-click stays the browser's.
+- **WS-6 Closing.** Any tab but Home closes; closing the active tab shows its
+  right neighbour, else its left.
+- **WS-7 Home stays Home.** The Home frame never leaves `/home`: a hop from it
+  to any other page opens that page as a new tab; a query change on `/home`
+  stays. A Home frame found on another path anyway is opened as a tab and
+  reset to `/home`.
+- **WS-8 The URL is the state.** The host URL is the active tab's own URL plus
+  `_tabs=` (every tab in strip order, each `encodeURIComponent(path+query)`,
+  the active one `.`) and an opaque `_right=` carried through. Home alone
+  carries no `_tabs`. An active tab the host may not sit on (a `/render` page,
+  an embed spelling) keeps the host on `/home` and is named `!<encoded>`. A
+  list without Home gets it at 0, so turning the flag on while on a file gives
+  Home and that file, the file active. Reload restores every tab.
+- **WS-9 History.** Every open, switch and close is a host history entry
+  carrying `{wsActive, wsIds, wsTitles}`; location syncs replace. Back/Forward
+  reconcile the strip in place, without reloading a frame; a traversal that
+  lands in a hidden tab shows it.
+- **WS-10 Params stay in their tab.** The host is a param boundary and opaque:
+  a page's params are its frame's own URL, and the runtime's global-params
+  read (D72) stops before the host, whose URL mirrors another tab.
+- **WS-11 Pages lose their pane and rail.** In a frame the explorer folder and
+  file views, the app page and the canvas page draw no Claude/Git side pane
+  and no Claude rail, and take the full width. The host stands the shell's
+  fallback rail at the window's right edge.
+- **WS-12 The sidebar.** No Home row in a host (Search takes its place); the
+  brand row activates Home. Highlights compare against the active tab's own
+  URL.
+- **WS-13 The wizard is the whole window.** A hop to `/onboarding` is never a
+  tab: the host shows the wizard in place of its tabs, and leaving it brings
+  the host back on the URL it left to.
+- **WS-14 Bookmarks across the window's documents.** The sidebar and every
+  tab keep their own copy of the bookmarks. A save in one (a tab's ★, a
+  sidebar rename) is announced through the host, and every other document of
+  the window re-reads at once instead of on its 30 s poll.

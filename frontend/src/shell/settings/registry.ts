@@ -488,6 +488,16 @@ const ENTRIES = [
     description: "With the left sidebar collapsed, hovering one of its icons previews that page in a card beside it: Home, Search, AI Models, Community, your projects, canvases and favourites. A click still opens the page; a press inside the card keeps it open, and its pin holds it.",
     keywords: "sidebar left rail collapsed preview hover card peek icon home search models community project canvas favourite pin",
   },
+  // WORKSPACE (D1514): pages as tabs on the left, one panel on the right.
+  // Read once per window load, so the switch reloads the window.
+  {
+    id: "workspace-tabs",
+    group: "features",
+    section: "Other",
+    label: "Tabs and side panel",
+    description: "Pages open as tabs on the left, with Home as the first tab. The window reloads when you switch it.",
+    keywords: "tabs tab strip workspace panel side right left pages split window",
+  },
   // EXPERTS (docs/experts.md): a kind of bot on the Bots page, and
   // the task tools and the breakout's "With". Off by default; off, nothing of
   // it exists.

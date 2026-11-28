@@ -1264,12 +1264,16 @@
   // a param boundary stopped the climb). Their top-level queries hold
   // hand-typed global params (D72): read-only from here — set() never touches
   // them. Computed per read: an ancestor's URL changes over time.
+  // An OPAQUE window ends the climb, unread (`_fusedParamOpaque`, a workspace
+  // host, D1514): its URL mirrors whichever of its tabs is active, so its
+  // params belong to some other page, never globals for this one.
   function ancestorWindows() {
     const out = [];
     let t = target;
     try {
       while (t.parent && t.parent !== t) {
         void t.parent.location.href; // throws when cross-origin
+        if (t.parent._fusedParamOpaque) break;
         t = t.parent;
         out.push(t);
       }

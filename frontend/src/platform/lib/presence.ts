@@ -14,7 +14,7 @@
 // `postMessage` (this repo deliberately avoids the latter — see
 // `notifications.ts`'s own header comment on why it uses a same-origin
 // `window.top` global instead for the parent/child case).
-import { NAV_EVENT, currentUrl, fsPathFromLocation, IS_EMBED } from "@platform/lib/router";
+import { NAV_EVENT, currentUrl, fsPathFromLocation, NO_SHELL_CHROME } from "@platform/lib/router";
 import { ORIGIN_BY_ROUTE } from "@platform/lib/originRoutes";
 
 export interface PresenceEntry {
@@ -447,8 +447,10 @@ function writeSelf(env: PresenceEnv = {}): void {
       page: currentPresencePage(),
       focused: isFocusedAndVisible(),
       ts: now,
-      topLevel: computeTopLevel(IS_EMBED, typeof window === "undefined" ? undefined : window),
-      embed: IS_EMBED,
+      topLevel: computeTopLevel(NO_SHELL_CHROME, typeof window === "undefined" ? undefined : window),
+      // A workspace frame counts as an embed: the host's own entry already
+      // names the page on screen, and a hidden tab is not "open" to a reader.
+      embed: NO_SHELL_CHROME,
     };
     return map;
   }, env);

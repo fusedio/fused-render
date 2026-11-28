@@ -556,6 +556,15 @@ def left_rail_peek_enabled() -> bool:
     return read_prefs().get("left_rail_peek_enabled") is True
 
 
+def workspace_tabs_enabled() -> bool:
+    """Whether the window is a WORKSPACE (D1514, SPEC §56): pages open as
+    tabs on the left, each a normal page in its own frame, with Home as the
+    fixed first tab. Read by the shell once per load through /api/config, so
+    flipping it reloads the window. Default off; only a stored `true` is on.
+    """
+    return read_prefs().get("workspace_tabs_enabled") is True
+
+
 def task_summary_titles_enabled() -> bool:
     """Whether Tasks rows are titled ONLY by the server's stable `title` (a
     name the reader chose, else the app's own haiku AI title refreshed every
@@ -1289,6 +1298,9 @@ def _prefs_response() -> dict:
         # The collapsed left sidebar's hover previews
         # (`left_rail_peek_enabled`; off by default).
         "left_rail_peek": {"enabled": left_rail_peek_enabled()},
+        # Tabs on the left, one panel on the right
+        # (`workspace_tabs_enabled`; off by default).
+        "workspace_tabs": {"enabled": workspace_tabs_enabled()},
         # Stable AI Tasks titles (`task_summary_titles_enabled`).
         "task_summary_titles": {"enabled": task_summary_titles_enabled()},
         # Lean Claude sessions (`claude_strict_mcp_enabled`, default off).
@@ -1671,6 +1683,13 @@ def put_prefs(body: dict = Body(...), x_fused: str | None = Header(default=None)
                                     status_code=400)
             prefs["left_rail_peek_enabled"] = value
             changed = True
+        if "workspace_tabs_enabled" in body:
+            value = body.get("workspace_tabs_enabled")
+            if not isinstance(value, bool):
+                return JSONResponse({"error": "'workspace_tabs_enabled' must be a boolean"},
+                                    status_code=400)
+            prefs["workspace_tabs_enabled"] = value
+            changed = True
         if "task_summary_titles_enabled" in body:
             value = body.get("task_summary_titles_enabled")
             if not isinstance(value, bool):
@@ -2025,6 +2044,7 @@ def put_prefs(body: dict = Body(...), x_fused: str | None = Header(default=None)
                           "'chat_recap_enabled', 'breakout_enabled', 'experts_enabled', "
                           "'canvas_shot_slow_fallback_enabled', "
                           "'rail_extras_enabled', 'left_rail_peek_enabled', "
+                          "'workspace_tabs_enabled', "
                           "'task_summary_titles_enabled', "
                           "'claude_strict_mcp_enabled', 'claude_default_permission', "
                           "'bots_autostage', 'bots_sounds', 'bots_clear_enabled', "

@@ -217,7 +217,7 @@ import { addCurrentApp } from "@platform/lib/api";
 import { CURRENT_APPS_CHANGED_EVENT } from "@platform/lib/tasksChanged";
 import { ChatMount, ShotViewer, type CanvasShot, type CanvasShotAnswer, type CanvasShotBy, type CanvasShotWhat, type Viewable } from "@apps/claude";
 import { statPath } from "@platform/lib/api";
-import { EMBED_PREFIX, NAV_EVENT, VIEW_PREFIX, confirmLeave, embedUrlForFsPath, navigateUrl, spaLinkProps, viewUrlForFsPath } from "@platform/lib/router";
+import { EMBED_PREFIX, IS_WS_FRAME, NAV_EVENT, VIEW_PREFIX, confirmLeave, embedUrlForFsPath, navigateUrl, spaLinkProps, viewUrlForFsPath } from "@platform/lib/router";
 import { ErrorBanner } from "@platform/ui/ErrorBanner";
 import { CanvasGhost } from "./CanvasGhost";
 import { ghostFile, ghostSrc } from "./canvas-ghost";
@@ -693,6 +693,12 @@ export default function CanvasWorkspace({
   // workbench's edge chips, or `side=off` on the URL. Hiding it leaves the selection alone: the canvas goes on
   // selecting, and the pane opens on whatever node is selected by then.
   const [sideOpen, setSideOpen] = useState<boolean>(() => sideOpenFromUrl());
+  // IN A WORKSPACE FRAME (D1514) this page draws no pane and no rail: Claude
+  // lives in the window's right panel (specified by later clauses), and the
+  // canvas takes the whole width. `sideOpen` itself — and so the URL's
+  // `side` and the shared flag — is left as the reader set it; only what is
+  // drawn reads this. Stage 2's "open this chat on the right" hooks in here.
+  const paneShown = sideOpen && !IS_WS_FRAME;
   // Bumped when the node pane must REBOOT on a session for the node already
   // shown (a Recent row's hop onto the selected node, below): the frame's src
   // is otherwise frozen per node and tab (`nodeBootSrc`).
@@ -1764,10 +1770,10 @@ export default function CanvasWorkspace({
   // sits at its own right edge.
   // Written after commit, not during render: a discarded render must not
   // leave a pane state the message handler reads that was never shown.
-  const sidePanelStateRef = useRef({ open: sideOpen, code: false, width: 0 });
+  const sidePanelStateRef = useRef({ open: paneShown, code: false, width: 0 });
   useLayoutEffect(() => {
-    sidePanelStateRef.current = { open: sideOpen, code: false, width: 0 };
-  }, [sideOpen]);
+    sidePanelStateRef.current = { open: paneShown, code: false, width: 0 };
+  }, [paneShown]);
   const sendCodePanelState = useCallback(() => {
     const frame = frameRef.current;
     const origin = baseOriginRef.current;
@@ -1779,7 +1785,7 @@ export default function CanvasWorkspace({
   }, []);
   useEffect(() => {
     sendCodePanelState();
-  }, [sideOpen, sendCodePanelState]);
+  }, [paneShown, sendCodePanelState]);
 
   // Tell the canvas whether THIS window is focused (see the header): on every
   // change, and whenever the frame (re)loads or re-hydrates, since it starts
@@ -3462,8 +3468,10 @@ export default function CanvasWorkspace({
             <strong style={{ minWidth: 0, overflowWrap: "anywhere" }}>
               {pushLeg.reason ?? "Publishing failed"}
             </strong>
-            {/* Claude's feature (D17): no door while Claude is switched off. */}
-            {!claudeOff && <button
+            {/* Claude's feature (D17): no door while Claude is switched off —
+                nor in a workspace tab, which draws no pane for the fix's chat
+                to stand in (the button would read "see chat" with none). */}
+            {!claudeOff && !IS_WS_FRAME && <button
               className="btn btn-primary"
               disabled={fixBusy || fixActive}
               onClick={() => void onFix()}
@@ -3535,7 +3543,7 @@ export default function CanvasWorkspace({
             // `0 1`: the canvas yields when the window narrows under the
             // pane's floor (the pane column's minWidth below), never the
             // other way round.
-            flex: !sideOpen ? "1 1 auto" : `0 1 ${leftFrac * 100}%`,
+            flex: !paneShown ? "1 1 auto" : `0 1 ${leftFrac * 100}%`,
             minWidth: 0,
             position: "relative",
             pointerEvents: dragging ? "none" : "auto",
@@ -3621,7 +3629,7 @@ export default function CanvasWorkspace({
             </div>
           )}
         </div>
-        {sideOpen && (
+        {paneShown && (
           <div
             // The right pane's column: the seam and the pane, the rest of
             // the row past the canvas's share. Its floor is
@@ -3747,7 +3755,7 @@ export default function CanvasWorkspace({
         </div>
           </div>
         )}
-        {(
+        {!IS_WS_FRAME && (
           // The pane shut: the rail takes its edge (ClaudeRail.tsx) — the way
           // back in, plus Claude's state on this canvas, which is what the
           // pane was showing. It stands past the OPEN pane too, at the row's

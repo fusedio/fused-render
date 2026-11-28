@@ -30,7 +30,7 @@
 import { useSyncExternalStore } from "react";
 import { JOB_POPUP_VISIBLE_MS } from "@platform/lib/jobs";
 import type { JobTier } from "@platform/lib/jobs";
-import { IS_EMBED, IS_TOP_EMBED } from "@platform/lib/router";
+import { NO_SHELL_CHROME, IS_TOP_EMBED } from "@platform/lib/router";
 import { isFocusedHere } from "@platform/lib/presence";
 import { labelForSource } from "@platform/lib/format";
 import type { NotificationCardAction } from "@platform/ui/NotificationCard";
@@ -292,7 +292,8 @@ export function _setIsTopEmbedForTest(value: boolean | null): void {
 // module registry).
 let isEmbedOverride: boolean | null = null;
 function effectiveIsEmbed(): boolean {
-  return isEmbedOverride ?? IS_EMBED;
+  // A workspace frame forwards to its host like a pane does (D1514).
+  return isEmbedOverride ?? NO_SHELL_CHROME;
 }
 /** Test-only — see `effectiveIsEmbed`'s comment. `null` restores the real
  *  `IS_EMBED` reading. */

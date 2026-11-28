@@ -23,7 +23,7 @@ import {
   setSidebarState,
   subscribeSidebarState,
 } from "@platform/lib/sidebarstate";
-import { IS_EMBED, pushHistory } from "@platform/lib/router";
+import { NO_SHELL_CHROME, pushHistory } from "@platform/lib/router";
 
 /** The query param the peek rides on `/tasks`. */
 export const PEEK_PARAM = "peek";
@@ -1338,7 +1338,7 @@ export function openPeek(
 
 /** The open-time exception, spent (`openTimeCollapse` carries the rule). */
 function spendOpenTimeCollapse(): void {
-  if (IS_EMBED) return; // no sidebar here to spend (`hostSidebar`)
+  if (NO_SHELL_CHROME) return; // no sidebar here to spend (`hostSidebar`)
   const sidebar = hostSidebar();
   const collapse = openTimeCollapse({
     viewport: viewportWidth(),
@@ -1506,7 +1506,7 @@ function viewportWidth(): number {
  * too (`setSidebar`, `spendOpenTimeCollapse`, `applyResize`, `watchSidebar`).
  */
 function hostSidebar(): { expanded: number; collapsed: boolean; occupied: number } {
-  if (IS_EMBED) return { expanded: 0, collapsed: false, occupied: 0 };
+  if (NO_SHELL_CHROME) return { expanded: 0, collapsed: false, occupied: 0 };
   const sidebar = getSidebarState();
   return {
     expanded: sidebar.width,
@@ -1560,7 +1560,7 @@ function establishSide(): void {
  */
 export function applyResize(): RoomPlan {
   // Embedded, the crossing plan is a no-op: there is no sidebar to move.
-  if (state.key !== null && !IS_EMBED) {
+  if (state.key !== null && !NO_SHELL_CHROME) {
     const plan = planCrossing(crossEnv());
     floorSide = plan.side;
     if (plan.sidebar !== null) {
@@ -1610,7 +1610,7 @@ function setSidebar(collapsed: boolean, persist = false): void {
   // EMBEDDED, HANDS OFF: `sidebarstate` is the shared layout document, so a write from
   // a framed Tasks page would collapse the PARENT shell's sidebar — a column
   // this document does not even draw.
-  if (IS_EMBED) return;
+  if (NO_SHELL_CHROME) return;
   ours = true;
   try {
     setSidebarState((s) => (s.collapsed === collapsed ? s : { ...s, collapsed }), persist);
@@ -1666,7 +1666,7 @@ let sidebarWasCollapsed = false;
 function watchSidebar(): void {
   // Embedded: a change to `sidebarstate` is the HOST's sidebar moving, not the
   // reader moving one beside this frame — nothing here to track.
-  if (IS_EMBED || unsubscribeSidebar) return;
+  if (NO_SHELL_CHROME || unsubscribeSidebar) return;
   sidebarWasCollapsed = hostSidebar().collapsed;
   unsubscribeSidebar = subscribeSidebarState(() => {
     // Track ours too, or an auto-collapse followed by their chevron reads as

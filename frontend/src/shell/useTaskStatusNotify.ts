@@ -74,7 +74,7 @@
 import { useEffect, useRef } from "react";
 import { notify } from "@platform/lib/notifications";
 import { snapshotIsOpenExact } from "@platform/lib/presence";
-import { IS_EMBED, IS_TOP_EMBED } from "@platform/lib/router";
+import { NO_SHELL_CHROME, IS_TOP_EMBED } from "@platform/lib/router";
 import { useTasksPulseRows } from "@shell/tasksPulse";
 import { noticeColumn, notificationForTransition } from "@shell/task-status-notify";
 import { useTaskNotifyTerminalSessions } from "@shell/task-notify-terminal-flag";
@@ -89,7 +89,7 @@ import { useAutoReadOpenTasks, useOpenTaskKeys } from "@shell/task-open-read";
 // 2026-10-08). The rows are thrown away in an embed anyway, so the pane now
 // asks for none. A TOP embed is a whole window and keeps both its rows and
 // its notices, as above (its feed rides the socket now and costs no slot).
-const READS_TASK_ROWS = !(IS_EMBED && !IS_TOP_EMBED);
+const READS_TASK_ROWS = !(NO_SHELL_CHROME && !IS_TOP_EMBED);
 
 /** The hook as a LEAF (2026-10-09): mounted once in `App`'s tree, renders
  *  nothing, and so is the only thing the listing's row publishes re-render
@@ -119,7 +119,7 @@ export function useTaskStatusNotify(): void {
   openRef.current = open;
 
   useEffect(() => {
-    if (IS_EMBED && !IS_TOP_EMBED) return;
+    if (NO_SHELL_CHROME && !IS_TOP_EMBED) return;
     if (watchStartS.current === null) watchStartS.current = Date.now() / 1000;
     const prev = previous.current;
     const liveKeys = new Set<string>();

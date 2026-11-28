@@ -12,7 +12,7 @@
 // Read at SEND time (a pinned card outlives page hops), by the bots composer
 // (`screen` on /api/bots/<id>/send) and the expert chat (the `screen` field of
 // the `terminal_hint` param, which agent.py writes as a `<user-screen>` line).
-import { currentUrl, fsPathFromLocation, IS_EMBED } from "@platform/lib/router";
+import { currentUrl, fsPathFromLocation, NO_SHELL_CHROME } from "@platform/lib/router";
 
 /** Where the rail stands, as the shell's rail last said it (`RailPlace`,
  *  flattened: platform cannot import the shell). */
@@ -50,7 +50,7 @@ function placeLines(p: ScreenPlace): string[] {
  *  nothing to say (an embed, no DOM). Every field is optional but the URL. */
 export function screenContext(): string {
   try {
-    if (IS_EMBED || typeof document === "undefined") return "";
+    if (NO_SHELL_CHROME || typeof document === "undefined") return "";
     const lines: string[] = [];
     const title = one(document.title);
     if (title) lines.push(`Page: ${title}`);

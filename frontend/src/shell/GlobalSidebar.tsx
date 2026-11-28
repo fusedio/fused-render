@@ -11,15 +11,18 @@
 // (SidebarFrame) and explorer-owned sections (Bookmarks), which only
 // the shell is allowed to import together (scripts/check-boundaries.mjs).
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
-import { Plug, Sparkles, Store } from "lucide-react";
+import { Plug, Search, Sparkles, Store } from "lucide-react";
 import { ClaudeMark } from "@platform/ui/ClaudeMark";
 import { CanvasIcon } from "@platform/ui/NodeTypeIcons";
 import { SidebarFrame, NavItem } from "@platform/ui/sidebar/SidebarFrame";
 import { setSidebarSectionOpen } from "@platform/ui/sidebar/sidebar-accordion";
 import type { SidebarRailItem } from "@platform/ui/sidebar/SidebarFrame";
 import { SidebarDoorContext, type SidebarDoorLookup } from "@platform/ui/sidebar/sidebar-doors";
-import { botsAvailable, rawUrl, type Config } from "@platform/lib/api";
+import { botsAvailable, rawUrl, showLauncher, type Config } from "@platform/lib/api";
+import { useLauncherAvailable } from "@platform/lib/bots-available";
+import { useLauncherOpen } from "@shell/claude-rail/launcher-open";
 import { embedUrlForFsPath, navigateUrl, viewUrlForFsPath } from "@platform/lib/router";
+import { currentPageUrl, isWorkspaceHost } from "@platform/lib/workspace-bridge";
 import { isBrowserHandledClick } from "@platform/lib/appEntry";
 import { TOURS, startTour } from "@platform/lib/tours";
 import { ONBOARDING_PATH } from "@shell/onboarding/state";
@@ -124,6 +127,9 @@ const SKILLS_ICON = <Sparkles size={16} strokeWidth={2} aria-hidden="true" />;
 // browsed and installed, sized like the lucide Tasks glyph above.
 // The plug Preferences draws beside its Integrations page.
 const INTEGRATIONS_ICON = <Plug size={16} strokeWidth={2} aria-hidden="true" />;
+// The Search row a workspace host draws in Home's place (the app's launcher,
+// the ⌥Space search panel over the apps and bots).
+const SEARCH_ICON = <Search size={16} strokeWidth={2} aria-hidden="true" />;
 const MARKETPLACE_ICON = <Store size={16} strokeWidth={1.9} aria-hidden="true" />;
 
 // Connected nodes: a canvas is a graph of UDFs.
@@ -525,6 +531,20 @@ export default function GlobalSidebar({ config }: { config: Config }) {
   // highlighting both the row and the thing you opened read as two selections.
   const pathname = location.pathname;
   const homeActive = pathname === "/home";
+  // A WORKSPACE HOST (D1514) draws no Home row: Home is the fixed first tab,
+  // and the brand row above still takes you there. A SEARCH ROW stands in its
+  // place: the launcher panel, where the app has one (the Mac desktop app),
+  // lit while the panel stands (`useLauncherOpen`); a miss (the panel went
+  // with the preference) is nothing to show. Outside a host there is no such
+  // row — the Home card holds the file search — and neither hook reads
+  // anything.
+  const homeRow = !isWorkspaceHost();
+  const searchAvailable = useLauncherAvailable(!homeRow) && !homeRow;
+  const launcher = useLauncherOpen();
+  const openSearch = () => {
+    launcher.opened();
+    showLauncher().catch(() => launcher.failed());
+  };
   const tasksActive = pathname === "/tasks";
   // PREFIX, unlike Canvases above: /ai-models/<tab> is the same page seen
   // through a different tab, not a second destination, so every one of the five
@@ -719,7 +739,9 @@ export default function GlobalSidebar({ config }: { config: Config }) {
     canvases: canvasesInNav,
   });
   const onAppPath = appPathFromPath(pathname);
-  const here = pathname + location.search;
+  // The page on screen — in a workspace host, the active tab's own URL (the
+  // host's adds `_tabs`).
+  const here = currentPageUrl();
   // A rail door opens ITS section for the next expand (owner, 2026-11-09:
   // "my last clicked item in the collapsed sidebar should be remembered and
   // open that section"): the accordion's own write (sidebar-accordion), so
@@ -826,7 +848,10 @@ export default function GlobalSidebar({ config }: { config: Config }) {
 
   const railItems: SidebarRailItem[] = [
     // Same gate and same order as the expanded rows below.
-    { key: "home", label: "Home", icon: HOME_ICON, href: "/home", active: homeActive },
+    ...(homeRow ? [{ key: "home", label: "Home", icon: HOME_ICON, href: "/home", active: homeActive }] : []),
+    ...(searchAvailable
+      ? [{ key: "search", label: "Search", icon: SEARCH_ICON, active: launcher.open, onClick: openSearch }]
+      : []),
     // No Canvases entry (owner, 2026-10-20): the Canvases SECTION below lists
     // the canvases, and its "+ Canvas" row is the door to the catalog.
     {
@@ -896,14 +921,14 @@ export default function GlobalSidebar({ config }: { config: Config }) {
     const goTo = (href: string) => () => navigateUrl(href);
     // THE HOME CARD (owner, 2026-11-27): the home folder's listing, a file
     // search in its head (typing swaps the listing for the results), and its
-    // Open is the file explorer at ~ — the row's own click stays /home.
-    leftItems.push({
-      key: "home",
-      title: "Home",
-      icon: HOME_ICON,
-      show: { kind: "frame", src: embedUrlForFsPath(config.home, "?_side=off"), searchHome: config.home },
+    // Open is the file explorer at ~ — the row's own click stays /home. In a
+    // workspace host, where no Home row stands, the Search row carries it.
+    const homeCard = {
+      show: { kind: "frame" as const, src: embedUrlForFsPath(config.home, "?_side=off"), searchHome: config.home },
       onOpen: goTo(viewUrlForFsPath(config.home)),
-    });
+    };
+    if (homeRow) leftItems.push({ key: "home", title: "Home", icon: HOME_ICON, ...homeCard });
+    else if (searchAvailable) leftItems.push({ key: "search", title: "Search", icon: SEARCH_ICON, ...homeCard });
     leftItems.push({ key: "ai-models", title: "AI Models", icon: AI_MODELS_ICON, show: { kind: "frame", src: withQueryEmbed(AI_MODELS_HOME) }, onOpen: goTo(AI_MODELS_HOME) });
     leftItems.push({ key: "marketplace", title: "Community", icon: MARKETPLACE_ICON, show: { kind: "frame", src: withQueryEmbed(marketplaceHref) }, onOpen: goTo(marketplaceHref) });
     // The "+" rows: the page each one leads to — their own click is unchanged.
@@ -1001,7 +1026,17 @@ export default function GlobalSidebar({ config }: { config: Config }) {
         onRailEl={leftPeekOn ? setLeftRail : undefined}
       >
         <div className="sidebar-section sidebar-group">
-          <NavItem href="/home" id="home-link" label="Home" icon={HOME_ICON} active={homeActive} doorKey="home" />
+          {homeRow && <NavItem href="/home" id="home-link" label="Home" icon={HOME_ICON} active={homeActive} doorKey="home" />}
+          {searchAvailable && (
+            <NavItem
+              id="search-link"
+              label="Search"
+              icon={SEARCH_ICON}
+              active={launcher.open}
+              onClick={openSearch}
+              doorKey="search"
+            />
+          )}
           {/* No Canvases row (owner, 2026-10-20): the Canvases section below
               is the listing, its "+ Canvas" row the way to the catalog. */}
           <NavItem

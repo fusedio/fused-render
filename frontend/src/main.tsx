@@ -4,7 +4,14 @@ import { createRoot } from "react-dom/client";
 import { TroubleCard } from "@platform/ui/TroubleCard";
 import { ShellErrorBoundary } from "@platform/ui/ShellErrorBoundary";
 import { installShellErrorReporter, reportShellError } from "@platform/lib/shell-errors";
-import { IS_EMBED, IS_SNAPSHOT } from "@platform/lib/router";
+import { IS_EMBED, IS_SNAPSHOT, NO_SHELL_CHROME, navigateUrl } from "@platform/lib/router";
+import {
+  bootWorkspaceHost,
+  installWorkspaceFrameSink,
+  onWorkspaceBookmarks,
+  shouldHostWorkspace,
+} from "@platform/lib/workspace-bridge";
+import { ONBOARDING_PATH } from "@shell/onboarding/state";
 import { installNetTiming, shellPageIdentity } from "@platform/lib/netTiming";
 import { clearListPrefetch, getConfig } from "@platform/lib/api";
 import { pauseWhileHidden } from "@platform/lib/pause-while-hidden";
@@ -94,8 +101,9 @@ window._fusedFsChanged = () => {
 // embed, so a hook here with nothing to open would silently "succeed" a
 // request no drawer will ever show — an embedded pane's page is meant to see
 // the same "no shell host" rejection a standalone /render page gets, not a
-// resolved promise for a drawer that never appears.
-if (!IS_EMBED) {
+// resolved promise for a drawer that never appears. A workspace frame has no
+// drawer either: the runtime's climb goes on to the host's hook.
+if (!NO_SHELL_CHROME) {
   window._fusedOpenTerminal = (req) => openTerminal(req);
 }
 
@@ -129,7 +137,11 @@ const CONFIG_TIMEOUT_MS = 20_000;
 // companion side pane's shut / width / full-screen stores in its first render.
 // They skip the notifications state — no embed draws the panel, and every
 // preview card on Home is an embed, so that would be one wasted request each.
-const uiState = hydrateUiState(IS_EMBED ? [] : [hydrateNotificationsState]);
+const uiState = hydrateUiState(NO_SHELL_CHROME ? [] : [hydrateNotificationsState]);
+
+// A workspace frame's own hops that are not its to make (Home stays Home, the
+// wizard is the whole window) go to the host instead (workspace-bridge).
+installWorkspaceFrameSink(ONBOARDING_PATH);
 
 Promise.all([getConfig({ signal: AbortSignal.timeout(CONFIG_TIMEOUT_MS) }), uiState]).then(
   ([config]) => {
@@ -137,6 +149,11 @@ Promise.all([getConfig({ signal: AbortSignal.timeout(CONFIG_TIMEOUT_MS) }), uiSt
     // render, and a seed a tick later is a flash of the wrong name.
     seedFlavor(config);
     document.title = displayName();
+    // A WORKSPACE HOST (D1514) is marked now, before the first render and so
+    // before any frame mounts: its frames read the mark at their module init.
+    // While no host layout is mounted (the setup wizard owns the window) a
+    // page request is an ordinary hop.
+    if (shouldHostWorkspace(config)) bootWorkspaceHost((url) => void navigateUrl(url));
     // ⌘+ / ⌘− / ⌘0 in a chat, and the saved chat text size — after the layout
     // hydrate (or its bound), so the first paint is already at that size.
     installChatZoom();
@@ -187,6 +204,9 @@ Promise.all([getConfig({ signal: AbortSignal.timeout(CONFIG_TIMEOUT_MS) }), uiSt
     // rest of the 30 s tick. Same "refresh on focus" posture as
     // ServerStatusBanner's health probe (D126).
     window.addEventListener("focus", pollBookmarks);
+    // …and the instant another document of this window saved them (a
+    // workspace's sidebar and tabs are separate documents: workspace-bridge).
+    onWorkspaceBookmarks(pollBookmarks);
   },
   (err: Error) => {
     reportShellError({ where: "boot", message: String(err.message || err), stack: err.stack });

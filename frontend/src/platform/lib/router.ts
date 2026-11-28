@@ -205,6 +205,43 @@ export const IS_EMBED =
   boot.pathname === "/explorer/embed" ||
   IS_QUERY_EMBED;
 
+// AM I A FRAME OF A WORKSPACE HOST? (D1514, shell/workspace) — and which one:
+// Home (tab 0), another tab, or the right panel. The host sets `data-ws-role`
+// on the iframe ELEMENT before it sets `src`, so the answer is on the frame,
+// not in its URL: a URL marker would be dropped by the first in-app hop
+// (navigate() starts a fresh query). Null at top level, under bun (no window),
+// and when the parent is cross-origin. Read once — a document cannot be
+// re-parented.
+export type WsRole = "home" | "tab" | "panel";
+export const WS_ROLE: WsRole | null = (function wsRole(): WsRole | null {
+  try {
+    if (typeof window === "undefined") return null;
+    const el = window.frameElement as HTMLElement | null | undefined;
+    const role = el?.dataset?.wsRole;
+    return role === "home" || role === "tab" || role === "panel" ? role : null;
+  } catch {
+    return null;
+  }
+})();
+export const IS_WS_FRAME = WS_ROLE !== null;
+
+// NO SHELL CHROME HERE: no sidebar, status bar, terminal drawer, fallback rail,
+// card hosts or notifiers. An embed draws none (its host owns them), and
+// neither does a workspace frame — it is a whole normal PAGE, with its page
+// chrome (breadcrumb, top bar, mode menu), but the window's chrome is the
+// host's. Page-level decisions keep asking IS_EMBED.
+export const NO_SHELL_CHROME = IS_EMBED || IS_WS_FRAME;
+
+// Is `win` a workspace host? Its pathname only MIRRORS its active tab, so the
+// ancestor climbs below must stop there rather than read it as a route.
+function isWorkspaceHostWin(win: Window): boolean {
+  try {
+    return !!win._fusedWorkspace;
+  } catch {
+    return false;
+  }
+}
+
 // The param a display-only card peek stamps on its embed URL (BookmarkCards'
 // LivePreview), and the flag GET /render takes to skip open recording (D301).
 // One name end to end: the card marks the embed shell, the shell forwards it
@@ -223,6 +260,7 @@ function ancestorIsPreview(): boolean {
     let w: Window = window;
     while (w.parent && w.parent !== w) {
       w = w.parent;
+      if (isWorkspaceHostWin(w)) break;
       if (new URLSearchParams(w.location.search).get(PREVIEW_PARAM) === "1") return true;
     }
   } catch {
@@ -387,6 +425,7 @@ export const IS_PANEL_PANE = (function inPanelHost(): boolean {
     let win: Window = window;
     while (win !== win.parent) {
       win = win.parent;
+      if (isWorkspaceHostWin(win)) break;
       if (isPanelPath(win.location.pathname)) return true;
     }
   } catch {
@@ -418,6 +457,7 @@ export const IS_FOREIGN_EMBED = (function foreignHost(): boolean {
     let win: Window = window;
     while (win !== win.parent) {
       win = win.parent;
+      if (isWorkspaceHostWin(win)) break;
       if (win.location.pathname.startsWith("/explorer")) return false;
     }
     return true;
@@ -437,6 +477,7 @@ export const IS_CROSS_ORIGIN_EMBED = (function crossOriginHost(): boolean {
     while (win !== win.parent) {
       win = win.parent;
       void win.location.pathname;
+      if (isWorkspaceHostWin(win)) break;
     }
     return false;
   } catch {
@@ -630,6 +671,45 @@ function destOptsQuery(opts?: { mode?: string; sel?: string | null; q?: string }
   return parts;
 }
 
+// ---- the navigation sink (D1514) ---------------------------------------------
+//
+// A WORKSPACE HOST SHOWS NO ROUTE OF ITS OWN (shell/workspace): its page column
+// is a stack of tab frames, and an in-app hop made from the host's own chrome
+// (a sidebar row, a notification) means "open this page", decided by the open
+// rules. The host installs a sink; `navigate`/`navigateUrl` hand it the href
+// they would push plus the CALL itself. A sink returns true when it took the
+// hop; false lets the ordinary local push run — so a FRAME can install one that
+// handles only some URLs (Home stays Home) and leaves the rest alone.
+//
+// THE CALL, NOT THE RESULT, is what reaches a tab: what navigate() derives from
+// "the page you are leaving" (the `_side` carry, `snapshot`, the history-state
+// hints) is about the TAB's page, so the same function runs again in there. Its
+// leave guard asks there too — the composer whose words a hop could lose lives
+// inside the tab.
+export type NavCall =
+  | {
+      fn: "navigate";
+      fsPath: string;
+      opts?: { isDir?: boolean; mode?: string; sel?: string | null; q?: string };
+    }
+  | { fn: "navigateUrl"; url: string; opts?: { isDir?: boolean; replace?: boolean } };
+
+export type NavSink = (href: string, call: NavCall) => boolean;
+
+/** What a host puts in a NAVIGATE_URL_EVENT's detail: the call to re-run, or
+ *  `load` — a url this document's router cannot show (a `/render` page), left
+ *  for by a full load, still behind this page's leave guard. */
+export type NavDetail = NavCall | { fn: "load"; url: string };
+
+let navSink: NavSink | null = null;
+
+export function installNavSink(sink: NavSink | null): void {
+  navSink = sink;
+}
+
+/** The event a host dispatches on a frame's window to navigate it. */
+export const NAVIGATE_URL_EVENT = "fused:navigate-url";
+
 export function navigate(
   fsPath: string,
   opts?: { isDir?: boolean; mode?: string; sel?: string | null; q?: string },
@@ -751,6 +831,7 @@ export function navigate(
   // THE URL IS BUILT NOW AND PUSHED WHEN THE GUARD ANSWERS: everything above
   // reads `location.search`, which is still this page's while the question is up.
   const href = urlForFsPath(fsPath, search);
+  if (navSink && navSink(href, { fn: "navigate", fsPath, opts })) return;
   void guarded(() => {
     pushHistory(state, href);
     notifyNavigate();
@@ -847,10 +928,28 @@ export function navigateUrl(url: string, opts?: { isDir?: boolean; replace?: boo
   // /explorer prefix rename; an in-app push skips the module-init rewrite, so
   // map here or the dispatcher won't recognize the path.
   const href = rewriteLegacyUrl(url);
+  if (navSink && navSink(href, { fn: "navigateUrl", url, opts })) return Promise.resolve(true);
   return guarded(() => {
     if (opts?.replace) history.replaceState(state ?? history.state, "", href);
     else pushHistory(state, href);
     notifyNavigate();
+  });
+}
+
+// The receiving end of a host's sink, in EVERY document: a frame cannot know
+// it will be asked until its host speaks, and registering costs one listener.
+// The call re-runs here as an ordinary hop — or through this frame's own sink
+// first (Home's rule), exactly as if a click in here had made it.
+if (typeof window !== "undefined" && typeof window.addEventListener === "function") {
+  window.addEventListener(NAVIGATE_URL_EVENT, (e: Event) => {
+    const d = (e as CustomEvent<NavDetail | null>).detail;
+    if (!d || typeof d !== "object") return;
+    if (d.fn === "navigate" && typeof d.fsPath === "string") navigate(d.fsPath, d.opts);
+    else if (d.fn === "navigateUrl" && typeof d.url === "string") void navigateUrl(d.url, d.opts);
+    else if (d.fn === "load" && typeof d.url === "string") {
+      const target = d.url;
+      void guarded(() => location.assign(target));
+    }
   });
 }
 

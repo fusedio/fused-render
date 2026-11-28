@@ -44,6 +44,10 @@ export interface Config {
   // always true off Windows, and on Windows only with pywinpty installed (the
   // `[cli]` extra). Absent from an older server: treated as available.
   terminal_available?: boolean;
+  // Is this window a workspace (tabs on the left, D1514; the
+  // `workspace_tabs_enabled` pref)? Here, not only in Prefs, because the shell
+  // decides before its first render. Absent (older server) reads as off.
+  workspace_tabs_enabled?: boolean;
   // Self-update state (fused_render/update/mac.py) — present only when the
   // packaged mac app started the update manager; absent on dev servers and
   // the Linux package (it updates through its supervisor).
@@ -1635,6 +1639,9 @@ export interface Prefs {
   // default): the collapsed left sidebar's icons preview their page in a
   // hover card (shell/left-rail). Optional: absent (older server) reads as off.
   left_rail_peek?: { enabled: boolean };
+  // Tabs and side panel (`workspace_tabs_enabled`, shell/prefs.py; off by
+  // default, D1514). Optional: absent (older server) reads as off.
+  workspace_tabs?: { enabled: boolean };
   // Stable AI titles: Tasks rows titled only by the stable `title` (`task_summary_titles_enabled`,
   // shell/prefs.py; off by default). Optional: absent reads as off.
   task_summary_titles?: { enabled: boolean };
@@ -2227,6 +2234,10 @@ export function putRailExtrasEnabled(enabled: boolean): Promise<Prefs> {
 
 export function putLeftRailPeekEnabled(enabled: boolean): Promise<Prefs> {
   return putJson<Prefs>("/api/prefs", { left_rail_peek_enabled: enabled });
+}
+
+export function putWorkspaceTabsEnabled(enabled: boolean): Promise<Prefs> {
+  return putJson<Prefs>("/api/prefs", { workspace_tabs_enabled: enabled });
 }
 
 /** One PUT per Bots page-wide switch (`Prefs.bots`). */

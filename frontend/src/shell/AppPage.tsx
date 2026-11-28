@@ -78,7 +78,7 @@ import {
 import { useFavicon, useUrlVersion } from "@platform/lib/hooks";
 import { isRasterIconUrl, useThemedIconSrc } from "@platform/lib/app-icon-src";
 import { isOverlayOpen } from "@platform/lib/ui-overlay";
-import { confirmLeave, navigateUrl, replaceSearch, spaLinkProps, urlForFsPath } from "@platform/lib/router";
+import { IS_WS_FRAME, confirmLeave, navigateUrl, replaceSearch, spaLinkProps, urlForFsPath } from "@platform/lib/router";
 import { snapshotFrameSrc } from "@platform/lib/snapshot-param";
 import {
   AppWindow,
@@ -721,8 +721,14 @@ export default function AppPage({
   // the tab state and the probe.
   const claudeSplitRef = useRef<HTMLDivElement | null>(null);
   const claude = useAppPageClaudePane(claudeSplitRef);
+  // IN A WORKSPACE FRAME (D1514) the page draws no pane and no rail: Claude
+  // lives in the window's right panel (specified by later clauses), and the
+  // app takes the whole width. `claude.open` — the URL's `side` and the
+  // shared flag — is left as the reader set it; only what is drawn reads
+  // this. Stage 2's "open this chat on the right" hooks in here.
+  const paneHere = !IS_WS_FRAME;
   // Held mounted through its exit so the pane slides like the left sidebar.
-  const pane = usePanePresence(claude.open);
+  const pane = usePanePresence(paneHere && claude.open);
   const paneTab = useAppPagePaneTab(dir, pane.mounted);
   // Leaving the Claude tab unmounts the chat, so words typed into it get the
   // composer's own leave guard first — the explorer's `setSide` asks the same.
@@ -1255,7 +1261,7 @@ export default function AppPage({
           </div>
         </div>
       )}
-      {(
+      {paneHere && (
         // Past the pane, at the window's right edge (`paneOpen`); the same
         // slot either way, so the pane opening does not remount the rail.
         <ClaudeRail

@@ -11,6 +11,7 @@ import {
   putCanvasesEnabled,
   putRailExtrasEnabled,
   putLeftRailPeekEnabled,
+  putWorkspaceTabsEnabled,
   putGitAutoSyncEnabled,
   putLivePreviewsEnabled,
   putMonitorEnabled,
@@ -311,6 +312,36 @@ export function LeftRailPeekControl({ prefs, onChange }: PrefControlProps) {
       checked={on}
       put={putLeftRailPeekEnabled}
       after={(next) => publishLeftRailPeek(next.left_rail_peek)}
+      onChange={onChange}
+    />
+  );
+}
+
+// TABS AND SIDE PANEL (D1514): a window is a workspace host or not for its
+// whole life (the shell reads the flag from /api/config before its first
+// render), so a saved change reloads the TOP window — this page may itself be
+// a tab inside one.
+export function WorkspaceTabsControl({ prefs, onChange }: PrefControlProps) {
+  return (
+    <PrefToggleRow
+      id="workspace-tabs"
+      checked={prefs.workspace_tabs?.enabled === true}
+      put={putWorkspaceTabsEnabled}
+      after={(next) => {
+        try {
+          const top = window.top ?? window;
+          // SWITCHED OFF FROM INSIDE A TAB: the window comes back as the plain
+          // shell on THIS page, not on the host's address — that one still
+          // carries `_tabs` / `_right`, which mean nothing there.
+          if (next.workspace_tabs?.enabled !== true && top !== window) {
+            top.location.replace(location.pathname + location.search);
+          } else top.location.reload();
+        } catch {
+          // A cross-origin top (an external page framing this one): reload
+          // what we can reach.
+          window.location.reload();
+        }
+      }}
       onChange={onChange}
     />
   );

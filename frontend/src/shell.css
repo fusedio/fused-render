@@ -80,6 +80,10 @@
    layers its card grid over the .btn / .field-control vocabulary above. */
 @import "./styles/canvases.css";
 @import "./styles/claude-rail.css";
+/* After claude-rail.css: a workspace host's row (D1514) is that file's
+   `.shell-main-row`, made a box for good. Before reduced-motion.css, which
+   stills its fades. */
+@import "./styles/workspace.css";
 @import "./styles/reduced-motion.css";
 @import "./styles/apps.css";
 /* After apps.css: the Marketplace (/marketplace) and the App-Store blocks it
