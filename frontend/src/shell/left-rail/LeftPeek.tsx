@@ -8,8 +8,12 @@
 // frame behind the param boundary (peek-frame `PeekFrame`) — mounted while
 // the card is up and a beat after, never before its first opening; a
 // project's `preview.png` while a preview (its live page once pinned, or when
-// it has no still); the search card's result opens ON THE PAGE, never in the
-// card.
+// it has no still). THE HOME CARD has a file search in its head (`searchHome`,
+// Home's own FilesSearch): typing lays the results over the listing, Escape
+// (or emptying the box) takes them away. Everything opens IN THE CARD — a
+// result, a folder in the listing — and ← Back walks the card's trail
+// (left-peek-lib `HomeStep`); only Open takes the page there: the view the
+// card is on, or Home with the query while the results show.
 //
 // A PREVIEW'S FRAME IS SHIELDED (`.claude-left-peek:not(.is-live)`, claude-
 // rail.css): it takes no pointer, so the pointer over it is over the card
@@ -19,14 +23,33 @@
 // it back (peek-frame `reclaimFocus`).
 //
 // THE HEAD: the pin (RailPinButton, the Git and mode cards'), the icon and
-// title, and Open — the icon's own click, then the card goes. In a workspace
-// host only a favourite's card has the pin (SPEC §56 WS-28).
-import { useCallback, useEffect, useRef, useState } from "react";
-import { NAV_EVENT, navigateUrl } from "@platform/lib/router";
+// title, the Home card's ← Back and search box, and Open — the entry's Open
+// (the Home card's: what it shows), then the card goes. In a workspace host
+// only a favourite's card has the pin (SPEC §56 WS-28).
+import { useCallback, useEffect, useRef, useState, type MutableRefObject } from "react";
+import { ArrowLeft } from "lucide-react";
+import { NAV_EVENT, navigateUrl, urlForFsPath } from "@platform/lib/router";
 import { DoorCard } from "@shell/claude-rail/DoorCard";
 import { RailPinButton, useTempOutside } from "@shell/claude-rail/RailPin";
 import { FRAME_LINGER_MS, PeekFrame, usePeekFrameRules } from "@shell/claude-rail/peek-frame";
-import { LEFT_DOOR_ATTR, framePainted, frameSrcOf, leftDoorSelector, leftPressVerdict, searchHopTarget } from "./left-peek-lib";
+import {
+  bookmarkFrameSrc,
+  cardPageUrl,
+  framePainted,
+  frameSrcOf,
+  homeSearchUrl,
+  leftDoorSelector,
+  leftPressVerdict,
+  trailBack,
+  trailFrameAt,
+  trailNoResults,
+  trailOpen,
+  trailPage,
+  trailResults,
+  type HomeStep,
+} from "./left-peek-lib";
+import { FilesSearch } from "@apps/explorer/FilesHome";
+import { useIndexStatus } from "@platform/lib/index-status";
 import { NewAppInline } from "@shell/CurrentAppsSection";
 import {
   closeLeftCards,
@@ -40,7 +63,7 @@ import {
   type LeftPeekItem,
 } from "./left-peek-store";
 import { useSidebarState } from "@platform/lib/hooks";
-import { isWorkspaceHost } from "@platform/lib/workspace-bridge";
+import { isWorkspaceHost, workspaceHost } from "@platform/lib/workspace-bridge";
 import { useLeftRailPeek } from "./left-rail-peek-flag";
 import { installLeftRailZone } from "./left-rail-zone";
 
@@ -164,7 +187,35 @@ function LeftCard({ itemKey, on }: { itemKey: string; on: boolean }) {
   const still = show?.kind === "app" ? show.still : null;
   const [stillFailed, setStillFailed] = useState<string | null>(null);
   const failed = still !== null && stillFailed === still;
-  const src = show ? frameSrcOf(show, { pinned, stillFailed: failed }) : null;
+  // THE HOME CARD'S TRAIL (header; `searchHome`): its steps, its frame's
+  // address (changed only to show another step — the frame's own hops are
+  // its own), and where the frame says it is.
+  const searchHome = show?.kind === "frame" ? (show.searchHome ?? null) : null;
+  const homeSrc = searchHome !== null && show?.kind === "frame" ? show.src : null;
+  const [trail, setTrail] = useState<HomeStep[] | null>(null);
+  const [homeFrame, setHomeFrame] = useState<string | null>(homeSrc);
+  // Each load the card asks for is a new frame, even on the address the frame
+  // was first given (Back to it after the frame hopped on its own).
+  const [frameGen, setFrameGen] = useState(0);
+  const frameAt = useRef<string | null>(null);
+  const [clearKey, setClearKey] = useState(0);
+  const steps: HomeStep[] = homeSrc === null ? [] : (trail ?? [{ kind: "page", url: homeSrc }]);
+  const topStep = steps[steps.length - 1] ?? null;
+  const pageUrl = trailPage(steps);
+  // The card put down (its fade over) starts over on ~.
+  useEffect(() => {
+    if (live && homeSrc !== null) return;
+    setTrail(null);
+    setHomeFrame(homeSrc);
+    frameAt.current = null;
+  }, [live, homeSrc]);
+  // The step on top asks for another page than the frame is on: load it.
+  useEffect(() => {
+    if (pageUrl === null || pageUrl === frameAt.current) return;
+    setHomeFrame(pageUrl);
+    setFrameGen((n) => n + 1);
+  }, [pageUrl]);
+  const src = homeSrc !== null ? homeFrame : show ? frameSrcOf(show, { pinned, stillFailed: failed }) : null;
   const [loaded, setLoaded] = useState<string | null>(null);
   // THE SPINNER (owner, 2026-11-27: "sometimes it takes a long time to load
   // and it is just a blank screen"): the frame's `load` is only its shell's
@@ -176,16 +227,84 @@ function LeftCard({ itemKey, on }: { itemKey: string; on: boolean }) {
   const paintPoll = useRef(0);
   useEffect(() => () => window.clearInterval(paintPoll.current), []);
   const compose = show?.kind === "compose";
-  // THE SEARCH CARD'S RESULT OPENS ON THE PAGE: the frame's own hop (a result
-  // pressed, a path typed) is taken to the top page, and the frame starts
-  // over on its search.
-  const [round, setRound] = useState(0);
-  const isSearch = show?.kind === "search";
+  // THE HOME CARD'S SEARCH: the box in the head, its results in a layer
+  // over the frame while they are the step on top.
+  const [resultsEl, setResultsEl] = useState<HTMLDivElement | null>(null);
+  const homeBase = useCallback((t: HomeStep[] | null): HomeStep[] => t ?? (homeSrc !== null ? [{ kind: "page", url: homeSrc }] : []), [homeSrc]);
+  const onSearchActive = useCallback(
+    (active: boolean) => setTrail((t) => (active ? trailResults(homeBase(t)) : trailNoResults(homeBase(t)))),
+    [homeBase],
+  );
+  // Typing again over a page the results led to brings them back on top.
+  const onSearchInput = useCallback((value: string) => {
+    if (value.trim()) setTrail((t) => trailResults(homeBase(t)));
+  }, [homeBase]);
+  // A RESULT OPENS IN THE CARD: a row's link (caught before the row's own
+  // click takes the page there) or the box's Enter / open row (`onGo`).
+  const openInCard = useCallback((frameSrc: string | null) => {
+    if (frameSrc) setTrail((t) => trailOpen(homeBase(t), frameSrc));
+  }, [homeBase]);
+  const onGo = useCallback((fsPath: string) => openInCard(bookmarkFrameSrc(urlForFsPath(fsPath))), [openInCard]);
+  useEffect(() => {
+    if (!resultsEl) return;
+    const onClick = (e: MouseEvent) => {
+      if (e.defaultPrevented || e.button !== 0 || e.metaKey || e.ctrlKey || e.shiftKey || e.altKey) return;
+      const a = (e.target as Element | null)?.closest?.("a[href]");
+      if (!a || !resultsEl.contains(a)) return;
+      const frameSrc = bookmarkFrameSrc(a.getAttribute("href") ?? "");
+      if (!frameSrc) return;
+      e.preventDefault();
+      e.stopPropagation();
+      openInCard(frameSrc);
+    };
+    resultsEl.addEventListener("click", onClick, true);
+    return () => resultsEl.removeEventListener("click", onClick, true);
+  }, [resultsEl, openInCard]);
+  const back = useCallback(() => {
+    if (topStep?.kind === "results") setClearKey((n) => n + 1);
+    setTrail((t) => trailBack(homeBase(t)));
+  }, [topStep, homeBase]);
+  // THE FRAME WENT SOMEWHERE ON ITS OWN (a folder opened in the listing):
+  // the trail hears it (left-peek-lib `trailFrameAt`).
+  const frameHops = useRef<(() => void) | null>(null);
+  useEffect(() => () => frameHops.current?.(), []);
+  const watchFrame = useCallback(
+    (inner: HTMLIFrameElement) => {
+      frameHops.current?.();
+      frameHops.current = null;
+      if (homeSrc === null) return;
+      let w: Window | null = null;
+      try {
+        w = inner.contentWindow;
+      } catch {
+        return;
+      }
+      if (!w) return;
+      const win = w;
+      const report = () => {
+        let url: string;
+        try {
+          url = win.location.pathname + win.location.search + win.location.hash;
+        } catch {
+          return;
+        }
+        frameAt.current = url;
+        setTrail((t) => trailFrameAt(homeBase(t), url));
+      };
+      const kinds = [NAV_EVENT, "popstate", "hashchange", "fused:urlchange"];
+      for (const k of kinds) win.addEventListener(k, report);
+      frameHops.current = () => {
+        for (const k of kinds) win.removeEventListener(k, report);
+      };
+      report();
+    },
+    [homeSrc, homeBase],
+  );
   // READY PER FRAME, NOT PER ADDRESS (CodeRabbit on #2495): a new frame on
-  // the same address — the card back after its fade ran out, the search
-  // card's next round — is not loaded or painted yet. `loaded` and `painted`
+  // the same address — the card back after its fade ran out — is not loaded
+  // or painted yet. `loaded` and `painted`
   // name the frame they are about, and a new one drops the old one's poll.
-  const frameKey = src !== null ? `${mounts}#${round}#${src}` : null;
+  const frameKey = src !== null ? `${mounts}#${frameGen}#${src}` : null;
   useEffect(() => () => window.clearInterval(paintPoll.current), [frameKey]);
   const onFrameLoad = useCallback(
     (inner: HTMLIFrameElement) => {
@@ -206,88 +325,36 @@ function LeftCard({ itemKey, on }: { itemKey: string; on: boolean }) {
         return true;
       };
       if (!ask()) paintPoll.current = window.setInterval(ask, 120);
-      if (!isSearch) return;
-      let w: Window | null = null;
-      try {
-        w = inner.contentWindow;
-      } catch {
-        return;
-      }
-      if (!w) return;
-      const win = w;
-      const hop = () => {
-        let to: string | null = null;
-        try {
-          to = searchHopTarget(win.location.pathname + win.location.search);
-        } catch {
-          return;
-        }
-        if (!to) return;
-        win.removeEventListener(NAV_EVENT, hop);
-        setRound((n) => n + 1);
-        void navigateUrl(to);
-      };
-      win.addEventListener(NAV_EVENT, hop);
-      hop();
+      watchFrame(inner);
     },
-    [frameKey, isSearch],
+    [frameKey, watchFrame],
   );
-
-  // THE SEARCH CARD TAKES THE KEYBOARD WHEN PRESSED: the press that made it
-  // temp landed on the shield (header), so the box is put under the reader's
-  // hands — after the press's own focus change (a mousedown on the card).
-  // IN A WORKSPACE HOST the Search row's click opens the card straight to
-  // temp, often on a frame still loading (a fresh one after a result went to
-  // a tab): ask again for a while, as long as the keyboard is still where
-  // the click left it (the page, the frame, a sidebar entry).
-  const searchRound = isWorkspaceHost() ? frameKey : null;
-  useEffect(() => {
-    if (!isSearch || !pinned) return;
-    let tries = isWorkspaceHost() ? 30 : 1;
-    let t = 0;
-    // Is the keyboard still where the click left it? Not once the reader put
-    // it on any control of the card but the search box (its Open, a result
-    // in the frame): checked BEFORE each try, so a try never takes it back.
-    const untouched = (inner: HTMLIFrameElement | null | undefined, box: HTMLInputElement | null | undefined): boolean => {
-      const a = document.activeElement;
-      const frame = frameRef.current;
-      if (frame && a === frame) {
-        const doc = frame.contentDocument;
-        const fa = doc?.activeElement;
-        if (!fa || fa === doc?.body) return true;
-        if (!inner || fa !== inner) return false;
-        const idoc = inner.contentDocument;
-        const ia = idoc?.activeElement;
-        return !ia || ia === idoc?.body || ia === box;
-      }
-      return !a || a === document.body || !!a.closest?.(`[${LEFT_DOOR_ATTR}]`);
-    };
-    const host = isWorkspaceHost();
-    const attempt = () => {
-      let done = false;
-      let free = true;
-      try {
-        const inner = frameRef.current?.contentDocument?.querySelector("iframe");
-        const box = inner?.contentDocument?.querySelector<HTMLInputElement>("input.files-search-input");
-        // Asked only in a host: elsewhere it is one try, taken as before.
-        free = !host || untouched(inner, box);
-        if (!free) return;
-        box?.focus({ preventScroll: true });
-        done = !!box && inner?.contentDocument?.activeElement === box;
-      } catch {
-        // A frame not ours to reach: the reader clicks into it.
-        done = true;
-      }
-      if (!done && --tries > 0 && free) t = window.setTimeout(attempt, 100);
-    };
-    t = window.setTimeout(attempt, 60);
-    return () => window.clearTimeout(t);
-  }, [isSearch, pinned, searchRound]);
 
   const title = it?.title ?? "";
   const pinless = !!it?.pinless;
+  // THE HOME CARD'S OPEN: the view it is on — Home with the query while the
+  // results show, else the framed page as the page's own address.
+  const searchBox = useRef<HTMLDivElement | null>(null);
+  const homeOpenUrl = (): string | null => {
+    if (homeSrc === null || !topStep) return null;
+    if (topStep.kind === "results") return homeSearchUrl(searchBox.current?.querySelector("input")?.value ?? "");
+    return cardPageUrl(topStep.url);
+  };
   const open = useCallback(
-    (close: () => void, newTab: boolean) => {
+    (close: () => void, to: string | null, newTab: boolean) => {
+      if (to !== null) {
+        // Shift, in a workspace host: a new tab (the host's own open).
+        const host = newTab ? workspaceHost() : null;
+        if (host) {
+          host.openPage(to, { newTab: true });
+          close();
+          return;
+        }
+        void navigateUrl(to).then((ok) => {
+          if (ok !== false) close();
+        });
+        return;
+      }
       const now = leftItem(itemKey);
       if (!now) return;
       const went = now.onOpen(newTab ? { newTab } : undefined);
@@ -324,6 +391,11 @@ function LeftCard({ itemKey, on }: { itemKey: string; on: boolean }) {
                   none on a pinless card (a workspace host's non-favourite,
                   left-peek-lib `leftCardPinnable`): Open is the landing. */}
               {!pinless && <RailPinButton variant="legacy" btnRef={api.closeRef} pinned={api.pin.pinned} onToggle={api.pin.onToggle} />}
+              {homeSrc !== null && steps.length > 1 && (
+                <button type="button" className="claude-rail-peek-btn claude-rail-peek-close" aria-label="Back" data-hint="Back" onClick={back}>
+                  <ArrowLeft size={14} aria-hidden="true" />
+                </button>
+              )}
               <span className="claude-rail-tasks-title claude-rail-mode-title claude-left-peek-title">
                 {it && (
                   <span className="claude-rail-mode-icon" aria-hidden="true">
@@ -332,13 +404,25 @@ function LeftCard({ itemKey, on }: { itemKey: string; on: boolean }) {
                 )}
                 <span className="claude-left-peek-name">{title}</span>
               </span>
-              <span className="claude-rail-peek-gap" aria-hidden="true" />
+              {live && searchHome !== null ? (
+                <CardSearch
+                  home={searchHome}
+                  resultsHost={resultsEl}
+                  onActive={onSearchActive}
+                  onInput={onSearchInput}
+                  onGo={onGo}
+                  clearKey={clearKey}
+                  boxRef={searchBox}
+                />
+              ) : (
+                <span className="claude-rail-peek-gap" aria-hidden="true" />
+              )}
               <button
                 type="button"
                 className="btn claude-rail-peek-open"
                 ref={pinless ? api.closeRef : undefined}
-                // Shift: a new tab, in a workspace host (the entry's say).
-                onClick={(e) => open(api.close, e.shiftKey && isWorkspaceHost())}
+                // Shift: a new tab, in a workspace host.
+                onClick={(e) => open(api.close, homeOpenUrl(), e.shiftKey && isWorkspaceHost())}
               >
                 Open
               </button>
@@ -364,11 +448,63 @@ function LeftCard({ itemKey, on }: { itemKey: string; on: boolean }) {
               <img className="claude-left-peek-still" src={still} alt="" draggable={false} onError={() => setStillFailed(still)} />
             )}
             {live && src !== null && (
-              <PeekFrame key={src + "#" + round} src={src} title={title} frameRef={frameRef} onLoad={onFrameLoad} />
+              <PeekFrame key={src + "#" + frameGen} src={src} title={title} frameRef={frameRef} onLoad={onFrameLoad} />
             )}
+            {live && searchHome !== null && <div ref={setResultsEl} className="claude-left-peek-results" hidden={topStep?.kind !== "results"} />}
           </div>
         </>
       )}
     </DoorCard>
+  );
+}
+
+/** THE HOME CARD'S SEARCH BOX: Home's own file search (FilesSearch — the
+ *  same ranking, keys and rows), the box here in the head, its results in
+ *  `resultsHost` over the listing. Its own index poll, as Home's page has
+ *  (SearchWidget `useSearchHost`), only while a query is live; no `?q=`
+ *  carried in (the page's address is not this card's). */
+function CardSearch({
+  home,
+  resultsHost,
+  onActive,
+  onInput,
+  onGo,
+  clearKey,
+  boxRef,
+}: {
+  home: string;
+  resultsHost: HTMLElement | null;
+  onActive: (active: boolean) => void;
+  onInput: (value: string) => void;
+  onGo: (fsPath: string) => void;
+  clearKey: number;
+  boxRef: MutableRefObject<HTMLDivElement | null>;
+}) {
+  const [active, setActive] = useState(false);
+  const [nonce, setNonce] = useState(0);
+  const indexScan = useIndexStatus(active, nonce);
+  const changed = useCallback(
+    (a: boolean) => {
+      setActive(a);
+      onActive(a);
+    },
+    [onActive],
+  );
+  // The box going (the card's fade ran out) takes its results with it.
+  useEffect(() => () => onActive(false), [onActive]);
+  return (
+    <div className="claude-left-peek-search" ref={boxRef} onInput={(e) => onInput((e.target as HTMLInputElement).value ?? "")}>
+      <FilesSearch
+        home={home}
+        initialQuery=""
+        indexScan={indexScan}
+        onActiveChange={changed}
+        onScanRequested={() => setNonce((n) => n + 1)}
+        autoFocus={false}
+        resultsHost={resultsHost}
+        onGo={onGo}
+        clearKey={clearKey}
+      />
+    </div>
   );
 }

@@ -13629,11 +13629,14 @@ nothing here exists and nothing changes.
   favourite: its url equals the tab's) opens no card on hover or
   ArrowRight and keeps its active look and tooltip; a click on it opens
   what is already shown.
-- **WS-31 Search.** The Search row is first, collapsed and expanded, where
-  the launcher exists or the preview is on. Hover: the file-search card.
-  Click: the launcher; with none (a browser), the search card, held till
-  one press outside. A result from the card opens as a tab (WS-5), and the
-  card goes. Its Open is the launcher, else Home.
+- **WS-31 Search.** In a host the Search row is first, collapsed and
+  expanded, where the launcher exists or the preview is on; outside a host
+  there is none (the Home row's card holds the search). Hover: the Home
+  card, the home folder's listing with a file search in its head. Click: the
+  launcher; with none (a browser), the card, held till one press outside. A
+  result, or a folder in the listing, opens in the card, and Back walks it.
+  Its Open loads the view the card is on in the tab by WS-5 (Home with the
+  query while results show); Shift+Open, in a new tab.
 - **WS-32 Tasks and Bots are kept.** Each mounts the first time it shows and
   stays, hidden in place and inert, while another view shows or the panel
   is closed: the list keeps its filters, rows and scroll, the Bots frame is

@@ -21,7 +21,7 @@ import { SidebarDoorContext, type SidebarDoorLookup } from "@platform/ui/sidebar
 import { botsAvailable, rawUrl, showLauncher, type Config } from "@platform/lib/api";
 import { useLauncherAvailable } from "@platform/lib/bots-available";
 import { useLauncherOpen } from "@shell/claude-rail/launcher-open";
-import { embedUrlForFsPath, navigateUrl } from "@platform/lib/router";
+import { embedUrlForFsPath, navigateUrl, viewUrlForFsPath } from "@platform/lib/router";
 import { currentPageUrl, isWorkspaceHost, workspaceHost } from "@platform/lib/workspace-bridge";
 import { isBrowserHandledClick } from "@platform/lib/appEntry";
 import { TOURS, startTour } from "@platform/lib/tours";
@@ -73,7 +73,6 @@ import {
   type LeftPeekItem,
 } from "@shell/left-rail/left-peek-store";
 import {
-  SEARCH_CARD_SRC,
   appShow,
   bookmarkFrameSrc,
   canvasShow,
@@ -137,9 +136,10 @@ const SKILLS_ICON = <Sparkles size={16} strokeWidth={2} aria-hidden="true" />;
 
 // A shop front (lucide Store) for the Marketplace: where community apps are
 // browsed and installed, sized like the lucide Tasks glyph above.
-// The app's launcher (the ⌥Space search panel over the apps and bots).
 // The plug Preferences draws beside its Integrations page.
 const INTEGRATIONS_ICON = <Plug size={16} strokeWidth={2} aria-hidden="true" />;
+// The Search row a workspace host draws in Home's place (the app's launcher,
+// the ⌥Space search panel over the apps and bots).
 const SEARCH_ICON = <Search size={16} strokeWidth={2} aria-hidden="true" />;
 const MARKETPLACE_ICON = <Store size={16} strokeWidth={1.9} aria-hidden="true" />;
 
@@ -543,16 +543,15 @@ export default function GlobalSidebar({ config }: { config: Config }) {
   const pathname = location.pathname;
   const homeActive = pathname === "/home";
   // A WORKSPACE HOST (D1514) draws no Home row: Home is the fixed first tab,
-  // and the brand row above still takes you there. Search moves up into its
-  // place.
+  // and the brand row above still takes you there. A SEARCH ROW stands in its
+  // place (below): the launcher panel, where the app has one (the Mac desktop
+  // app), lit while the panel stands (`useLauncherOpen`); a miss (the panel
+  // went with the preference) is nothing to show. Outside a host there is no
+  // such row — the Home card holds the file search — and neither hook reads
+  // anything.
   const workspace = isWorkspaceHost();
   const homeRow = !workspace;
-  // THE SEARCH ROW (owner, 2026-11-26: "move it on left side below home"):
-  // the launcher panel, once the Claude rail's top door. Only where the app
-  // has one (the Mac desktop app); lit while the panel stands
-  // (`useLauncherOpen`). Where the shortcut opens it; a miss (the panel went
-  // with the preference) is nothing to show.
-  const searchAvailable = useLauncherAvailable(true);
+  const searchAvailable = useLauncherAvailable(workspace) && workspace;
   const launcher = useLauncherOpen();
   const openSearch = () => {
     launcher.opened();
@@ -936,26 +935,25 @@ export default function GlobalSidebar({ config }: { config: Config }) {
   const leftItems: LeftPeekItem[] = [];
   if (leftPeekOn) {
     const goTo = (href: string) => () => navigateUrl(href);
-    // IN A WORKSPACE HOST (SPEC §56 WS-28…WS-31; left-peek-lib): the entry the
-    // active tab shows opens no card; only a favourite's card pins and opens
-    // on a click; Search's click holds its card where there is no launcher.
-    // Outside a host every one of these reads as today.
+    // IN A WORKSPACE HOST (SPEC §56 WS-28…WS-31; left-peek-lib): only a
+    // favourite's card pins and opens on a click; Search's click holds its
+    // card where there is no launcher. The entry whose page is on screen
+    // opens no card, host or not. Outside a host the rest reads as today.
     const rules = (kind: LeftEntryKind, active: boolean) => ({
-      active: !leftCardOnHover({ workspace, active }),
+      active: !leftCardOnHover({ active }),
       clickShowsCard: leftEntryPress({ workspace, peekOn: true, kind, hasCard: true, active, launcher: searchAvailable }) === "card",
       pinless: !leftCardPinnable({ workspace, kind }),
     });
-    if (homeRow) leftItems.push({ key: "home", title: "Home", icon: HOME_ICON, show: { kind: "frame", src: embedUrlForFsPath(config.home, "?_side=off") }, onOpen: goTo("/home"), ...rules("other", homeActive) });
-    // Search's Open: the launcher, else Home, where the search lives whole.
-    if (searchRow)
-      leftItems.push({
-        key: "search",
-        title: "Search",
-        icon: SEARCH_ICON,
-        show: { kind: "search", src: SEARCH_CARD_SRC },
-        onOpen: searchAvailable ? openSearch : goTo("/home"),
-        ...rules("search", false),
-      });
+    // THE HOME CARD (owner, 2026-11-27): the home folder's listing, a file
+    // search in its head (typing swaps the listing for the results), and its
+    // Open is the file explorer at ~ — the row's own click stays /home. In a
+    // workspace host, where no Home row stands, the Search row carries it.
+    const homeCard = {
+      show: { kind: "frame" as const, src: embedUrlForFsPath(config.home, "?_side=off"), searchHome: config.home },
+      onOpen: goTo(viewUrlForFsPath(config.home)),
+    };
+    if (homeRow) leftItems.push({ key: "home", title: "Home", icon: HOME_ICON, ...homeCard, ...rules("other", homeActive) });
+    else if (searchRow) leftItems.push({ key: "search", title: "Search", icon: SEARCH_ICON, ...homeCard, ...rules("search", false) });
     leftItems.push({ key: "ai-models", title: "AI Models", icon: AI_MODELS_ICON, show: { kind: "frame", src: withQueryEmbed(AI_MODELS_HOME) }, onOpen: goTo(AI_MODELS_HOME), ...rules("other", aiModelsActive) });
     leftItems.push({ key: "marketplace", title: "Community", icon: MARKETPLACE_ICON, show: { kind: "frame", src: withQueryEmbed(marketplaceHref) }, onOpen: goTo(marketplaceHref), ...rules("other", marketplaceActive) });
     // The "+" rows: the page each one leads to — their own click is unchanged.
@@ -1024,6 +1022,13 @@ export default function GlobalSidebar({ config }: { config: Config }) {
         });
     }
   }
+  // THE PAGE YOU ARE ON HAS NO CARD (owner, 2026-11-27: "if the page is
+  // active it shouldn't popup"): an entry lit as the current page opens
+  // nothing on hover — it keeps its active look and its tooltip. Projects,
+  // canvases and favourites say so themselves (the rail shows only the first
+  // few); the rest take the rail item's own `active`.
+  const railActive = new Map(railItems.map((r) => [r.key, r.active === true] as const));
+  for (const it of leftItems) if (railActive.get(it.key)) it.active = true;
   // Published with the switch on; off, the empty list puts every card down.
   useLeftRailPublish(leftItems, leftPeekOn);
   // SHIFT+CLICK ON A FAVOURITE IN A HOST: the host's capture handler opens

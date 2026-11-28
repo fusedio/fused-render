@@ -37,11 +37,13 @@ describe("what a click on a left entry does", () => {
 });
 
 describe("the other rules", () => {
-  it("the Search row stands with the launcher, or in a host with the preview on", () => {
-    expect(leftSearchRowShown({ workspace: false, launcher: true, peekOn: false })).toBe(true);
-    expect(leftSearchRowShown({ workspace: false, launcher: false, peekOn: true })).toBe(false);
+  it("the Search row stands in a host only: with the launcher, or with the preview on (the card it carries)", () => {
+    expect(leftSearchRowShown({ workspace: true, launcher: true, peekOn: false })).toBe(true);
     expect(leftSearchRowShown({ workspace: true, launcher: false, peekOn: true })).toBe(true);
     expect(leftSearchRowShown({ workspace: true, launcher: false, peekOn: false })).toBe(false);
+    // Outside a host there is no Search row: the Home card holds the search.
+    expect(leftSearchRowShown({ workspace: false, launcher: true, peekOn: true })).toBe(false);
+    expect(leftSearchRowShown({ workspace: false, launcher: false, peekOn: true })).toBe(false);
   });
   it("a pin on every card outside a host; in one, only a favourite's", () => {
     expect(leftCardPinnable({ workspace: false, kind: "other" })).toBe(true);
@@ -49,10 +51,9 @@ describe("the other rules", () => {
     expect(leftCardPinnable({ workspace: true, kind: "other" })).toBe(false);
     expect(leftCardPinnable({ workspace: true, kind: "search" })).toBe(false);
   });
-  it("the entry the active tab shows opens no card, in a host only", () => {
-    expect(leftCardOnHover({ workspace: true, active: true })).toBe(false);
-    expect(leftCardOnHover({ workspace: true, active: false })).toBe(true);
-    expect(leftCardOnHover({ workspace: false, active: true })).toBe(true);
+  it("the entry whose page is on screen opens no card, host or not", () => {
+    expect(leftCardOnHover({ active: true })).toBe(false);
+    expect(leftCardOnHover({ active: false })).toBe(true);
   });
 });
 
