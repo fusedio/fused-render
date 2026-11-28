@@ -1,8 +1,16 @@
 // Left sidebar preview, the parts that need no DOM (left-peek-lib).
 import { describe, expect, it } from "bun:test";
 import {
-  SEARCH_CARD_SRC,
   appShow,
+  cardPageUrl,
+  homeSearchUrl,
+  trailBack,
+  trailFrameAt,
+  trailNoResults,
+  trailOpen,
+  trailPage,
+  trailResults,
+  type HomeStep,
   bookmarkFrameSrc,
   canvasShow,
   framePainted,
@@ -10,7 +18,6 @@ import {
   LEFT_RAIL_SELECTOR,
   leftDoorSelector,
   leftPressVerdict,
-  searchHopTarget,
   sideOff,
   withQueryEmbed,
   withSearchParam,
@@ -32,9 +39,6 @@ describe("frame addresses", () => {
     expect(sideOff("/explorer/embed/x?_mode=code#L3")).toBe("/explorer/embed/x?_mode=code&_side=off#L3");
     expect(sideOff("/explorer/embed/x?_side=off#L3")).toBe("/explorer/embed/x?_side=off#L3");
     expect(withSearchParam("/p", "a", "1")).toBe("/p?a=1");
-  });
-  it("the search card is Home narrowed to its search, embedded", () => {
-    expect(SEARCH_CARD_SRC).toBe("/home?embed=1&searchonly=1");
   });
   it("a favourite: an explorer page's own embed, a shell route embedded, anything else no card", () => {
     expect(bookmarkFrameSrc("/explorer/view/Users/me/a.html?_mode=code")).toBe("/explorer/embed/Users/me/a.html?_mode=code&_side=off");
@@ -77,15 +81,42 @@ describe("frame addresses", () => {
   });
 });
 
-describe("searchHopTarget", () => {
-  it("still on its search: nothing to open", () => {
-    expect(searchHopTarget("/home?embed=1&searchonly=1")).toBeNull();
-    expect(searchHopTarget("/home?embed=1&searchonly=1&q=report")).toBeNull();
+describe("the Home card's trail", () => {
+  const home: HomeStep[] = [{ kind: "page", url: "/explorer/embed/Users/me?_side=off" }];
+  it("a query puts its results on top once; emptying it takes them away, wherever they are", () => {
+    const r = trailResults(home);
+    expect(r).toEqual([...home, { kind: "results" }]);
+    expect(trailResults(r)).toEqual(r);
+    expect(trailNoResults(r)).toEqual(home);
+    expect(trailNoResults(home)).toEqual(home);
+    // Under a page the results led to, too: Back never lands on empty results.
+    const under = trailOpen(r, "/explorer/embed/Users/me/a.pdf");
+    expect(trailNoResults(under)).toEqual([...home, { kind: "page", url: "/explorer/embed/Users/me/a.pdf" }]);
   });
-  it("a result: the top page's address — the view prefix, the frame's stamps dropped", () => {
-    expect(searchHopTarget("/explorer/embed/Users/me/report.pdf?embed=1&searchonly=1")).toBe("/explorer/view/Users/me/report.pdf");
-    expect(searchHopTarget("/explorer/embed/Users/me?sel=a.txt&_nofocus=1&_preview=1")).toBe("/explorer/view/Users/me?sel=a.txt");
-    expect(searchHopTarget("/preferences?tab=indexing")).toBe("/preferences?tab=indexing");
+  it("a result opens on top; Back walks to the results, then the listing, never past it", () => {
+    const t = trailOpen(trailResults(home), "/explorer/embed/Users/me/a.pdf?_side=off");
+    expect(trailPage(t)).toBe("/explorer/embed/Users/me/a.pdf?_side=off");
+    const r = trailBack(t);
+    expect(r[r.length - 1]).toEqual({ kind: "results" });
+    expect(trailPage(r)).toBe(home[0].kind === "page" ? home[0].url : "");
+    expect(trailBack(trailBack(r))).toEqual(home);
+  });
+  it("the frame's own hops: a new path is a step, the same path with a new query updates it, none under the results", () => {
+    const a = trailFrameAt(home, "/explorer/embed/Users/me/Downloads?_side=off");
+    expect(a.length).toBe(2);
+    const b = trailFrameAt(a, "/explorer/embed/Users/me/Downloads?_side=off&sel=x");
+    expect(b.length).toBe(2);
+    expect(trailPage(b)).toBe("/explorer/embed/Users/me/Downloads?_side=off&sel=x");
+    expect(trailFrameAt(b, "/explorer/embed/Users/me/Downloads?_side=off&sel=x")).toEqual(b);
+    const r = trailResults(b);
+    expect(trailFrameAt(r, "/explorer/embed/elsewhere")).toEqual(r);
+  });
+  it("Open: the framed page as the top page's address; the results as Home with the query", () => {
+    expect(cardPageUrl("/explorer/embed/Users/me?_side=off")).toBe("/explorer/view/Users/me");
+    expect(cardPageUrl("/explorer/embed/Users/me/a.html?_mode=code&embed=1&_nofocus=1&_preview=1#L3")).toBe("/explorer/view/Users/me/a.html?_mode=code#L3");
+    expect(cardPageUrl("/explorer/embed/x?_side=claude")).toBe("/explorer/view/x?_side=claude");
+    expect(homeSearchUrl("visa photo")).toBe("/home?q=visa%20photo&qmode=instant");
+    expect(homeSearchUrl("  ")).toBe("/home");
   });
 });
 
