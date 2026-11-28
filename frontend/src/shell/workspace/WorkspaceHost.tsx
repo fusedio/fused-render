@@ -46,7 +46,7 @@ import { focusAnyChatComposer } from "@platform/lib/chat-focus";
 import { pendingEntryId } from "@platform/lib/queue";
 import type { Task, TaskPulseTask } from "@platform/lib/api";
 import { displayName } from "@platform/lib/flavor";
-import { useFavicon } from "@platform/lib/hooks";
+import { notifyArmedChanged, useFavicon } from "@platform/lib/hooks";
 import type { Config } from "@platform/lib/api";
 import { ClaudeRail, type NewTaskSeed } from "@shell/claude-rail/ClaudeRail";
 import { placeRoot, type RailPlace } from "@shell/claude-rail/claude-rail-lib";
@@ -59,7 +59,7 @@ import { chatMount, type PanelParamsHost } from "./panel-params";
 import type { PanelAsk } from "./WorkspacePanel";
 import { canRunInTerminal, openTerminal } from "@platform/lib/terminalDockStore";
 import { noteAskBackend } from "@platform/lib/pending-claude-ask";
-import { getArmedBookmark, splitBookmarkUrl, type ArmedBookmark } from "@platform/lib/bookmarks";
+import { splitBookmarkUrl, takeArmedHandoff, type ArmedBookmark } from "@platform/lib/bookmarks";
 import { ONBOARDING_PATH } from "@shell/onboarding/state";
 import TabStrip from "./TabStrip";
 import {
@@ -72,6 +72,9 @@ import {
   neighborAfterClose,
   normalizeOpenUrl,
   liftRightTabs,
+  liveTabArm,
+  nextTabArm,
+  type HeldTabArm,
   pageUrlOf,
   parseHostUrl,
   adoptedRun,
@@ -296,6 +299,10 @@ export default function WorkspaceHost({
     ask: null as PanelAsk | null,
     // A bookmark the sidebar armed, waiting for its tab to land (WS-38).
     arms: new Map<string, ArmedBookmark>(),
+    // Each tab's OWN armed bookmark, as its document last said (`tabArmed`):
+    // the sidebar marks the row for the tab on screen. Like a publication, it
+    // is the document's, not the frame's.
+    tabArms: new Map<string, HeldTabArm<Document>>(),
   }).current;
   const frames = useRef(new Map<string, HTMLIFrameElement>()).current;
   const wiring = useRef(new Map<string, FrameWiring>()).current;
@@ -436,14 +443,31 @@ export default function WorkspaceHost({
       /* frame mid-navigation */
     }
   };
-  // Called after an open put `url` in tab `id`: armed for exactly that url,
-  // the tab is armed now when it is already there, else when it lands.
-  const armFor = (id: string, url: string, landed: boolean) => {
-    const armed = getArmedBookmark();
+  // Called after an open put `url` in tab `id`, with the arm that open took
+  // from the sidebar (`open`): armed for exactly that url, the tab is armed
+  // now when it is already there, else when it lands.
+  const armFor = (id: string, url: string, landed: boolean, armed: ArmedBookmark | null) => {
     if (!armed || armed.url !== url) return;
     if (landed && wireOf(id).loaded) sendArm(id, armed);
     else R.arms.set(id, armed);
   };
+  // A TAB SAYS WHAT IT FOLLOWS (WS-38): armed by the event above, by its own
+  // "Update bookmark", or let go by its Breadcrumb (the page changed, the
+  // bookmark is gone). The host keeps no arm of its own: its sidebar reads
+  // the shown tab's (`pageArm`), so a row is marked, and marked changed, only
+  // for the tab that follows it.
+  const tabArmed = (win: Window, said: unknown) => {
+    const id = st.order.find((x) => frames.get(x)?.contentWindow === win);
+    if (!id) return;
+    const next = nextTabArm(R.tabArms.get(id), docOf(win), said);
+    if (next === "same") return;
+    if (next) R.tabArms.set(id, next);
+    else R.tabArms.delete(id);
+    // The sidebar's rows hear of it (`useArmedVersion`).
+    notifyArmedChanged();
+  };
+  const pageArm = (): ArmedBookmark | null =>
+    liveTabArm(R.tabArms.get(st.active), docOf(frames.get(st.active)?.contentWindow));
 
   // Undo a tab's landing on a panel-only page: its own Back when the frame
   // has an entry to go back to (Navigation API), else a reload of the page it
@@ -491,6 +515,12 @@ export default function WorkspaceHost({
     if (pub && pub.doc !== docOf(iframe.contentWindow)) {
       R.places.delete(id);
       rerender();
+    }
+    // …and so does the arm the old one held (a reload follows no bookmark).
+    const held = R.tabArms.get(id);
+    if (held && !liveTabArm(held, docOf(iframe.contentWindow))) {
+      R.tabArms.delete(id);
+      notifyArmedChanged();
     }
     const w = wireOf(id);
     w.loaded = true;
@@ -597,6 +627,11 @@ export default function WorkspaceHost({
 
   // The open rules (workspace-lib planOpen).
   const open = (raw: string, opts?: { newTab?: boolean; call?: NavCall }) => {
+    // THE SIDEBAR'S ARM IS THIS OPEN'S OR NOBODY'S (WS-38, bookmarks
+    // `takeArmedHandoff`): taken whatever this open turns out to be, so a
+    // later open of the same address — the file tree, a search — follows no
+    // bookmark.
+    const armed = takeArmedHandoff();
     const n = normalizeOpenUrl(raw, location.href);
     if (!n) return;
     if (n.kind === "foreign") {
@@ -622,17 +657,17 @@ export default function WorkspaceHost({
     if (plan.kind === "activate") {
       const id = st.order[plan.index];
       activate(id, "push");
-      armFor(id, url, !plan.navigate);
+      armFor(id, url, !plan.navigate, armed);
       if (plan.navigate) navigateTab(id, url, opts?.call);
       return;
     }
     if (plan.kind === "append") {
       const t = addTab(url);
-      armFor(t.id, url, false);
+      armFor(t.id, url, false, armed);
       activate(t.id, "push");
       return;
     }
-    armFor(st.active, url, false);
+    armFor(st.active, url, false, armed);
     navigateTab(st.active, url, opts?.call);
   };
 
@@ -643,6 +678,7 @@ export default function WorkspaceHost({
     st.mounted = st.mounted.filter((x) => x !== id);
     R.places.delete(id);
     R.arms.delete(id);
+    R.tabArms.delete(id);
   };
 
   const close = (id: string) => {
@@ -776,7 +812,7 @@ export default function WorkspaceHost({
     // the task, which a booting window may not yet.
     const place = classifyNav(url);
     if (place.side === "session") {
-      if (shown && st.right === null) adoptSession(place.sessionId);
+      if (shown && st.right === null) adoptSession(place.sessionId, st.active);
       return null;
     }
     const { keep, right } = splitArrival(url);
@@ -787,9 +823,10 @@ export default function WorkspaceHost({
   };
 
   // The session's chat on the right as soon as a row names it; given up after
-  // a while, or once the panel changed at all meanwhile (opened on anything
-  // else — even if closed again since).
-  const adoptSession = (sid: string) => {
+  // a while, once the panel changed at all meanwhile (opened on anything
+  // else — even if closed again since), or once the tab that asked (`origin`)
+  // is closed: its chat is not opened beside another tab's page.
+  const adoptSession = (sid: string, origin: string) => {
     const now = viewForSession(sid);
     if (now) {
       void openRightView(now, "replace");
@@ -807,7 +844,7 @@ export default function WorkspaceHost({
     // Subscribing replays the held listing synchronously: `stop` copes.
     unsub = subscribeListing(() => {
       if (done) return;
-      if (R.rightGen !== gen || S.current?.right !== null) return stop();
+      if (R.rightGen !== gen || S.current?.right !== null || !S.current?.tabs.has(origin)) return stop();
       const view = viewForSession(sid);
       if (!view) return;
       stop();
@@ -950,8 +987,8 @@ export default function WorkspaceHost({
 
   // Handlers close over `st` and stable maps but are re-created per render, so
   // the effects below read them through a ref.
-  const live = useRef({ onPopState, open, close, openHref, openRightView, takeHop, adoptArrival, publishPlace, hostUrl, replaceMirror, askClaude });
-  live.current = { onPopState, open, close, openHref, openRightView, takeHop, adoptArrival, publishPlace, hostUrl, replaceMirror, askClaude };
+  const live = useRef({ onPopState, open, close, openHref, openRightView, takeHop, adoptArrival, publishPlace, tabArmed, pageArm, hostUrl, replaceMirror, askClaude });
+  live.current = { onPopState, open, close, openHref, openRightView, takeHop, adoptArrival, publishPlace, tabArmed, pageArm, hostUrl, replaceMirror, askClaude };
 
   // After a switch the shown frame takes focus, so the keyboard is in the page
   // the reader chose, not left on the strip or in a hidden frame.
@@ -975,6 +1012,8 @@ export default function WorkspaceHost({
       takeHop: (url, role) => live.current.takeHop(String(url), role),
       adoptArrival: (win, url) => live.current.adoptArrival(win, String(url)),
       publishPlace: (win, info) => live.current.publishPlace(win, info),
+      tabArmed: (win, arm) => live.current.tabArmed(win, arm),
+      pageArm: () => live.current.pageArm(),
       focusPanelChat: () => focusAnyChatComposer(),
       askClaude: (file, prompt, opts) => live.current.askClaude(String(file), String(prompt), opts?.backend ? String(opts.backend) : undefined),
       // The window's terminal drawer is this document's (WS-37).

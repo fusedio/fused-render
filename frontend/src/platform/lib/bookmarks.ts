@@ -9,7 +9,13 @@
 // components still subscribe via useBookmarksVersion (lib/hooks.ts) and call
 // notifyBookmarksChanged() after each mutation they trigger.
 import { getBookmarks, putBookmarks } from "@platform/lib/api";
-import { announceBookmarksWritten, WS_ARM_BOOKMARK_EVENT } from "@platform/lib/workspace-bridge";
+import {
+  announceBookmarksWritten,
+  announceTabArmed,
+  currentPageArm,
+  isWorkspaceHost,
+  WS_ARM_BOOKMARK_EVENT,
+} from "@platform/lib/workspace-bridge";
 import { notifyArmedChanged } from "@platform/lib/hooks";
 import { splitShellSearch } from "@platform/lib/layout-codec";
 import { IS_WS_FRAME, rewriteLegacyUrl } from "@platform/lib/router";
@@ -529,7 +535,8 @@ export interface ArmedBookmark {
 // IN A WORKSPACE FRAME THE ARM IS THIS DOCUMENT'S (SPEC §56 WS-38): the
 // window's tabs share one sessionStorage, and every other tab's Breadcrumb
 // would read a bookmark armed for another page as "page changed" and disarm
-// it. The host hands the arm to the tab it opens (`WS_ARM_BOOKMARK_EVENT`).
+// it. The host hands the arm to the tab it opens (`WS_ARM_BOOKMARK_EVENT`),
+// and each tab tells the host what it holds (`announceTabArmed`).
 let frameArmed: ArmedBookmark | null = null;
 if (IS_WS_FRAME && typeof window !== "undefined") {
   window.addEventListener(WS_ARM_BOOKMARK_EVENT, (e) => {
@@ -538,10 +545,31 @@ if (IS_WS_FRAME && typeof window !== "undefined") {
   });
 }
 
+// IN THE HOST ITSELF THE SIDEBAR'S ARM IS A HANDOFF, NOT A STATE (WS-38): it
+// waits here for the open that follows the click and is taken by it, once
+// (`takeArmedHandoff`). Kept as a state it never cleared — no Breadcrumb runs
+// in the host — and every later open of that address read as the bookmark
+// followed again. What the host READS as armed is the tab on screen's own.
+let handoff: ArmedBookmark | null = null;
+
+/** The host's open rules take the arm the sidebar just made — at most once,
+ *  whatever the open was for: an arm no open claimed is not kept for a later
+ *  one. Null outside a host. */
+export function takeArmedHandoff(): ArmedBookmark | null {
+  const taken = handoff;
+  handoff = null;
+  return taken;
+}
+
 export function armBookmark(id: string, url: string): void {
   if (IS_WS_FRAME) {
     frameArmed = { id, url };
+    announceTabArmed(frameArmed);
     notifyArmedChanged();
+    return;
+  }
+  if (isWorkspaceHost()) {
+    handoff = { id, url };
     return;
   }
   try {
@@ -555,7 +583,14 @@ export function armBookmark(id: string, url: string): void {
 export function disarmBookmark(): void {
   if (IS_WS_FRAME) {
     frameArmed = null;
+    announceTabArmed(null);
     notifyArmedChanged();
+    return;
+  }
+  if (isWorkspaceHost()) {
+    // The tab that follows the bookmark lets go itself (its Breadcrumb, once
+    // it hears of the change): here only an arm no open has taken yet.
+    handoff = null;
     return;
   }
   try {
@@ -602,6 +637,8 @@ export function getArmedBookmarkFor(pathname: string): ArmedBookmark | null {
 
 export function getArmedBookmark(): ArmedBookmark | null {
   if (IS_WS_FRAME) return frameArmed;
+  // The host's chrome asks about the page on screen: the active tab's own.
+  if (isWorkspaceHost()) return currentPageArm();
   try {
     const raw = sessionStorage.getItem(ARMED_KEY);
     if (!raw) return null;

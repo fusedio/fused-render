@@ -242,8 +242,10 @@ function useUpdateButton(urlVersion: number, bookmarksVersion: number): boolean 
     const bookmark = allBookmarks().find((b) => b.id === armed.id);
     if (!bookmark) {
       // Not loaded yet (a fresh workspace tab, armed by the click that opened
-      // it): ask again once they are (bookmarksVersion).
-      if (!bookmarksHydrated()) return setVisible(false);
+      // it): ask again once they are (bookmarksVersion). Only there: outside
+      // a workspace the check is as it was — an id the list does not hold is
+      // dropped, loaded or not.
+      if (IS_WS_FRAME && !bookmarksHydrated()) return setVisible(false);
       disarmBookmark(); // bookmark deleted out from under us
       return setVisible(false);
     }

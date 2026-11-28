@@ -815,3 +815,41 @@ export function splitArrival(url: string): { keep: string; right: RightView | nu
   const query = querySegments(parts.query).filter((s) => !drop(s)).join("&");
   return { keep: joinUrl({ ...parts, query }), right: place.view };
 }
+
+// ---- a tab's own armed bookmark (WS-38) ---------------------------------------
+
+/** The bookmark a tab follows, as plain data. */
+export interface TabArm {
+  id: string;
+  url: string;
+}
+
+/** What the host holds of it: the arm, and the DOCUMENT that said it (a
+ *  frame keeps its window across a navigation, never its document — the
+ *  rule a published rail place follows). */
+export interface HeldTabArm<D> {
+  doc: D | null;
+  arm: TabArm;
+}
+
+/**
+ * A TAB SAID WHAT IT FOLLOWS: `said` is its arm (`{ id, url }`, from another
+ * realm — anything else, null included, means it let go), `doc` the document
+ * that said it. Answers what the host holds next: the new record, `null` (the
+ * tab follows nothing), or `"same"` when nothing changed (no re-render).
+ */
+export function nextTabArm<D>(was: HeldTabArm<D> | undefined, doc: D | null, said: unknown): HeldTabArm<D> | null | "same" {
+  const a = said as { id?: unknown; url?: unknown } | null | undefined;
+  if (a && typeof a === "object" && typeof a.id === "string" && typeof a.url === "string" && a.id && a.url) {
+    if (was && was.doc === doc && was.arm.id === a.id && was.arm.url === a.url) return "same";
+    return { doc, arm: { id: a.id, url: a.url } };
+  }
+  return was ? null : "same";
+}
+
+/** The arm of the document a frame holds NOW: one an earlier document said
+ *  (a reload, another page loaded whole) is nobody's. */
+export function liveTabArm<D>(held: HeldTabArm<D> | undefined, docNow: D | null): TabArm | null {
+  if (!held || held.doc === null || held.doc !== docNow) return null;
+  return held.arm;
+}

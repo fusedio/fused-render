@@ -6,7 +6,7 @@
 import { activateHow, sidebarDoorProps, useSidebarDoor } from "@platform/ui/sidebar/sidebar-doors";
 import React, { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { navigateUrl, rootedFsPath, VIEW_PREFIX } from "@platform/lib/router";
-import { currentPageUrl } from "@platform/lib/workspace-bridge";
+import { currentPageUrl, isWorkspaceHost } from "@platform/lib/workspace-bridge";
 import { isRemoteLocation } from "@platform/lib/remote";
 // Folder-as-tabs entry (TM-8): composeFolderTabsUrl builds the `_tab` url
 // from a folder's children. This sidebar -> Tabs import is the documented
@@ -282,8 +282,10 @@ function BookmarkRow({ b, child, parentId, active, dirty, missing, isRenaming, o
           draggable={false}
           onClick={(e) => {
             // The sidebar's owner took the click (the favourite's card came
-            // up instead of the page: a workspace host, sidebar-doors).
-            if (door?.onActivate?.(activateHow(e)) === true) {
+            // up instead of the page: a workspace host, sidebar-doors). Asked
+            // only in a host: elsewhere this link never told its door of a
+            // click, and its card is left as it was.
+            if (isWorkspaceHost() && door?.onActivate?.(activateHow(e)) === true) {
               e.preventDefault();
               return;
             }

@@ -66,6 +66,10 @@ export interface WorkspaceHostApi {
   /** `from` just saved the bookmarks: every other document of this window
    *  (the host's sidebar, the other tabs' ★) re-reads them now. */
   bookmarksWritten?(from: Window): void;
+  /** A tab's own armed bookmark changed (platform/lib/bookmarks, §56 WS-38;
+   *  null: it let go). The host's sidebar marks that bookmark's row while
+   *  this tab is the one on screen. */
+  tabArmed?(win: Window, arm: { id: string; url: string } | null): void;
   /** A staged ask ("Fix with AI", "Explain with AI"): the panel opens the
    *  Claude home of `file` and hands `prompt` to that one chat mount. */
   askClaude?(file: string, prompt: string, opts?: { backend?: string }): void;
@@ -82,6 +86,8 @@ export interface WorkspaceHostImpl extends WorkspaceHostApi {
    *  and `_right`, and the right answer when the host sits on Home for a
    *  `/render` tab. */
   pageUrl(): string;
+  /** The ACTIVE tab's own armed bookmark, as its document last said. */
+  pageArm(): { id: string; url: string } | null;
 }
 
 let hostOn = false;
@@ -119,6 +125,7 @@ export function bootWorkspaceHost(fallback: (url: string) => void): void {
     publishPlace: (win, info) => impl?.publishPlace?.(win, info),
     focusPanelChat: () => impl?.focusPanelChat?.() ?? false,
     bookmarksWritten: (from) => impl?.bookmarksWritten?.(from),
+    tabArmed: (win, arm) => impl?.tabArmed?.(win, arm),
     askClaude: (file, prompt, opts) => impl?.askClaude?.(file, prompt, opts),
     canRunInTerminal: () => impl?.canRunInTerminal?.() ?? false,
     openTerminal: (req) => impl?.openTerminal?.(req),
@@ -140,6 +147,24 @@ export function registerWorkspaceImpl(api: WorkspaceHostImpl | null): void {
 export function currentPageUrl(): string {
   if (hostOn && impl) return impl.pageUrl();
   return location.pathname + location.search;
+}
+
+/** The armed bookmark of "the page this window shows", in a host: the active
+ *  tab's own — the arm lives in that tab's document (§56 WS-38), and the host
+ *  only mirrors what the tab says. Null anywhere else. */
+export function currentPageArm(): { id: string; url: string } | null {
+  return hostOn && impl ? impl.pageArm() : null;
+}
+
+/** From a tab: this document's armed bookmark changed. Nothing anywhere else
+ *  (a panel frame's is no tab's: the host ignores it). */
+export function announceTabArmed(arm: { id: string; url: string } | null): void {
+  if (WS_ROLE === null || typeof window === "undefined") return;
+  try {
+    workspaceHost()?.tabArmed?.(window, arm ? { id: arm.id, url: arm.url } : null);
+  } catch {
+    /* host gone */
+  }
 }
 
 /** The host that owns this window: its own facade in the host, the parent's in

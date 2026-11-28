@@ -11,7 +11,9 @@ import {
   isPlainPath,
   isSpaUrl,
   liftRightTabs,
+  liveTabArm,
   neighborAfterClose,
+  nextTabArm,
   panelLayout,
   normalizeOpenUrl,
   pageUrlOf,
@@ -487,5 +489,41 @@ describe("asRailPlace (a place remembered in the history entry)", () => {
     for (const x of [null, undefined, "folder", 3, {}, { kind: "folder" }, { kind: "folder", dir: "" }, { kind: "file", file: 1 }, { kind: "canvas", env: "x", name: "a", dir: null }]) {
       expect(asRailPlace(x)).toBeNull();
     }
+  });
+});
+
+describe("a tab's own armed bookmark (WS-38)", () => {
+  const docA = { n: "a" };
+  const docB = { n: "b" };
+  const arm = { id: "b1", url: "/explorer/view/Users/me/a.html?x=1" };
+
+  test("a tab that says what it follows is held with the document that said it", () => {
+    expect(nextTabArm(undefined, docA, arm)).toEqual({ doc: docA, arm });
+    // Copied out of the frame's realm: never the object it was handed.
+    expect((nextTabArm(undefined, docA, arm) as { arm: object }).arm).not.toBe(arm);
+  });
+  test("the same arm from the same document changes nothing; a new url (Update bookmark) or a new document does", () => {
+    const held = { doc: docA, arm };
+    expect(nextTabArm(held, docA, { ...arm })).toBe("same");
+    expect(nextTabArm(held, docA, { ...arm, url: arm.url + "&y=2" })).toEqual({ doc: docA, arm: { ...arm, url: arm.url + "&y=2" } });
+    expect(nextTabArm(held, docB, { ...arm })).toEqual({ doc: docB, arm });
+  });
+  test("letting go clears it; letting go of nothing changes nothing", () => {
+    expect(nextTabArm({ doc: docA, arm }, docA, null)).toBeNull();
+    expect(nextTabArm(undefined, docA, null)).toBe("same");
+  });
+  test("anything that is not an arm reads as letting go", () => {
+    for (const said of [undefined, "b1", 3, {}, { id: "b1" }, { id: 1, url: "/x" }, { id: "", url: "/x" }, { id: "b1", url: "" }]) {
+      expect(nextTabArm({ doc: docA, arm }, docA, said)).toBeNull();
+      expect(nextTabArm(undefined, docA, said)).toBe("same");
+    }
+  });
+  test("the arm is the document's: after a reload, or with no frame, the tab follows nothing", () => {
+    const held = { doc: docA, arm };
+    expect(liveTabArm(held, docA)).toEqual(arm);
+    expect(liveTabArm(held, docB)).toBeNull();
+    expect(liveTabArm(held, null)).toBeNull();
+    expect(liveTabArm({ doc: null, arm }, null)).toBeNull();
+    expect(liveTabArm(undefined, docA)).toBeNull();
   });
 });

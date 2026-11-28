@@ -13650,7 +13650,8 @@ nothing here exists and nothing changes.
   even as a new tab, opens the panel. A tab that lands on one by a full load
   goes back (its own Back, else a reload of where it was, else it closes) and
   the panel shows it. A canvas page naming a `session_id` stays a tab and,
-  shown with no `_right`, also opens that task's chat once the listing has it.
+  shown with no `_right`, also opens that task's chat once the listing has
+  it — unless that tab was closed first.
 - **WS-35 A canvas fix in a tab.** "Fix with Claude" works in a canvas tab:
   the run's chat opens in the panel (the clone's chat with `run=`), and
   "Claude is on it — see chat →" opens it again.
@@ -13663,4 +13664,8 @@ nothing here exists and nothing changes.
   bridge. A real embed still has none.
 - **WS-38 Armed bookmarks.** A tab keeps its own armed bookmark, not the
   window's shared one. A sidebar bookmark opened into a tab arms that tab
-  once it lands on the bookmark's page, so its "Update bookmark" works.
+  once it lands on the bookmark's page, so its "Update bookmark" works. The
+  sidebar's arm goes to the one open that follows the click and to no later
+  one. The host holds no arm of its own: each tab tells it what it follows,
+  and a favourite's row is marked (active, changed `*`) from the tab on
+  screen.

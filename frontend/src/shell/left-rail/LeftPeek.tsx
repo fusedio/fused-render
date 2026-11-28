@@ -269,8 +269,9 @@ function LeftCard({ itemKey, on }: { itemKey: string; on: boolean }) {
       try {
         const inner = frameRef.current?.contentDocument?.querySelector("iframe");
         const box = inner?.contentDocument?.querySelector<HTMLInputElement>("input.files-search-input");
-        free = untouched(inner, box);
-        if (host && !free) return;
+        // Asked only in a host: elsewhere it is one try, taken as before.
+        free = !host || untouched(inner, box);
+        if (!free) return;
         box?.focus({ preventScroll: true });
         done = !!box && inner?.contentDocument?.activeElement === box;
       } catch {
