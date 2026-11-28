@@ -17,6 +17,9 @@ import {
   setLeftRail,
   leftSidebarFolded,
   leftKeyOpens,
+  leftSwapReady,
+  leftSwapRole,
+  SWAP_HOLD_MS,
   type LeftPeekItem,
 } from "./left-peek-store";
 
@@ -349,5 +352,110 @@ describe("never the Claude rail's", () => {
     clock.tick(PEEK_OPEN_MS);
     leftCardStore("home").close();
     expect(leftMove.pos(k)).toBeNull();
+  });
+});
+
+describe("the swap: moving entry to entry changes the content, the window stays", () => {
+  beforeEach(() => {
+    publishLeftItems([item("home"), item("ai-models"), item("marketplace")]);
+    for (const k of ["home", "ai-models", "marketplace"]) offs.push(ready(k));
+  });
+  const role = (key: string) => leftSwapRole(leftPeekSnapshot(), key);
+  const move = (from: string | null, to: string) => {
+    if (from) leftDoorFor(from)!.onPointerLeave!({} as ReactPointerEvent<HTMLElement>);
+    enter(to);
+    clock.tick(PEEK_OPEN_MS);
+  };
+
+  it("a card opening with none up is no swap: it fades in as ever", () => {
+    move(null, "home");
+    expect(state("home").up).toBe(true);
+    expect(role("home")).toBeNull();
+  });
+  it("the next entry's card is the newcomer; the one it replaces is held up under it until it is drawn, then cut", () => {
+    move(null, "home");
+    move("home", "ai-models");
+    expect(state("ai-models").up).toBe(true);
+    expect(state("home").up).toBe(false);
+    expect(role("ai-models")).toBe("in");
+    expect(role("home")).toBe("hold");
+    leftSwapReady("ai-models");
+    expect(role("home")).toBe("cut");
+    // The newcomer keeps its mark a beat, then is an ordinary card.
+    expect(role("ai-models")).toBe("in");
+    clock.tick(SWAP_HOLD_MS);
+    expect(role("ai-models")).toBeNull();
+  });
+  it("a newcomer that never says it is drawn lets the old card go after SWAP_HOLD_MS", () => {
+    move(null, "home");
+    move("home", "ai-models");
+    clock.tick(SWAP_HOLD_MS);
+    expect(role("home")).toBe("cut");
+  });
+  it("a quick run: only the card just left stands under the newcomer", () => {
+    move(null, "home");
+    move("home", "ai-models");
+    move("ai-models", "marketplace");
+    expect(role("marketplace")).toBe("in");
+    expect(role("ai-models")).toBe("hold");
+    expect(role("home")).toBe("cut");
+  });
+  it("a held card is no part of a swap; the entry reopened is no longer cut", () => {
+    move(null, "home");
+    pressIn("home");
+    leftCardStore("home").setHeld(true);
+    move("home", "ai-models");
+    expect(state("home").up).toBe(true);
+    expect(role("home")).toBeNull();
+    expect(role("ai-models")).toBeNull();
+    move("ai-models", "marketplace");
+    leftSwapReady("marketplace");
+    expect(role("ai-models")).toBe("cut");
+    move("marketplace", "ai-models");
+    expect(role("ai-models")).toBe("in");
+  });
+});
+
+describe("the safe cone across the cards", () => {
+  beforeEach(() => {
+    publishLeftItems([item("home"), item("ai-models")]);
+    for (const k of ["home", "ai-models"]) offs.push(ready(k));
+    enter("home");
+    clock.tick(PEEK_OPEN_MS);
+  });
+  const leave = (key: string) => leftDoorFor(key)!.onPointerLeave!({} as ReactPointerEvent<HTMLElement>);
+
+  it("an entry crossed while the pointer is on its way to the open card opens nothing", () => {
+    leave("home");
+    leftCardStore("home").intent().enterCone();
+    enter("ai-models");
+    clock.tick(PEEK_OPEN_MS * 2);
+    expect(state("ai-models").up).toBe(false);
+    expect(state("home").up).toBe(true);
+    // …crossed on: the pointer reaches the card.
+    leave("ai-models");
+    leftCardStore("home").intent().enterCard();
+    clock.tick(1000);
+    expect(state("ai-models").up).toBe(false);
+    expect(state("home").up).toBe(true);
+  });
+  it("a press on the waiting entry drops the wait: the cone letting go opens nothing", () => {
+    leave("home");
+    leftCardStore("home").intent().enterCone();
+    enter("ai-models");
+    leftDoorFor("ai-models")!.onPointerDown!({} as ReactPointerEvent<HTMLElement>);
+    leftCardStore("home").intent().leaveCone();
+    clock.tick(PEEK_OPEN_MS * 2);
+    expect(state("ai-models").up).toBe(false);
+  });
+  it("the cone letting go with the pointer resting on the entry opens it", () => {
+    leave("home");
+    leftCardStore("home").intent().enterCone();
+    enter("ai-models");
+    clock.tick(PEEK_OPEN_MS);
+    leftCardStore("home").intent().leaveCone();
+    clock.tick(PEEK_OPEN_MS * 2);
+    expect(state("ai-models").up).toBe(true);
+    expect(state("home").up).toBe(false);
   });
 });

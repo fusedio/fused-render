@@ -112,8 +112,11 @@ function onStoreChange(key: string): void {
   // others down — temp ones too; a held card stays.
   if (s.up && seqs.get(key) !== s.seq) {
     seqs.set(key, s.seq);
+    startSwap(key);
     closeLeftCards((k, c) => k === key || c.held);
   }
+  // A card going down that was the swap's newcomer is no newcomer.
+  if (!s.up && swapIn === key) endSwap();
   // …AND A CARD LOSING ITS HOLD WHILE UP (its pin pressed again, free pins
   // off) is a non-held card again: the others that are not held go, so one
   // stays (CodeRabbit on #2495).
@@ -129,6 +132,138 @@ function onStoreChange(key: string): void {
   }
   wasUp.set(key, s.up);
   emit();
+}
+
+// ---- the swap: one window, its content changing ---------------------------------
+//
+// MOVING FROM ONE ENTRY TO THE NEXT CHANGES WHAT THE WINDOW SHOWS — it does not
+// close and open (owner, 2026-11-28: "the window opens and closes; it should
+// stay and only the content should change — look at the right side"). The
+// Claude rail has one card for every ring; here each entry keeps its own (its
+// frame, its size), so the change is drawn: a card coming up while another
+// that is not held stands is the SWAP'S NEWCOMER (`is-swap-in`: no fade, no
+// slide — it is simply there), and the one it replaces is HELD UP under it
+// (`is-swap-hold`, no pointer) until the newcomer's content is drawn
+// (`leftSwapReady`), at most SWAP_HOLD_MS, then CUT (`is-swap-cut`: gone with
+// no fade). A card opening with none up fades in as ever.
+
+/** The longest an outgoing card stands under the newcomer — under the frame's
+ *  linger (peek-frame FRAME_LINGER_MS, 400), so its page is still drawn. */
+export const SWAP_HOLD_MS = 350;
+
+let swapIn: string | null = null;
+const swapHolds = new Map<string, "hold" | "cut">();
+let swapTimer = 0;
+
+/** The swap's and the cone's clocks: the tests' when they set one. */
+function later(fn: () => void, ms: number): number {
+  if (testTimers) return testTimers.set(fn, ms);
+  return typeof window === "undefined" ? 0 : window.setTimeout(fn, ms);
+}
+function cancel(id: number): void {
+  if (!id) return;
+  if (testTimers) testTimers.clear(id);
+  else if (typeof window !== "undefined") window.clearTimeout(id);
+}
+
+function startSwap(key: string): void {
+  // The newcomer's own past is over: it is up, not held up.
+  swapHolds.delete(key);
+  const outgoing = [...stores].filter(([k, st]) => {
+    const c = st.state();
+    return k !== key && c.up && !c.held;
+  });
+  if (outgoing.length === 0) return;
+  // An older hold gives way at once: only the card the reader just left
+  // stands under the newcomer.
+  for (const [k, v] of swapHolds) if (v === "hold") swapHolds.set(k, "cut");
+  for (const [k] of outgoing) swapHolds.set(k, "hold");
+  swapIn = key;
+  cancel(swapTimer);
+  swapTimer = later(() => leftSwapReady(key), SWAP_HOLD_MS);
+}
+
+function endSwap(): void {
+  cancel(swapTimer);
+  swapTimer = 0;
+  swapIn = null;
+  for (const [k, v] of swapHolds) if (v === "hold") swapHolds.set(k, "cut");
+}
+
+/** Card `key` is shown and its content drawn (LeftPeek): if it is the swap's
+ *  newcomer, the card it replaced goes now. The newcomer keeps its mark a
+ *  beat more (SWAP_SETTLE_MS), so the class that kept its fade off does not
+ *  leave in the same frame it was shown. */
+export function leftSwapReady(key: string): void {
+  if (swapIn !== key) return;
+  let cut = false;
+  for (const [k, v] of swapHolds)
+    if (v === "hold") {
+      swapHolds.set(k, "cut");
+      cut = true;
+    }
+  cancel(swapTimer);
+  swapTimer = later(() => {
+    if (swapIn !== key) return;
+    endSwap();
+    emit();
+  }, SWAP_SETTLE_MS);
+  if (cut) emit();
+}
+const SWAP_SETTLE_MS = 250;
+
+/** How card `key` takes part in a swap now: the newcomer, held up under it,
+ *  cut (gone without a fade), or none. */
+export function leftSwapRole(snap: LeftPeekSnapshot, key: string): "in" | "hold" | "cut" | null {
+  if (snap.swapIn === key) return "in";
+  return snap.swapHolds.get(key) ?? null;
+}
+
+// ---- the safe cone across the cards ------------------------------------------------
+//
+// THE SAFE CONE (owner, 2026-11-28: "moving diagonally shows me another window
+// — the right side's cone is not here"): each card keeps its own cone
+// (DoorCard), but each entry has its own intent machine, so another entry
+// crossed on the way to a card knew nothing of it and opened. Now an entry
+// reached while another card's cone holds the pointer waits — and opens only
+// if the pointer still rests on it once that cone lets go (the Claude rail's
+// rule, PeekIntent `leaveCone`).
+
+let coneWait: { key: string; timer: number } | null = null;
+const CONE_POLL_MS = 50;
+
+function coneHolder(key: string): DoorCardStore | null {
+  for (const [k, st] of stores) {
+    if (k === key) continue;
+    const c = st.state();
+    if (c.up && st.intent().coning) return st;
+  }
+  return null;
+}
+
+function stopConeWait(): void {
+  if (coneWait) cancel(coneWait.timer);
+  coneWait = null;
+}
+
+/** The pointer reached entry `key`: open its card, or — another card's cone
+ *  holding the pointer — wait for that cone to let go. */
+function enterDoor(key: string, store: DoorCardStore): void {
+  stopConeWait();
+  if (!coneHolder(key)) {
+    store.intent().enterRing(store.key, "pointer");
+    return;
+  }
+  const poll = (): void => {
+    if (coneWait?.key !== key) return;
+    if (coneHolder(key)) {
+      coneWait.timer = later(poll, CONE_POLL_MS);
+      return;
+    }
+    coneWait = null;
+    if (!blocked && !sidebarBusy() && store.state().ready && items.get(key)?.active !== true) store.intent().enterRing(store.key, "pointer");
+  };
+  coneWait = { key, timer: later(poll, CONE_POLL_MS) };
 }
 
 /** The card store of icon `key` (made on first ask, kept). */
@@ -168,7 +303,8 @@ let itemsSig = "";
 
 function showSig(s: LeftPeekShow): string {
   if (s.kind === "compose") return "compose";
-  return s.kind === "app" ? `app|${s.still}|${s.picture}|${s.live}` : `${s.kind}|${s.src}|${s.searchHome ?? ""}`;
+  if (s.kind === "app") return `app|${s.still}|${s.picture}|${s.live}`;
+  return `${s.kind}|${s.src}|${s.searchHome ?? ""}|${s.spin ? "spin" : ""}`;
 }
 
 /** What the collapsed sidebar's icons offer now (GlobalSidebar, each render
@@ -252,10 +388,14 @@ export interface LeftPeekSnapshot {
   items: ReadonlyMap<string, LeftPeekItem>;
   rail: HTMLElement | null;
   blocked: boolean;
+  /** The swap (header of its section): the newcomer, and the cards held up
+   *  under it or cut. */
+  swapIn: string | null;
+  swapHolds: ReadonlyMap<string, "hold" | "cut">;
 }
 
 export function leftPeekSnapshot(): LeftPeekSnapshot {
-  if (!snapshot) snapshot = { keys: [...stores.keys()], items: new Map(items), rail, blocked };
+  if (!snapshot) snapshot = { keys: [...stores.keys()], items: new Map(items), rail, blocked, swapIn, swapHolds: new Map(swapHolds) };
   return snapshot;
 }
 
@@ -343,7 +483,11 @@ export function leftDoorFor(key: string, slot: LeftDoorSlot = "rail"): SidebarRa
   const s = store.state();
   /** The entry's page is on screen: nothing opens (`LeftPeekItem.active`). */
   const here = () => items.get(key)?.active === true;
+  // A PRESS ON THE ENTRY also drops a hover still waiting on another card's
+  // cone (CodeRabbit on #2503): the cone letting go after it must not open
+  // this card under a click or a drag.
   const putDownOwn = () => {
+    if (coneWait?.key === key) stopConeWait();
     const c = store.state();
     if (c.up && !c.held) store.close();
   };
@@ -355,9 +499,12 @@ export function leftDoorFor(key: string, slot: LeftDoorSlot = "rail"): SidebarRa
       // or a rename has the sidebar.
       if (e.pointerType === "touch" || e.buttons !== 0 || blocked || sidebarBusy() || here()) return;
       if (!store.state().ready) return;
-      store.intent().enterRing(store.key, "pointer");
+      enterDoor(key, store);
     },
-    onPointerLeave: () => store.intent().leaveRing("pointer"),
+    onPointerLeave: () => {
+      if (coneWait?.key === key) stopConeWait();
+      store.intent().leaveRing("pointer");
+    },
     // A PRESS ON THE ENTRY — its link (the click navigates), a kebab, a
     // glyph's icon picker, a drag's start — puts its card down unless held.
     onPointerDown: putDownOwn,
@@ -466,6 +613,9 @@ export function resetLeftPeekForTests(timers?: Timers): void {
   wasUp.clear();
   wasHeld.clear();
   leftViewPress.inside = false;
+  endSwap();
+  swapHolds.clear();
+  stopConeWait();
   for (const [key, store] of stores) {
     store.resetForTests(timers);
     // `resetForTests` drops a store's subscribers, this file's among them.

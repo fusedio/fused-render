@@ -14,6 +14,8 @@
 // result, a folder in the listing — and ← Back walks the card's trail
 // (left-peek-lib `HomeStep`); only Open takes the page there: the view the
 // card is on, or Home with the query while the results show.
+// No spinner but on the slow pages, and a project's still stays under its live
+// page, which fades in over it once drawn (left-peek-lib `leftFrameLook`).
 //
 // A PREVIEW'S FRAME IS SHIELDED (`.claude-left-peek:not(.is-live)`, claude-
 // rail.css): it takes no pointer, so the pointer over it is over the card
@@ -36,6 +38,7 @@ import {
   cardPageUrl,
   framePainted,
   frameSrcOf,
+  leftFrameLook,
   homeSearchUrl,
   leftDoorSelector,
   leftPressVerdict,
@@ -57,6 +60,8 @@ import {
   leftMove,
   leftSidebarFolded,
   leftSize,
+  leftSwapReady,
+  leftSwapRole,
   leftViewPress,
   useLeftPeek,
   type LeftPeekItem,
@@ -95,6 +100,13 @@ export function LeftPeek() {
   // collapsed rail stands.
   const railUp = rail !== null;
   useEffect(() => (on && railUp ? installLeftRailZone() : undefined), [on, railUp]);
+  // `<html data-left-rail-peek>` WHILE THE SWITCH IS ON (claude-rail.css): the
+  // collapsed rail's buttons take the Claude rail's gap-free hover box.
+  useEffect(() => {
+    if (!on) return;
+    document.documentElement.setAttribute("data-left-rail-peek", "");
+    return () => document.documentElement.removeAttribute("data-left-rail-peek");
+  }, [on]);
   // THE SIDEBAR COLLAPSING OR EXPANDING puts down every card that is not
   // held; a held one re-places beside the new layout (left-peek-store
   // `leftSidebarFolded`).
@@ -132,7 +144,10 @@ export function LeftPeek() {
 
 function LeftCard({ itemKey, on }: { itemKey: string; on: boolean }) {
   const store = leftCardStore(itemKey);
-  const { items, rail } = useLeftPeek();
+  const snap = useLeftPeek();
+  const { items, rail } = snap;
+  // THE SWAP (left-peek-store): the newcomer, or the card held up under it.
+  const swap = leftSwapRole(snap, itemKey);
   const item = items.get(itemKey) ?? null;
   // The facts the card last drew, while it fades out after its icon went.
   const last = useRef<LeftPeekItem | null>(item);
@@ -173,7 +188,8 @@ function LeftCard({ itemKey, on }: { itemKey: string; on: boolean }) {
     viewFlag: leftViewPress,
   });
 
-  // A PROJECT'S STILL (left-peek-lib `frameSrcOf`): drawn while a preview;
+  // A PROJECT'S STILL (left-peek-lib `frameSrcOf`): drawn while a preview,
+  // and under its live page, which fades in over it once drawn (`leftFrameLook`);
   // one that does not load gives way to the live page.
   const show = it?.show ?? null;
   const still = show?.kind === "app" ? show.still : null;
@@ -209,12 +225,12 @@ function LeftCard({ itemKey, on }: { itemKey: string; on: boolean }) {
   }, [pageUrl]);
   const src = homeSrc !== null ? homeFrame : show ? frameSrcOf(show, { pinned, stillFailed: failed }) : null;
   const [loaded, setLoaded] = useState<string | null>(null);
-  // THE SPINNER (owner, 2026-11-27: "sometimes it takes a long time to load
-  // and it is just a blank screen"): the frame's `load` is only its shell's
-  // document — the page behind it may still be resolving its view and
-  // loading the file's own frame. The card spins until the framed page shows
-  // something (left-peek-lib `framePainted`), asked every 120 ms from the
-  // load; a page that never says so is taken as shown after PAINT_WAIT_MS.
+  // DRAWN YET? (left-peek-lib `framePainted`): the frame's `load` is only its
+  // shell's document — the page behind it may still be resolving its view
+  // and loading the file's own frame. Asked every 120 ms from the load; a
+  // page that never says so is taken as drawn after PAINT_WAIT_MS. What the
+  // card shows meanwhile — nothing, a spinner, a project's still — is
+  // left-peek-lib `leftFrameLook`'s.
   const [painted, setPainted] = useState<string | null>(null);
   const paintPoll = useRef(0);
   useEffect(() => () => window.clearInterval(paintPoll.current), []);
@@ -322,6 +338,21 @@ function LeftCard({ itemKey, on }: { itemKey: string; on: boolean }) {
     [frameKey, watchFrame],
   );
 
+  const look = leftFrameLook({ show, stillOk: still !== null && !failed, frameKey, loaded, painted });
+  // The newcomer is SHOWN (DoorCard `onVisible`: placed, then on) and its
+  // content drawn (the composer, a still at once): the card it replaced goes.
+  // Only once this opening's body is mounted (`live`): the first render of an
+  // opening still carries the last one's frame facts.
+  const [shown, setShown] = useState(false);
+  const drawn = shown && live && (compose || look.ready);
+  useEffect(() => {
+    if (up && swap === "in" && drawn) leftSwapReady(itemKey);
+  }, [up, swap, drawn, itemKey]);
+  // ONLY A FAVOURITE'S CARD HOLDS (owner, 2026-11-28: "remove the pin for
+  // everything on the left sidebar except the favourite bookmarks"): the rest
+  // preview, and a press inside keeps them up until a press outside.
+  const canHold = itemKey.startsWith("pin:");
+
   const title = it?.title ?? "";
   // THE HOME CARD'S OPEN: the view it is on — Home with the query while the
   // results show, else the framed page as the page's own address.
@@ -360,9 +391,15 @@ function LeftCard({ itemKey, on }: { itemKey: string; on: boolean }) {
       sizeStore={leftSize}
       viewFlag={leftViewPress}
       scrollerOf={scrollerOf}
-      className={"claude-left-peek" + (pinned ? " is-live" : "")}
+      className={
+        "claude-left-peek" +
+        (pinned ? " is-live" : "") +
+        (swap === "in" ? " is-swap-in" : swap === "hold" ? " is-swap-hold" : swap === "cut" ? " is-swap-cut" : "")
+      }
       ariaLabel={title || "Preview"}
       enabled={on && item !== null}
+      onVisible={setShown}
+      canHold={canHold}
       subOpen={false}
       {...(compose ? { wishHeight: COMPOSE_HEIGHT } : {})}
     >
@@ -370,8 +407,9 @@ function LeftCard({ itemKey, on }: { itemKey: string; on: boolean }) {
         <>
           <div className="claude-rail-peek-head">
             <div className="claude-rail-peek-row">
-              {/* No ×: the pin in its seat (and the keyboard's landing). */}
-              <RailPinButton variant="legacy" btnRef={api.closeRef} pinned={api.pin.pinned} onToggle={api.pin.onToggle} />
+              {/* No ×: the pin in its seat (and the keyboard's landing) — a
+                  favourite's only; the others land the keyboard on Open. */}
+              {canHold && <RailPinButton variant="legacy" btnRef={api.closeRef} pinned={api.pin.pinned} onToggle={api.pin.onToggle} />}
               {homeSrc !== null && steps.length > 1 && (
                 <button type="button" className="claude-rail-peek-btn claude-rail-peek-close" aria-label="Back" data-hint="Back" onClick={back}>
                   <ArrowLeft size={14} aria-hidden="true" />
@@ -398,7 +436,7 @@ function LeftCard({ itemKey, on }: { itemKey: string; on: boolean }) {
               ) : (
                 <span className="claude-rail-peek-gap" aria-hidden="true" />
               )}
-              <button type="button" className="btn claude-rail-peek-open" onClick={() => open(api.close, homeOpenUrl())}>
+              <button type="button" ref={canHold ? undefined : api.closeRef} className="btn claude-rail-peek-open" onClick={() => open(api.close, homeOpenUrl())}>
                 Open
               </button>
             </div>
@@ -406,7 +444,7 @@ function LeftCard({ itemKey, on }: { itemKey: string; on: boolean }) {
           <div
             className={
               "claude-rail-peek-body claude-rail-mode-body claude-left-peek-body" +
-              ((frameKey !== null && loaded === frameKey) || (src === null && still !== null) ? " is-loaded" : "") +
+              (look.ready ? " is-loaded" : "") +
               (compose ? " is-compose" : "")
             }
           >
@@ -414,12 +452,12 @@ function LeftCard({ itemKey, on }: { itemKey: string; on: boolean }) {
                 kept while the card is up, so a half-typed prompt survives the
                 pointer leaving and coming back within the fade. */}
             {live && compose && <NewAppInline onCreated={api.close} />}
-            {live && src !== null && painted !== frameKey && (
+            {live && look.spinner && (
               <span className="claude-left-peek-wait" role="status" aria-label="Loading">
                 <span className="claude-left-peek-spin" aria-hidden="true" />
               </span>
             )}
-            {live && src === null && still !== null && (
+            {live && look.still && still !== null && (
               <img className="claude-left-peek-still" src={still} alt="" draggable={false} onError={() => setStillFailed(still)} />
             )}
             {live && src !== null && (

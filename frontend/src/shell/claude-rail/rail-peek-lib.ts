@@ -507,6 +507,13 @@ export class PeekIntent {
     return this.pinned;
   }
 
+  /** Whether the pointer is on its way to the card (the safe cone or the
+   *  bridge): read by cards that keep an intent machine each (the left
+   *  sidebar's), so another door's hover waits as a ring's would here. */
+  get coning(): boolean {
+    return this.inCone;
+  }
+
   /** The pointer (or the keyboard focus) arrived on ring `key`. A pinned card
    *  moves for no hover: only a ring's press does (owner, 2026-11-05: a
    *  favourite's ring is the OTHER window's — its hover opens that one). */

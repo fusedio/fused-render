@@ -904,8 +904,8 @@ export default function GlobalSidebar({ config }: { config: Config }) {
       show: { kind: "frame", src: embedUrlForFsPath(config.home, "?_side=off"), searchHome: config.home },
       onOpen: goTo(viewUrlForFsPath(config.home)),
     });
-    leftItems.push({ key: "ai-models", title: "AI Models", icon: AI_MODELS_ICON, show: { kind: "frame", src: withQueryEmbed(AI_MODELS_HOME) }, onOpen: goTo(AI_MODELS_HOME) });
-    leftItems.push({ key: "marketplace", title: "Community", icon: MARKETPLACE_ICON, show: { kind: "frame", src: withQueryEmbed(marketplaceHref) }, onOpen: goTo(marketplaceHref) });
+    leftItems.push({ key: "ai-models", title: "AI Models", icon: AI_MODELS_ICON, show: { kind: "frame", src: withQueryEmbed(AI_MODELS_HOME), spin: true }, onOpen: goTo(AI_MODELS_HOME) });
+    leftItems.push({ key: "marketplace", title: "Community", icon: MARKETPLACE_ICON, show: { kind: "frame", src: withQueryEmbed(marketplaceHref), spin: true }, onOpen: goTo(marketplaceHref) });
     // The "+" rows: the page each one leads to — their own click is unchanged.
     leftItems.push({
       key: "new-app",

@@ -13,7 +13,10 @@ import type { PressTarget, PressWhere } from "@shell/claude-rail/rail-pin-lib";
  *    - `app`: a project — its `preview.png` still while a preview, its live
  *      entry page once pinned, or when it has no still. */
 export type LeftPeekShow =
-  | { kind: "frame"; src: string; searchHome?: string }
+  // `searchHome`: the Home card's search in its head (LeftPeek). `spin`: the
+  // card spins until the framed page has drawn (LeftPeek `leftFrameLook`) —
+  // only the slow pages (AI Models, the Community).
+  | { kind: "frame"; src: string; searchHome?: string; spin?: boolean }
   | { kind: "app"; still: string; picture: string; live: string }
   // The "+ New app" card: the New-app composer itself (the modal's content),
   // drawn in the card — no page, no frame.
@@ -209,6 +212,35 @@ export function leftPressVerdict(
   for (const s of o.ownSelectors) if (el.closest(s)) return "own";
   if (el.closest(LEFT_RAIL_SELECTOR) || el.closest(LEFT_CARD_ANY)) return "view";
   return "outside";
+}
+
+/** HOW A CARD'S BODY LOOKS WHILE ITS FRAME LOADS (owner, 2026-11-27: "don't
+ *  show indicator for canvas … bring it in, it is fast enough; same for
+ *  projects, load in preview.png; and explorer"):
+ *    - most cards (a canvas, the explorer, a favourite, search): NO SPINNER —
+ *      the frame fades in on its `load`;
+ *    - a `spin` frame (AI Models, the Community): the spinner over the frame
+ *      until the framed page has drawn (`framePainted`), as before;
+ *    - a PROJECT with a still: its `preview.png` stays up under the live page
+ *      (pressed, or held); the page fades in over it once drawn, and the
+ *      still stays under it (the opaque page covers it) — dropping it as the
+ *      fade starts would show the card's ground for the fade (Bugbot,
+ *      CodeRabbit on #2503). Never a blank card, never a spinner.
+ *  `frameKey` names the frame now drawn (null: none); `loaded` / `painted`
+ *  the frame each was last said of. `ready` is the body's `is-loaded`. */
+export function leftFrameLook(o: {
+  show: LeftPeekShow | null;
+  stillOk: boolean;
+  frameKey: string | null;
+  loaded: string | null;
+  painted: string | null;
+}): { ready: boolean; spinner: boolean; still: boolean } {
+  const hasStill = o.show?.kind === "app" && o.stillOk;
+  if (o.frameKey === null) return { ready: hasStill, spinner: false, still: hasStill };
+  const drawn = o.painted === o.frameKey;
+  if (hasStill) return { ready: drawn, spinner: false, still: true };
+  const spin = o.show?.kind === "frame" && o.show.spin === true;
+  return { ready: o.loaded === o.frameKey, spinner: spin && !drawn, still: false };
 }
 
 /** IS THE FRAMED PAGE SHOWING SOMETHING YET (LeftPeek's spinner)? The frame's
