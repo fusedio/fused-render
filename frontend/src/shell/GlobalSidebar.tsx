@@ -11,17 +11,15 @@
 // (SidebarFrame) and explorer-owned sections (Bookmarks), which only
 // the shell is allowed to import together (scripts/check-boundaries.mjs).
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
-import { Plug, Search, Sparkles, Store } from "lucide-react";
+import { Plug, Sparkles, Store } from "lucide-react";
 import { ClaudeMark } from "@platform/ui/ClaudeMark";
 import { CanvasIcon } from "@platform/ui/NodeTypeIcons";
 import { SidebarFrame, NavItem } from "@platform/ui/sidebar/SidebarFrame";
 import { setSidebarSectionOpen } from "@platform/ui/sidebar/sidebar-accordion";
 import type { SidebarRailItem } from "@platform/ui/sidebar/SidebarFrame";
 import { SidebarDoorContext, type SidebarDoorLookup } from "@platform/ui/sidebar/sidebar-doors";
-import { botsAvailable, rawUrl, showLauncher, type Config } from "@platform/lib/api";
-import { useLauncherAvailable } from "@platform/lib/bots-available";
-import { useLauncherOpen } from "@shell/claude-rail/launcher-open";
-import { embedUrlForFsPath, navigateUrl } from "@platform/lib/router";
+import { botsAvailable, rawUrl, type Config } from "@platform/lib/api";
+import { embedUrlForFsPath, navigateUrl, viewUrlForFsPath } from "@platform/lib/router";
 import { isBrowserHandledClick } from "@platform/lib/appEntry";
 import { TOURS, startTour } from "@platform/lib/tours";
 import { ONBOARDING_PATH } from "@shell/onboarding/state";
@@ -71,7 +69,7 @@ import {
   useLeftPeek,
   type LeftPeekItem,
 } from "@shell/left-rail/left-peek-store";
-import { SEARCH_CARD_SRC, appShow, bookmarkFrameSrc, canvasShow, withQueryEmbed } from "@shell/left-rail/left-peek-lib";
+import { appShow, bookmarkFrameSrc, canvasShow, withQueryEmbed } from "@shell/left-rail/left-peek-lib";
 
 // House — the Home page (/home): search hero + the three recency strips.
 const HOME_ICON = (
@@ -124,10 +122,8 @@ const SKILLS_ICON = <Sparkles size={16} strokeWidth={2} aria-hidden="true" />;
 
 // A shop front (lucide Store) for the Marketplace: where community apps are
 // browsed and installed, sized like the lucide Tasks glyph above.
-// The app's launcher (the ⌥Space search panel over the apps and bots).
 // The plug Preferences draws beside its Integrations page.
 const INTEGRATIONS_ICON = <Plug size={16} strokeWidth={2} aria-hidden="true" />;
-const SEARCH_ICON = <Search size={16} strokeWidth={2} aria-hidden="true" />;
 const MARKETPLACE_ICON = <Store size={16} strokeWidth={1.9} aria-hidden="true" />;
 
 // Connected nodes: a canvas is a graph of UDFs.
@@ -529,17 +525,6 @@ export default function GlobalSidebar({ config }: { config: Config }) {
   // highlighting both the row and the thing you opened read as two selections.
   const pathname = location.pathname;
   const homeActive = pathname === "/home";
-  // THE SEARCH ROW (owner, 2026-11-26: "move it on left side below home"):
-  // the launcher panel, once the Claude rail's top door. Only where the app
-  // has one (the Mac desktop app); lit while the panel stands
-  // (`useLauncherOpen`). Where the shortcut opens it; a miss (the panel went
-  // with the preference) is nothing to show.
-  const searchAvailable = useLauncherAvailable(true);
-  const launcher = useLauncherOpen();
-  const openSearch = () => {
-    launcher.opened();
-    showLauncher().catch(() => launcher.failed());
-  };
   const tasksActive = pathname === "/tasks";
   // PREFIX, unlike Canvases above: /ai-models/<tab> is the same page seen
   // through a different tab, not a second destination, so every one of the five
@@ -842,9 +827,6 @@ export default function GlobalSidebar({ config }: { config: Config }) {
   const railItems: SidebarRailItem[] = [
     // Same gate and same order as the expanded rows below.
     { key: "home", label: "Home", icon: HOME_ICON, href: "/home", active: homeActive },
-    ...(searchAvailable
-      ? [{ key: "search", label: "Search", icon: SEARCH_ICON, active: launcher.open, onClick: openSearch }]
-      : []),
     // No Canvases entry (owner, 2026-10-20): the Canvases SECTION below lists
     // the canvases, and its "+ Canvas" row is the door to the catalog.
     {
@@ -912,8 +894,16 @@ export default function GlobalSidebar({ config }: { config: Config }) {
   const leftItems: LeftPeekItem[] = [];
   if (leftPeekOn) {
     const goTo = (href: string) => () => navigateUrl(href);
-    leftItems.push({ key: "home", title: "Home", icon: HOME_ICON, show: { kind: "frame", src: embedUrlForFsPath(config.home, "?_side=off") }, onOpen: goTo("/home") });
-    if (searchAvailable) leftItems.push({ key: "search", title: "Search", icon: SEARCH_ICON, show: { kind: "search", src: SEARCH_CARD_SRC }, onOpen: openSearch });
+    // THE HOME CARD (owner, 2026-11-27): the home folder's listing, a file
+    // search in its head (typing swaps the listing for the results), and its
+    // Open is the file explorer at ~ — the row's own click stays /home.
+    leftItems.push({
+      key: "home",
+      title: "Home",
+      icon: HOME_ICON,
+      show: { kind: "frame", src: embedUrlForFsPath(config.home, "?_side=off"), searchHome: config.home },
+      onOpen: goTo(viewUrlForFsPath(config.home)),
+    });
     leftItems.push({ key: "ai-models", title: "AI Models", icon: AI_MODELS_ICON, show: { kind: "frame", src: withQueryEmbed(AI_MODELS_HOME) }, onOpen: goTo(AI_MODELS_HOME) });
     leftItems.push({ key: "marketplace", title: "Community", icon: MARKETPLACE_ICON, show: { kind: "frame", src: withQueryEmbed(marketplaceHref) }, onOpen: goTo(marketplaceHref) });
     // The "+" rows: the page each one leads to — their own click is unchanged.
@@ -943,6 +933,7 @@ export default function GlobalSidebar({ config }: { config: Config }) {
         title: app.name,
         icon: <RailAppIcon app={app} />,
         show: appShow({ path: app.path, entry: app.entry, rawUrl, embedUrl: embedUrlForFsPath }),
+        active: onAppPath === app.path,
         onOpen: () => railGo("projects", appPageUrl(app.path)),
       });
     for (const app of canvasesInNav ? desk.filter((a) => a.canvas) : []) {
@@ -952,6 +943,7 @@ export default function GlobalSidebar({ config }: { config: Config }) {
         title: app.name,
         icon: <CanvasGlyph size={16} />,
         show: canvasShow({ path: app.path, embedUrl: embedUrlForFsPath }),
+        active: !!app.canvas && !!onCanvas && onCanvas.env === app.canvas.env && onCanvas.name === app.canvas.name,
         onOpen: () => railGo("canvases", href),
       });
     }
@@ -963,6 +955,7 @@ export default function GlobalSidebar({ config }: { config: Config }) {
           title: b.name,
           icon: <span className={"sidebar-rail-bm-glyph" + (b.icon ? " custom-icon" : "")}>{b.icon ?? "★"}</span>,
           show: { kind: "frame", src },
+          active: b.url === here,
           onOpen: () => {
             armBookmark(b.id, b.url);
             return railGo("favourites", b.url);
@@ -970,6 +963,13 @@ export default function GlobalSidebar({ config }: { config: Config }) {
         });
     }
   }
+  // THE PAGE YOU ARE ON HAS NO CARD (owner, 2026-11-27: "if the page is
+  // active it shouldn't popup"): an entry lit as the current page opens
+  // nothing on hover — it keeps its active look and its tooltip. Projects,
+  // canvases and favourites say so themselves (the rail shows only the first
+  // few); the rest take the rail item's own `active`.
+  const railActive = new Map(railItems.map((r) => [r.key, r.active === true] as const));
+  for (const it of leftItems) if (railActive.get(it.key)) it.active = true;
   // Published with the switch on; off, the empty list puts every card down.
   useLeftRailPublish(leftItems, leftPeekOn);
   // The Settings menu open: no card over it, and a preview goes.
@@ -1002,16 +1002,6 @@ export default function GlobalSidebar({ config }: { config: Config }) {
       >
         <div className="sidebar-section sidebar-group">
           <NavItem href="/home" id="home-link" label="Home" icon={HOME_ICON} active={homeActive} doorKey="home" />
-          {searchAvailable && (
-            <NavItem
-              id="search-link"
-              label="Search"
-              icon={SEARCH_ICON}
-              active={launcher.open}
-              onClick={openSearch}
-              doorKey="search"
-            />
-          )}
           {/* No Canvases row (owner, 2026-10-20): the Canvases section below
               is the listing, its "+ Canvas" row the way to the catalog. */}
           <NavItem

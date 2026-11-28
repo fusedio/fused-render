@@ -6,11 +6,19 @@ import { Search } from "lucide-react";
 import { useIndexStatus } from "@platform/lib/index-status";
 import { FilesSearch } from "@apps/explorer/FilesHome";
 import type { WidgetSize } from "../layout";
+import { replaceSearch } from "@platform/lib/router";
+
+/** `?qmode=instant` beside `?q=`: an instant search handed over (the sidebar's
+ *  Home card Open) — type it, run no AI. */
+export const INSTANT_PARAM = "qmode";
 
 export interface SearchHost {
   home: string;
   /** `?q=` from the URL at load; only a mounted search widget consumes it. */
   initialQuery: string;
+  /** That `?q=` was a committed AI search (re-run it), not an instant one
+   *  handed over with `qmode=instant` (left-peek-lib `homeSearchUrl`). */
+  initialAi: boolean;
   searching: boolean;
   setSearching: (active: boolean) => void;
   indexScan: ReturnType<typeof useIndexStatus>;
@@ -26,8 +34,24 @@ export function useSearchHost(home: string): SearchHost {
   const [searching, setSearching] = useState(false);
   const [nonce, setNonce] = useState(0);
   const indexScan = useIndexStatus(searching, nonce);
-  const initialQuery = useRef(new URLSearchParams(location.search).get("q") || "").current;
-  return { home, initialQuery, searching, setSearching, indexScan, requestScan: () => setNonce((n) => n + 1) };
+  const initial = useRef<{ q: string; ai: boolean } | null>(null);
+  if (initial.current === null) {
+    const params = new URLSearchParams(location.search);
+    initial.current = { q: params.get("q") || "", ai: params.get(INSTANT_PARAM) !== "instant" };
+  }
+  // An instant search handed over is typed into the box, not kept on the
+  // address: instant results need no restoring (FilesSearch keeps `?q=` for
+  // committed AI searches only).
+  useEffect(() => {
+    const params = new URLSearchParams(location.search);
+    if (params.get(INSTANT_PARAM) !== "instant") return;
+    params.delete(INSTANT_PARAM);
+    params.delete("q");
+    const qs = params.toString();
+    replaceSearch(location.pathname + (qs ? "?" + qs : ""));
+  }, []);
+  const { q: initialQuery, ai: initialAi } = initial.current;
+  return { home, initialQuery, initialAi, searching, setSearching, indexScan, requestScan: () => setNonce((n) => n + 1) };
 }
 
 export function SearchWidget({ edit, size }: { edit: boolean; size: WidgetSize }) {
@@ -61,6 +85,7 @@ export function SearchWidget({ edit, size }: { edit: boolean; size: WidgetSize }
     <FilesSearch
       home={host.home}
       initialQuery={host.initialQuery}
+      initialAi={host.initialAi}
       compact={size === "1x1"}
       indexScan={host.indexScan}
       onActiveChange={host.setSearching}
