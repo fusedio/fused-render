@@ -22,6 +22,7 @@ const {
   spaLinkProps,
   confirmLeave,
   registerLeaveGuard,
+  runHostNav,
   rootedFsPath,
   encodeFsPathSegments,
   urlForFsPath,
@@ -553,6 +554,62 @@ describe("confirmLeave", () => {
     });
     expect(await confirmLeave()).toBe(true);
     off();
+  });
+});
+
+// A workspace host hands a tab its hops (NAVIGATE_URL_EVENT) and numbers them:
+// what it holds for a hop (a bookmark's arm) must go when the tab's leave guard
+// refuses that hop, and only then.
+describe("a host's hop run in this document (runHostNav)", () => {
+  const settle = () => new Promise<void>((r) => setTimeout(r, 0));
+  // The hop's own push, kept off the shared shim's history.
+  async function run(detail: Parameters<typeof runHostNav>[0]): Promise<{ refused: number[]; pushed: string[] }> {
+    const hist = globalThis.history as { pushState: (state: unknown, title: string, url: string) => void };
+    const prevPush = hist.pushState;
+    const refused: number[] = [];
+    const pushed: string[] = [];
+    hist.pushState = (_state, _title, url) => void pushed.push(url);
+    try {
+      runHostNav(detail, (hop) => void refused.push(hop));
+      await settle();
+    } finally {
+      hist.pushState = prevPush;
+    }
+    return { refused, pushed };
+  }
+  const URL_A = "/explorer/view/Users/me/a.html?x=1";
+
+  test("a numbered hop the leave guard refuses is said back, and does not happen", async () => {
+    const off = registerLeaveGuard(() => false);
+    try {
+      expect(await run({ fn: "navigateUrl", url: URL_A, hop: 7 })).toEqual({ refused: [7], pushed: [] });
+    } finally {
+      off();
+    }
+  });
+
+  test("a hop that goes says nothing: no guard, or a guard that lets it", async () => {
+    expect(await run({ fn: "navigateUrl", url: URL_A, hop: 8 })).toEqual({ refused: [], pushed: [URL_A] });
+    const off = registerLeaveGuard(() => true);
+    try {
+      expect(await run({ fn: "navigateUrl", url: URL_A, hop: 9 })).toEqual({ refused: [], pushed: [URL_A] });
+    } finally {
+      off();
+    }
+  });
+
+  test("a refused hop the host did not number says nothing either", async () => {
+    const off = registerLeaveGuard(() => false);
+    try {
+      expect(await run({ fn: "navigateUrl", url: URL_A })).toEqual({ refused: [], pushed: [] });
+    } finally {
+      off();
+    }
+  });
+
+  test("anything that is no call is ignored", async () => {
+    expect(await run(null)).toEqual({ refused: [], pushed: [] });
+    expect(await run({ fn: "navigateUrl", hop: 1 } as never)).toEqual({ refused: [], pushed: [] });
   });
 });
 

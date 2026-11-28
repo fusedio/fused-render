@@ -13666,6 +13666,6 @@ nothing here exists and nothing changes.
   window's shared one. A sidebar bookmark opened into a tab arms that tab
   once it lands on the bookmark's page, so its "Update bookmark" works. The
   sidebar's arm goes to the one open that follows the click and to no later
-  one. The host holds no arm of its own: each tab tells it what it follows,
-  and a favourite's row is marked (active, changed `*`) from the tab on
-  screen.
+  one, and a hop the tab's leave guard refuses takes its arm with it. The
+  host holds no arm of its own: each tab tells it what it follows, and a
+  favourite's row is marked (active, changed `*`) from the tab on screen.

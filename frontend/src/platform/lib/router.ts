@@ -698,8 +698,10 @@ export type NavSink = (href: string, call: NavCall) => boolean;
 
 /** What a host puts in a NAVIGATE_URL_EVENT's detail: the call to re-run, or
  *  `load` — a url this document's router cannot show (a `/render` page), left
- *  for by a full load, still behind this page's leave guard. */
-export type NavDetail = NavCall | { fn: "load"; url: string };
+ *  for by a full load, still behind this page's leave guard. `hop`: the host's
+ *  own number for this hop, said back in a NAV_REFUSED_EVENT when the leave
+ *  guard refuses it. */
+export type NavDetail = (NavCall | { fn: "load"; url: string }) & { hop?: number };
 
 let navSink: NavSink | null = null;
 
@@ -709,6 +711,11 @@ export function installNavSink(sink: NavSink | null): void {
 
 /** The event a host dispatches on a frame's window to navigate it. */
 export const NAVIGATE_URL_EVENT = "fused:navigate-url";
+
+/** The event a frame dispatches on its OWN window when its leave guard
+ *  refused a hop the host handed it (detail: that hop's number): what the
+ *  host held for the hop — a bookmark's arm, SPEC §56 WS-38 — is let go. */
+export const NAV_REFUSED_EVENT = "fused:navigate-refused";
 
 export function navigate(
   fsPath: string,
@@ -936,20 +943,32 @@ export function navigateUrl(url: string, opts?: { isDir?: boolean; replace?: boo
   });
 }
 
+/** A host's hop, run in THIS document (the listener below; exported for its
+ *  tests). The call re-runs here as an ordinary hop — or through this frame's
+ *  own sink first (Home's rule), exactly as if a click in here had made it.
+ *  `refused` hears the number of a NUMBERED hop this page's leave guard said
+ *  no to; a hop that went, or one the host did not number, says nothing. */
+export function runHostNav(d: NavDetail | null | undefined, refused: (hop: number) => void): void {
+  if (!d || typeof d !== "object") return;
+  const hop = typeof d.hop === "number" ? d.hop : null;
+  const settled = (ok: boolean) => {
+    if (!ok && hop !== null) refused(hop);
+  };
+  if (d.fn === "navigate" && typeof d.fsPath === "string") navigate(d.fsPath, d.opts);
+  else if (d.fn === "navigateUrl" && typeof d.url === "string") void navigateUrl(d.url, d.opts).then(settled);
+  else if (d.fn === "load" && typeof d.url === "string") {
+    const target = d.url;
+    void guarded(() => location.assign(target)).then(settled);
+  }
+}
+
 // The receiving end of a host's sink, in EVERY document: a frame cannot know
 // it will be asked until its host speaks, and registering costs one listener.
-// The call re-runs here as an ordinary hop — or through this frame's own sink
-// first (Home's rule), exactly as if a click in here had made it.
 if (typeof window !== "undefined" && typeof window.addEventListener === "function") {
   window.addEventListener(NAVIGATE_URL_EVENT, (e: Event) => {
-    const d = (e as CustomEvent<NavDetail | null>).detail;
-    if (!d || typeof d !== "object") return;
-    if (d.fn === "navigate" && typeof d.fsPath === "string") navigate(d.fsPath, d.opts);
-    else if (d.fn === "navigateUrl" && typeof d.url === "string") void navigateUrl(d.url, d.opts);
-    else if (d.fn === "load" && typeof d.url === "string") {
-      const target = d.url;
-      void guarded(() => location.assign(target));
-    }
+    runHostNav((e as CustomEvent<NavDetail | null>).detail, (hop) => {
+      window.dispatchEvent(new CustomEvent(NAV_REFUSED_EVENT, { detail: hop }));
+    });
   });
 }
 
