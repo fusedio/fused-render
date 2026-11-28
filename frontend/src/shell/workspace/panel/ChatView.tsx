@@ -63,6 +63,9 @@ export function ChatView({ file, sessionId, queued, initialAsk, host, mount, eve
         pageRoot={null}
         // …and the place itself, not only where in it: no page stands for it.
         placeInHead
+        // No ← (owner, 2026-11-28): the × alone, and the rail's + for the
+        // folder's chats.
+        noBack
         onNavigate={onNavigate}
         onBreakout={breakoutOpener()}
         {...(initialAsk ? { initialAsk } : {})}

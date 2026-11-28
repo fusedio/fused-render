@@ -2518,8 +2518,10 @@ export function ClaudeRail({
     headSelector: POPOVER_HEAD_SELECTOR,
     shown: card?.pop ? String(card.seq) : null,
     // A non-pin's head drag pins it (useCardMove `dragPins`): the pin icon's
-    // own press (`plusPinRef`, where the + card's pin is built).
-    dragPins: card?.pop && !popHeld ? () => plusPinRef.current() : null,
+    // own press (`plusPinRef`, where the + card's pin is built). Not beside
+    // the workspace's panel: the + card is no favourite's, so it has no pin
+    // there — neither the button (RailPin `PinWindowA`) nor the drag.
+    dragPins: card?.pop && !popHeld && !hasPanel ? () => plusPinRef.current() : null,
   });
   // A PRESS ON A RING OR DOOR BRINGS ITS WINDOW TO THE FRONT (rail-move-lib
   // `railPressWindow`; owner, 2026-11-17): the pinned window's own ring does

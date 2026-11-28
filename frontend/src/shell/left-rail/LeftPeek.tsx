@@ -34,10 +34,9 @@ import { RailPinButton, useTempOutside } from "@shell/claude-rail/RailPin";
 import { FRAME_LINGER_MS, PeekFrame, usePeekFrameRules } from "@shell/claude-rail/peek-frame";
 import {
   bookmarkFrameSrc,
-  cardPageUrl,
+  cardOpenTarget,
   framePainted,
   frameSrcOf,
-  homeSearchUrl,
   leftDoorSelector,
   leftPressVerdict,
   trailBack,
@@ -190,8 +189,14 @@ function LeftCard({ itemKey, on }: { itemKey: string; on: boolean }) {
   // THE HOME CARD'S TRAIL (header; `searchHome`): its steps, its frame's
   // address (changed only to show another step — the frame's own hops are
   // its own), and where the frame says it is.
+  // IN A WORKSPACE HOST EVERY CARD WITH A PAGE KEEPS ONE (SPEC §56 WS-39;
+  // owner, 2026-11-28: "same with any bookmark or file explorer thing it
+  // navigates and opens things inside unless I click Open … also have a back
+  // button"): `homeSrc` is then the address the card frames by its own facts
+  // (a project's live page once pinned; nothing while its still is drawn).
   const searchHome = show?.kind === "frame" ? (show.searchHome ?? null) : null;
-  const homeSrc = searchHome !== null && show?.kind === "frame" ? show.src : null;
+  const ownSrc = show ? frameSrcOf(show, { pinned, stillFailed: failed }) : null;
+  const homeSrc = searchHome !== null && show?.kind === "frame" ? show.src : isWorkspaceHost() ? ownSrc : null;
   const [trail, setTrail] = useState<HomeStep[] | null>(null);
   const [homeFrame, setHomeFrame] = useState<string | null>(homeSrc);
   // Each load the card asks for is a new frame, even on the address the frame
@@ -215,7 +220,7 @@ function LeftCard({ itemKey, on }: { itemKey: string; on: boolean }) {
     setHomeFrame(pageUrl);
     setFrameGen((n) => n + 1);
   }, [pageUrl]);
-  const src = homeSrc !== null ? homeFrame : show ? frameSrcOf(show, { pinned, stillFailed: failed }) : null;
+  const src = homeSrc !== null ? homeFrame : ownSrc;
   const [loaded, setLoaded] = useState<string | null>(null);
   // THE SPINNER (owner, 2026-11-27: "sometimes it takes a long time to load
   // and it is just a blank screen"): the frame's `load` is only its shell's
@@ -332,14 +337,33 @@ function LeftCard({ itemKey, on }: { itemKey: string; on: boolean }) {
 
   const title = it?.title ?? "";
   const pinless = !!it?.pinless;
-  // THE HOME CARD'S OPEN: the view it is on — Home with the query while the
-  // results show, else the framed page as the page's own address.
+  // A TRAIL CARD'S OPEN (left-peek-lib `cardOpenTarget`): the view it is on
+  // — Home with the query while the results show, else the framed page as
+  // the page's own address; null (a host's other cards, still on the page
+  // they came up on) leaves it to the entry's own Open.
   const searchBox = useRef<HTMLDivElement | null>(null);
   const homeOpenUrl = (): string | null => {
     if (homeSrc === null || !topStep) return null;
-    if (topStep.kind === "results") return homeSearchUrl(searchBox.current?.querySelector("input")?.value ?? "");
-    return cardPageUrl(topStep.url);
+    return cardOpenTarget({
+      base: homeSrc,
+      top: topStep,
+      searchHome: searchHome !== null,
+      query: searchBox.current?.querySelector("input")?.value ?? "",
+    });
   };
+  // IN A WORKSPACE HOST THE SEARCH ROW'S CARD TAKES THE KEYBOARD when the
+  // row's click brings it up held (no launcher: the row IS the search), the
+  // box under the reader's hands. Not when the press was inside the card —
+  // the keyboard is in its frame then, and stays there.
+  useEffect(() => {
+    if (!isWorkspaceHost() || searchHome === null || !pinned || !live) return;
+    const t = window.setTimeout(() => {
+      const a = document.activeElement;
+      if (a && a !== document.body && !a.closest?.("#sidebar")) return;
+      searchBox.current?.querySelector("input")?.focus({ preventScroll: true });
+    }, 60);
+    return () => window.clearTimeout(t);
+  }, [searchHome, pinned, live]);
   const open = useCallback(
     (close: () => void, to: string | null, newTab: boolean) => {
       if (to !== null) {

@@ -164,6 +164,23 @@ export function cardPageUrl(url: string): string {
   return top + (qs ? "?" + qs : "") + hash;
 }
 
+/** WHAT A CARD'S OPEN LOADS, for a card that keeps a trail (the Home card;
+ *  in a workspace host every card with a page — owner, 2026-11-28: "it
+ *  navigates and opens things inside unless I click Open"): the view the
+ *  card is on. `base` is the address the card came up on, `top` the step
+ *  that shows, `query` the search box's words.
+ *    - the search results: Home with the query (`homeSearchUrl`);
+ *    - the Home card (`searchHome`): the framed page, always;
+ *    - any other card still on the page it came up on: `null` — the entry's
+ *      own Open (a favourite's arms it, a project's is its app page);
+ *    - any other card that went somewhere: that page. */
+export function cardOpenTarget(o: { base: string; top: HomeStep; searchHome: boolean; query: string }): string | null {
+  if (o.top.kind === "results") return homeSearchUrl(o.query);
+  const at = cardPageUrl(o.top.url);
+  if (o.searchHome) return at;
+  return at === cardPageUrl(o.base) ? null : at;
+}
+
 /** The Home page with a search typed (the card's Open while its results
  *  show) — an INSTANT one (`qmode=instant`, SearchWidget): a bare `?q=` is a
  *  committed AI search, which Home would run again (a model call). */

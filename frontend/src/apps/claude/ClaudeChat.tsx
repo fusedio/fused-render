@@ -321,6 +321,10 @@ export interface ClaudeChatProps {
    *  its head names the place too, as a rail card's does, not only where in
    *  it — the pane's "a pane IS its place" does not hold there. */
   placeInHead?: boolean;
+  /** NO ← IN THE HEAD (the workspace's panel; owner, 2026-11-28: "remove
+   *  back button … no need"): the panel shows one thing at a time and the
+   *  rail's + is the way to the folder's chats, so the × alone stands. */
+  noBack?: boolean;
   params: ChatParamsSource;
   /** A HOST stated this conversation's model/effort through `ChatMount`'s
    *  `model`/`effort` props, so the `model`/`effort` params on this mount's
@@ -6153,9 +6157,9 @@ function ChatBody(props: ChatBodyProps) {
   const unifiedHead = headUnified ? (
     <TaskHead
       className="c-task-head"
-      {...(inChat && hidePaneBtn ? { preLead: hidePaneBtn } : {})}
+      {...(inChat && hidePaneBtn && !props.noBack ? { preLead: hidePaneBtn } : {})}
       lead={
-        inChat
+        inChat && !(props.noBack && props.onHidePane)
           ? {
               kind: "back",
               label: "Back to chats",
@@ -6344,7 +6348,7 @@ function ChatBody(props: ChatBodyProps) {
             ) : null}
             {/* The way back, at the strip's left end (T:3941). Absent on the
                 landing: there is no chat to leave. */}
-            {inChat && !mergedHeadRow ? backBtn : null}
+            {inChat && !mergedHeadRow && !props.noBack ? backBtn : null}
             {/* NO SPACER ELEMENT HERE. The slack is `#anncta`'s own
                 `margin-left: auto` (T:255-262, chat.css), which is not the same
                 thing: a spacer is a flex ITEM, so it kept its 12px gap even

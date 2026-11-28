@@ -13672,3 +13672,15 @@ nothing here exists and nothing changes.
   one, and a hop the tab's leave guard refuses takes its arm with it. The
   host holds no arm of its own: each tab tells it what it follows, and a
   favourite's row is marked (active, changed `*`) from the tab on screen.
+- **WS-39 Left cards keep their clicks.** In a host every left card that
+  shows a page keeps what is opened in it: a folder, a file or a link opens
+  in the card, and Back (in its head once it has gone somewhere) walks it.
+  Open loads the view the card is on in the tab by WS-5, Shift+Open in a new
+  tab; a card still on the page it came up on uses the entry's own Open (a
+  favourite's arms it). The Search row's card takes the keyboard in its
+  search box when the row's click brings it up.
+- **WS-40 No Back in the panel.** A chat in the panel has no back arrow: its
+  × hides the panel, and the rail's + shows the folder's chats. A task picked
+  in a narrow Tasks view has one × that returns to the list. Its head is the
+  Tasks page's two-line head. The + card has no pin beside the panel, by
+  button or by a drag of its head.
