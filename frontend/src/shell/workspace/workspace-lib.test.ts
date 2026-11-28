@@ -10,6 +10,7 @@ import {
   encodeTabsParam,
   isPlainPath,
   isSpaUrl,
+  landPendingArms,
   liftRightTabs,
   liveTabArm,
   neighborAfterClose,
@@ -21,10 +22,12 @@ import {
   parseRight,
   placeOfUrl,
   planOpen,
+  reloadPendingArms,
   rightOnlyView,
   rightSession,
   sameRight,
   samePage,
+  settlePendingArm,
   splitArrival,
   tabKind,
   tabLabel,
@@ -525,5 +528,63 @@ describe("a tab's own armed bookmark (WS-38)", () => {
     expect(liveTabArm(held, null)).toBeNull();
     expect(liveTabArm({ doc: null, arm }, null)).toBeNull();
     expect(liveTabArm(undefined, docA)).toBeNull();
+  });
+});
+
+describe("an arm waiting on its hop (WS-38)", () => {
+  const A = { id: "a", url: "/explorer/view/Users/me/a.html?x=1" };
+  const B = { id: "b", url: "/explorer/view/Users/me/b.html" };
+  const AT_A = "/explorer/view/Users/me/a.html?x=1";
+  const AT_A_OTHER_QUERY = "/explorer/view/Users/me/a.html?x=9";
+  const ELSEWHERE = "/explorer/view/Users/me/notes.md";
+  const routed = (arm: typeof A, hop: number) => ({ arm, hop, load: false });
+  const loaded = (arm: typeof A, hop: number) => ({ arm, hop, load: true });
+  const riding = (arm: typeof A) => ({ arm, hop: null, load: false });
+
+  test("a hop that went by the router delivers its arm when the tab stands on the bookmark's page", () => {
+    expect(settlePendingArm([routed(A, 1)], 1, true, AT_A)).toEqual({ left: [], deliver: A });
+    // The page, not the params: the saved params applied, or the page rewrote them.
+    expect(settlePendingArm([routed(A, 1)], 1, true, AT_A_OTHER_QUERY)).toEqual({ left: [], deliver: A });
+  });
+  test("…and spends it without delivering when the tab ended up elsewhere, or cannot be read", () => {
+    expect(settlePendingArm([routed(A, 1)], 1, true, ELSEWHERE)).toEqual({ left: [], deliver: null });
+    expect(settlePendingArm([routed(A, 1)], 1, true, null)).toEqual({ left: [], deliver: null });
+  });
+  test("a hop the leave guard refused takes its arm with it, wherever the tab stands", () => {
+    expect(settlePendingArm([routed(A, 1)], 1, false, AT_A)).toEqual({ left: [], deliver: null });
+  });
+  test("a second click dropped while the first is still asked about spends only its own arm", () => {
+    // Bookmark A's hop (1) waits on the dialog; bookmark B's (2) is dropped by it.
+    const afterDrop = settlePendingArm([routed(A, 1), routed(B, 2)], 2, false, ELSEWHERE);
+    expect(afterDrop).toEqual({ left: [routed(A, 1)], deliver: null });
+    // The reader then says yes to the first: A is followed.
+    expect(settlePendingArm(afterDrop.left, 1, true, AT_A)).toEqual({ left: [], deliver: A });
+  });
+  test("a number nothing waits on changes nothing (an unarmed hop settling)", () => {
+    expect(settlePendingArm([routed(A, 1)], 5, false, AT_A)).toEqual({ left: [routed(A, 1)], deliver: null });
+    expect(settlePendingArm([], 5, true, AT_A)).toEqual({ left: [], deliver: null });
+  });
+  test("a hop that leaves by a full load has gone, not arrived: its arm waits for the new document", () => {
+    const gone = settlePendingArm([loaded(A, 3)], 3, true, ELSEWHERE);
+    expect(gone).toEqual({ left: [riding(A)], deliver: null });
+    expect(landPendingArms(gone.left, AT_A)).toEqual({ left: [], deliver: A });
+    // Refused, it never leaves.
+    expect(settlePendingArm([loaded(A, 3)], 3, false, ELSEWHERE)).toEqual({ left: [], deliver: null });
+  });
+  test("a location read spends the arms riding a load: delivered on the bookmark's page, dropped anywhere else", () => {
+    expect(landPendingArms([riding(A)], AT_A)).toEqual({ left: [], deliver: A });
+    expect(landPendingArms([riding(A)], ELSEWHERE)).toEqual({ left: [], deliver: null });
+    expect(landPendingArms([riding(B), riding(A)], AT_A)).toEqual({ left: [], deliver: A });
+    expect(landPendingArms([], AT_A)).toEqual({ left: [], deliver: null });
+  });
+  test("…and leaves a numbered arm alone: a refused hop's arm is never picked up by a later page", () => {
+    // The hop is still being asked about; the page changes its own address meanwhile.
+    expect(landPendingArms([routed(A, 1)], AT_A_OTHER_QUERY)).toEqual({ left: [routed(A, 1)], deliver: null });
+    // Refused: gone. The tab reaching the bookmark's page some other way follows nothing.
+    const left = settlePendingArm([routed(A, 1)], 1, false, ELSEWHERE).left;
+    expect(landPendingArms(left, AT_A)).toEqual({ left: [], deliver: null });
+  });
+  test("a new document: numbered arms can no longer settle and go; an arm riding the load stays", () => {
+    expect(reloadPendingArms([routed(A, 1), riding(B), loaded(A, 2)])).toEqual([riding(B)]);
   });
 });

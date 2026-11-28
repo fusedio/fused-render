@@ -26,7 +26,7 @@ import {
   confirmLeave,
   installNavSink,
   NAV_EVENT,
-  NAV_REFUSED_EVENT,
+  NAV_SETTLED_EVENT,
   NAVIGATE_URL_EVENT,
   navigateUrl,
   type NavCall,
@@ -60,7 +60,7 @@ import { chatMount, type PanelParamsHost } from "./panel-params";
 import type { PanelAsk } from "./WorkspacePanel";
 import { canRunInTerminal, openTerminal } from "@platform/lib/terminalDockStore";
 import { noteAskBackend } from "@platform/lib/pending-claude-ask";
-import { splitBookmarkUrl, takeArmedHandoff, type ArmedBookmark } from "@platform/lib/bookmarks";
+import { takeArmedHandoff, type ArmedBookmark } from "@platform/lib/bookmarks";
 import { ONBOARDING_PATH } from "@shell/onboarding/state";
 import TabStrip from "./TabStrip";
 import {
@@ -72,10 +72,14 @@ import {
   isSpaUrl,
   neighborAfterClose,
   normalizeOpenUrl,
+  landPendingArms,
   liftRightTabs,
   liveTabArm,
   nextTabArm,
+  reloadPendingArms,
+  settlePendingArm,
   type HeldTabArm,
+  type PendingArm,
   pageUrlOf,
   parseHostUrl,
   adoptedRun,
@@ -167,8 +171,8 @@ interface FrameWiring {
   hook: UrlChangeHook | null;
   observer: MutationObserver | null;
   pop: { win: Window; handler: () => void } | null;
-  // The frame's "my leave guard refused your hop" (router NAV_REFUSED_EVENT).
-  refused: { win: Window; handler: (e: Event) => void } | null;
+  // The frame's word on a hop this host numbered (router NAV_SETTLED_EVENT).
+  settled: { win: Window; handler: (e: Event) => void } | null;
   // False from the moment an src is written until that document's `load`: a
   // navigation sent as an event before the frame's router exists would be lost.
   loaded: boolean;
@@ -300,12 +304,10 @@ export default function WorkspaceHost({
     places: new Map<string, Published>(),
     // A staged ask for ONE chat mount: the one made at `epoch` (WS-36).
     ask: null as PanelAsk | null,
-    // A bookmark the sidebar armed, waiting for its tab to land (WS-38) — and
-    // the hop that carries it there (`navigateTab`'s number), when that hop
-    // was handed to the tab's own router: refused by its leave guard, the arm
-    // goes with it (`dropArm`).
-    arms: new Map<string, ArmedBookmark>(),
-    armHops: new Map<string, number>(),
+    // Bookmarks the sidebar armed, each waiting on the hop that carries it to
+    // its tab (WS-38, workspace-lib `PendingArm`): the arm is that hop's and
+    // no other's. `hop` numbers the hops handed to a tab's own router.
+    arms: new Map<string, PendingArm[]>(),
     hop: 0,
     // Each tab's OWN armed bookmark, as its document last said (`tabArmed`):
     // the sidebar marks the row for the tab on screen. Like a publication, it
@@ -317,7 +319,7 @@ export default function WorkspaceHost({
   const wireOf = (id: string): FrameWiring => {
     let w = wiring.get(id);
     if (!w) {
-      w = { hook: null, observer: null, pop: null, refused: null, loaded: false };
+      w = { hook: null, observer: null, pop: null, settled: null, loaded: false };
       wiring.set(id, w);
     }
     return w;
@@ -422,11 +424,13 @@ export default function WorkspaceHost({
       if (pathOfUrl(loc) !== pathOfUrl(t.url)) t.place = null;
       t.url = loc;
     }
-    // The first location after an armed open: the arm goes to that page.
-    const arm = R.arms.get(id);
-    if (arm && loc) {
-      dropArm(id);
-      if (splitBookmarkUrl(loc).pathname === splitBookmarkUrl(arm.url).pathname) sendArm(id, arm);
+    // A location: the arms that rode a whole-document load here are spent,
+    // the one for this page delivered (`landPendingArms`).
+    const waiting = R.arms.get(id);
+    if (waiting && loc) {
+      const { left, deliver } = landPendingArms(waiting, loc);
+      setArms(id, left);
+      if (deliver) sendArm(id, deliver);
     }
     try {
       t.docTitle = iframe.contentDocument?.title ?? "";
@@ -439,10 +443,13 @@ export default function WorkspaceHost({
     rerender();
   };
 
-  // A pending arm goes: delivered, or its hop never happened.
-  const dropArm = (id: string) => {
-    R.arms.delete(id);
-    R.armHops.delete(id);
+  // The arms waiting on tab `id`'s hops.
+  const setArms = (id: string, list: PendingArm[]) => {
+    if (list.length) R.arms.set(id, list);
+    else R.arms.delete(id);
+  };
+  const pend = (id: string, arm: ArmedBookmark, hop: number | null, load = false) => {
+    setArms(id, [...(R.arms.get(id) ?? []), { arm, hop, load }]);
   };
   // ARM A TAB (WS-38): the sidebar armed a bookmark in THIS document and
   // opened its page; the tab showing it is armed in its own.
@@ -456,19 +463,18 @@ export default function WorkspaceHost({
       /* frame mid-navigation */
     }
   };
-  // Called after an open put `url` in tab `id`, with the arm that open took
-  // from the sidebar (`open`): armed for exactly that url, the tab is armed
-  // now when it is already there, else when it lands — true then: the arm
-  // waits on the hop that follows (`navigateTab` numbers it).
-  const armFor = (id: string, url: string, landed: boolean, armed: ArmedBookmark | null): boolean => {
-    if (!armed || armed.url !== url) return false;
+  // Called when an open puts `url` in tab `id`, with the arm that open took
+  // from the sidebar (`open`): armed for exactly that url. A tab already
+  // standing there is armed now; otherwise the arm is handed back, to ride
+  // the hop that takes the tab there (`navigateTab`, or `pend` for a tab that
+  // has yet to load).
+  const armFor = (id: string, url: string, landed: boolean, armed: ArmedBookmark | null): ArmedBookmark | null => {
+    if (!armed || armed.url !== url) return null;
     if (landed && wireOf(id).loaded) {
       sendArm(id, armed);
-      return false;
+      return null;
     }
-    R.arms.set(id, armed);
-    R.armHops.delete(id);
-    return true;
+    return armed;
   };
   // A TAB SAYS WHAT IT FOLLOWS (WS-38): armed by the event above, by its own
   // "Update bookmark", or let go by its Breadcrumb (the page changed, the
@@ -523,11 +529,11 @@ export default function WorkspaceHost({
     }
     w.pop = null;
     try {
-      w.refused?.win.removeEventListener(NAV_REFUSED_EVENT, w.refused.handler);
+      w.settled?.win.removeEventListener(NAV_SETTLED_EVENT, w.settled.handler);
     } catch {
       /* window gone */
     }
-    w.refused = null;
+    w.settled = null;
   };
 
   const onFrameLoad = (id: string, iframe: HTMLIFrameElement) => {
@@ -541,6 +547,10 @@ export default function WorkspaceHost({
       R.places.delete(id);
       rerender();
     }
+    // …and an arm waiting on a hop the old document's router was asked to
+    // make: that router will never say how it ended.
+    const waiting = R.arms.get(id);
+    if (waiting) setArms(id, reloadPendingArms(waiting));
     // …and so does the arm the old one held (a reload follows no bookmark).
     const held = R.tabArms.get(id);
     if (held && !liveTabArm(held, docOf(iframe.contentWindow))) {
@@ -566,17 +576,22 @@ export default function WorkspaceHost({
       } catch {
         /* frame went away under us */
       }
-      // A HOP THE TAB'S LEAVE GUARD REFUSED never lands: the arm that rode on
-      // it is let go (WS-38), or the tab's next page with that pathname —
-      // reached some other way — would read as following the bookmark. By the
-      // hop's own number: a second, dropped click must not spend the arm of
-      // a first one still being asked about.
-      const refused = (e: Event) => {
-        if (R.armHops.get(id) === (e as CustomEvent<unknown>).detail) dropArm(id);
+      // THE TAB SAYS HOW A NUMBERED HOP ENDED (router `runHostNav`), and the
+      // arm that rode on it follows (WS-38, `settlePendingArm`): delivered when
+      // the hop went and the tab stands on the bookmark's page, let go when the
+      // page's leave guard refused it — or the tab's next page with that
+      // pathname, reached some other way, would read as following the bookmark.
+      const settled = (e: Event) => {
+        const d = (e as CustomEvent<{ hop?: unknown; ok?: unknown } | null>).detail;
+        const waiting = R.arms.get(id);
+        if (!waiting || !d || typeof d.hop !== "number") return;
+        const { left, deliver } = settlePendingArm(waiting, d.hop, d.ok === true, readFrameLoc(frames.get(id)));
+        setArms(id, left);
+        if (deliver) sendArm(id, deliver);
       };
       try {
-        win.addEventListener(NAV_REFUSED_EVENT, refused);
-        w.refused = { win, handler: refused };
+        win.addEventListener(NAV_SETTLED_EVENT, settled);
+        w.settled = { win, handler: settled };
       } catch {
         /* frame went away under us */
       }
@@ -637,26 +652,31 @@ export default function WorkspaceHost({
   // page. A destination the router cannot show (`/render`) still goes through
   // it, as a `load`. Only a frame with no router — not loaded yet, or itself a
   // `/render` page — is loaded straight from here.
-  // `armed`: a bookmark's arm waits on this hop (`armFor` said so).
-  const navigateTab = (id: string, url: string, call?: NavCall, armed = false) => {
+  // `riding`: a bookmark's arm that goes with this hop (`armFor` handed it
+  // back), and with no other.
+  const navigateTab = (id: string, url: string, call?: NavCall, riding: ArmedBookmark | null = null) => {
     const t = st.tabs.get(id);
     const iframe = frames.get(id);
     if (!t) return;
     const w = wireOf(id);
     const win = iframe?.contentWindow;
     if (iframe && win && w.loaded && isSpaUrl(t.url)) {
-      // Numbered, so a refusal names the hop it refused (NAV_REFUSED_EVENT).
+      // Numbered: the tab's router says how THIS hop ended (NAV_SETTLED_EVENT).
       const hop = (R.hop += 1);
-      const detail: NavDetail = { ...(!isSpaUrl(url) ? { fn: "load" as const, url } : (call ?? { fn: "navigateUrl" as const, url })), hop };
-      if (armed) R.armHops.set(id, hop);
+      const load = !isSpaUrl(url);
+      const detail: NavDetail = { ...(load ? { fn: "load" as const, url } : (call ?? { fn: "navigateUrl" as const, url })), hop };
+      if (riding) pend(id, riding, hop, load);
       try {
         const Ctor = (win as Window & typeof globalThis).CustomEvent;
         win.dispatchEvent(new Ctor(NAVIGATE_URL_EVENT, { detail }));
         return;
       } catch {
-        /* fall through to a load */
+        // Fall through to a load: the arm rides that instead.
+        if (riding) setArms(id, (R.arms.get(id) ?? []).filter((p) => p.hop !== hop));
       }
     }
+    // A whole-document load: the arm arrives with the tab's next location.
+    if (riding) pend(id, riding, null);
     if (iframe) {
       w.loaded = false;
       iframe.classList.remove("is-loaded");
@@ -700,18 +720,20 @@ export default function WorkspaceHost({
     if (plan.kind === "activate") {
       const id = st.order[plan.index];
       activate(id, "push");
-      const waits = armFor(id, url, !plan.navigate, armed);
-      if (plan.navigate) navigateTab(id, url, opts?.call, waits);
+      const riding = armFor(id, url, !plan.navigate, armed);
+      if (plan.navigate) navigateTab(id, url, opts?.call, riding);
+      // Already on the page but not loaded yet: armed at its first location.
+      else if (riding) pend(id, riding, null);
       return;
     }
     if (plan.kind === "append") {
       const t = addTab(url);
-      armFor(t.id, url, false, armed);
+      const riding = armFor(t.id, url, false, armed);
+      if (riding) pend(t.id, riding, null);
       activate(t.id, "push");
       return;
     }
-    const waits = armFor(st.active, url, false, armed);
-    navigateTab(st.active, url, opts?.call, waits);
+    navigateTab(st.active, url, opts?.call, armFor(st.active, url, false, armed));
   };
 
   const dropTab = (id: string) => {
@@ -720,7 +742,7 @@ export default function WorkspaceHost({
     st.tabs.delete(id);
     st.mounted = st.mounted.filter((x) => x !== id);
     R.places.delete(id);
-    dropArm(id);
+    R.arms.delete(id);
     R.tabArms.delete(id);
   };
 

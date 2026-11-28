@@ -853,3 +853,61 @@ export function liveTabArm<D>(held: HeldTabArm<D> | undefined, docNow: D | null)
   if (!held || held.doc === null || held.doc !== docNow) return null;
   return held.arm;
 }
+
+/**
+ * A BOOKMARK'S ARM WAITING ON THE HOP THAT CARRIES IT TO ITS TAB (WS-38). The
+ * arm is that hop's and no other's:
+ *   - `hop` a number: the hop was handed to the tab's own router, which says
+ *     how it ended (`settlePendingArm`) — it went, or the page's leave guard
+ *     refused it. `load`: it leaves by a whole-document load (a `/render`
+ *     page), so "went" is not yet "arrived";
+ *   - `hop` null: it rides a whole-document load — a new tab, a frame with no
+ *     router, a numbered load that went — and arrives at the tab's next
+ *     location (`landPendingArms`).
+ */
+export interface PendingArm {
+  arm: TabArm;
+  hop: number | null;
+  load: boolean;
+}
+
+const armPath = (url: string): string => url.split(/[?#]/, 1)[0];
+
+/**
+ * A NUMBERED HOP SETTLED. Refused: its arm goes, and only its (another hop
+ * still being asked about keeps its own). Went by the router: the tab stands
+ * on the page now (`loc`, its location; null when it cannot be read) and the
+ * arm is delivered if that is the bookmark's page. Went by a full load: the
+ * arm waits for the new document. A number nothing waits on changes nothing.
+ */
+export function settlePendingArm(
+  list: readonly PendingArm[],
+  hop: number,
+  ok: boolean,
+  loc: string | null,
+): { left: PendingArm[]; deliver: TabArm | null } {
+  const at = list.findIndex((p) => p.hop === hop);
+  if (at === -1) return { left: list.slice(), deliver: null };
+  const mine = list[at];
+  const left = list.filter((_, i) => i !== at);
+  if (!ok) return { left, deliver: null };
+  if (mine.load) return { left: [...left, { arm: mine.arm, hop: null, load: false }], deliver: null };
+  return { left, deliver: loc !== null && armPath(loc) === armPath(mine.arm.url) ? mine.arm : null };
+}
+
+/**
+ * THE TAB'S LOCATION WAS READ (a load, a change): every arm riding a
+ * whole-document load is spent — the last one whose page this is gets
+ * delivered — and the numbered ones wait for their own word.
+ */
+export function landPendingArms(list: readonly PendingArm[], loc: string): { left: PendingArm[]; deliver: TabArm | null } {
+  let deliver: TabArm | null = null;
+  for (const p of list) if (p.hop === null && armPath(loc) === armPath(p.arm.url)) deliver = p.arm;
+  return { left: list.filter((p) => p.hop !== null), deliver };
+}
+
+/** A NEW DOCUMENT IN THE FRAME: a numbered hop's router went with the old
+ *  one and will never say how it ended — its arm goes. */
+export function reloadPendingArms(list: readonly PendingArm[]): PendingArm[] {
+  return list.filter((p) => p.hop === null);
+}
