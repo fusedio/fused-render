@@ -174,6 +174,9 @@ export interface DoorCardProps {
   /** LEFT: a card whose content is short (the "+ New app" composer) stands no
    *  taller than this while the reader has dragged no size of their own. */
   wishHeight?: number;
+  /** LEFT: a card with no pin (a workspace host's non-favourite, SPEC §56
+   *  WS-28): its head drag pins nothing. Its content draws no pin button. */
+  pinless?: boolean;
   children: (api: DoorCardApi) => ReactNode;
 }
 
@@ -194,6 +197,7 @@ export function DoorCard({
   viewFlag = viewPress,
   scrollerOf,
   wishHeight,
+  pinless = false,
   children,
 }: DoorCardProps) {
   const on = enabled;
@@ -283,7 +287,7 @@ export function DoorCard({
     key: store.key,
     movable: left && card.held,
     headSelector: RAIL_HEAD_SELECTOR,
-    dragPins: left && !card.held && up ? () => togglePinRef.current() : null,
+    dragPins: left && !card.held && up && !pinless ? () => togglePinRef.current() : null,
   });
   const move = left ? ownCardMove : railMove;
   const floatingRef = useRef(false);

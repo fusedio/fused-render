@@ -13600,3 +13600,28 @@ nothing here exists and nothing changes.
   file — the file in its parent. A published place wins. A faded ring's
   card names its own place; its click opens its chat in the panel and
   never switches the tab. A switch starts the list at its top.
+- **WS-28 Left cards in a host.** With "Left sidebar preview" on, every
+  sidebar entry keeps its hover card, and a press inside one holds it until
+  one press outside. Only a favourite's card (a bookmark: a collapsed rail
+  icon or a non-folder Favourites row) has a pin; every other card has none,
+  and a head drag pins nothing. A click on any other entry loads its page in
+  the tab (WS-5) and puts its card down; its card's Open does the same.
+- **WS-29 A favourite's click.** A plain click (or Enter) on a favourite
+  shows its card, held till one press outside, and opens nothing; its pin
+  holds it across presses and tab switches. The card's Open loads it in the
+  tab by WS-5 and arms it (Update-bookmark); Shift+click on the row or on
+  Open opens a new tab, armed too. A favourite with no card (another site,
+  `/api`) and every favourite with the preview off open on click as before;
+  folder rows are unchanged.
+- **WS-30 The shown entry.** The entry whose page the active tab shows (a
+  favourite: its url equals the tab's) opens no card on hover or
+  ArrowRight and keeps its active look and tooltip; a click on it opens
+  what is already shown.
+- **WS-31 Search.** In a host the Search row is first, collapsed and
+  expanded, where the launcher exists or the preview is on; outside a host
+  there is none (the Home row's card holds the search). Hover: the Home
+  card, the home folder's listing with a file search in its head. Click: the
+  launcher; with none (a browser), the card, held till one press outside. A
+  result, or a folder in the listing, opens in the card, and Back walks it.
+  Its Open loads the view the card is on in the tab by WS-5 (Home with the
+  query while results show); Shift+Open, in a new tab.

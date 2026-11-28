@@ -24,7 +24,8 @@
 //
 // THE HEAD: the pin (RailPinButton, the Git and mode cards'), the icon and
 // title, the Home card's ← Back and search box, and Open — the entry's Open
-// (the Home card's: what it shows), then the card goes.
+// (the Home card's: what it shows), then the card goes. In a workspace host
+// only a favourite's card has the pin (SPEC §56 WS-28).
 import { useCallback, useEffect, useRef, useState, type MutableRefObject } from "react";
 import { ArrowLeft } from "lucide-react";
 import { NAV_EVENT, navigateUrl, urlForFsPath } from "@platform/lib/router";
@@ -62,6 +63,7 @@ import {
   type LeftPeekItem,
 } from "./left-peek-store";
 import { useSidebarState } from "@platform/lib/hooks";
+import { isWorkspaceHost, workspaceHost } from "@platform/lib/workspace-bridge";
 import { useLeftRailPeek } from "./left-rail-peek-flag";
 import { installLeftRailZone } from "./left-rail-zone";
 
@@ -114,11 +116,17 @@ export function LeftPeek() {
       path = location.pathname;
       closeLeftCards((_k, s) => s.held);
     };
+    // In a workspace host the active tab's own hop (a search result, a
+    // favourite's Open) reaches the host's URL as a location sync — a
+    // replace, announced as `fused:urlchange` — not as a navigation.
+    const sync = isWorkspaceHost() ? "fused:urlchange" : null;
     window.addEventListener(NAV_EVENT, check);
     window.addEventListener("popstate", check);
+    if (sync) window.addEventListener(sync, check);
     return () => {
       window.removeEventListener(NAV_EVENT, check);
       window.removeEventListener("popstate", check);
+      if (sync) window.removeEventListener(sync, check);
     };
   }, []);
   return (
@@ -323,6 +331,7 @@ function LeftCard({ itemKey, on }: { itemKey: string; on: boolean }) {
   );
 
   const title = it?.title ?? "";
+  const pinless = !!it?.pinless;
   // THE HOME CARD'S OPEN: the view it is on — Home with the query while the
   // results show, else the framed page as the page's own address.
   const searchBox = useRef<HTMLDivElement | null>(null);
@@ -332,8 +341,15 @@ function LeftCard({ itemKey, on }: { itemKey: string; on: boolean }) {
     return cardPageUrl(topStep.url);
   };
   const open = useCallback(
-    (close: () => void, to: string | null) => {
+    (close: () => void, to: string | null, newTab: boolean) => {
       if (to !== null) {
+        // Shift, in a workspace host: a new tab (the host's own open).
+        const host = newTab ? workspaceHost() : null;
+        if (host) {
+          host.openPage(to, { newTab: true });
+          close();
+          return;
+        }
         void navigateUrl(to).then((ok) => {
           if (ok !== false) close();
         });
@@ -341,7 +357,7 @@ function LeftCard({ itemKey, on }: { itemKey: string; on: boolean }) {
       }
       const now = leftItem(itemKey);
       if (!now) return;
-      const went = now.onOpen();
+      const went = now.onOpen(newTab ? { newTab } : undefined);
       if (went instanceof Promise) {
         void went.then((ok) => {
           if (ok !== false) close();
@@ -363,6 +379,7 @@ function LeftCard({ itemKey, on }: { itemKey: string; on: boolean }) {
       className={"claude-left-peek" + (pinned ? " is-live" : "")}
       ariaLabel={title || "Preview"}
       enabled={on && item !== null}
+      pinless={pinless}
       subOpen={false}
       {...(compose ? { wishHeight: COMPOSE_HEIGHT } : {})}
     >
@@ -370,8 +387,10 @@ function LeftCard({ itemKey, on }: { itemKey: string; on: boolean }) {
         <>
           <div className="claude-rail-peek-head">
             <div className="claude-rail-peek-row">
-              {/* No ×: the pin in its seat (and the keyboard's landing). */}
-              <RailPinButton variant="legacy" btnRef={api.closeRef} pinned={api.pin.pinned} onToggle={api.pin.onToggle} />
+              {/* No ×: the pin in its seat (and the keyboard's landing) —
+                  none on a pinless card (a workspace host's non-favourite,
+                  left-peek-lib `leftCardPinnable`): Open is the landing. */}
+              {!pinless && <RailPinButton variant="legacy" btnRef={api.closeRef} pinned={api.pin.pinned} onToggle={api.pin.onToggle} />}
               {homeSrc !== null && steps.length > 1 && (
                 <button type="button" className="claude-rail-peek-btn claude-rail-peek-close" aria-label="Back" data-hint="Back" onClick={back}>
                   <ArrowLeft size={14} aria-hidden="true" />
@@ -398,7 +417,13 @@ function LeftCard({ itemKey, on }: { itemKey: string; on: boolean }) {
               ) : (
                 <span className="claude-rail-peek-gap" aria-hidden="true" />
               )}
-              <button type="button" className="btn claude-rail-peek-open" onClick={() => open(api.close, homeOpenUrl())}>
+              <button
+                type="button"
+                className="btn claude-rail-peek-open"
+                ref={pinless ? api.closeRef : undefined}
+                // Shift: a new tab, in a workspace host.
+                onClick={(e) => open(api.close, homeOpenUrl(), e.shiftKey && isWorkspaceHost())}
+              >
                 Open
               </button>
             </div>

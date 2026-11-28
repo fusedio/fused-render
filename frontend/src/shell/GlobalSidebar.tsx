@@ -22,7 +22,7 @@ import { botsAvailable, rawUrl, showLauncher, type Config } from "@platform/lib/
 import { useLauncherAvailable } from "@platform/lib/bots-available";
 import { useLauncherOpen } from "@shell/claude-rail/launcher-open";
 import { embedUrlForFsPath, navigateUrl, viewUrlForFsPath } from "@platform/lib/router";
-import { currentPageUrl, isWorkspaceHost } from "@platform/lib/workspace-bridge";
+import { currentPageUrl, isWorkspaceHost, workspaceHost } from "@platform/lib/workspace-bridge";
 import { isBrowserHandledClick } from "@platform/lib/appEntry";
 import { TOURS, startTour } from "@platform/lib/tours";
 import { ONBOARDING_PATH } from "@shell/onboarding/state";
@@ -72,7 +72,18 @@ import {
   useLeftPeek,
   type LeftPeekItem,
 } from "@shell/left-rail/left-peek-store";
-import { appShow, bookmarkFrameSrc, canvasShow, withQueryEmbed } from "@shell/left-rail/left-peek-lib";
+import {
+  appShow,
+  bookmarkFrameSrc,
+  canvasShow,
+  leftCardOnHover,
+  leftCardPinnable,
+  leftEntryPress,
+  leftSearchRowShown,
+  shiftClickBookmark,
+  withQueryEmbed,
+  type LeftEntryKind,
+} from "@shell/left-rail/left-peek-lib";
 
 // House — the Home page (/home): search hero + the three recency strips.
 const HOME_ICON = (
@@ -533,18 +544,23 @@ export default function GlobalSidebar({ config }: { config: Config }) {
   const homeActive = pathname === "/home";
   // A WORKSPACE HOST (D1514) draws no Home row: Home is the fixed first tab,
   // and the brand row above still takes you there. A SEARCH ROW stands in its
-  // place: the launcher panel, where the app has one (the Mac desktop app),
-  // lit while the panel stands (`useLauncherOpen`); a miss (the panel went
-  // with the preference) is nothing to show. Outside a host there is no such
-  // row — the Home card holds the file search — and neither hook reads
+  // place (below): the launcher panel, where the app has one (the Mac desktop
+  // app), lit while the panel stands (`useLauncherOpen`); a miss (the panel
+  // went with the preference) is nothing to show. Outside a host there is no
+  // such row — the Home card holds the file search — and neither hook reads
   // anything.
-  const homeRow = !isWorkspaceHost();
-  const searchAvailable = useLauncherAvailable(!homeRow) && !homeRow;
+  const workspace = isWorkspaceHost();
+  const homeRow = !workspace;
+  const searchAvailable = useLauncherAvailable(workspace) && workspace;
   const launcher = useLauncherOpen();
   const openSearch = () => {
     launcher.opened();
     showLauncher().catch(() => launcher.failed());
   };
+  // IN A WORKSPACE HOST the row stands in Home's place: with no launcher (a
+  // browser) its click holds the search card (SPEC §56 WS-31), so it shows
+  // while "Left sidebar preview" is on too.
+  const searchRow = leftSearchRowShown({ workspace, launcher: searchAvailable, peekOn: leftPeekOn });
   const tasksActive = pathname === "/tasks";
   // PREFIX, unlike Canvases above: /ai-models/<tab> is the same page seen
   // through a different tab, not a second destination, so every one of the five
@@ -849,7 +865,7 @@ export default function GlobalSidebar({ config }: { config: Config }) {
   const railItems: SidebarRailItem[] = [
     // Same gate and same order as the expanded rows below.
     ...(homeRow ? [{ key: "home", label: "Home", icon: HOME_ICON, href: "/home", active: homeActive }] : []),
-    ...(searchAvailable
+    ...(searchRow
       ? [{ key: "search", label: "Search", icon: SEARCH_ICON, active: launcher.open, onClick: openSearch }]
       : []),
     // No Canvases entry (owner, 2026-10-20): the Canvases SECTION below lists
@@ -919,6 +935,15 @@ export default function GlobalSidebar({ config }: { config: Config }) {
   const leftItems: LeftPeekItem[] = [];
   if (leftPeekOn) {
     const goTo = (href: string) => () => navigateUrl(href);
+    // IN A WORKSPACE HOST (SPEC §56 WS-28…WS-31; left-peek-lib): only a
+    // favourite's card pins and opens on a click; Search's click holds its
+    // card where there is no launcher. The entry whose page is on screen
+    // opens no card, host or not. Outside a host the rest reads as today.
+    const rules = (kind: LeftEntryKind, active: boolean) => ({
+      active: !leftCardOnHover({ active }),
+      clickShowsCard: leftEntryPress({ workspace, peekOn: true, kind, hasCard: true, active, launcher: searchAvailable }) === "card",
+      pinless: !leftCardPinnable({ workspace, kind }),
+    });
     // THE HOME CARD (owner, 2026-11-27): the home folder's listing, a file
     // search in its head (typing swaps the listing for the results), and its
     // Open is the file explorer at ~ — the row's own click stays /home. In a
@@ -927,10 +952,10 @@ export default function GlobalSidebar({ config }: { config: Config }) {
       show: { kind: "frame" as const, src: embedUrlForFsPath(config.home, "?_side=off"), searchHome: config.home },
       onOpen: goTo(viewUrlForFsPath(config.home)),
     };
-    if (homeRow) leftItems.push({ key: "home", title: "Home", icon: HOME_ICON, ...homeCard });
-    else if (searchAvailable) leftItems.push({ key: "search", title: "Search", icon: SEARCH_ICON, ...homeCard });
-    leftItems.push({ key: "ai-models", title: "AI Models", icon: AI_MODELS_ICON, show: { kind: "frame", src: withQueryEmbed(AI_MODELS_HOME) }, onOpen: goTo(AI_MODELS_HOME) });
-    leftItems.push({ key: "marketplace", title: "Community", icon: MARKETPLACE_ICON, show: { kind: "frame", src: withQueryEmbed(marketplaceHref) }, onOpen: goTo(marketplaceHref) });
+    if (homeRow) leftItems.push({ key: "home", title: "Home", icon: HOME_ICON, ...homeCard, ...rules("other", homeActive) });
+    else if (searchRow) leftItems.push({ key: "search", title: "Search", icon: SEARCH_ICON, ...homeCard, ...rules("search", false) });
+    leftItems.push({ key: "ai-models", title: "AI Models", icon: AI_MODELS_ICON, show: { kind: "frame", src: withQueryEmbed(AI_MODELS_HOME) }, onOpen: goTo(AI_MODELS_HOME), ...rules("other", aiModelsActive) });
+    leftItems.push({ key: "marketplace", title: "Community", icon: MARKETPLACE_ICON, show: { kind: "frame", src: withQueryEmbed(marketplaceHref) }, onOpen: goTo(marketplaceHref), ...rules("other", marketplaceActive) });
     // The "+" rows: the page each one leads to — their own click is unchanged.
     leftItems.push({
       key: "new-app",
@@ -941,6 +966,7 @@ export default function GlobalSidebar({ config }: { config: Config }) {
         setSidebarSectionOpen("projects", true);
         setRailComposing(true);
       },
+      ...rules("other", false),
     });
     if (canvasesInNav)
       leftItems.push({
@@ -949,6 +975,7 @@ export default function GlobalSidebar({ config }: { config: Config }) {
         icon: NEW_GLYPH,
         show: { kind: "frame", src: withQueryEmbed("/canvases") },
         onOpen: () => railGo("canvases", "/canvases"),
+        ...rules("other", pathname === "/canvases"),
       });
     // Every project and canvas on the desk (the rail draws the first seven;
     // the expanded sections every one), and every favourite — pinned or not.
@@ -958,8 +985,8 @@ export default function GlobalSidebar({ config }: { config: Config }) {
         title: app.name,
         icon: <RailAppIcon app={app} />,
         show: appShow({ path: app.path, entry: app.entry, rawUrl, embedUrl: embedUrlForFsPath }),
-        active: onAppPath === app.path,
         onOpen: () => railGo("projects", appPageUrl(app.path)),
+        ...rules("other", onAppPath === app.path),
       });
     for (const app of canvasesInNav ? desk.filter((a) => a.canvas) : []) {
       const href = canvasRowHref(app) ?? appPageUrl(app.path);
@@ -968,8 +995,8 @@ export default function GlobalSidebar({ config }: { config: Config }) {
         title: app.name,
         icon: <CanvasGlyph size={16} />,
         show: canvasShow({ path: app.path, embedUrl: embedUrlForFsPath }),
-        active: !!app.canvas && !!onCanvas && onCanvas.env === app.canvas.env && onCanvas.name === app.canvas.name,
         onOpen: () => railGo("canvases", href),
+        ...rules("other", !!app.canvas && !!onCanvas && onCanvas.env === app.canvas.env && onCanvas.name === app.canvas.name),
       });
     }
     for (const b of allBookmarks()) {
@@ -980,11 +1007,18 @@ export default function GlobalSidebar({ config }: { config: Config }) {
           title: b.name,
           icon: <span className={"sidebar-rail-bm-glyph" + (b.icon ? " custom-icon" : "")}>{b.icon ?? "★"}</span>,
           show: { kind: "frame", src },
-          active: b.url === here,
-          onOpen: () => {
+          // Armed as the row's own click arms it; Shift on Open (a host): a
+          // new tab, as Shift+click on the row.
+          onOpen: (o) => {
             armBookmark(b.id, b.url);
+            const host = o?.newTab ? workspaceHost() : null;
+            if (host) {
+              host.openPage(b.url, { newTab: true });
+              return;
+            }
             return railGo("favourites", b.url);
           },
+          ...rules("bookmark", b.url === here),
         });
     }
   }
@@ -997,6 +1031,22 @@ export default function GlobalSidebar({ config }: { config: Config }) {
   for (const it of leftItems) if (railActive.get(it.key)) it.active = true;
   // Published with the switch on; off, the empty list puts every card down.
   useLeftRailPublish(leftItems, leftPeekOn);
+  // SHIFT+CLICK ON A FAVOURITE IN A HOST: the host's capture handler opens
+  // the new tab and stops the click before the row's own handler, which arms
+  // the bookmark (Update-bookmark tracking) — arm it here first (window
+  // capture runs before the host's document capture).
+  useEffect(() => {
+    if (!workspace) return;
+    const onClick = (e: MouseEvent) => {
+      if (e.button !== 0 || !e.shiftKey || e.metaKey || e.ctrlKey || e.altKey) return;
+      const a = (e.target as Element | null)?.closest?.("a[href]");
+      if (!a || !a.closest("#sidebar")) return;
+      const b = shiftClickBookmark(a, allBookmarks());
+      if (b) armBookmark(b.id, b.url);
+    };
+    window.addEventListener("click", onClick, true);
+    return () => window.removeEventListener("click", onClick, true);
+  }, [workspace]);
   // The Settings menu open: no card over it, and a preview goes.
   useEffect(() => {
     if (leftPeekOn) setLeftPeekBlocked(prefsPos !== null);
@@ -1027,7 +1077,7 @@ export default function GlobalSidebar({ config }: { config: Config }) {
       >
         <div className="sidebar-section sidebar-group">
           {homeRow && <NavItem href="/home" id="home-link" label="Home" icon={HOME_ICON} active={homeActive} doorKey="home" />}
-          {searchAvailable && (
+          {searchRow && (
             <NavItem
               id="search-link"
               label="Search"

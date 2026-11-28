@@ -225,3 +225,85 @@ export function framePainted(doc: { querySelector(selector: string): unknown } |
   if (doc.querySelector(".preview-body iframe") && !doc.querySelector(".preview-body iframe.is-shown, .preview-body .is-shown iframe")) return false;
   return true;
 }
+
+// ---- in a workspace host (SPEC §56 WS-28…WS-31) ------------------------------
+//
+// Owner, 2026-11-28: "We still show the hover preview popup on both sides …
+// but a click changes the left / right content. Only for FAVOURITES … we keep
+// hover preview, click preview and pin." Outside a host every answer below is
+// today's, so the flag off changes nothing.
+
+/** Which kind of entry, for the rules below: a favourite (a bookmark), the
+ *  Search row, or any other entry (AI Models, Community, a project, a canvas,
+ *  the "+" rows). */
+export type LeftEntryKind = "bookmark" | "search" | "other";
+
+/** WHAT A PLAIN CLICK ON A LEFT ENTRY DOES:
+ *    - `page`: the entry's own click (its page, in the tab);
+ *    - `card`: its card comes up, held till one press outside (temp) — a
+ *      favourite's in a host, or Search where there is no launcher;
+ *    - `launcher`: the Search row's Mac launcher.
+ *  `hasCard`: the entry has a card that can stand now; `active`: the active
+ *  tab shows the entry's page (a favourite then just opens, harmlessly). */
+export function leftEntryPress(o: {
+  workspace: boolean;
+  peekOn: boolean;
+  kind: LeftEntryKind;
+  hasCard: boolean;
+  active: boolean;
+  launcher: boolean;
+}): "page" | "card" | "launcher" {
+  const cardOk = o.workspace && o.peekOn && o.hasCard;
+  if (o.kind === "search") return o.launcher || !cardOk ? "launcher" : "card";
+  if (o.kind === "bookmark" && cardOk && !o.active) return "card";
+  return "page";
+}
+
+/** THE SEARCH ROW STANDS IN A HOST ONLY, in Home's place, and where it can
+ *  do something: the launcher, or the Home card it carries (the file search).
+ *  Outside a host the Home row has that card and there is no Search row. */
+export function leftSearchRowShown(o: { workspace: boolean; launcher: boolean; peekOn: boolean }): boolean {
+  return o.workspace && (o.launcher || o.peekOn);
+}
+
+/** A LEFT CARD CARRIES A PIN (its button, a head drag): always outside a
+ *  host; in one, only a favourite's. */
+export function leftCardPinnable(o: { workspace: boolean; kind: LeftEntryKind }): boolean {
+  return !o.workspace || o.kind === "bookmark";
+}
+
+/** A HOVER OR ARROWRIGHT OPENS THE ENTRY'S CARD, unless its page is the one
+ *  on screen (owner, 2026-11-27: "if the page is active it shouldn't popup")
+ *  — in a host, the page the active tab shows. */
+export function leftCardOnHover(o: { active: boolean }): boolean {
+  return !o.active;
+}
+
+/** Where a plain press on an entry landed: on its own link (the rail icon
+ *  itself, a row's link) — the press of a click — or on something else in
+ *  it (a row's glyph, a button, a drag's start). */
+export function pressOnLink(target: PressTarget | null, entry: unknown): boolean {
+  if (!target) return false;
+  const hit = target.closest("a[href], button") as (PressTarget & { matches?: (s: string) => boolean }) | null;
+  if (!hit) return false;
+  return hit === entry || (typeof hit.matches === "function" && hit.matches("a[href]"));
+}
+
+/** The bookmark a Shift+click in the sidebar landed on: a row's id (the
+ *  expanded Favourites), else its card's key (`pin:<id>`), else the first
+ *  pinned bookmark at the link's address (a collapsed rail icon). Null for
+ *  anything else, or an address that is not this server's. */
+export function shiftClickBookmark(
+  link: PressTarget & { getAttribute(name: string): string | null },
+  pins: readonly { id: string; url: string }[],
+): { id: string; url: string } | null {
+  const href = link.getAttribute("href");
+  if (!href || !href.startsWith("/") || href.startsWith("//")) return null;
+  const row = link.closest(".bookmark-row[data-id]") as { getAttribute(name: string): string | null } | null;
+  const door = link.closest(`[${LEFT_DOOR_ATTR}^="pin:"]`) as { getAttribute(name: string): string | null } | null;
+  const id = row?.getAttribute("data-id") ?? door?.getAttribute(LEFT_DOOR_ATTR)?.slice(4) ?? null;
+  if (id) return { id, url: href };
+  if (!link.closest(".sidebar-rail-btn")) return null;
+  const pin = pins.find((b) => b.url === href);
+  return pin ? { id: pin.id, url: href } : null;
+}

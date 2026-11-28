@@ -35,7 +35,8 @@ import type { Pos, Size } from "@shell/claude-rail/rail-move-lib";
 import type { OwnMoveStore } from "@shell/claude-rail/useOwnCardMove";
 import type { PressFlag } from "@shell/claude-rail/RailPin";
 import { railExtrasNow } from "@shell/claude-rail/rail-extras-flag";
-import { LEFT_DOOR_ATTR, LEFT_OPEN_ATTR, type LeftPeekShow } from "./left-peek-lib";
+import type { PressTarget } from "@shell/claude-rail/rail-pin-lib";
+import { LEFT_DOOR_ATTR, LEFT_OPEN_ATTR, pressOnLink, type LeftPeekShow } from "./left-peek-lib";
 import { leftPace } from "./left-rail-zone";
 
 /** One collapsed-sidebar icon's card, as GlobalSidebar describes it. */
@@ -46,12 +47,21 @@ export interface LeftPeekItem {
   icon: ReactNode;
   show: LeftPeekShow;
   /** The icon's own click — Open does the same. A navigation's promise
-   *  (false: a leave guard refused it) when it has one. */
-  onOpen: () => Promise<boolean> | void;
+   *  (false: a leave guard refused it) when it has one. `newTab`: Shift on
+   *  the card's Open in a workspace host (an entry that has no use for it
+   *  ignores it). */
+  onOpen: (o?: { newTab?: boolean }) => Promise<boolean> | void;
   /** The entry is the page on screen (lit active): a hover or ArrowRight
    *  opens no card for it (owner, 2026-11-27: "if the page is active it
-   *  shouldn't popup"); a card already up stays as it is. */
+   *  shouldn't popup"); a card already up stays as it is. In a workspace
+   *  host, the page the active tab shows. */
   active?: boolean;
+  /** IN A WORKSPACE HOST (left-peek-lib, SPEC §56 WS-28…): a plain click
+   *  shows the card, held till one press outside, instead of the entry's own
+   *  click (a favourite; Search with no launcher). */
+  clickShowsCard?: boolean;
+  /** …and the card has no pin: no button, no head-drag pin. */
+  pinless?: boolean;
 }
 
 // ---- one bus ----------------------------------------------------------------
@@ -171,12 +181,18 @@ function showSig(s: LeftPeekShow): string {
   return s.kind === "app" ? `app|${s.still}|${s.picture}|${s.live}` : `${s.kind}|${s.src}|${s.searchHome ?? ""}`;
 }
 
+function rulesSig(i: LeftPeekItem): string {
+  return (i.active ? "a" : "") + (i.clickShowsCard ? "c" : "") + (i.pinless ? "p" : "");
+}
+
 /** What the collapsed sidebar's icons offer now (GlobalSidebar, each render
  *  while the rail stands). A card stands behind every icon from the moment
  *  it is published; an icon that is gone takes its card with it — held or
  *  not (a project off the desk, a favourite unpinned). */
 export function publishLeftItems(list: readonly LeftPeekItem[]): void {
-  const sig = list.map((i) => `${i.key}\u0000${i.title}\u0000${showSig(i.show)}\u0000${i.active ? 1 : 0}`).join("\u0001");
+  // The workspace's rules (active, click, pin) are drawn too: the door's
+  // tooltip and the card's pin follow them.
+  const sig = list.map((i) => `${i.key}\u0000${i.title}\u0000${showSig(i.show)}\u0000${rulesSig(i)}`).join("\u0001");
   const next = new Map(list.map((i) => [i.key, i] as const));
   // The facts are refreshed every time (the click's closure is the render's);
   // only a change in what is drawn is news.
@@ -360,7 +376,13 @@ export function leftDoorFor(key: string, slot: LeftDoorSlot = "rail"): SidebarRa
     onPointerLeave: () => store.intent().leaveRing("pointer"),
     // A PRESS ON THE ENTRY — its link (the click navigates), a kebab, a
     // glyph's icon picker, a drag's start — puts its card down unless held.
-    onPointerDown: putDownOwn,
+    // …except the plain press of a click that will SHOW the card
+    // (`clickShowsCard`): put down now, it would only blink back up.
+    onPointerDown: (e: ReactPointerEvent<HTMLElement>) => {
+      const plain = e.button === 0 && !e.shiftKey && !e.metaKey && !e.ctrlKey && !e.altKey;
+      if (plain && items.get(key)?.clickShowsCard && pressOnLink(e.target as unknown as PressTarget, e.currentTarget)) return;
+      putDownOwn();
+    },
     // Its context menu opening: every card that is not held goes.
     onContextMenu: quietLeftCards,
     // The keyboard: Escape lets a preview go (a held card closes by its pin
@@ -383,8 +405,20 @@ export function leftDoorFor(key: string, slot: LeftDoorSlot = "rail"): SidebarRa
       }
     },
     // THE CLICK NAVIGATES (header): a card of this icon that is not held goes
-    // with it; a held one stays.
-    onActivate: putDownOwn,
+    // with it; a held one stays. IN A WORKSPACE HOST a favourite's plain click
+    // (`clickShowsCard`) shows its card instead, held till one press outside,
+    // and the entry's own click does not run (true); from Enter the keyboard
+    // lands in it, as ArrowRight's does.
+    onActivate: (how) => {
+      const now = items.get(key);
+      if (now?.clickShowsCard && !how?.modified && store.state().ready) {
+        store.intent().press(store.key);
+        if (how?.keyboard) focusCardSoon(store);
+        return true;
+      }
+      putDownOwn();
+      return false;
+    },
     attrs: {
       [LEFT_DOOR_ATTR]: key,
       // THE ENTRY WHOSE CARD IS UP LOOKS OPEN (claude-rail.css; the Claude

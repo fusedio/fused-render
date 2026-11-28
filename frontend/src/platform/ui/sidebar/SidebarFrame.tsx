@@ -21,7 +21,7 @@ import {
 } from "@platform/lib/sidebarstate";
 import { reopenWidth, resizeWidth } from "@platform/lib/panel-drag";
 import { useSidebarState } from "@platform/lib/hooks";
-import { sidebarDoorProps, useSidebarDoor, type SidebarRailDoor } from "./sidebar-doors";
+import { activateHow, sidebarDoorProps, useSidebarDoor, type SidebarRailDoor } from "./sidebar-doors";
 
 export type { SidebarRailDoor } from "./sidebar-doors";
 
@@ -140,7 +140,8 @@ function renderRailItem(item: SidebarRailItem, tip: RailTip, bare = false) {
           onBlur={onBlur}
           onClick={(e) => {
             tip.hide();
-            door?.onActivate?.();
+            // The door took the click (its card came up instead).
+            if (door?.onActivate?.(activateHow(e)) === true) return;
             item.onClick?.(e);
           }}
         >
@@ -163,7 +164,7 @@ function renderRailItem(item: SidebarRailItem, tip: RailTip, bare = false) {
           onClick={(e) => {
             e.preventDefault();
             tip.hide();
-            door?.onActivate?.();
+            if (door?.onActivate?.(activateHow(e)) === true) return;
             if (item.onClick) item.onClick(e);
             else navigateUrl(item.href!);
           }}
@@ -251,8 +252,8 @@ export function NavItem({
         title={tip}
         className={"sidebar-item" + (active ? " active" : "")}
         {...sidebarDoorProps(door)}
-        onClick={() => {
-          door?.onActivate?.();
+        onClick={(e) => {
+          if (door?.onActivate?.(activateHow(e)) === true) return;
           onClick?.();
         }}
       >
@@ -274,7 +275,7 @@ export function NavItem({
       {...sidebarDoorProps(door)}
       onClick={(e) => {
         e.preventDefault();
-        door?.onActivate?.();
+        if (door?.onActivate?.(activateHow(e)) === true) return;
         if (onClick) onClick();
         else navigateUrl(href);
       }}
