@@ -1,6 +1,6 @@
 // SIDEBAR PREVIEWS (owner, 2026-11-27: "the same hover-card behaviour on the
 // collapsed left rail's icons", behind `left_rail_peek_enabled`, default
-// off). Each icon of the collapsed LEFT sidebar — Home, Search, AI Models,
+// off). Each icon of the collapsed LEFT sidebar — Home, AI Models,
 // Community, every project, canvas and favourite — opens the Claude rail's
 // window A card (DoorCard, `side: "left"`), to the right of the sidebar:
 //
@@ -40,7 +40,7 @@ import { leftPace } from "./left-rail-zone";
 
 /** One collapsed-sidebar icon's card, as GlobalSidebar describes it. */
 export interface LeftPeekItem {
-  /** The rail item's own key (`home`, `search`, `app:<path>`, `pin:<id>` …). */
+  /** The rail item's own key (`home`, `app:<path>`, `pin:<id>` …). */
   key: string;
   title: string;
   icon: ReactNode;
@@ -48,6 +48,10 @@ export interface LeftPeekItem {
   /** The icon's own click — Open does the same. A navigation's promise
    *  (false: a leave guard refused it) when it has one. */
   onOpen: () => Promise<boolean> | void;
+  /** The entry is the page on screen (lit active): a hover or ArrowRight
+   *  opens no card for it (owner, 2026-11-27: "if the page is active it
+   *  shouldn't popup"); a card already up stays as it is. */
+  active?: boolean;
 }
 
 // ---- one bus ----------------------------------------------------------------
@@ -164,7 +168,7 @@ let itemsSig = "";
 
 function showSig(s: LeftPeekShow): string {
   if (s.kind === "compose") return "compose";
-  return s.kind === "app" ? `app|${s.still}|${s.picture}|${s.live}` : `${s.kind}|${s.src}`;
+  return s.kind === "app" ? `app|${s.still}|${s.picture}|${s.live}` : `${s.kind}|${s.src}|${s.searchHome ?? ""}`;
 }
 
 /** What the collapsed sidebar's icons offer now (GlobalSidebar, each render
@@ -172,7 +176,7 @@ function showSig(s: LeftPeekShow): string {
  *  it is published; an icon that is gone takes its card with it — held or
  *  not (a project off the desk, a favourite unpinned). */
 export function publishLeftItems(list: readonly LeftPeekItem[]): void {
-  const sig = list.map((i) => `${i.key}\u0000${i.title}\u0000${showSig(i.show)}`).join("\u0001");
+  const sig = list.map((i) => `${i.key}\u0000${i.title}\u0000${showSig(i.show)}\u0000${i.active ? 1 : 0}`).join("\u0001");
   const next = new Map(list.map((i) => [i.key, i] as const));
   // The facts are refreshed every time (the click's closure is the render's);
   // only a change in what is drawn is news.
@@ -337,6 +341,8 @@ export function leftDoorFor(key: string, slot: LeftDoorSlot = "rail"): SidebarRa
   const store = stores.get(key);
   if (!store || !items.has(key)) return undefined;
   const s = store.state();
+  /** The entry's page is on screen: nothing opens (`LeftPeekItem.active`). */
+  const here = () => items.get(key)?.active === true;
   const putDownOwn = () => {
     const c = store.state();
     if (c.up && !c.held) store.close();
@@ -347,7 +353,7 @@ export function leftDoorFor(key: string, slot: LeftDoorSlot = "rail"): SidebarRa
       // A touch is no hover; a pointer dragging something (a row's reorder,
       // the width seam) opens nothing; nor does one while a menu, a dialog
       // or a rename has the sidebar.
-      if (e.pointerType === "touch" || e.buttons !== 0 || blocked || sidebarBusy()) return;
+      if (e.pointerType === "touch" || e.buttons !== 0 || blocked || sidebarBusy() || here()) return;
       if (!store.state().ready) return;
       store.intent().enterRing(store.key, "pointer");
     },
@@ -370,7 +376,7 @@ export function leftDoorFor(key: string, slot: LeftDoorSlot = "rail"): SidebarRa
         store.close(true);
         return;
       }
-      if (leftKeyOpens({ key: e.key, modified: e.altKey || e.ctrlKey || e.metaKey || e.shiftKey, ready: c.ready, editable: isEditable(e.target), blocked: blocked || sidebarBusy() })) {
+      if (leftKeyOpens({ key: e.key, modified: e.altKey || e.ctrlKey || e.metaKey || e.shiftKey, ready: c.ready && !here(), editable: isEditable(e.target), blocked: blocked || sidebarBusy() })) {
         e.preventDefault();
         store.intent().press(store.key);
         focusCardSoon(store);
@@ -384,12 +390,12 @@ export function leftDoorFor(key: string, slot: LeftDoorSlot = "rail"): SidebarRa
       // THE ENTRY WHOSE CARD IS UP LOOKS OPEN (claude-rail.css; the Claude
       // rail's `doorOpen`): a preview or temp card, or a held one.
       ...(s.up ? { [LEFT_OPEN_ATTR]: s.held ? "pinned" : "open" } : {}),
-      ...(s.ready
+      ...(s.ready && (s.up || !here())
         ? { "aria-haspopup": "dialog", "aria-expanded": s.up ? "true" : "false", "aria-controls": store.id, "aria-keyshortcuts": "ArrowRight" }
         : {}),
     },
     // The card speaks for the icon: no tooltip beside it.
-    quietTip: s.ready,
+    quietTip: s.ready && (s.up || !here()),
   };
 }
 
