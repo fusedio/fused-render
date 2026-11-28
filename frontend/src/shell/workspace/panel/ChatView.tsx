@@ -25,15 +25,18 @@ export interface ChatViewProps {
   /** A staged ask for this mount only (the host's `R.ask`), else null. */
   initialAsk: string | null;
   host: PanelParamsHost;
+  /** This mount's token (panel-params `chatMount`): its writes land only
+   *  while it is the chat the host shows. */
+  mount: string;
   events: EventTarget;
   onHide: () => void;
   onNavigate: (url: string) => void;
 }
 
-export function ChatView({ file, sessionId, queued, initialAsk, host, events, onHide, onNavigate }: ChatViewProps) {
+export function ChatView({ file, sessionId, queued, initialAsk, host, mount, events, onHide, onNavigate }: ChatViewProps) {
   // One store per mount (the host's key remounts this): built in a lazy
   // initializer so a discarded render binds nothing (params/store's header).
-  const [store] = useState(() => createPanelParamsStore(host, events));
+  const [store] = useState(() => createPanelParamsStore(host, events, mount));
   useEffect(() => {
     store.attach();
     return () => store.dispose();

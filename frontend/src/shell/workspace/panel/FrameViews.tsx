@@ -51,24 +51,41 @@ export function BotsView({
   const shownRef = useRef(shown);
   shownRef.current = shown;
   useEffect(() => () => detachEmbedUrlChange(hook.current), []);
+  // A view URL asked for before the frame can go there (still on about:blank,
+  // or not loaded yet — hidden or not): kept, and gone to on its load, before
+  // the load reports where it is (or that report would undo the request).
+  const pending = useRef<string | null>(null);
+  const loaded = useRef(false);
+  const go = (win: Window, to: string): boolean => {
+    try {
+      const detail: NavDetail = { fn: "navigateUrl", url: to };
+      win.dispatchEvent(new (win as Window & typeof globalThis).CustomEvent(NAVIGATE_URL_EVENT, { detail }));
+      return true;
+    } catch {
+      return false;
+    }
+  };
   // An outside change of the view: the frame goes there by its router.
   useEffect(() => {
+    if (url === null) return;
     const iframe = ref.current;
     const win = iframe?.contentWindow;
     const loc = readFrameLoc(iframe);
-    if (url === null || !win || loc === null || loc === url) return;
-    try {
-      const detail: NavDetail = { fn: "navigateUrl", url };
-      win.dispatchEvent(new (win as Window & typeof globalThis).CustomEvent(NAVIGATE_URL_EVENT, { detail }));
-    } catch {
-      /* mid-load: its own load reports where it is */
+    if (!loaded.current || !win || loc === null) {
+      // Its first load is already on its way to `src`.
+      pending.current = !loaded.current && url === src ? null : url;
+      return;
     }
-  }, [url]);
+    pending.current = null;
+    // Mid-load: its own load goes there.
+    if (loc !== url && !go(win, url)) pending.current = url;
+  }, [url, src]);
   // Hidden to its polls while another view shows (pause-while-hidden).
   useEffect(() => signalHidden(ref.current, !shown), [shown]);
   const onLoad = () => {
     const iframe = ref.current;
     if (!iframe) return;
+    loaded.current = true;
     iframe.classList.add("is-loaded");
     signalHidden(iframe, !shownRef.current);
     detachEmbedUrlChange(hook.current);
@@ -77,6 +94,12 @@ export function BotsView({
       if (loc) onSyncRef.current(loc);
     };
     hook.current = attachEmbedUrlChange(iframe, report);
+    const want = pending.current;
+    pending.current = null;
+    const loc = readFrameLoc(iframe);
+    const win = iframe.contentWindow;
+    // The request first: the hook reports where it lands.
+    if (want && win && loc !== null && loc !== want && go(win, want)) return;
     report();
   };
   return (

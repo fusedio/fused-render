@@ -55,7 +55,7 @@ import { readListing, readTasksRows, subscribeListing } from "@shell/tasksPulse"
 import { taskChatTarget } from "@shell/tasks-lib";
 import { templateModeIcon } from "@apps/explorer/ModeSwitcher";
 import { WorkspacePanel } from "./WorkspacePanel";
-import type { PanelParamsHost } from "./panel-params";
+import { chatMount, type PanelParamsHost } from "./panel-params";
 import type { PanelAsk } from "./WorkspacePanel";
 import { canRunInTerminal, openTerminal } from "@platform/lib/terminalDockStore";
 import { noteAskBackend } from "@platform/lib/pending-claude-ask";
@@ -99,11 +99,26 @@ const noop = () => {};
 const noPull = () => {};
 
 /** What a tab's page last published for the rail (plain data, cloned out of
- *  the frame's realm), and the document that said it. */
+ *  the frame's realm), and the DOCUMENT that said it — not its Window: a
+ *  frame's WindowProxy survives navigation, its document does not. */
 interface Published {
-  win: Window;
+  doc: Document | null;
   info: WsPublishedPlace;
   json: string;
+}
+
+function docOf(win: Window | null | undefined): Document | null {
+  try {
+    return win?.document ?? null;
+  } catch {
+    return null;
+  }
+}
+
+/** The publication `pub`, while the document that made it is the frame's. */
+function liveInfo(pub: Published | undefined, iframe: HTMLIFrameElement | undefined): WsPublishedPlace | null {
+  if (!pub || !iframe || !pub.doc) return null;
+  return pub.doc === docOf(iframe.contentWindow) ? pub.info : null;
 }
 
 /** The rail's picture of what the panel shows. */
@@ -272,6 +287,9 @@ export default function WorkspaceHost({
   // published rail (WS-20).
   const R = useRef({
     chatEpoch: 0,
+    // Bumped on EVERY panel change (setRight, a traversal): a deferred open
+    // (`adoptSession`) made before one gives up.
+    rightGen: 0,
     chatEvents: new EventTarget(),
     places: new Map<string, Published>(),
     // A staged ask for ONE chat mount: the one made at `epoch` (WS-36).
@@ -470,7 +488,7 @@ export default function WorkspaceHost({
     // A new document: what the old one published for the rail goes (the new
     // page publishes again from its own mount, which may already have run).
     const pub = R.places.get(id);
-    if (pub && pub.win !== iframe.contentWindow) {
+    if (pub && pub.doc !== docOf(iframe.contentWindow)) {
       R.places.delete(id);
       rerender();
     }
@@ -648,6 +666,7 @@ export default function WorkspaceHost({
     const prev = parseRight(st.right);
     const nv = parseRight(next);
     st.right = next;
+    R.rightGen += 1;
     // An ask is for the mount it was handed to: any outside change spends it.
     if (!own) R.ask = null;
     // The chat follows an OUTSIDE change of its conversation by a remount.
@@ -682,7 +701,7 @@ export default function WorkspaceHost({
     const go = () => {
       R.chatEpoch += 1;
       setRight(encodeRight(view), "push", true);
-      if (backend) noteAskBackend(prompt, backend);
+      noteAskBackend(prompt, backend);
       R.ask = { file, prompt, epoch: R.chatEpoch };
       rerender();
     };
@@ -768,13 +787,15 @@ export default function WorkspaceHost({
   };
 
   // The session's chat on the right as soon as a row names it; given up after
-  // a while, or once anything else opened the panel.
+  // a while, or once the panel changed at all meanwhile (opened on anything
+  // else — even if closed again since).
   const adoptSession = (sid: string) => {
     const now = viewForSession(sid);
     if (now) {
       void openRightView(now, "replace");
       return;
     }
+    const gen = R.rightGen;
     let done = false;
     let unsub: (() => void) | null = null;
     let timer: ReturnType<typeof setTimeout> | null = null;
@@ -786,7 +807,7 @@ export default function WorkspaceHost({
     // Subscribing replays the held listing synchronously: `stop` copes.
     unsub = subscribeListing(() => {
       if (done) return;
-      if (S.current?.right !== null) return stop();
+      if (R.rightGen !== gen || S.current?.right !== null) return stop();
       const view = viewForSession(sid);
       if (!view) return;
       stop();
@@ -802,8 +823,9 @@ export default function WorkspaceHost({
   const publishPlace = (win: Window, info: WsPublishedPlace | null) => {
     const id = st.order.find((x) => frames.get(x)?.contentWindow === win);
     if (!id) return;
+    const doc = docOf(win);
     if (!info) {
-      if (R.places.get(id)?.win !== win) return;
+      if (R.places.get(id)?.doc !== doc) return;
       R.places.delete(id);
     } else {
       let json: string;
@@ -813,9 +835,9 @@ export default function WorkspaceHost({
         return;
       }
       const was = R.places.get(id);
-      if (was && was.win === win && was.json === json) return;
+      if (was && was.doc === doc && was.json === json) return;
       const clean = JSON.parse(json) as WsPublishedPlace;
-      R.places.set(id, { win, info: clean, json });
+      R.places.set(id, { doc, info: clean, json });
       // Remembered with the tab (its entry carries it across a reload).
       const t = st.tabs.get(id);
       if (t) {
@@ -853,6 +875,12 @@ export default function WorkspaceHost({
         } else live.current.replaceMirror();
         rerender();
       },
+      // A retired chat mount (another file, or remounted on an outside
+      // change) writes nothing: its flush on unmount would land on the next.
+      mount: () => {
+        const v = parseRight(S.current?.right ?? null);
+        return v?.kind === "chat" ? chatMount(v.file, R.chatEpoch) : null;
+      },
     };
   }
 
@@ -872,6 +900,7 @@ export default function WorkspaceHost({
     // moved is remounted on it, and its params store drops a pending write.
     const prevRight = parseRight(st.right);
     st.right = parsed.right;
+    R.rightGen += 1;
     R.ask = null;
     const nextRight = parseRight(st.right);
     if (prevRight?.kind === "chat" && nextRight?.kind === "chat" && prevRight.file === nextRight.file && prevRight.query !== nextRight.query) {
@@ -912,8 +941,9 @@ export default function WorkspaceHost({
     st.order = parsedIds;
     const idx = typeof state?.wsActive === "number" ? state.wsActive : parsed.active;
     const target = parsedIds[idx] ?? parsedIds[parsed.active] ?? homeId();
-    // The shown tab may be one just closed: `activate` must not read it.
-    if (!st.tabs.has(st.active)) st.active = target;
+    // The shown tab may be one just closed: `activate` reads only the target
+    // (and the mounted list, already pruned), and a change it sees asks the
+    // shown frame for focus.
     activate(target, "replace");
     rerender();
   };
@@ -1034,10 +1064,7 @@ export default function WorkspaceHost({
 
   // ---- the right panel and the window's one rail (WS-16, WS-20, WS-21) ------
   const view = parseRight(st.right);
-  const activePub = (() => {
-    const p = R.places.get(st.active);
-    return p && p.win === frames.get(st.active)?.contentWindow ? p.info : null;
-  })();
+  const activePub = liveInfo(R.places.get(st.active), frames.get(st.active));
   const activeFrameWin = () => frames.get(st.active)?.contentWindow ?? null;
   // …and UNTIL ITS PAGE HAS SAID (a tab still loading), the place its URL
   // names: its tasks stand on top from the first paint, not among the faded
@@ -1058,8 +1085,8 @@ export default function WorkspaceHost({
     st.order
       .filter((id) => id !== st.active)
       .map((id) => {
-        const p = R.places.get(id);
-        if (p && p.win === frames.get(id)?.contentWindow) return p.info.place as RailPlace;
+        const info = liveInfo(R.places.get(id), frames.get(id));
+        if (info) return info.place as RailPlace;
         // Not loaded: the place its page last said, else its URL's best guess.
         const t = st.tabs.get(id);
         return t ? (t.place ?? placeOfUrl(t.url)) : null;

@@ -237,6 +237,16 @@ describe("parseRight / encodeRight", () => {
     // A run the opened view names is another chat to show (a canvas fix).
     expect(sameRight({ kind: "chat", file: "/a", query: "" }, { kind: "chat", file: "/a", query: "run=r1" })).toBe(false);
     expect(sameRight({ kind: "chat", file: "/a", query: "run=r1" }, { kind: "chat", file: "/a", query: "run=r1&split=1" })).toBe(true);
+    // A home door naming an agent is another view from a home on another (or none).
+    expect(sameRight({ kind: "chat", file: "/a", query: "" }, { kind: "chat", file: "/a", query: "backend=codex" })).toBe(false);
+    expect(sameRight({ kind: "chat", file: "/a", query: "backend=claude" }, { kind: "chat", file: "/a", query: "backend=codex" })).toBe(false);
+    expect(sameRight({ kind: "chat", file: "/a", query: "backend=codex&split=1" }, { kind: "chat", file: "/a", query: "backend=codex" })).toBe(true);
+    // …one naming none is any home; a conversation is its session, agent or not.
+    expect(sameRight({ kind: "chat", file: "/a", query: "backend=codex" }, { kind: "chat", file: "/a", query: "" })).toBe(true);
+    expect(sameRight({ kind: "chat", file: "/a", query: "session_id=s" }, { kind: "chat", file: "/a", query: "session_id=s&backend=codex" })).toBe(true);
+    // A run-only chat on screen is not the home + asks for.
+    expect(sameRight({ kind: "chat", file: "/a", query: "run=r1" }, { kind: "chat", file: "/a", query: "" })).toBe(false);
+    expect(sameRight({ kind: "chat", file: "/a", query: "session_id=s&run=r1" }, { kind: "chat", file: "/a", query: "session_id=s" })).toBe(true);
     expect(rightSession({ kind: "chat", file: "/a", query: "session_id=s1" })).toBe("s1");
     expect(rightSession({ kind: "chat", file: "/a", query: "" })).toBeNull();
   });
@@ -288,6 +298,12 @@ describe("splitArrival", () => {
   });
   test("a file on _mode=git: right git, the tab on its default mode", () => {
     expect(splitArrival(FILE + "?_mode=git")).toEqual({ keep: FILE, right: { kind: "git", path: "/Users/me/a.html" } });
+  });
+  test("the pane's params are read decoded; every other param is kept byte for byte", () => {
+    expect(splitArrival(FOLDER + "?q=a%20b&_side=%63laude&session%5Fid=s1&x=%2F")).toEqual({
+      keep: FOLDER + "?q=a%20b&x=%2F",
+      right: { kind: "chat", file: "/Users/me/dir", query: "session_id=s1" },
+    });
   });
   test("no pane: kept as is", () => {
     expect(splitArrival(FILE + "?_mode=code")).toEqual({ keep: FILE + "?_mode=code", right: null });

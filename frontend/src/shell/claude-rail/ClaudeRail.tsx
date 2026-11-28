@@ -489,6 +489,8 @@ import type { DoorCardState } from "./door-card-store";
 
 /** No mode doors (a stable empty list). */
 const NO_MODE_DOORS: RailModeDoor[] = [];
+/** Window A's pins beside the workspace's panel: none (`aWords`). */
+const NO_A_WORDS: readonly string[] = [];
 
 /** THE RAIL'S WIDTH, SAID TO THE DOCUMENT (owner, 2026-11-05: "move the
  *  notification modal to the right a little bit so it doesn't cover the mini
@@ -1036,7 +1038,12 @@ export function ClaudeRail({
   /** FREE PINS (many pins, 2026-11-24): every section A pin's word, every
    *  pinned favourite's key, every pinned bot's id (last-chat `aPins`,
    *  `favPins`, `botPins`). */
-  const aWords = useAPins();
+  const aWordsStored = useAPins();
+  // BESIDE THE WORKSPACE'S PANEL nothing of window A pins (WS-21): a stored A
+  // pin is left in the document but counts for NOTHING here — not drawn, and
+  // not read by the quiet rule, the pinned-ring set or a ring's raise either,
+  // or a pin no one can see would silence every hover. Window B's are its own.
+  const aWords = hasPanel ? NO_A_WORDS : aWordsStored;
   const favPinKeys = useFavPins();
   const botPinIds = useBotPins();
   const rowsRef = useRef(rows);
@@ -3431,7 +3438,7 @@ export function ClaudeRail({
    *  the keyboard, in whichever section it was pinned. False when it is not
    *  pinned (or free pins are off). */
   const raisePinOf = (key: string): boolean => {
-    const win = freePinsRef.current ? pinOf(key, { aWords: aPins(), favKeys: favPins() }) : null;
+    const win = freePinsRef.current ? pinOf(key, { aWords: panelRef.current ? NO_A_WORDS : aPins(), favKeys: favPins() }) : null;
     if (!win) return false;
     const pinId = win === "a" ? aPinWord({ kind: "task", key }) : favPinId(key);
     hideHint();
@@ -4617,7 +4624,7 @@ export function ClaudeRail({
             },
           },
   });
-  // Beside the workspace's panel, stored A pins are left unread (WS-21).
+  // Beside the workspace's panel, stored A pins are left unread (WS-21; `aWords`).
   const listCards = (freePins ? (panel ? aSlots.filter((x) => x.pin === null) : aSlots) : ONE_SLOT).map((slot) => {
     const isFree = !freePins || slot.pin === null;
     return {

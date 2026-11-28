@@ -154,8 +154,9 @@ export function takePendingClaudeAsk(path: string): string | null {
  *  same text; "" when the ask named none (the catalog's default stands). */
 let taken: { prompt: string; backend: string } | null = null;
 /** An ask handed straight to a chat (a workspace's panel, §56 WS-36) names
- *  its agent here, as `takePendingClaudeAsk` does for a staged one. */
-export function noteAskBackend(prompt: string, backend: string): void {
+ *  its agent here, as `takePendingClaudeAsk` does for a staged one — called
+ *  on EVERY handoff: one that names none clears the last one's agent. */
+export function noteAskBackend(prompt: string, backend?: string): void {
   taken = backend ? { prompt, backend } : null;
 }
 export function takenAskBackend(prompt: string): string {

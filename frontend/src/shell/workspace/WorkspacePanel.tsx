@@ -23,7 +23,7 @@
 // tabs to stop at the panel's final edge from the first frame — not cheap.
 import { useLayoutEffect, useRef, useState, type PointerEvent as ReactPointerEvent, type ReactNode } from "react";
 import { getPanelWidth, PANEL_MIN_W, setPanelWidth, usePanelWidth } from "./panel-width";
-import type { PanelParamsHost } from "./panel-params";
+import { chatMount, type PanelParamsHost } from "./panel-params";
 import { panelLayout, rightSession, type RightView } from "./workspace-lib";
 import { ChatView } from "./panel/ChatView";
 import { TasksView } from "./panel/TasksView";
@@ -138,7 +138,11 @@ export function WorkspacePanel(p: WorkspacePanelProps) {
       const rowBox = row.getBoundingClientRect();
       const room = right - rowBox.left - LEFT_MIN_W;
       last = Math.max(PANEL_MIN_W, Math.min(implied, Math.max(PANEL_MIN_W, room)));
-      if (implied < PANEL_MIN_W - CLOSE_UNDER) last = -1;
+      // Past the floor the panel can actually have: CSS holds it under
+      // PANEL_MIN_W when the row is short, and a widening drag there is not
+      // a close.
+      const floor = Math.min(PANEL_MIN_W, Math.max(0, room));
+      if (implied < floor - CLOSE_UNDER) last = -1;
       else setPanelWidth(last);
     };
     const end = () => {
@@ -174,7 +178,8 @@ export function WorkspacePanel(p: WorkspacePanelProps) {
     body = (
       <ChatView
         // A new mount for another file, or a query changed from outside.
-        key={v.file + "\u0000" + p.chatEpoch}
+        key={chatMount(v.file, p.chatEpoch)}
+        mount={chatMount(v.file, p.chatEpoch)}
         file={v.file}
         sessionId={rightSession(v)}
         queued={new URLSearchParams(v.query).get("queued") || null}

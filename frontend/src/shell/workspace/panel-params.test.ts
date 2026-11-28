@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { createPanelParamsStore, type PanelParamsHost } from "./panel-params";
+import { chatMount, createPanelParamsStore, type PanelParamsHost } from "./panel-params";
 
 // The store reads `window` (the gesture's listeners, its timers) and the
 // host's `history.state`: a bare EventTarget window and a state slot stand in.
@@ -71,5 +71,27 @@ describe("panel chat params over `_right`", () => {
     events.dispatchEvent(new Event("popstate"));
     expect(seen).toEqual(["b"]);
     off();
+  });
+
+  test("a retired mount's pending write never lands on the chat that replaced it", () => {
+    let current: string | null = chatMount("/f", 0);
+    const { host, writes, set } = makeHost("session_id=a");
+    host.mount = () => current;
+    const storeA = createPanelParamsStore(host, new EventTarget(), chatMount("/f", 0));
+    storeA.attach();
+    storeA.set({ run: "r1" }); // lands at once (no write yet in 400 ms)
+    storeA.set({ split: "1" }); // queued behind the throttle
+    expect(writes.map((w) => w.query)).toEqual(["session_id=a&run=r1"]);
+    // Another chat replaces it (an outside change: the host bumped its counter).
+    current = chatMount("/f", 1);
+    set("session_id=b");
+    storeA.dispose(); // its unmount flush is dropped
+    expect(writes.length).toBe(1);
+    // …and the new mount's own writes still persist.
+    const storeB = createPanelParamsStore(host, new EventTarget(), chatMount("/f", 1));
+    storeB.attach();
+    storeB.set({ split: "2" });
+    expect(writes.map((w) => w.query)).toEqual(["session_id=a&run=r1", "session_id=b&split=2"]);
+    storeB.dispose();
   });
 });

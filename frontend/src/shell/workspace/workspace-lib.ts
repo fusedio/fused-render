@@ -552,15 +552,21 @@ export function sameRight(
     const pb = new URLSearchParams(b.query);
     if (a.file !== b.file) return false;
     const run = pb.get("run") || "";
+    const aRun = pa.get("run") || "";
     const session = pa.get("session_id") || "";
     // `b` names only a run: `a` is that run, or the session it became.
     if (run && !pb.get("session_id") && !pb.get("queued")) {
-      return run === (pa.get("run") || "") || (!!session && adopted?.(run) === session);
+      return run === aRun || (!!session && adopted?.(run) === session);
     }
+    // With no session, the agent a door names is part of what it opens (a
+    // home on another agent is another view), and a door naming no run is
+    // not the run-only chat on screen (+ opens the home over it).
+    const backend = pb.get("backend") || "";
     return (
       session === (pb.get("session_id") || "") &&
       (pa.get("queued") || "") === (pb.get("queued") || "") &&
-      (!run || run === (pa.get("run") || ""))
+      (run ? run === aRun : !!session || !aRun) &&
+      (!!session || !backend || backend === (pa.get("backend") || ""))
     );
   }
   return encodeRight(a) === encodeRight(b);
@@ -790,10 +796,19 @@ export function splitArrival(url: string): { keep: string; right: RightView | nu
   if (place.side !== "right" || (place.view.kind !== "chat" && place.view.kind !== "git") || !fsPathOfViewPath(parts.path)) {
     return { keep: url, right: null };
   }
+  // Read DECODED, as `classifyNav` read them (`_side=%63laude` is a chat
+  // door too); every other segment is kept byte for byte.
+  const decode = (raw: string): string => {
+    try {
+      return decodeURIComponent(raw.replace(/\+/g, " "));
+    } catch {
+      return raw;
+    }
+  };
   const drop = (seg: string): boolean => {
     const eq = seg.indexOf("=");
-    const name = eq === -1 ? seg : seg.slice(0, eq);
-    const value = eq === -1 ? "" : seg.slice(eq + 1);
+    const name = decode(eq === -1 ? seg : seg.slice(0, eq));
+    const value = decode(eq === -1 ? "" : seg.slice(eq + 1));
     if (name === "_side" || name === "_mode") return value === "claude" || value === "git";
     return (CHAT_DOOR_PARAMS as readonly string[]).includes(name);
   };

@@ -2165,8 +2165,12 @@ function TemplatePreview({
   // dialog (McpDialog) the kebab's row opens, since the sidebar no longer lists
   // it. Only when there is a manifest to show; otherwise the request falls
   // through to the content pane as any unsplit surface would take it.
+  //
+  // IN A WORKSPACE FRAME (§56 WS-25) Claude and Git live in the window's
+  // right panel: their rows open it there (a `_mode` here would do nothing).
   const openMode = (m: string) => {
-    if (m === "mcp" && mcpSrc) setMcpOpen(true);
+    if (IS_WS_FRAME && (m === "claude" || m === "git")) void openInWorkspace(viewUrlForFsPath(fsPath, "?_side=" + m));
+    else if (m === "mcp" && mcpSrc) setMcpOpen(true);
     else if (sideOn && isSidebarMode(m)) setSide(m, m);
     else void setMode(m);
   };

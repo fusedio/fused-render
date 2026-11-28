@@ -245,20 +245,39 @@ function LeftCard({ itemKey, on }: { itemKey: string; on: boolean }) {
     if (!isSearch || !pinned) return;
     let tries = isWorkspaceHost() ? 30 : 1;
     let t = 0;
+    // Is the keyboard still where the click left it? Not once the reader put
+    // it on any control of the card but the search box (its Open, a result
+    // in the frame): checked BEFORE each try, so a try never takes it back.
+    const untouched = (inner: HTMLIFrameElement | null | undefined, box: HTMLInputElement | null | undefined): boolean => {
+      const a = document.activeElement;
+      const frame = frameRef.current;
+      if (frame && a === frame) {
+        const doc = frame.contentDocument;
+        const fa = doc?.activeElement;
+        if (!fa || fa === doc?.body) return true;
+        if (!inner || fa !== inner) return false;
+        const idoc = inner.contentDocument;
+        const ia = idoc?.activeElement;
+        return !ia || ia === idoc?.body || ia === box;
+      }
+      return !a || a === document.body || !!a.closest?.(`[${LEFT_DOOR_ATTR}]`);
+    };
+    const host = isWorkspaceHost();
     const attempt = () => {
       let done = false;
+      let free = true;
       try {
         const inner = frameRef.current?.contentDocument?.querySelector("iframe");
         const box = inner?.contentDocument?.querySelector<HTMLInputElement>("input.files-search-input");
+        free = untouched(inner, box);
+        if (host && !free) return;
         box?.focus({ preventScroll: true });
         done = !!box && inner?.contentDocument?.activeElement === box;
       } catch {
         // A frame not ours to reach: the reader clicks into it.
         done = true;
       }
-      const a = document.activeElement;
-      const untouched = !a || a === document.body || a === frameRef.current || !!a.closest?.(`[${LEFT_DOOR_ATTR}]`);
-      if (!done && --tries > 0 && untouched) t = window.setTimeout(attempt, 100);
+      if (!done && --tries > 0 && free) t = window.setTimeout(attempt, 100);
     };
     t = window.setTimeout(attempt, 60);
     return () => window.clearTimeout(t);
