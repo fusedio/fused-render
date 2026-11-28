@@ -399,6 +399,7 @@ function LeftCard({ itemKey, on }: { itemKey: string; on: boolean }) {
       ariaLabel={title || "Preview"}
       enabled={on && item !== null}
       onVisible={setShown}
+      canHold={canHold}
       subOpen={false}
       {...(compose ? { wishHeight: COMPOSE_HEIGHT } : {})}
     >

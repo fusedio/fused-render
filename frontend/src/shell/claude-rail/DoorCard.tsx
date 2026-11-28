@@ -172,6 +172,9 @@ export interface DoorCardProps {
   /** LEFT: a card whose content is short (the "+ New app" composer) stands no
    *  taller than this while the reader has dragged no size of their own. */
   wishHeight?: number;
+  /** LEFT: whether the card can be HELD at all (owner, 2026-11-28: only a
+   *  favourite's) — false, a head drag pins nothing. */
+  canHold?: boolean;
   children: (api: DoorCardApi) => ReactNode;
 }
 
@@ -192,6 +195,7 @@ export function DoorCard({
   viewFlag = viewPress,
   scrollerOf,
   wishHeight,
+  canHold = true,
   children,
 }: DoorCardProps) {
   const on = enabled;
@@ -279,7 +283,7 @@ export function DoorCard({
     key: store.key,
     movable: left && card.held,
     headSelector: RAIL_HEAD_SELECTOR,
-    dragPins: left && !card.held && up ? () => togglePinRef.current() : null,
+    dragPins: left && canHold && !card.held && up ? () => togglePinRef.current() : null,
   });
   const move = left ? ownCardMove : railMove;
   const floatingRef = useRef(false);

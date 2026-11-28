@@ -439,6 +439,15 @@ describe("the safe cone across the cards", () => {
     expect(state("ai-models").up).toBe(false);
     expect(state("home").up).toBe(true);
   });
+  it("a press on the waiting entry drops the wait: the cone letting go opens nothing", () => {
+    leave("home");
+    leftCardStore("home").intent().enterCone();
+    enter("ai-models");
+    leftDoorFor("ai-models")!.onPointerDown!({} as ReactPointerEvent<HTMLElement>);
+    leftCardStore("home").intent().leaveCone();
+    clock.tick(PEEK_OPEN_MS * 2);
+    expect(state("ai-models").up).toBe(false);
+  });
   it("the cone letting go with the pointer resting on the entry opens it", () => {
     leave("home");
     leftCardStore("home").intent().enterCone();

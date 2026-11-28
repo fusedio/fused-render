@@ -261,7 +261,7 @@ function enterDoor(key: string, store: DoorCardStore): void {
       return;
     }
     coneWait = null;
-    if (!blocked && !sidebarBusy() && store.state().ready) store.intent().enterRing(store.key, "pointer");
+    if (!blocked && !sidebarBusy() && store.state().ready && items.get(key)?.active !== true) store.intent().enterRing(store.key, "pointer");
   };
   coneWait = { key, timer: later(poll, CONE_POLL_MS) };
 }
@@ -483,7 +483,11 @@ export function leftDoorFor(key: string, slot: LeftDoorSlot = "rail"): SidebarRa
   const s = store.state();
   /** The entry's page is on screen: nothing opens (`LeftPeekItem.active`). */
   const here = () => items.get(key)?.active === true;
+  // A PRESS ON THE ENTRY also drops a hover still waiting on another card's
+  // cone (CodeRabbit on #2503): the cone letting go after it must not open
+  // this card under a click or a drag.
   const putDownOwn = () => {
+    if (coneWait?.key === key) stopConeWait();
     const c = store.state();
     if (c.up && !c.held) store.close();
   };
