@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import {
+  asRailPlace,
   buildHostUrl,
   classifyNav,
   encodeRight,
@@ -11,6 +12,7 @@ import {
   pageUrlOf,
   parseHostUrl,
   parseRight,
+  placeOfUrl,
   planOpen,
   rightSession,
   sameRight,
@@ -285,6 +287,26 @@ describe("splitArrival", () => {
   });
 });
 
+describe("placeOfUrl (an unloaded tab's rail place, WS-27)", () => {
+  test("an app page is its folder", () => {
+    expect(placeOfUrl("/apps/Users/me/my%20app?_tab=tasks")).toEqual({ kind: "folder", dir: "/Users/me/my app", word: "App" });
+  });
+  test("a canvas page is its canvas, its clone not known", () => {
+    expect(placeOfUrl("/canvases/prod/demo_1?node=x")).toEqual({ kind: "canvas", env: "prod", name: "demo_1", dir: null });
+    expect(placeOfUrl("/canvases/nope/demo")).toBeNull();
+  });
+  test("an explorer folder, or a file in its parent folder", () => {
+    expect(placeOfUrl(FOLDER + "?sort=name")).toEqual({ kind: "folder", dir: "/Users/me/dir" });
+    expect(placeOfUrl(FILE)).toEqual({ kind: "file", file: "/Users/me/a.html", dir: "/Users/me" });
+    expect(placeOfUrl("/explorer/view/Users/me/b%20c.py")).toEqual({ kind: "file", file: "/Users/me/b c.py", dir: "/Users/me" });
+  });
+  test("anything else has no place", () => {
+    for (const u of ["/home", "/tasks", "/ai-models", "/marketplace", "/preferences", "/explorer", "/explorer/view/_panel", "/explorer/view/s3:/bucket/k", "/render?path=/a"]) {
+      expect(placeOfUrl(u)).toBeNull();
+    }
+  });
+});
+
 describe("what a restored tab may be", () => {
   test("a path this origin serves, as a browser would resolve it", () => {
     expect(isPlainPath("/explorer/view/Users/me/a b.html?x=1")).toBe(true);
@@ -304,5 +326,25 @@ describe("what a restored tab may be", () => {
     expect(buildHostUrl(["/home", "/tasks?embed=%31"], 1)).toMatch(/^\/home\?_tabs=/);
     expect(buildHostUrl(["/home", "/tasks?embed=1"], 1)).toMatch(/^\/home\?_tabs=/);
     expect(buildHostUrl(["/home", "/tasks?embedded=1"], 1)).toMatch(/^\/tasks\?embedded=1&_tabs=/);
+  });
+});
+
+describe("asRailPlace (a place remembered in the history entry)", () => {
+  test("a place comes back as itself", () => {
+    expect(asRailPlace({ kind: "folder", dir: "/Users/me/data.v2" })).toEqual({ kind: "folder", dir: "/Users/me/data.v2" });
+    expect(asRailPlace({ kind: "folder", dir: "/a", word: "App", sessionless: true })).toEqual({ kind: "folder", dir: "/a", word: "App" });
+    expect(asRailPlace({ kind: "file", file: "/a/Makefile", dir: "/a" })).toEqual({ kind: "file", file: "/a/Makefile", dir: "/a" });
+    expect(asRailPlace({ kind: "canvas", env: "prod", name: "sales", dir: null, file: "hex.py" })).toEqual({
+      kind: "canvas",
+      env: "prod",
+      name: "sales",
+      dir: null,
+      file: "hex.py",
+    });
+  });
+  test("anything else is no place", () => {
+    for (const x of [null, undefined, "folder", 3, {}, { kind: "folder" }, { kind: "folder", dir: "" }, { kind: "file", file: 1 }, { kind: "canvas", env: "x", name: "a", dir: null }]) {
+      expect(asRailPlace(x)).toBeNull();
+    }
   });
 });
