@@ -193,7 +193,9 @@ import {
   type StarMark,
 } from "./rail-peek-lib";
 import { publishWindowABox, setSnapGuide, setSnapGuides, windowABox } from "./card-snap";
-import { RailPinButton } from "./RailPin";
+import { PinWindowA, RailPinButton } from "./RailPin";
+import { usePanelRailOn } from "./rail-panel";
+import { isWorkspaceHost } from "@platform/lib/workspace-bridge";
 import {
   FLOAT_GRIPS,
   RAIL_HEAD_SELECTOR,
@@ -564,6 +566,7 @@ export const RailPeek = forwardRef<RailPeekHandle, RailPeekProps>(function RailP
   // is window A's, the favourite's (`resizeKey`) window B's. Pinned and
   // dragged, it FLOATS: placed at the window's position, not beside the rail.
   const moveWin: RailWindow = win ?? (resizeKey === "canvasRailFav" ? "b" : "a");
+  const panelOn = usePanelRailOn();
   const move = useCardMove({
     win: moveWin,
     pinId,
@@ -572,7 +575,8 @@ export const RailPeek = forwardRef<RailPeekHandle, RailPeekProps>(function RailP
     shown: shown?.pulse.key ?? null,
     // A non-pin's head drag pins it (useCardMove `dragPins`): the pin icon's
     // own press.
-    dragPins: !pinCtl.pinned && shown ? pinCtl.onToggle : null,
+    // …never a window A card beside the workspace's panel (rail-panel.ts).
+    dragPins: !pinCtl.pinned && shown && !(moveWin === "a" && panelOn) ? pinCtl.onToggle : null,
   });
   const floatingRef = useRef(false);
   floatingRef.current = move.floating;
@@ -1509,7 +1513,8 @@ export const RailPeek = forwardRef<RailPeekHandle, RailPeekProps>(function RailP
         onArchived={onFiled}
         // FULL SCREEN: the Open door, then the Claude panel
         // filling the window (side-maximized-store).
-        {...(head.href && head.t.session_id && opensInSidePane(head.href) ? {
+        // Not in a workspace: no pane there to fill (SPEC §56).
+        {...(head.href && head.t.session_id && opensInSidePane(head.href) && !isWorkspaceHost() ? {
           fullScreen: {
             on: false,
             onToggle: () => {
@@ -1545,7 +1550,8 @@ export const RailPeek = forwardRef<RailPeekHandle, RailPeekProps>(function RailP
   // is the box's. Not while this card's own grip is held: the grip moves it.
   const drawn = freePins && move.floating && !resizing ? drawnBox(box, move.pos) : box;
   return createPortal(
-    <>
+    // Window A's pin goes beside the workspace's panel (RailPin `PinWindowA`).
+    <PinWindowA.Provider value={moveWin === "a"}>
     {bridge && (
       <div
         className={"claude-rail-peek-bridge" + (visible ? " is-on" : "")}
@@ -1803,7 +1809,7 @@ export const RailPeek = forwardRef<RailPeekHandle, RailPeekProps>(function RailP
         </div>
       </div>
     </div>
-    </>,
+    </PinWindowA.Provider>,
     document.body,
   );
 });

@@ -38,6 +38,11 @@ SIDEBAR_MAX_W = 400
 # The right rail's expanded width (frontend platform/lib/railstate.ts).
 RAIL_MIN_W = 180
 RAIL_MAX_W = 400
+# The workspace's right panel width (frontend shell/workspace panel-width.ts):
+# its floor is the panel's own 380px; the ceiling only keeps a hand-edited
+# document sane (the live clamp is the window's).
+WS_PANEL_MIN_W = 380
+WS_PANEL_MAX_W = 4000
 MAX_VIEW_STATE = 500
 MAX_PATH = 4096
 MAX_QUERY = 512
@@ -52,7 +57,7 @@ RAIL_CARD_KEYS = ("canvasRailPeek", "canvasRailFav")
 CHAT_TEXT_SCALES = (0.8, 0.9, 1, 1.1, 1.25, 1.5, 1.75, 2)
 # Keys an OLDER bundle's whole-document PUT never names: carried forward from
 # the stored document rather than dropped (see put_ui_layout).
-CARRIED_KEYS = (*RAIL_CARD_KEYS, "chatTextScale", "chatSeen", "rail")
+CARRIED_KEYS = (*RAIL_CARD_KEYS, "chatTextScale", "chatSeen", "rail", "workspace")
 # The task chat's "seen" mark (apps/claude/ui/chatSeen.ts): session id → where
 # the reader last sat at the end of it (`k:d:r`, a position in the log). The bots'
 # `seen_seq`, for task chats: where the NEW rule goes on the next open.
@@ -123,6 +128,11 @@ def _clean(doc) -> dict:
         _check(_is_int(rl.get("width")) and RAIL_MIN_W <= rl["width"] <= RAIL_MAX_W)
         _check(isinstance(rl.get("expanded"), bool))
         out["rail"] = {"width": rl["width"], "expanded": rl["expanded"]}
+    if "workspace" in doc:
+        ws = doc["workspace"]
+        _check(isinstance(ws, dict))
+        _check(_is_int(ws.get("rightWidth")) and WS_PANEL_MIN_W <= ws["rightWidth"] <= WS_PANEL_MAX_W)
+        out["workspace"] = {"rightWidth": ws["rightWidth"]}
     for key in ("bookmarksCollapsed", "currentAppsCollapsed", "canvasesCollapsed"):
         if key in doc:
             _check(isinstance(doc[key], bool))

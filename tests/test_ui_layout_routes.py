@@ -163,3 +163,17 @@ def test_corrupt_stored_doc_reads_absent(tmp_path, monkeypatch):
     with open(path, "w") as f:
         json.dump({"v": 1, "sidebar": {"width": 9999, "collapsed": False}}, f)
     assert client.get("/api/ui-layout").json() == {"exists": False, "layout": None}
+
+
+def test_workspace_right_width_validates_and_carries_forward(tmp_path, monkeypatch):
+    """The workspace's right panel width (SPEC §56): an int from the panel's
+    380px floor up; out of range or not an int is a 400; an older bundle's
+    PUT that does not name it keeps the stored one."""
+    client = _client(tmp_path, monkeypatch)
+    doc = {**_doc(), "workspace": {"rightWidth": 520, "x": 1}}
+    assert client.put("/api/ui-layout", json=doc, headers=FUSED).status_code == 200
+    assert client.get("/api/ui-layout").json()["layout"]["workspace"] == {"rightWidth": 520}
+    for bad in ({"rightWidth": 379}, {"rightWidth": 520.5}, {"rightWidth": "520"}, {}, 520):
+        assert client.put("/api/ui-layout", json={**_doc(), "workspace": bad}, headers=FUSED).status_code == 400
+    assert client.put("/api/ui-layout", json=_doc(), headers=FUSED).status_code == 200
+    assert client.get("/api/ui-layout").json()["layout"]["workspace"] == {"rightWidth": 520}

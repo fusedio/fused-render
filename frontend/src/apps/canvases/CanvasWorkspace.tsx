@@ -217,6 +217,7 @@ import { addCurrentApp } from "@platform/lib/api";
 import { CURRENT_APPS_CHANGED_EVENT } from "@platform/lib/tasksChanged";
 import { ChatMount, ShotViewer, type CanvasShot, type CanvasShotAnswer, type CanvasShotBy, type CanvasShotWhat, type Viewable } from "@apps/claude";
 import { statPath } from "@platform/lib/api";
+import { WS_SELECT_NODE_EVENT, useWorkspacePlace } from "@platform/lib/workspace-bridge";
 import { EMBED_PREFIX, IS_WS_FRAME, NAV_EVENT, VIEW_PREFIX, confirmLeave, embedUrlForFsPath, navigateUrl, spaLinkProps, viewUrlForFsPath } from "@platform/lib/router";
 import { ErrorBanner } from "@platform/ui/ErrorBanner";
 import { CanvasGhost } from "./CanvasGhost";
@@ -3512,6 +3513,44 @@ export default function CanvasWorkspace({
       )}
     </>
   );
+
+  // IN A WORKSPACE TAB the window's one rail stands instead (SPEC §56 WS-20):
+  // this canvas says what its rail would show, as data — the + held for the
+  // same two waits — and the host's node chip and place tags select HERE
+  // (`WS_SELECT_NODE_EVENT`).
+  useWorkspacePlace(
+    IS_WS_FRAME
+      ? {
+          place: railPlace,
+          newTask: {
+            target: dir && node ? nodeFile(dir, node) : dir,
+            waiting:
+              dir === null
+                ? "Loading the canvas…"
+                : node && nodeFileOnDisk !== nodeFile(dir, node)
+                  ? `Saving ${node.file}…`
+                  : null,
+            on: node?.udfName ?? null,
+            where: { canvas: name, node: node?.udfName ?? null },
+          },
+          git: null,
+          fileModes: null,
+          canvasSelect: true,
+        }
+      : null,
+  );
+  useEffect(() => {
+    if (!IS_WS_FRAME) return;
+    const onSelect = (e: Event) => {
+      const d = (e as CustomEvent<{ udfName?: unknown; sessionId?: unknown; tag?: unknown } | null>).detail;
+      if (!d || typeof d !== "object") return;
+      const udf = typeof d.udfName === "string" ? d.udfName : null;
+      if (d.tag) selectFromTag(udf, typeof d.sessionId === "string" ? d.sessionId : null);
+      else selectFromRail(udf);
+    };
+    window.addEventListener(WS_SELECT_NODE_EVENT, onSelect);
+    return () => window.removeEventListener(WS_SELECT_NODE_EVENT, onSelect);
+  }, [selectFromRail, selectFromTag]);
 
   return (
     <div style={{ display: "flex", flexDirection: "column", height: "100%", minWidth: 0 }}>

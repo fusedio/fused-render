@@ -305,6 +305,11 @@ export interface ChatMountProps {
   /** "url" for sidebar / content / canvas; "memory" for cards / peek / panel /
    *  tab, whose page URL is not this chat's (00 §1e). */
   paramsSource: "url" | "memory";
+  /** A store of the HOST'S making, used instead of either: the workspace's
+   *  right panel backs its chat's params with the host URL's `_right`
+   *  (shell/workspace/panel-params.ts), keeping every rule of the URL store
+   *  (gesture-gated push, throttle, Back). The host owns its lifetime. */
+  paramsStore?: ParamsStore;
   /**
    * A class for the mount's own box, where the host needs one. Site 6 is the
    * case: the explorer content pane's
@@ -369,7 +374,7 @@ export function ChatMount(props: ChatMountProps) {
 
   return (
    <ChatChunkBoundary>
-    {props.paramsSource === "url" && !props.preview && <AnnounceUrlSession />}
+    {props.paramsSource === "url" && !props.paramsStore && !props.preview && <AnnounceUrlSession />}
     <div className={props.mountClassName ? `chat-mount ${props.mountClassName}` : "chat-mount"}>
      <Suspense fallback={<ChatFramePlaceholder />}>
       <ClaudeChat
@@ -385,7 +390,7 @@ export function ChatMount(props: ChatMountProps) {
         {...(props.headChipsHost ? { headChipsHost: props.headChipsHost } : {})}
         {...(props.headStatusHost ? { headStatusHost: props.headStatusHost } : {})}
         {...(props.prChip ? { prChip: true } : {})}
-        params={props.paramsSource === "url" ? "url" : memory}
+        params={props.paramsStore ?? (props.paramsSource === "url" ? "url" : memory)}
         // WHOSE `?model=`/`?effort=` the composer is looking at. These two props
         // are the only way a seed is ever STATED — everything else in that pair
         // of params is the composer's own leftover — and a stated one keeps

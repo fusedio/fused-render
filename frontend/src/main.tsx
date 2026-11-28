@@ -6,6 +6,7 @@ import { ShellErrorBoundary } from "@platform/ui/ShellErrorBoundary";
 import { installShellErrorReporter, reportShellError } from "@platform/lib/shell-errors";
 import { IS_EMBED, IS_SNAPSHOT, NO_SHELL_CHROME, navigateUrl } from "@platform/lib/router";
 import {
+  adoptWorkspaceArrival,
   bootWorkspaceHost,
   installWorkspaceFrameSink,
   onWorkspaceBookmarks,
@@ -142,6 +143,9 @@ const uiState = hydrateUiState(NO_SHELL_CHROME ? [] : [hydrateNotificationsState
 // A workspace frame's own hops that are not its to make (Home stays Home, the
 // wizard is the whole window) go to the host instead (workspace-bridge).
 installWorkspaceFrameSink(ONBOARDING_PATH);
+// …and a tab that boots on a companion pane (`_side=claude`) hands it to the
+// host's right panel before the page reads its URL.
+adoptWorkspaceArrival();
 
 Promise.all([getConfig({ signal: AbortSignal.timeout(CONFIG_TIMEOUT_MS) }), uiState]).then(
   ([config]) => {
