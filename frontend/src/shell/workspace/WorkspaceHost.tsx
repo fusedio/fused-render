@@ -494,17 +494,13 @@ export default function WorkspaceHost({
   const pageArm = (): ArmedBookmark | null =>
     liveTabArm(R.tabArms.get(st.active), docOf(frames.get(st.active)?.contentWindow));
 
-  // Undo a tab's landing on a panel-only page: its own Back when the frame
-  // has an entry to go back to (Navigation API), else a reload of the page it
-  // was on, else — it was born there — the tab closes.
+  // Undo a tab's landing on a panel-only page: the page it was on, loaded
+  // over the landing (a replace, so the window's history keeps the entry the
+  // panel just opened on — the frame's own Back would walk the JOINT history
+  // off it and close the panel again); a tab born there closes.
   const putBack = (id: string, prev: string) => {
     const win = frames.get(id)?.contentWindow;
     try {
-      const nav = (win as (Window & { navigation?: { canGoBack?: boolean } }) | null | undefined)?.navigation;
-      if (win && nav?.canGoBack) {
-        win.history.back();
-        return;
-      }
       if (win && prev && !rightOnlyView(prev)) {
         win.location.replace(prev);
         return;

@@ -13651,7 +13651,7 @@ nothing here exists and nothing changes.
   `/bots…`, or with one in `_tabs`, drops that tab (Home active if it was)
   and shows it in the panel unless `_right` names a view. An open of one,
   even as a new tab, opens the panel. A tab that lands on one by a full load
-  goes back (its own Back, else a reload of where it was, else it closes) and
+  goes back (a reload of where it was, else it closes) and
   the panel shows it. A canvas page naming a `session_id` stays a tab and,
   shown with no `_right`, also opens that task's chat once the listing has
   it — unless that tab was closed first.
