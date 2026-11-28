@@ -114,6 +114,23 @@ describe("the hover", () => {
     clock.tick(1);
     expect(state("home").up).toBe(true);
   });
+  it("the page on screen (an active entry) opens nothing — hover or ArrowRight — and keeps its tooltip", () => {
+    publishLeftItems([{ ...item("home"), active: true }]);
+    offs.push(ready("home"));
+    enter("home");
+    clock.tick(PEEK_OPEN_MS);
+    expect(state("home").up).toBe(false);
+    leftDoorFor("home")!.onKeyDown!({ key: "ArrowRight", preventDefault() {}, target: null } as unknown as ReactKeyboardEvent<HTMLElement>);
+    clock.tick(PEEK_OPEN_MS);
+    expect(state("home").up).toBe(false);
+    expect(leftDoorFor("home")!.quietTip).toBe(false);
+    expect(leftDoorFor("home")!.attrs?.["aria-haspopup"]).toBeUndefined();
+    // Off that page again: the hover opens it.
+    publishLeftItems([item("home")]);
+    enter("home");
+    clock.tick(PEEK_OPEN_MS);
+    expect(state("home").up).toBe(true);
+  });
   it("a touch, a drag (buttons down) and the Settings menu open nothing", () => {
     publishLeftItems([item("home")]);
     offs.push(ready("home"));

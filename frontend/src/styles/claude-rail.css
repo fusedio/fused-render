@@ -2072,6 +2072,50 @@ a.claude-rail-peek-scope:focus-visible {
   flex: 1;
   min-width: 0;
 }
+/* THE HOME CARD'S SEARCH (LeftPeek `CardSearch`, owner 2026-11-27): Home's
+   file search box in the head, between the title and Open, at the head's
+   12px scale; its results (`.is-card-results`) lie over the listing while a
+   query is live and scroll in the body. */
+.claude-left-peek-search {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+.files-search-wrap.is-in-card .files-search {
+  gap: 6px;
+  padding: 0 8px;
+  border-radius: 7px;
+  box-shadow: none;
+}
+.files-search-wrap.is-in-card .files-search-icon svg {
+  width: 12px;
+  height: 12px;
+}
+.files-search-wrap.is-in-card .files-search-input,
+.files-search-wrap.is-in-card .files-search-input:focus {
+  padding: 3px 0;
+  font-size: 12px;
+  line-height: 16px;
+}
+.files-search-wrap.is-in-card .files-search-clear {
+  padding: 1px 7px;
+  font-size: 10.5px;
+}
+.claude-left-peek-results {
+  position: absolute;
+  inset: 0;
+  z-index: 2;
+  overflow-y: auto;
+  padding: 10px 12px 14px;
+  background: var(--bg);
+}
+.claude-left-peek-results .fh-panel {
+  margin-top: 0;
+}
+.claude-left-peek-results .fh-results {
+  max-height: none;
+  overflow: visible;
+}
+
 /* A project's preview.png, while a preview: the still a card on /apps shows,
    whole and centred, the card's own ground around it. */
 .claude-left-peek-still {

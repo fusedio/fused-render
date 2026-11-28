@@ -4,6 +4,7 @@
 // bookmarks and recent files. Entering any target navigates into
 // /explorer/view/... (the explorer proper).
 import { useEffect, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import { navigate, navigateUrl, replaceSearch, spaLinkProps } from "@platform/lib/router";
 import { basename, formatMtime, formatMtimeFull, formatSize } from "@platform/lib/format";
 import { iconForEntry } from "@platform/ui/FileIcons";
@@ -444,9 +445,31 @@ export function FilesSearch({
   onScanRequested,
   compact,
   autoFocus = true,
+  resultsHost,
+  onGo,
+  clearKey,
+  initialAi = true,
 }: {
   home: string;
   initialQuery: string;
+  /** THE BOX IN A CARD'S HEAD (the sidebar's Home card, shell/left-rail
+   *  LeftPeek): given, this box draws only itself where it is mounted and its
+   *  results — notes, banners, the list — in `resultsHost` (null: not drawn
+   *  yet, no results drawn). It then keeps to itself: no page-wide "typing
+   *  goes to the box", no `?q=` on the page's address, no "All files" (the
+   *  card's Open is that). */
+  resultsHost?: HTMLElement | null;
+  /** Where a picked row goes (Enter, the open row, the keyboard's pick) —
+   *  the page by default (`navigate`); the Home card opens it in the card.
+   *  Rows that are links (`a[href]`) are the caller's to catch. */
+  onGo?: (fsPath: string, opts?: { isDir?: boolean }) => void;
+  /** A new value empties the box, as its Clear does (the Home card's Back
+   *  out of the results). */
+  clearKey?: number;
+  /** `initialQuery` was a committed AI search (a `?q=` the page wrote), so
+   *  it runs one again. False: an instant search handed over (the Home
+   *  card's Open, `qmode=instant`) — its query is typed, no model call. */
+  initialAi?: boolean;
   /** The caret starts in the box (the page's own posture). Off for a box in
    *  a hover card (the shell's sidebar search preview), which must not take
    *  the keyboard until the reader presses into it. */
@@ -465,6 +488,8 @@ export function FilesSearch({
    */
   onScanRequested: () => void;
 }) {
+  const inCard = resultsHost !== undefined;
+  const go = (fsPath: string, opts?: { isDir?: boolean }) => (onGo ? onGo(fsPath, opts) : navigate(fsPath, opts));
   const [query, setQuery] = useState(initialQuery);
   const [ai, setAi] = useState<AiPhase>(AI_OFF);
   const [picked, setPicked] = useState<RowId | null>(null);
@@ -612,7 +637,7 @@ export function FilesSearch({
     const target = awaitingCommit.current;
     awaitingCommit.current = null;
     if (target !== address) return; // superseded by a newer keystroke
-    if (addr.status === "exists") navigate(addr.path, { isDir: addr.is_dir });
+    if (addr.status === "exists") go(addr.path, { isDir: addr.is_dir });
     // "missing" resolves to nothing: Enter must not navigate to a path that
     // does not exist.
   }, [addr, address]);
@@ -920,6 +945,8 @@ export function FilesSearch({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
   useEffect(() => {
+    // A box in a card's head is not the page: the page's typing is its own.
+    if (inCard) return;
     const onKey = (e: KeyboardEvent) => {
       const el = e.target as HTMLElement | null;
       const claim = redirectsToSearch({
@@ -939,12 +966,13 @@ export function FilesSearch({
     };
     document.addEventListener("keydown", onKey);
     return () => document.removeEventListener("keydown", onKey);
-  }, []);
+  }, [inCard]);
 
   // -- AI search -------------------------------------------------------------
   const aiCtl = useRef<AbortController | null>(null);
   useEffect(() => () => aiCtl.current?.abort(), []);
   const syncQueryParam = (value: string | null) => {
+    if (inCard) return;
     const params = new URLSearchParams(location.search);
     if (value) params.set("q", value);
     else params.delete("q");
@@ -987,6 +1015,14 @@ export function FilesSearch({
     setPicked(null);
     syncQueryParam(null);
   };
+  const clearNow = useRef(clear);
+  clearNow.current = clear;
+  const clearSeen = useRef(clearKey);
+  useEffect(() => {
+    if (clearSeen.current === clearKey) return;
+    clearSeen.current = clearKey;
+    clearNow.current();
+  }, [clearKey]);
 
   const edit = (value: string) => {
     setQuery(value);
@@ -1020,7 +1056,7 @@ export function FilesSearch({
   useEffect(() => {
     if (ranInitial.current) return;
     ranInitial.current = true;
-    if (initialQuery.trim()) runAi(initialQuery);
+    if (initialAi && initialQuery.trim()) runAi(initialQuery);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
@@ -1234,7 +1270,7 @@ export function FilesSearch({
 
   const activateRow = (row: number) => {
     if (isOpenRow(row, rowModel)) {
-      if (addr.status === "exists") navigate(addr.path, { isDir: addr.is_dir });
+      if (addr.status === "exists") go(addr.path, { isDir: addr.is_dir });
       return;
     }
     if (isAiRow(row, rowModel)) {
@@ -1244,10 +1280,10 @@ export function FilesSearch({
     const fi = row - fileOffset;
     if (fi >= hits.length) {
       const hit = remote.shown[fi - hits.length];
-      if (hit) navigate(hit.url, { isDir: hit.is_dir });
+      if (hit) go(hit.url, { isDir: hit.is_dir });
       return;
     }
-    navigate(hits[fi].path, { isDir: hits[fi].is_dir });
+    go(hits[fi].path, { isDir: hits[fi].is_dir });
   };
 
   // Enter with no row chosen: a resolved address (the open row) or the top
@@ -1260,7 +1296,7 @@ export function FilesSearch({
     // bucket rows are never the default target. A picked bucket row (arrowed
     // to) falls through and opens that row.
     if (remoteAddr !== null && highlight === null) {
-      navigate(remoteAddr);
+      go(remoteAddr);
       return;
     }
     if (address !== null && (addr.status === "idle" || addr.status === "checking")) {
@@ -1275,73 +1311,10 @@ export function FilesSearch({
     if (current !== null) activateRow(current);
   };
 
-  return (
-    <div className="files-search-wrap">
-      <div className="files-search">
-        <span className="files-search-icon" aria-hidden="true">
-          <MagnifierIcon />
-        </span>
-        <input
-          ref={inputEl}
-          type="search"
-          className="files-search-input"
-          placeholder={compact ? "Search files…" : "Search your files — or paste a path like ~/Downloads"}
-          aria-label="Search your files"
-          role="combobox"
-          aria-expanded={active && !showingAi && listShown}
-          aria-controls="fh-result-list"
-          aria-activedescendant={
-            active && !showingAi && listShown && current !== null
-              ? "fh-row-" + current
-              : undefined
-          }
-          autoComplete="off"
-          spellCheck={false}
-          value={query}
-          onChange={(e) => edit(e.target.value)}
-          onKeyDown={(e) => {
-            if (e.key === "ArrowDown" || e.key === "ArrowUp") {
-              if (!active || showingAi || !listShown) return;
-              e.preventDefault();
-              // Step from `current` (the RESOLVED row, `activeRow` above), not
-              // the raw `highlight` state: the top file row can be active with
-              // `highlight` still null (activeRow's implicit pre-select), and
-              // stepping from null would land the first ArrowDown back on row
-              // 0 — the already-visible selection — instead of row 1.
-              pick(stepHighlight(current, rowModel, e.key === "ArrowDown" ? 1 : -1));
-            } else if (e.key === "Enter") {
-              e.preventDefault();
-              submit();
-            } else if (e.key === "Escape" && active) {
-              e.preventDefault();
-              clear();
-            }
-          }}
-        />
-        {active && (
-          <button type="button" className="files-search-clear" title="Clear search (esc)" onClick={clear}>
-            Clear
-          </button>
-        )}
-        {/* A navigation shortcut, not a search control — it does not read or
-            write `query`/`ai`/anything else in here, same reasoning as the
-            recents screen's own "Browse files" CTA (.files-hero-cta) whose
-            handler this reuses verbatim, so the two entry points into the
-            home directory cannot drift apart. */}
-        <button
-          type="button"
-          className="files-hero-cta files-search-allfiles"
-          aria-label="All files"
-          title="Open the file explorer at your home directory"
-          onClick={() => navigate(home, { isDir: true })}
-        >
-          All files
-          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-            <path d="M5 12h14M13 6l6 6-6 6" />
-          </svg>
-        </button>
-      </div>
-
+  // The notes, banners and the list under the box: under it on a page, in
+  // `resultsHost` for a box in a card's head.
+  const below = (
+    <>
       {ai.status === "failed" && <ErrorBanner>{ai.message}</ErrorBanner>}
 
       {/* A refetch failed while rows are still in hand. The rows stay — they
@@ -1554,7 +1527,7 @@ export function FilesSearch({
                   isDir={addr.is_dir}
                   active={current === 0}
                   id="fh-row-0"
-                  onOpen={() => navigate(addr.path, { isDir: addr.is_dir })}
+                  onOpen={() => go(addr.path, { isDir: addr.is_dir })}
                 />
               )}
               {hits.map((hit, i) => {
@@ -1594,6 +1567,81 @@ export function FilesSearch({
           )}
         </div>
       )}
+    </>
+  );
+
+  return (
+    <div className={"files-search-wrap" + (inCard ? " is-in-card" : "")}>
+      <div className="files-search">
+        <span className="files-search-icon" aria-hidden="true">
+          <MagnifierIcon />
+        </span>
+        <input
+          ref={inputEl}
+          type="search"
+          className="files-search-input"
+          placeholder={compact || inCard ? "Search files…" : "Search your files — or paste a path like ~/Downloads"}
+          aria-label="Search your files"
+          role="combobox"
+          aria-expanded={active && !showingAi && listShown}
+          aria-controls="fh-result-list"
+          aria-activedescendant={
+            active && !showingAi && listShown && current !== null
+              ? "fh-row-" + current
+              : undefined
+          }
+          autoComplete="off"
+          spellCheck={false}
+          value={query}
+          onChange={(e) => edit(e.target.value)}
+          onKeyDown={(e) => {
+            if (e.key === "ArrowDown" || e.key === "ArrowUp") {
+              if (!active || showingAi || !listShown) return;
+              e.preventDefault();
+              // Step from `current` (the RESOLVED row, `activeRow` above), not
+              // the raw `highlight` state: the top file row can be active with
+              // `highlight` still null (activeRow's implicit pre-select), and
+              // stepping from null would land the first ArrowDown back on row
+              // 0 — the already-visible selection — instead of row 1.
+              pick(stepHighlight(current, rowModel, e.key === "ArrowDown" ? 1 : -1));
+            } else if (e.key === "Enter") {
+              e.preventDefault();
+              submit();
+            } else if (e.key === "Escape" && active) {
+              e.preventDefault();
+              clear();
+            }
+          }}
+        />
+        {active && (
+          <button type="button" className="files-search-clear" title="Clear search (esc)" onClick={clear}>
+            Clear
+          </button>
+        )}
+        {!inCard && (
+          <>
+            {/* Not in a card (`inCard`): its Open is this. A navigation shortcut, not a search control — it does not read or
+                write `query`/`ai`/anything else in here, same reasoning as the
+                recents screen's own "Browse files" CTA (.files-hero-cta) whose
+                handler this reuses verbatim, so the two entry points into the
+                home directory cannot drift apart. */}
+            <button
+              type="button"
+              className="files-hero-cta files-search-allfiles"
+              aria-label="All files"
+              title="Open the file explorer at your home directory"
+              onClick={() => navigate(home, { isDir: true })}
+            >
+              All files
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                <path d="M5 12h14M13 6l6 6-6 6" />
+              </svg>
+            </button>
+          </>
+        )}
+      </div>
+
+      {inCard ? (resultsHost ? createPortal(<div className="files-search-wrap is-card-results">{below}</div>, resultsHost) : null) : below}
     </div>
   );
 }
